@@ -1,61 +1,120 @@
+# tmux Worktree Switcher Setup
+
+Install the tmux-worktree-switcher tool for fast fzf-based worktree navigation.
+
 ---
-name: setup
-prefix: g
-description: Install tmux-worktree-switcher to ~/.local/bin and configure tmux keybinding
+
+## Step 1: Check dependencies
+
+Verify required tools are installed:
+
+```bash
+echo "Checking dependencies..."
+command -v tmux &>/dev/null && echo "  ✓ tmux" || echo "  ✗ tmux (required)"
+command -v fzf &>/dev/null && echo "  ✓ fzf" || echo "  ✗ fzf (required)"
+command -v git &>/dev/null && echo "  ✓ git" || echo "  ✗ git (required)"
+```
+
+If any are missing, inform the user they need to install them first (e.g., `brew install tmux fzf`).
+
 ---
 
-# /g:setup — Install tmux-worktree-switcher
+## Step 2: Locate the script
 
-You are setting up the tmux-worktree-switcher tool from the Atlas g plugin.
+Find the `tmux-worktree-switcher` script in the plugin cache:
 
-## Steps
+```bash
+SCRIPT_PATH=$(find ~/.claude/plugins/cache -name "tmux-worktree-switcher" 2>/dev/null | head -1)
+echo "Found script at: $SCRIPT_PATH"
+```
 
-1. **Locate the script** in the plugin cache:
-   - Look in `~/.claude/plugins/cache/` for the Atlas plugin
-   - The script is at `plugins/g/bin/tmux-worktree-switcher` within the plugin directory
-   - Use `find ~/.claude/plugins/cache -name "tmux-worktree-switcher" 2>/dev/null` to locate it
+**If not found**, ask the user for the path to their Atlas repository clone and use `<atlas-path>/plugins/g/bin/tmux-worktree-switcher`.
 
-2. **Create the target directory** if it doesn't exist:
-   ```bash
-   mkdir -p ~/.local/bin
-   ```
+---
 
-3. **Copy the script** to `~/.local/bin/tmux-worktree-switcher`
+## Step 3: Install the script
 
-4. **Make it executable**:
-   ```bash
-   chmod +x ~/.local/bin/tmux-worktree-switcher
-   ```
+```bash
+mkdir -p ~/.local/bin
+cp "$SCRIPT_PATH" ~/.local/bin/tmux-worktree-switcher
+chmod +x ~/.local/bin/tmux-worktree-switcher
+echo "Installed to ~/.local/bin/tmux-worktree-switcher"
+```
 
-5. **Check if ~/.local/bin is in PATH**:
-   - If not, suggest adding `export PATH="$HOME/.local/bin:$PATH"` to their shell config
+---
 
-6. **Print the tmux configuration**:
-   Tell the user to add this line to `~/.tmux.conf`:
-   ```
-   bind g display-popup -E -w 80% -h 60% "tmux-worktree-switcher"
-   ```
-   Then reload tmux config with `tmux source-file ~/.tmux.conf` or restart tmux.
+## Step 4: Check PATH
 
-## Output
+```bash
+if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+    echo "Warning: ~/.local/bin is not in your PATH"
+    echo "Add this to your shell config (~/.zshrc or ~/.bashrc):"
+    echo '  export PATH="$HOME/.local/bin:$PATH"'
+fi
+```
 
-Print a summary showing:
-- Where the script was installed
-- The tmux keybinding to add
-- How to reload the tmux config
-- Note that `Ctrl+B g` will open the worktree switcher popup
+---
 
-## Requirements
+## Step 5: Configure tmux keybinding
 
-The switcher requires:
-- tmux (for popup windows)
-- fzf (for fuzzy selection)
-- git (for worktree operations)
+Check if the keybinding already exists in `~/.tmux.conf`:
 
-If any are missing, note which ones need to be installed.
+```bash
+if grep -q "tmux-worktree-switcher" ~/.tmux.conf 2>/dev/null; then
+    echo "Keybinding already configured in ~/.tmux.conf"
+else
+    echo "Add this line to ~/.tmux.conf:"
+    echo '  bind g display-popup -E -w 80% -h 60% "tmux-worktree-switcher"'
+fi
+```
 
-## Fallback
+Use `AskUserQuestion` to ask:
+- **"Add keybinding automatically"** — Append the bind line to `~/.tmux.conf`
+- **"I'll add it manually"** — Just show the instructions
 
-If the script cannot be found in the plugin cache:
-1. Ask the user for the path to their Atlas repository clone
-2. Copy from `<atlas-path>/plugins/g/bin/tmux-worktree-switcher`
+If adding automatically:
+
+```bash
+echo '' >> ~/.tmux.conf
+echo '# Worktree switcher (Ctrl+B g)' >> ~/.tmux.conf
+echo 'bind g display-popup -E -w 80% -h 60% "tmux-worktree-switcher"' >> ~/.tmux.conf
+echo "Added keybinding to ~/.tmux.conf"
+```
+
+---
+
+## Step 6: Reload tmux config
+
+If tmux is running:
+
+```bash
+if [ -n "$TMUX" ]; then
+    tmux source-file ~/.tmux.conf
+    echo "tmux config reloaded"
+else
+    echo "Reload tmux config with: tmux source-file ~/.tmux.conf"
+fi
+```
+
+---
+
+## Summary
+
+Print a final summary:
+
+```
+tmux-worktree-switcher installed!
+
+  Script:     ~/.local/bin/tmux-worktree-switcher
+  Keybinding: Ctrl+B g (opens worktree popup)
+
+Usage:
+  1. Press Ctrl+B g in any tmux session
+  2. Use arrow keys or type to filter worktrees
+  3. Press Enter to switch to the selected worktree
+
+Features:
+  • Shows active (●) and inactive (○) worktrees
+  • Displays current command running in each worktree
+  • Creates new tmux window when switching to inactive worktree
+```
