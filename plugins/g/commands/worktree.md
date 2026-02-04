@@ -63,7 +63,7 @@ Based on the user's selection:
 
 - **If they selected an existing worktree**, ask a follow-up question with `AskUserQuestion`:
   - **"Remove this worktree"** — Proceed with Cleanup Mode (starting at Cleanup Step 2, since the worktree is already identified)
-  - **"Open in Cursor"** — Run `cursor "<WORKTREE_PATH>"`
+  - **"Open in editor"** — Run `$EDITOR "<WORKTREE_PATH>"` (uses the EDITOR environment variable)
   - **"Open tmux session/window"** — Run the tmux logic from Create Mode Step 8, using the worktree path and deriving the session label from the branch name
 
 - **If they selected "Create new worktree"**, tell them to run `/g:worktree <feature description>` with a description of what they want to build.
@@ -350,14 +350,14 @@ else
 fi
 ```
 
-### Step 9: Open in Cursor
+### Step 9: Open in editor
 
 ```bash
-if command -v cursor &> /dev/null; then
-    echo "Opening worktree in Cursor..."
-    cursor "$WORKTREE_PATH"
+if [ -n "$EDITOR" ]; then
+    echo "Opening worktree in $EDITOR..."
+    $EDITOR "$WORKTREE_PATH"
 else
-    echo "Cursor not found, skipping IDE launch"
+    echo "EDITOR not set, skipping IDE launch"
 fi
 ```
 
@@ -374,7 +374,7 @@ Worktree ready!
   Deps:    ✓ pnpm install complete
   tmux:    ✓ window '<SESSION_LABEL>' added / ✓ session '<SESSION_LABEL>' created / ✗ not available
   Layout:  ✓ 70/30 split — claude (top) + shell (bottom) / ✗ no tmux
-  Cursor:  ✓ opened / ✗ not available
+  Editor:  ✓ opened ($EDITOR) / ✗ EDITOR not set
 
   In tmux:     Ctrl+B w to switch windows
   Outside:     tmux attach -t <SESSION_LABEL>

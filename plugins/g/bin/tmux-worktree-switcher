@@ -138,6 +138,6 @@ if [ -n "$matched_window" ]; then
 else
     window_name="$(echo "$branch" | tr '/' '-')"
     tmux new-window -n "$window_name" -c "$wt_path" -t "$CURRENT_SESSION"
-    # Open Cursor IDE in the new worktree
-    cursor "$wt_path" &
+    # Open editor in the new worktree (if EDITOR is set)
+    [ -n "$EDITOR" ] && $EDITOR "$wt_path" &
 fi
