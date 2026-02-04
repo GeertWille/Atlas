@@ -20,6 +20,47 @@ Copyright (c) 2026 Geert Wille
 | `/g:worktree` | Create, list, or clean up git worktrees with full project bootstrapping |
 | `/g:worktree <description>` | Create a new worktree from a feature description |
 | `/g:worktree cleanup <name>` | Remove a worktree safely |
+| `/g:setup` | Install tmux-worktree-switcher and configure tmux keybinding |
+
+## tmux Worktree Switcher
+
+The g plugin includes `tmux-worktree-switcher`, a fast fzf-based worktree navigator for tmux. It shows all worktrees in a popup and lets you quickly switch between them.
+
+Features:
+- Shows active (●) and inactive (○) worktrees
+- Displays the current command/task running in each worktree
+- Creates a new tmux window when switching to an inactive worktree
+- Focuses the correct pane when switching to an active worktree
+
+### Quick Setup
+
+Run `/g:setup` in Claude Code to automatically install the switcher.
+
+### Manual Setup
+
+1. Copy the script to your PATH:
+   ```bash
+   cp /path/to/atlas/plugins/g/bin/tmux-worktree-switcher ~/.local/bin/
+   chmod +x ~/.local/bin/tmux-worktree-switcher
+   ```
+
+2. Add the keybinding to `~/.tmux.conf`:
+   ```
+   bind g display-popup -E -w 80% -h 60% "tmux-worktree-switcher"
+   ```
+
+3. Reload tmux config:
+   ```bash
+   tmux source-file ~/.tmux.conf
+   ```
+
+4. Press `Ctrl+B g` to open the worktree switcher popup.
+
+### Requirements
+
+- tmux
+- fzf
+- git
 
 ## Installation
 

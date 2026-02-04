@@ -218,15 +218,47 @@ echo "Project: $PROJECT_NAME"
 echo "Worktree path: $WORKTREE_PATH"
 ```
 
-### Step 4: Create worktree
+### Step 3b: Determine base branch
+
+Check if the current branch is `main` or `master`. If not, ask the user which branch to base the new worktree on.
 
 ```bash
-git worktree add "$WORKTREE_PATH" -b "<BRANCH_NAME>"
+# Determine the default branch (main or master)
+DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@')
+if [ -z "$DEFAULT_BRANCH" ]; then
+    # Fallback: check if main or master exists
+    if git show-ref --verify --quiet refs/heads/main; then
+        DEFAULT_BRANCH="main"
+    elif git show-ref --verify --quiet refs/heads/master; then
+        DEFAULT_BRANCH="master"
+    fi
+fi
+echo "Default branch: $DEFAULT_BRANCH"
 ```
 
-If the branch already exists, use `git worktree add "$WORKTREE_PATH" "<BRANCH_NAME>"` instead (without `-b`).
+**If current branch equals the default branch** (e.g., on `main`), use it as the base and proceed to Step 4.
 
-If the worktree path already exists, inform the user and suggest they remove it first or choose a different name.
+**If current branch is NOT the default branch**, use `AskUserQuestion` to ask:
+
+- Question: "Which branch should the new worktree be based on?"
+- Header: "Base branch"
+- Options:
+  1. **`<DEFAULT_BRANCH>` (Recommended)** — "Start fresh from the main development branch"
+  2. **`<CURRENT_BRANCH>`** — "Branch from your current work (includes uncommitted changes won't be included)"
+
+Store the selected branch as `BASE_BRANCH` for use in Step 4.
+
+### Step 4: Create worktree
+
+Create the worktree from the selected base branch (determined in Step 3b):
+
+```bash
+git worktree add "$WORKTREE_PATH" -b "<BRANCH_NAME>" "<BASE_BRANCH>"
+```
+
+- If `BASE_BRANCH` is the current branch, you can omit it: `git worktree add "$WORKTREE_PATH" -b "<BRANCH_NAME>"`
+- If the branch already exists, use `git worktree add "$WORKTREE_PATH" "<BRANCH_NAME>"` instead (without `-b`)
+- If the worktree path already exists, inform the user and suggest they remove it first or choose a different name
 
 ### Step 5: Copy .certs if present
 
@@ -335,7 +367,7 @@ Print a final summary:
 
 ```
 Worktree ready!
-  Branch:  <BRANCH_NAME> (from <CURRENT_BRANCH>)
+  Branch:  <BRANCH_NAME> (based on <BASE_BRANCH>)
   Path:    <WORKTREE_PATH>
   Certs:   ✓ copied / ✗ not found
   Secrets: ✓ .env.local copied / ✓ generated / ✗ none

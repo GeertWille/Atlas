@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# tmux-worktree-switcher
+# Fast fzf-based worktree navigator for tmux.
+# Creates/switches windows (tabs) within the current session.
+
+NL=$'\n'
+DIM=$'\033[2m'
+RST=$'\033[0m'
+
+# Get the working directory of the active tmux pane
+PANE_CWD="$(tmux display-message -p -F '#{pane_current_path}')"
+
+# Find the git repo root
+REPO_ROOT="$(git -C "$PANE_CWD" rev-parse --show-toplevel 2>/dev/null)" || {
+    echo "Not a git repo"; sleep 1; exit 1
+}
+
+REPO_NAME="$(basename "$REPO_ROOT")"
+CURRENT_SESSION="$(tmux display-message -p -F '#{session_name}')"
+
+# Get all panes: window_name, pane index, pane path, pane title
+ALL_PANES="$(tmux list-panes -s -t "$CURRENT_SESSION" -F '#{window_name}|#{pane_index}|#{pane_current_path}|#{pane_title}' 2>/dev/null)"
+
+WORKTREE_LIST="$(git -C "$REPO_ROOT" worktree list)"
+
+# First pass: find longest branch name for alignment
+MAX_LEN=0
+while IFS= read -r line; do
+    branch="$(echo "$line" | sed -n 's/.*\[\(.*\)\].*/\1/p')"
+    [ -z "$branch" ] && continue
+    len=${#branch}
+    if [ "$len" -gt "$MAX_LEN" ]; then MAX_LEN=$len; fi
+done <<< "$WORKTREE_LIST"
+
+# Second pass: build entries
+# Match worktrees to windows by checking if any pane's working dir is inside the worktree path
+COUNT=0
+ENTRIES=""
+# Store worktree-to-window mapping for later switching
+WT_WINDOWS=""
+while IFS= read -r line; do
+    wt_path="$(echo "$line" | awk '{print $1}')"
+    branch="$(echo "$line" | sed -n 's/.*\[\(.*\)\].*/\1/p')"
+    [ -z "$branch" ] && continue
+
+    COUNT=$((COUNT + 1))
+
+    # Pad branch name for alignment
+    padding=$((MAX_LEN - ${#branch} + 2))
+    pad=""
+    i=0
+    while [ "$i" -lt "$padding" ]; do pad="${pad} "; i=$((i + 1)); done
+
+    # Find a window with a pane whose cwd matches this worktree path
+    matched_window=""
+    matched_pane=""
+    matched_title=""
+    while IFS='|' read -r wname wpane wpath wtitle; do
+        case "$wpath" in
+            "${wt_path}"|"${wt_path}"/*)
+                matched_window="$wname"
+                matched_pane="$wpane"
+                # Clean up title (remove spinner/status chars, trim)
+                matched_title="$(echo "$wtitle" | sed 's/^[^a-zA-Z]*//' | sed 's/^[[:space:]]*//')"
+                # Skip if title is just the hostname
+                case "$matched_title" in
+                    *".local"*) matched_title="" ;;
+                esac
+                break
+                ;;
+        esac
+    done <<< "$ALL_PANES"
+
+    if [ -n "$matched_window" ]; then
+        WT_WINDOWS="${WT_WINDOWS}${branch}|${matched_window}|${matched_pane}${NL}"
+        if [ -n "$matched_title" ]; then
+            ENTRIES="${ENTRIES}  ● ${branch}${pad}${DIM}${matched_title}${RST}${NL}"
+        else
+            ENTRIES="${ENTRIES}  ● ${branch}${NL}"
+        fi
+    else
+        ENTRIES="${ENTRIES}  ○ ${branch}${NL}"
+    fi
+done <<< "$WORKTREE_LIST"
+
+if [ -z "$ENTRIES" ]; then
+    echo "No worktrees found."; sleep 1; exit 0
+fi
+
+# fzf with polished TUI
+SELECTED="$(printf '%s' "$ENTRIES" | fzf \
+    --ansi \
+    --reverse \
+    --no-sort \
+    --no-scrollbar \
+    --gap=1 \
+    --margin=0 \
+    --padding=1,2 \
+    --border=rounded \
+    --border-label=" 󰘬 ${REPO_NAME} worktrees " \
+    --border-label-pos=center \
+    --color='border:#565f89,label:#7aa2f7,label:bold' \
+    --color='bg:#1a1b26,fg:#a9b1d6' \
+    --color='bg+:#292e42,fg+:#c0caf5,fg+:bold' \
+    --color='pointer:#9ece6a,pointer:bold' \
+    --color='prompt:#7aa2f7,prompt:bold' \
+    --color='info:#565f89,header:#565f89' \
+    --color='hl:#bb9af7,hl+:#bb9af7,hl+:bold' \
+    --pointer='▸' \
+    --prompt='  ' \
+    --info=hidden \
+    --header='  ● active  ○ inactive' \
+    --header-first)" || exit 0
+
+# Parse selection — strip indicator, ANSI codes, and any trailing command text
+CLEAN="$(echo "$SELECTED" | sed 's/\x1b\[[0-9;]*m//g')"
+branch="$(echo "$CLEAN" | sed 's/^[[:space:]]*[●○][[:space:]]*//' | awk '{print $1}')"
+
+# Look up worktree path
+wt_path="$(echo "$WORKTREE_LIST" | grep "\[$branch\]" | awk '{print $1}')" || true
+
+if [ -z "$wt_path" ]; then
+    echo "Could not find worktree for branch: $branch"
+    sleep 1
+    exit 1
+fi
+
+# Check if this worktree has a matched window + pane
+matched_line="$(echo "$WT_WINDOWS" | grep "^${branch}|" | head -1)" || true
+matched_window="$(echo "$matched_line" | cut -d'|' -f2)"
+matched_pane="$(echo "$matched_line" | cut -d'|' -f3)"
+
+if [ -n "$matched_window" ]; then
+    tmux select-window -t "${CURRENT_SESSION}:${matched_window}"
+    tmux select-pane -t "${CURRENT_SESSION}:${matched_window}.${matched_pane}"
+else
+    window_name="$(echo "$branch" | tr '/' '-')"
+    tmux new-window -n "$window_name" -c "$wt_path" -t "$CURRENT_SESSION"
+    # Open Cursor IDE in the new worktree
+    cursor "$wt_path" &
+fi
