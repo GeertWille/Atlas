@@ -1,0 +1,20 @@
+{
+  "name": "g",
+  "version": "1.0.0",
+  "description": "Git productivity tools — worktree management with full project bootstrapping, smart branch naming, tmux setup, and more.",
+  "author": {
+    "name": "Geert Wille",
+    "url": "https://github.com/GeertWille"
+  },
+  "homepage": "https://github.com/GeertWille/atlas",
+  "repository": "https://github.com/GeertWille/atlas",
+  "license": "MIT",
+  "keywords": [
+    "git",
+    "worktree",
+    "branching",
+    "tmux",
+    "bootstrap",
+    "developer-tools"
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "atlas",
+  "version": "1.0.0",
+  "description": "Atlas — a developer toolkit for shipping products faster. Git worktree management, project bootstrapping, and more.",
+  "owner": {
+    "name": "Geert Wille",
+    "email": "geert@nineid.com"
+  },
+  "plugins": [
+    {
+      "name": "g",
+      "description": "Git productivity tools — worktree management with full project bootstrapping, smart branch naming, dependency installation, secret copying, tmux setup with Claude Code, and Cursor IDE launch.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Geert Wille",
+        "url": "https://github.com/GeertWille"
+      },
+      "source": "./plugins/g",
+      "category": "development"
+    }
+  ]
+}
