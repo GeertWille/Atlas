@@ -3,6 +3,12 @@
 //!
 //! The public API below is a fixed contract consumed by `src-tauri`.
 
+mod capture;
+mod cdp;
+mod demo;
+mod detect;
+mod device;
+
 use std::sync::Arc;
 
 use adscan_model::{BrowserInfo, Capture, CaptureRequest};
@@ -33,14 +39,20 @@ pub struct CaptureHooks {
 
 /// Find a usable browser. `explicit` is the user's configured path, if any.
 pub fn detect_browser(explicit: Option<&str>) -> Option<BrowserInfo> {
-    let _ = explicit;
-    todo!("implemented by the browser crate")
+    detect::detect_browser(explicit)
 }
 
 /// Load the page with the tracker injected, observe it, and return everything captured.
 pub async fn capture(request: CaptureRequest, hooks: CaptureHooks) -> Result<Capture, BrowserError> {
-    let _ = (request, hooks);
-    todo!("implemented by the browser crate")
+    // The capture runs as its own task so that Chrome is shut down and its
+    // profile removed even when the caller drops this future instead of
+    // cancelling through `hooks.cancel`.
+    let cancel = hooks.cancel.child_token();
+    let cancel_if_dropped = cancel.clone().drop_guard();
+    let hooks = CaptureHooks { cancel, on_progress: hooks.on_progress };
+    let outcome = tokio::spawn(capture::run(request, hooks)).await;
+    cancel_if_dropped.disarm();
+    outcome.unwrap_or_else(|panic| Err(BrowserError::Other(format!("the capture task failed: {panic}"))))
 }
 
 /// Handle to the built-in demo publisher site. The server stops when dropped.
@@ -59,5 +71,5 @@ impl Drop for DemoSite {
 /// Serve the bundled demo publisher page (with planted ad-stack bugs) on a random
 /// loopback port. Works fully offline.
 pub async fn start_demo_site() -> std::io::Result<DemoSite> {
-    todo!("implemented by the browser crate")
+    demo::start().await
 }

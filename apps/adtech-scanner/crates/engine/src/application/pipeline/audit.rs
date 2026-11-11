@@ -1,0 +1,179 @@
+//! One running pipeline step: its audit trail, token accounting and findings.
+
+use adscan_model::{
+    Finding, LogEntry, LogKind, LogLevel, PipelineStep, ScanEvent, StepStatus,
+};
+use serde_json::{Value, json};
+
+use super::PipelineDeps;
+use super::state::{NodeError, ScanJob, ScanState};
+use crate::domain::finding::FindingDraft;
+use crate::domain::pricing::{TokenUsage, cost_of};
+use crate::domain::synthesis::severity_counts;
+
+/// Audit entries carry excerpts, never whole payloads.
+pub const MAX_LOG_MESSAGE_CHARS: usize = 20_000;
+const MAX_LOG_DATA_STRING_CHARS: usize = 4_000;
+
+pub struct StepRun<'a> {
+    pub deps: &'a PipelineDeps,
+    pub job: &'a ScanJob,
+    pub state: &'a mut ScanState,
+    pub(super) step: PipelineStep,
+}
+
+impl StepRun<'_> {
+    pub fn check_cancelled(&self) -> Result<(), NodeError> {
+        if self.job.cancel.is_cancelled() {
+            Err(NodeError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub async fn info(&mut self, message: impl Into<String>) -> Result<(), NodeError> {
+        self.log(LogLevel::Info, LogKind::Message, message, None).await
+    }
+
+    pub async fn warn(&mut self, message: impl Into<String>) -> Result<(), NodeError> {
+        self.log(LogLevel::Warn, LogKind::Message, message, None).await
+    }
+
+    pub async fn log(
+        &mut self,
+        level: LogLevel,
+        kind: LogKind,
+        message: impl Into<String>,
+        data: Option<Value>,
+    ) -> Result<(), NodeError> {
+        let entry = LogEntry {
+            id: self.deps.ids.new_id(),
+            scan_id: self.step.scan_id.clone(),
+            step_id: self.step.id.clone(),
+            node: self.step.node,
+            ts: self.deps.clock.now_ms(),
+            level,
+            kind,
+            message: truncate_chars(&message.into(), MAX_LOG_MESSAGE_CHARS),
+            data: data.map(cap_strings),
+        };
+        self.deps.logs.append(&entry).await?;
+        self.step.log_count += 1;
+        self.deps.events.emit(ScanEvent::Log { entry });
+        Ok(())
+    }
+
+    /// Books one model call against the step, the scan and the budget.
+    pub async fn record_llm_call(&mut self, model: &str, usage: TokenUsage) -> Result<f64, NodeError> {
+        let cost = cost_of(model, usage);
+        self.step.model = Some(model.to_string());
+        self.step.input_tokens = saturating_u32(self.step.input_tokens as u64 + usage.prompt_tokens());
+        self.step.output_tokens = saturating_u32(self.step.output_tokens as u64 + usage.output);
+        self.step.cost_usd += cost.usd;
+        self.state.budget.charge(cost.usd);
+        self.state.summary.cost_usd += cost.usd;
+        self.state.summary.ai_used = true;
+        self.log(
+            LogLevel::Debug,
+            LogKind::Message,
+            format!(
+                "Token usage: {} in ({} cached), {} out, ${:.4} (scan total ${:.4} of ${:.2})",
+                usage.prompt_tokens(),
+                usage.cache_read,
+                usage.output,
+                cost.usd,
+                self.state.budget.spent_usd(),
+                self.state.budget.limit_usd(),
+            ),
+            Some(json!({
+                "model": model,
+                "inputTokens": usage.input,
+                "outputTokens": usage.output,
+                "cacheReadTokens": usage.cache_read,
+                "cacheWriteTokens": usage.cache_write,
+                "costUsd": cost.usd,
+            })),
+        )
+        .await?;
+        if !cost.known_model {
+            let caveat = format!(
+                "No price is known for model `{model}`; its cost was estimated with a conservative fallback price"
+            );
+            if !self.state.caveats.contains(&caveat) {
+                self.warn(caveat.clone()).await?;
+                self.state.caveats.push(caveat);
+            }
+        }
+        self.deps.scans.save_step(&self.step).await?;
+        self.deps.scans.save_summary(&self.state.summary).await?;
+        self.deps.events.emit(ScanEvent::StepUpdated {
+            step: self.step.clone(),
+        });
+        self.deps.events.emit(ScanEvent::ScanUpdated {
+            summary: self.state.summary.clone(),
+        });
+        Ok(cost.usd)
+    }
+
+    /// Persists a finding as soon as it is known, so a cancelled or failed
+    /// scan keeps it.
+    pub async fn add_finding(&mut self, draft: FindingDraft, origin: Value) -> Result<Finding, NodeError> {
+        let finding = draft.into_finding(self.deps.ids.new_id(), &self.step.scan_id);
+        self.state.findings.push(finding.clone());
+        self.state.summary.finding_counts = severity_counts(&self.state.findings);
+        self.deps
+            .scans
+            .save_findings(&self.step.scan_id, &self.state.findings)
+            .await?;
+        self.deps.scans.save_summary(&self.state.summary).await?;
+        self.log(
+            LogLevel::Info,
+            LogKind::Finding,
+            format!("[{:?}] {}", finding.severity, finding.title),
+            Some(json!({ "findingId": finding.id, "origin": origin })),
+        )
+        .await?;
+        self.deps.events.emit(ScanEvent::FindingAdded {
+            finding: finding.clone(),
+        });
+        self.deps.events.emit(ScanEvent::ScanUpdated {
+            summary: self.state.summary.clone(),
+        });
+        Ok(finding)
+    }
+
+    pub(super) fn finish(&mut self, status: StepStatus, summary: String, now_ms: f64) {
+        self.step.status = status;
+        self.step.summary = Some(summary);
+        self.step.duration_ms = self.step.started_at.map(|started| now_ms - started);
+    }
+}
+
+pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+    match text.char_indices().nth(max_chars) {
+        Some((cut, _)) => format!(
+            "{}\n[truncated, {} more characters]",
+            &text[..cut],
+            text[cut..].chars().count()
+        ),
+        None => text.to_string(),
+    }
+}
+
+fn cap_strings(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(truncate_chars(&text, MAX_LOG_DATA_STRING_CHARS)),
+        Value::Array(items) => Value::Array(items.into_iter().map(cap_strings).collect()),
+        Value::Object(fields) => Value::Object(
+            fields
+                .into_iter()
+                .map(|(key, value)| (key, cap_strings(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+fn saturating_u32(value: u64) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}

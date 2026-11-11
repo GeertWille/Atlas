@@ -7,8 +7,22 @@ publish.workspace = true
 
 [dependencies]
 adscan-model.workspace = true
+async-trait.workspace = true
+keyring = "4"
+oxc = { version = "0.158", features = ["codegen"] }
+psl = "2"
+regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2"] }
+rusqlite = { version = "0.42", features = ["bundled"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.11"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"

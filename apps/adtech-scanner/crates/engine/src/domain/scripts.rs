@@ -1,0 +1,228 @@
+//! Script metadata derived from captured scripts. Bodies never leave memory.
+
+use adscan_model::{Capture, CapturedScript, FindingSource, ScriptCategory, ScriptRecord};
+use sha2::{Digest, Sha256};
+use url::Url;
+
+use super::knowledge::{self, ScriptFacts, Verdict};
+
+/// Script categories that can contain the publisher's own bidding logic.
+const ANALYZABLE: &[ScriptCategory] = &[
+    ScriptCategory::Wrapper,
+    ScriptCategory::Prebid,
+    ScriptCategory::Unknown,
+];
+
+/// A script record plus what the knowledge base could not decide about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DescribedScript {
+    pub record: ScriptRecord,
+    /// `Some` when the knowledge base left the decision to Phase 1.
+    pub ambiguous_hints: Option<Vec<String>>,
+}
+
+/// One record per captured script, in capture order, with ids `s1`, `s2`, ...
+pub fn describe(capture: &Capture) -> Vec<DescribedScript> {
+    let page_host = hostname_of(&capture.final_url);
+    let page_domain = registrable_domain(&page_host);
+    capture
+        .scripts
+        .iter()
+        .enumerate()
+        .map(|(index, script)| describe_one(index, script, &page_host, page_domain.as_deref()))
+        .collect()
+}
+
+fn describe_one(
+    index: usize,
+    script: &CapturedScript,
+    page_host: &str,
+    page_domain: Option<&str>,
+) -> DescribedScript {
+    let hostname = if script.inline {
+        page_host.to_string()
+    } else {
+        hostname_of(&script.url)
+    };
+    let first_party = script.inline
+        || hostname == page_host
+        || (page_domain.is_some() && registrable_domain(&hostname).as_deref() == page_domain);
+    let verdict = knowledge::classify(&ScriptFacts {
+        url: &script.url,
+        hostname: &hostname,
+        inline: script.inline,
+        first_party,
+        body: &script.body,
+    });
+    let mut record = ScriptRecord {
+        id: format!("s{}", index + 1),
+        url: script.url.clone(),
+        hostname,
+        inline: script.inline,
+        size_bytes: script.body.len() as f64,
+        hash: content_hash(&script.body),
+        category: ScriptCategory::Unknown,
+        ad_related: false,
+        classification_reason: None,
+        classification_confidence: None,
+        classified_by: FindingSource::Heuristic,
+        analyzed: false,
+        vendor: None,
+        loaded_at_ms: script.loaded_at_ms,
+        first_party,
+    };
+    let ambiguous_hints = match verdict {
+        Verdict::Decided(classification) => {
+            record.category = classification.category;
+            record.ad_related = classification.ad_related;
+            record.vendor = classification.vendor.map(str::to_string);
+            record.classification_confidence = Some(classification.confidence);
+            record.classification_reason = Some(classification.reason);
+            None
+        }
+        Verdict::Ambiguous { hints } => {
+            record.classification_reason = Some(format!(
+                "Mentions {} but nothing conclusive; not classified by AI",
+                hints.join(", ")
+            ));
+            Some(hints)
+        }
+    };
+    DescribedScript {
+        record,
+        ambiguous_hints,
+    }
+}
+
+/// Indexes (into the script list) of the scripts worth handing to Phase 2:
+/// ad-related code that can hold publisher logic, wrappers and first-party
+/// code first, bounded in count and total size.
+pub fn select_for_analysis(records: &[ScriptRecord], max_scripts: usize, max_total_bytes: f64) -> Vec<usize> {
+    let mut candidates: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record.ad_related && ANALYZABLE.contains(&record.category))
+        .map(|(index, _)| index)
+        .collect();
+    candidates.sort_by_key(|&index| {
+        let record = &records[index];
+        (
+            record.category != ScriptCategory::Wrapper,
+            !record.first_party,
+            index,
+        )
+    });
+    let mut total = 0.0;
+    let mut selected = Vec::new();
+    for index in candidates {
+        let size = records[index].size_bytes;
+        if selected.len() < max_scripts && total + size <= max_total_bytes {
+            total += size;
+            selected.push(index);
+        }
+    }
+    selected.sort_unstable();
+    selected
+}
+
+pub fn content_hash(body: &str) -> String {
+    let digest = Sha256::digest(body.as_bytes());
+    digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub fn hostname_of(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// eTLD+1 according to the public suffix list (`news.example.co.uk` -> `example.co.uk`).
+pub fn registrable_domain(hostname: &str) -> Option<String> {
+    psl::domain_str(hostname).map(str::to_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adscan_model::{DeviceProfile, Viewport};
+
+    fn capture_with(scripts: Vec<CapturedScript>) -> Capture {
+        Capture {
+            final_url: "https://www.news.example.co.uk/article".into(),
+            page_title: None,
+            device: DeviceProfile::Desktop,
+            viewport: Viewport {
+                width: 1440,
+                height: 900,
+                device_scale_factor: 1.0,
+                mobile: false,
+            },
+            user_agent: "test".into(),
+            navigation_start: 0.0,
+            page_load_ms: None,
+            scripts,
+            events: vec![],
+            console: vec![],
+            max_scroll_depth: 0.0,
+            consent_accepted: false,
+        }
+    }
+
+    fn script(url: &str, inline: bool, body: &str) -> CapturedScript {
+        CapturedScript {
+            url: url.into(),
+            inline,
+            body: body.into(),
+            loaded_at_ms: Some(120.0),
+            initiator: None,
+        }
+    }
+
+    #[test]
+    fn first_party_is_decided_by_registrable_domain() {
+        let described = describe(&capture_with(vec![
+            script("https://static.example.co.uk/app.js", false, "boot()"),
+            script("https://other.co.uk/lib.js", false, "boot()"),
+            script("inline:1", true, "boot()"),
+        ]));
+        let first_party: Vec<bool> = described.iter().map(|d| d.record.first_party).collect();
+        assert_eq!(first_party, [true, false, true]);
+        assert_eq!(described[0].record.hostname, "static.example.co.uk");
+        assert_eq!(described[2].record.hostname, "www.news.example.co.uk");
+        assert_eq!(described[0].record.id, "s1");
+        assert_eq!(described[2].record.id, "s3");
+    }
+
+    #[test]
+    fn hash_is_a_stable_sha256_prefix() {
+        assert_eq!(content_hash("abc"), "ba7816bf8f01cfea");
+        assert_eq!(content_hash("abc").len(), 16);
+    }
+
+    #[test]
+    fn ambiguous_scripts_keep_their_hints() {
+        let described = describe(&capture_with(vec![script(
+            "https://static.example.co.uk/lazy.js",
+            false,
+            "loadAds(window.adUnits)",
+        )]));
+        assert_eq!(described[0].ambiguous_hints, Some(vec!["adUnit".to_string()]));
+        assert!(!described[0].record.ad_related);
+        assert_eq!(described[0].record.category, ScriptCategory::Unknown);
+    }
+
+    #[test]
+    fn analysis_selection_prefers_wrappers_and_respects_limits() {
+        let described = describe(&capture_with(vec![
+            script("https://cdn.jsdelivr.net/npm/prebid.js", false, &"x".repeat(900)),
+            script("https://securepubads.g.doubleclick.net/tag/js/gpt.js", false, "gpt"),
+            script("https://static.example.co.uk/ads.js", false, "pbjs.que.push(f)"),
+            script("https://static.example.co.uk/app.js", false, "boot()"),
+        ]));
+        let records: Vec<ScriptRecord> = described.into_iter().map(|d| d.record).collect();
+        assert_eq!(select_for_analysis(&records, 10, 1e6), vec![0, 2]);
+        assert_eq!(select_for_analysis(&records, 1, 1e6), vec![2]);
+        assert_eq!(select_for_analysis(&records, 10, 500.0), vec![2]);
+    }
+}
