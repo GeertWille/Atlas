@@ -1,0 +1,9 @@
+node_modules
+dist
+target
+.DS_Store
+*.log
+test-results
+playwright-report
+coverage
+src-tauri/gen/schemas
