@@ -1,0 +1,31 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Emulation probe</title><link rel="icon" href="data:,"></head>
+<body style="margin:0;height:3000px">
+<script>
+var hints = navigator.userAgentData;
+hints.getHighEntropyValues(['fullVersionList', 'model', 'platformVersion']).then(function (high) {
+  console.log('DEVICE ' + JSON.stringify({
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    hintsMobile: hints.mobile,
+    hintsPlatform: hints.platform,
+    hintsModel: high.model,
+    hintsBrands: hints.brands.map(function (brand) { return brand.brand; }),
+    hintsFullVersions: high.fullVersionList.map(function (brand) { return brand.version; }),
+    maxTouchPoints: navigator.maxTouchPoints,
+    hasTouchEvents: 'ontouchstart' in window,
+    innerWidth: innerWidth,
+    innerHeight: innerHeight,
+    screenWidth: screen.width,
+    devicePixelRatio: devicePixelRatio,
+    phoneWidth: matchMedia('(max-width: 767px)').matches,
+    desktopWidth: matchMedia('(min-width: 1024px)').matches,
+    coarsePointer: matchMedia('(pointer: coarse)').matches,
+    webdriver: navigator.webdriver,
+  }));
+});
+addEventListener('touchstart', function () { console.log('INPUT touchstart'); }, { once: true });
+addEventListener('wheel', function () { console.log('INPUT wheel'); }, { once: true });
+</script>
+</body></html>

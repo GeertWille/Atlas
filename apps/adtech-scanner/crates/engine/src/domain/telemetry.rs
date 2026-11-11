@@ -100,12 +100,26 @@ fn derive_auctions(capture: &Capture) -> Vec<Auction> {
                 auction_id,
                 bidder,
                 ad_unit_code,
-            } => settle_pending(&mut auctions, auction_id, ad_unit_code, bidder, BidStatus::NoBid, t),
+            } => settle_pending(
+                &mut auctions,
+                auction_id,
+                ad_unit_code,
+                bidder,
+                BidStatus::NoBid,
+                t,
+            ),
             Ev::BidTimeout {
                 auction_id,
                 bidder,
                 ad_unit_code,
-            } => settle_pending(&mut auctions, auction_id, ad_unit_code, bidder, BidStatus::Timeout, t),
+            } => settle_pending(
+                &mut auctions,
+                auction_id,
+                ad_unit_code,
+                bidder,
+                BidStatus::Timeout,
+                t,
+            ),
             Ev::BidderError {
                 auction_id, bidder, ..
             } => mark_bidder_error(&mut auctions, auction_id.as_deref(), bidder),
@@ -120,7 +134,13 @@ fn derive_auctions(capture: &Capture) -> Vec<Auction> {
                 bidder,
                 ad_unit_code,
                 cpm,
-            } => mark_won(&mut auctions, auction_id.as_deref(), ad_unit_code, bidder, *cpm),
+            } => mark_won(
+                &mut auctions,
+                auction_id.as_deref(),
+                ad_unit_code,
+                bidder,
+                *cpm,
+            ),
             Ev::AdRenderSucceeded {
                 ad_unit_code: Some(code),
                 bidder,
@@ -203,7 +223,13 @@ fn mark_bidder_error(auctions: &mut [Auction], auction_id: Option<&str>, bidder:
     }
 }
 
-fn mark_won(auctions: &mut [Auction], auction_id: Option<&str>, code: &str, bidder: &str, cpm: f64) {
+fn mark_won(
+    auctions: &mut [Auction],
+    auction_id: Option<&str>,
+    code: &str,
+    bidder: &str,
+    cpm: f64,
+) {
     let unit = auctions
         .iter_mut()
         .rev()
@@ -265,7 +291,9 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
                 }
             }
             Ev::SlotResponseReceived { element_id } => {
-                slot_entry(&mut slots, element_id).response_at_ms.get_or_insert(t);
+                slot_entry(&mut slots, element_id)
+                    .response_at_ms
+                    .get_or_insert(t);
             }
             Ev::SlotRenderEnded {
                 element_id,
@@ -288,7 +316,9 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
                 }
             }
             Ev::ImpressionViewable { element_id } => {
-                slot_entry(&mut slots, element_id).viewable_at_ms.get_or_insert(t);
+                slot_entry(&mut slots, element_id)
+                    .viewable_at_ms
+                    .get_or_insert(t);
             }
             _ => {}
         }
@@ -354,14 +384,18 @@ fn requested_before_auction_end(slot: &AdSlot, auctions: &[Auction]) -> Option<b
 fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> ScanMetrics {
     let ad_units = || auctions.iter().flat_map(|auction| &auction.ad_units);
     let bids = || ad_units().flat_map(|unit| &unit.bids);
-    let count_bids = |wanted: &[BidStatus]| bids().filter(|bid| wanted.contains(&bid.status)).count() as u32;
+    let count_bids =
+        |wanted: &[BidStatus]| bids().filter(|bid| wanted.contains(&bid.status)).count() as u32;
 
     let bid_request_count = bids().count() as u32;
     let bid_timeout_count = count_bids(&[BidStatus::Timeout]);
     let winning_cpms: Vec<f64> = ad_units().filter_map(|unit| unit.winning_cpm).collect();
     let total_winning_cpm: f64 = winning_cpms.iter().sum();
 
-    let requested_slots = slots.iter().filter(|slot| slot.requested_at_ms.is_some()).count();
+    let requested_slots = slots
+        .iter()
+        .filter(|slot| slot.requested_at_ms.is_some())
+        .count();
     let filled_slots = slots
         .iter()
         .filter(|slot| slot.outcome == SlotOutcome::Filled)
@@ -392,7 +426,10 @@ fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> 
     ScanMetrics {
         page_load_ms: capture.page_load_ms,
         auction_count: auctions.len() as u32,
-        ad_unit_count: ad_units().map(|unit| &unit.code).collect::<BTreeSet<_>>().len() as u32,
+        ad_unit_count: ad_units()
+            .map(|unit| &unit.code)
+            .collect::<BTreeSet<_>>()
+            .len() as u32,
         bidder_count: bids().map(|bid| &bid.bidder).collect::<BTreeSet<_>>().len() as u32,
         bid_request_count,
         bid_response_count: count_bids(&[BidStatus::Bid, BidStatus::Won, BidStatus::Rendered]),
@@ -412,7 +449,11 @@ fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> 
         time_to_first_ad_ms,
         script_count: capture.scripts.len() as u32,
         ad_script_count: 0,
-        total_script_bytes: capture.scripts.iter().map(|script| script.body.len() as f64).sum(),
+        total_script_bytes: capture
+            .scripts
+            .iter()
+            .map(|script| script.body.len() as f64)
+            .sum(),
         prebid_timeout_ms: configured_timeout
             .or_else(|| auctions.iter().find_map(|auction| auction.timeout_ms)),
         has_prebid: !auctions.is_empty()

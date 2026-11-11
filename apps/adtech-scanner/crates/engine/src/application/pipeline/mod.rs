@@ -54,7 +54,11 @@ impl Pipeline {
     pub async fn run(&self, job: ScanJob) -> ScanSummary {
         let budget = match Budget::new(job.settings.budget_usd) {
             Ok(budget) => budget,
-            Err(error) => return self.finalize(job.summary.clone(), RunOutcome::Failed(error.into())).await,
+            Err(error) => {
+                return self
+                    .finalize(job.summary.clone(), RunOutcome::Failed(error.into()))
+                    .await;
+            }
         };
         let mut state = ScanState::new(job.summary.clone(), budget);
         let outcome = match self.execute(&job, &mut state).await {
@@ -154,7 +158,8 @@ impl Pipeline {
                 match graph::on_failure(node) {
                     OnFailure::FailScan => Some(RunOutcome::Failed(error)),
                     OnFailure::ContinueWithoutAi => {
-                        run.state.ai_failure = Some(format!("{} failed: {error}", node_label(node)));
+                        run.state.ai_failure =
+                            Some(format!("{} failed: {error}", node_label(node)));
                         None
                     }
                 }
@@ -197,7 +202,9 @@ impl Pipeline {
 
     async fn publish_step(&self, step: &PipelineStep) -> RepoResult<()> {
         self.deps.scans.save_step(step).await?;
-        self.deps.events.emit(ScanEvent::StepUpdated { step: step.clone() });
+        self.deps
+            .events
+            .emit(ScanEvent::StepUpdated { step: step.clone() });
         Ok(())
     }
 }

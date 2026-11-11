@@ -27,8 +27,15 @@ impl ConsoleLog {
             Some("debug") => "debug",
             _ => "log",
         };
-        let args = params["args"].as_array().map(Vec::as_slice).unwrap_or_default();
-        let text = args.iter().map(remote_object_text).collect::<Vec<_>>().join(" ");
+        let args = params["args"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let text = args
+            .iter()
+            .map(remote_object_text)
+            .collect::<Vec<_>>()
+            .join(" ");
         self.push(params["timestamp"].as_f64(), level, text);
     }
 
@@ -57,7 +64,11 @@ impl ConsoleLog {
             Some((cut, _)) => format!("{}…", &text[..cut]),
             None => text,
         };
-        self.entries.push(Entry { epoch_ms, level, text });
+        self.entries.push(Entry {
+            epoch_ms,
+            level,
+            text,
+        });
     }
 
     pub(crate) fn into_lines(self, navigation_start: f64) -> Vec<ConsoleLine> {
@@ -110,7 +121,10 @@ mod tests {
             ]
         }));
         let lines = log.into_lines(1_000.0);
-        assert_eq!(lines[0].text, "slow bidder 42 false Object undefined null NaN");
+        assert_eq!(
+            lines[0].text,
+            "slow bidder 42 false Object undefined null NaN"
+        );
         assert_eq!(lines[0].level, "warning");
         assert_eq!(lines[0].t, 250.0);
     }
@@ -122,12 +136,21 @@ mod tests {
             log.record_api_call(&json!({"type": kind, "timestamp": 1.0, "args": [{"type": "string", "value": "x"}]}));
         }
         for level in ["verbose", "info", "warning", "error"] {
-            log.record_log_entry(&json!({"entry": {"level": level, "text": "x", "timestamp": 1.0}}));
+            log.record_log_entry(
+                &json!({"entry": {"level": level, "text": "x", "timestamp": 1.0}}),
+            );
         }
-        let levels: Vec<String> = log.into_lines(0.0).into_iter().map(|line| line.level).collect();
+        let levels: Vec<String> = log
+            .into_lines(0.0)
+            .into_iter()
+            .map(|line| line.level)
+            .collect();
         assert_eq!(
             levels,
-            ["log", "info", "debug", "error", "error", "log", "debug", "info", "warning", "error"]
+            [
+                "log", "info", "debug", "error", "error", "log", "debug", "info", "warning",
+                "error"
+            ]
         );
     }
 

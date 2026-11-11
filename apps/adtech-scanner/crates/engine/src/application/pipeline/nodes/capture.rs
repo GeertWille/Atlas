@@ -14,7 +14,8 @@ pub async fn launch_browser(run: &mut StepRun<'_>) -> NodeResult {
         .locate_browser(run.job.settings.chrome_path.clone())
         .await
         .ok_or(AppError::BrowserNotFound)?;
-    run.info(format!("Using {} at {}", browser.version, browser.path)).await?;
+    run.info(format!("Using {} at {}", browser.version, browser.path))
+        .await?;
     Ok(format!("{} found", browser.version))
 }
 
@@ -22,7 +23,11 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     let request = run.job.scan.capture_request(&run.job.settings);
     run.info(format!(
         "Loading {} as {:?}, observing for {} s (auto-scroll {}, accept consent {})",
-        request.url, request.device, request.observe_seconds, request.auto_scroll, request.accept_consent,
+        request.url,
+        request.device,
+        request.observe_seconds,
+        request.auto_scroll,
+        request.accept_consent,
     ))
     .await?;
 

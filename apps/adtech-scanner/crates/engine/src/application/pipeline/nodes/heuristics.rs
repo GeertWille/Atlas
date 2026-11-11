@@ -14,7 +14,10 @@ pub async fn run_rules(run: &mut StepRun<'_>) -> NodeResult {
     let rule_count = heuristics::all_rules().len();
     let hit_count = hits.len();
     for hit in hits {
-        run.add_finding(hit.finding, json!({ "rule": hit.rule })).await?;
+        run.add_finding(hit.finding, json!({ "rule": hit.rule }))
+            .await?;
     }
-    Ok(format!("{rule_count} rules evaluated, {hit_count} findings"))
+    Ok(format!(
+        "{rule_count} rules evaluated, {hit_count} findings"
+    ))
 }

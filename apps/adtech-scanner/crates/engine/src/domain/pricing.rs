@@ -17,13 +17,6 @@ impl TokenUsage {
     pub fn prompt_tokens(&self) -> u64 {
         self.input + self.cache_read + self.cache_write
     }
-
-    pub fn add(&mut self, other: TokenUsage) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_read += other.cache_read;
-        self.cache_write += other.cache_write;
-    }
 }
 
 /// USD per million tokens.
@@ -96,6 +89,21 @@ pub fn cost_of(model: &str, usage: TokenUsage) -> CallCost {
     }
 }
 
+/// How many output tokens `remaining_usd` still pays for after the prompt
+/// described by `prompt` (its `output` is ignored) has been billed.
+pub fn affordable_output_tokens(model: &str, prompt: TokenUsage, remaining_usd: f64) -> u64 {
+    let prompt = TokenUsage {
+        output: 0,
+        ..prompt
+    };
+    let rates = rates_for(model, prompt).unwrap_or(CONSERVATIVE);
+    let left_for_output = remaining_usd - cost_of(model, prompt).usd;
+    if left_for_output <= 0.0 {
+        return 0;
+    }
+    (left_for_output * 1_000_000.0 / rates.output) as u64
+}
+
 /// Rough token count for text we are about to send (about 3.5 chars per token
 /// for minified JavaScript and JSON; rounded up to stay on the safe side).
 pub fn estimate_tokens(chars: usize) -> u64 {
@@ -112,7 +120,9 @@ pub struct Budget {
 impl Budget {
     pub fn new(limit_usd: f64) -> Result<Self, DomainError> {
         if !limit_usd.is_finite() || !(0.0..=MAX_BUDGET_USD).contains(&limit_usd) {
-            return Err(DomainError::BudgetOutOfRange { max: MAX_BUDGET_USD });
+            return Err(DomainError::BudgetOutOfRange {
+                max: MAX_BUDGET_USD,
+            });
         }
         Ok(Self {
             limit_usd,
@@ -157,7 +167,10 @@ mod tests {
 
     #[test]
     fn sonnet_cost_includes_cache_reads_and_writes() {
-        let cost = cost_of("claude-sonnet-5-5", usage(1_000_000, 100_000, 2_000_000, 400_000));
+        let cost = cost_of(
+            "claude-sonnet-5-5",
+            usage(1_000_000, 100_000, 2_000_000, 400_000),
+        );
         assert!(cost.known_model);
         assert!((cost.usd - (2.0 + 1.0 + 0.2 + 1.0)).abs() < 1e-9);
     }
@@ -168,6 +181,24 @@ mod tests {
         assert!((short.usd - (0.01 + 0.0005)).abs() < 1e-9);
         let long = cost_of("claude-haiku-5-5", usage(90_000, 1_000, 20_000, 0));
         assert!((long.usd - (0.045 + 0.0025 + 0.001)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn affordable_output_is_what_remains_after_the_prompt() {
+        // $0.05 left, 10K uncached prompt tokens cost $0.02, $0.03 buys 3000 output tokens.
+        assert_eq!(
+            affordable_output_tokens("claude-sonnet-5-5", usage(10_000, 999, 0, 0), 0.05),
+            3_000
+        );
+        assert_eq!(
+            affordable_output_tokens("claude-sonnet-5-5", usage(10_000, 0, 0, 0), 0.02),
+            0
+        );
+        assert_eq!(
+            affordable_output_tokens("claude-sonnet-5-5", usage(10_000, 0, 0, 0), 0.0),
+            0
+        );
+        assert!(affordable_output_tokens("unknown", usage(0, 0, 0, 0), 0.75) == 10_000);
     }
 
     #[test]

@@ -21,9 +21,11 @@ use tokio_util::sync::CancellationToken;
 const TEST_CHROMIUM: &str = "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome";
 
 pub fn chrome_path() -> Option<String> {
-    std::env::var("ADSCAN_CHROME_PATH")
-        .ok()
-        .or_else(|| std::path::Path::new(TEST_CHROMIUM).exists().then(|| TEST_CHROMIUM.to_string()))
+    std::env::var("ADSCAN_CHROME_PATH").ok().or_else(|| {
+        std::path::Path::new(TEST_CHROMIUM)
+            .exists()
+            .then(|| TEST_CHROMIUM.to_string())
+    })
 }
 
 pub fn request(url: &str, device: DeviceProfile) -> CaptureRequest {
@@ -64,22 +66,34 @@ pub async fn run_cancellable(request: CaptureRequest, cancel: CancellationToken)
 pub async fn capture_ok(request: CaptureRequest) -> Capture {
     let outcome = run(request).await;
     assert!(
-        !outcome.progress.iter().any(|line| line.contains("malformed")),
+        !outcome
+            .progress
+            .iter()
+            .any(|line| line.contains("malformed")),
         "the tracker emitted events outside the contract: {:#?}",
         outcome.progress
     );
-    outcome.result.unwrap_or_else(|error| panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress))
+    outcome.result.unwrap_or_else(|error| {
+        panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress)
+    })
 }
 
 pub fn events_where<'a>(
     capture: &'a Capture,
     matches: impl Fn(&TrackerEventKind) -> bool + 'a,
 ) -> impl Iterator<Item = &'a TrackerEvent> {
-    capture.events.iter().filter(move |event| matches(&event.kind))
+    capture
+        .events
+        .iter()
+        .filter(move |event| matches(&event.kind))
 }
 
 pub fn first_time(capture: &Capture, matches: impl Fn(&TrackerEventKind) -> bool) -> Option<f64> {
-    capture.events.iter().find(|event| matches(&event.kind)).map(|event| event.t)
+    capture
+        .events
+        .iter()
+        .find(|event| matches(&event.kind))
+        .map(|event| event.t)
 }
 
 /// A local server for the pages in `tests/fixtures`, stopped when dropped.
@@ -99,7 +113,9 @@ impl Fixtures {
             .route("/never", get(never))
             .route("/{file}", get(fixture));
         tokio::spawn(async move {
-            let _ = axum::serve(listener, routes).with_graceful_shutdown(stopped).await;
+            let _ = axum::serve(listener, routes)
+                .with_graceful_shutdown(stopped)
+                .await;
         });
         Self { port, shutdown }
     }
@@ -116,8 +132,14 @@ impl Drop for Fixtures {
 }
 
 async fn fixture(Path(file): Path<String>) -> Response {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(&file);
-    let content_type = if file.ends_with(".js") { "text/javascript" } else { "text/html; charset=utf-8" };
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(&file);
+    let content_type = if file.ends_with(".js") {
+        "text/javascript"
+    } else {
+        "text/html; charset=utf-8"
+    };
     match tokio::fs::read(path).await {
         Ok(body) => ([(header::CONTENT_TYPE, content_type)], body).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
@@ -126,7 +148,12 @@ async fn fixture(Path(file): Path<String>) -> Response {
 
 async fn status(Path(code): Path<u16>) -> Response {
     let status = StatusCode::from_u16(code).unwrap();
-    (status, [(header::CONTENT_TYPE, "text/html")], format!("<h1>{status}</h1>")).into_response()
+    (
+        status,
+        [(header::CONTENT_TYPE, "text/html")],
+        format!("<h1>{status}</h1>"),
+    )
+        .into_response()
 }
 
 /// A resource that never answers, so a page that needs it never fires `load`.

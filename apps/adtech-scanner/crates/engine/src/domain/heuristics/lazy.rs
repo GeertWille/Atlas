@@ -25,7 +25,13 @@ impl Rule for AuctionGatedOnInteraction {
             Some(AuctionGate::AfterInteraction {
                 interaction_at_ms,
                 auction_at_ms,
-            }) => vec![started_after_interaction(ctx, interaction_at_ms, auction_at_ms)],
+                waiting_slots,
+            }) => vec![started_after_interaction(
+                ctx,
+                interaction_at_ms,
+                auction_at_ms,
+                waiting_slots,
+            )],
             None => Vec::new(),
         }
     }
@@ -67,7 +73,8 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
          Start the auction on page load for slots in the initial viewport. Then **re-scan with the {other} \
          profile**: if auctions start there, the wrapper's device detection is choosing the wrong path on {device}."
     );
-    finding.impact = format!("No header bidding demand on {device}: slots are sold without bids or stay empty");
+    finding.impact =
+        format!("No header bidding demand on {device}: slots are sold without bids or stay empty");
     finding.estimated_revenue_impact_pct = Some(super::HEADER_BIDDING_REVENUE_SHARE_PCT);
     finding.evidence.push(timeline(
         "Auction timeline",
@@ -83,10 +90,14 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
     finding
 }
 
-fn started_after_interaction(ctx: &RuleContext, interaction_at_ms: f64, auction_at_ms: f64) -> FindingDraft {
+fn started_after_interaction(
+    ctx: &RuleContext,
+    interaction_at_ms: f64,
+    auction_at_ms: f64,
+    in_view: Vec<String>,
+) -> FindingDraft {
     let device = ctx.device_name();
     let other = ctx.other_device_name();
-    let in_view = slots_in_initial_viewport(ctx);
     let severity = if in_view.is_empty() {
         Severity::Medium
     } else {
@@ -99,9 +110,9 @@ fn started_after_interaction(ctx: &RuleContext, interaction_at_ms: f64, auction_
         format!("Bidding waits for the first scroll on {device}"),
     );
     finding.description = format!(
-        "On this **{device}** scan the first Prebid auction started at {}, {} after the first scroll / interaction \
-         at {}, although Prebid was ready long before. Nothing is auctioned for users who do not scroll, and \
-         above-the-fold slots miss their first impression. Scroll-gated bidding is normally a mobile lazy-load \
+        "On this **{device}** scan the Prebid auction for the slots already on screen started at {}, {} after the \
+         first scroll / interaction at {}, although Prebid was ready long before. These slots are not auctioned \
+         for users who do not scroll, and above-the-fold slots miss their first impression. Scroll-gated bidding is normally a mobile lazy-load \
          optimisation; when it also (or only) runs on the other device class, the wrapper's device detection is wrong.",
         ms(auction_at_ms),
         ms(auction_at_ms - interaction_at_ms),
@@ -112,7 +123,9 @@ fn started_after_interaction(ctx: &RuleContext, interaction_at_ms: f64, auction_
          **Re-scan with the {other} profile** and compare when the first auction starts: if only one device \
          class waits for scroll, fix the device check that selects the lazy path."
     );
-    finding.impact = format!("No bids before the first scroll on {device}; non-scrolling users are not monetised by header bidding");
+    finding.impact = format!(
+        "No bids before the first scroll on {device}; non-scrolling users are not monetised by header bidding"
+    );
     finding.estimated_revenue_impact_pct =
         Some(super::HEADER_BIDDING_REVENUE_SHARE_PCT * GATED_AUCTION_HB_LOSS);
     finding.evidence.push(timeline(
@@ -132,14 +145,6 @@ fn started_after_interaction(ctx: &RuleContext, interaction_at_ms: f64, auction_
     }
     finding.affected_slots = in_view;
     finding
-}
-
-fn slots_in_initial_viewport(ctx: &RuleContext) -> Vec<String> {
-    ctx.slots()
-        .iter()
-        .filter(|slot| slot.in_initial_viewport == Some(true))
-        .map(|slot| slot.element_id.clone())
-        .collect()
 }
 
 fn slots_waiting_for_bids(ctx: &RuleContext) -> Vec<String> {

@@ -1,8 +1,6 @@
 //! One running pipeline step: its audit trail, token accounting and findings.
 
-use adscan_model::{
-    Finding, LogEntry, LogKind, LogLevel, PipelineStep, ScanEvent, StepStatus,
-};
+use adscan_model::{Finding, LogEntry, LogKind, LogLevel, PipelineStep, ScanEvent, StepStatus};
 use serde_json::{Value, json};
 
 use super::PipelineDeps;
@@ -12,7 +10,7 @@ use crate::domain::pricing::{TokenUsage, cost_of};
 use crate::domain::synthesis::severity_counts;
 
 /// Audit entries carry excerpts, never whole payloads.
-pub const MAX_LOG_MESSAGE_CHARS: usize = 20_000;
+const MAX_LOG_MESSAGE_CHARS: usize = 20_000;
 const MAX_LOG_DATA_STRING_CHARS: usize = 4_000;
 
 pub struct StepRun<'a> {
@@ -32,11 +30,13 @@ impl StepRun<'_> {
     }
 
     pub async fn info(&mut self, message: impl Into<String>) -> Result<(), NodeError> {
-        self.log(LogLevel::Info, LogKind::Message, message, None).await
+        self.log(LogLevel::Info, LogKind::Message, message, None)
+            .await
     }
 
     pub async fn warn(&mut self, message: impl Into<String>) -> Result<(), NodeError> {
-        self.log(LogLevel::Warn, LogKind::Message, message, None).await
+        self.log(LogLevel::Warn, LogKind::Message, message, None)
+            .await
     }
 
     pub async fn log(
@@ -64,10 +64,15 @@ impl StepRun<'_> {
     }
 
     /// Books one model call against the step, the scan and the budget.
-    pub async fn record_llm_call(&mut self, model: &str, usage: TokenUsage) -> Result<f64, NodeError> {
+    pub async fn record_llm_call(
+        &mut self,
+        model: &str,
+        usage: TokenUsage,
+    ) -> Result<f64, NodeError> {
         let cost = cost_of(model, usage);
         self.step.model = Some(model.to_string());
-        self.step.input_tokens = saturating_u32(self.step.input_tokens as u64 + usage.prompt_tokens());
+        self.step.input_tokens =
+            saturating_u32(self.step.input_tokens as u64 + usage.prompt_tokens());
         self.step.output_tokens = saturating_u32(self.step.output_tokens as u64 + usage.output);
         self.step.cost_usd += cost.usd;
         self.state.budget.charge(cost.usd);
@@ -117,7 +122,11 @@ impl StepRun<'_> {
 
     /// Persists a finding as soon as it is known, so a cancelled or failed
     /// scan keeps it.
-    pub async fn add_finding(&mut self, draft: FindingDraft, origin: Value) -> Result<Finding, NodeError> {
+    pub async fn add_finding(
+        &mut self,
+        draft: FindingDraft,
+        origin: Value,
+    ) -> Result<Finding, NodeError> {
         let finding = draft.into_finding(self.deps.ids.new_id(), &self.step.scan_id);
         self.state.findings.push(finding.clone());
         self.state.summary.finding_counts = severity_counts(&self.state.findings);

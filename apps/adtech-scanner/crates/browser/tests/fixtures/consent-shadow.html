@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: Usercentrics-style shadow DOM</title><link rel="icon" href="data:,"></head>
+<body>
+<div id="usercentrics-root"></div>
+<script>
+var root = document.getElementById('usercentrics-root').attachShadow({ mode: 'open' });
+root.innerHTML =
+  '<div role="dialog"><button data-testid="uc-deny-all-button">Deny</button>' +
+  '<button data-testid="uc-accept-all-button">Yes</button></div>';
+root.querySelector('[data-testid="uc-deny-all-button"]').onclick = function () { console.log('CONSENT rejected'); };
+root.querySelector('[data-testid="uc-accept-all-button"]').onclick = function () { console.log('CONSENT accepted'); };
+</script>
+</body></html>

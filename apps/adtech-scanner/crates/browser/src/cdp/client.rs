@@ -24,7 +24,10 @@ pub(crate) enum CdpError {
     #[error("the connection to the browser closed")]
     Closed,
     #[error("{method} failed: {message}")]
-    Rejected { method: &'static str, message: String },
+    Rejected {
+        method: &'static str,
+        message: String,
+    },
     #[error("{0} did not answer in time")]
     Timeout(&'static str),
 }
@@ -37,12 +40,17 @@ pub(crate) struct CdpEvent {
     pub session_id: Option<String>,
 }
 
+type Reply = oneshot::Sender<Result<Value, CdpError>>;
+
 struct Command {
     id: u64,
     method: &'static str,
     text: String,
-    reply: oneshot::Sender<Result<Value, CdpError>>,
+    reply: Reply,
 }
+
+/// Commands sent and not yet answered, by id.
+type Awaiting = HashMap<u64, (&'static str, Reply)>;
 
 pub(crate) struct Cdp {
     commands: mpsc::UnboundedSender<Command>,
@@ -52,16 +60,26 @@ pub(crate) struct Cdp {
 impl Cdp {
     /// Connects and returns the client plus the stream of protocol events.
     /// Dropping the client closes the connection.
-    pub(crate) async fn connect(ws_url: &str) -> Result<(Self, mpsc::UnboundedReceiver<CdpEvent>), CdpError> {
+    pub(crate) async fn connect(
+        ws_url: &str,
+    ) -> Result<(Self, mpsc::UnboundedReceiver<CdpEvent>), CdpError> {
         // Script bodies arrive as single messages; the default 64 MiB cap is too tight.
-        let config = WebSocketConfig::default().max_message_size(None).max_frame_size(None);
+        let config = WebSocketConfig::default()
+            .max_message_size(None)
+            .max_frame_size(None);
         let (socket, _) = tokio_tungstenite::connect_async_with_config(ws_url, Some(config), false)
             .await
             .map_err(|error| CdpError::Connect(error.to_string()))?;
         let (commands, command_queue) = mpsc::unbounded_channel();
         let (events, event_stream) = mpsc::unbounded_channel();
         tokio::spawn(pump(socket, command_queue, events));
-        Ok((Self { commands, next_id: AtomicU64::new(1) }, event_stream))
+        Ok((
+            Self {
+                commands,
+                next_id: AtomicU64::new(1),
+            },
+            event_stream,
+        ))
     }
 
     /// Queues the command immediately and returns a future for its result, so
@@ -79,7 +97,12 @@ impl Cdp {
         }
         let (reply, response) = oneshot::channel();
         // A closed connection drops `reply`, which surfaces as `Closed` below.
-        let _ = self.commands.send(Command { id, method, text: message.to_string(), reply });
+        let _ = self.commands.send(Command {
+            id,
+            method,
+            text: message.to_string(),
+            reply,
+        });
         async move {
             match tokio::time::timeout(CALL_TIMEOUT, response).await {
                 Ok(Ok(result)) => result,
@@ -95,7 +118,8 @@ impl Cdp {
     }
 }
 
-type Socket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Socket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 async fn pump(
     socket: Socket,
@@ -103,7 +127,7 @@ async fn pump(
     events: mpsc::UnboundedSender<CdpEvent>,
 ) {
     let (mut sink, mut stream) = socket.split();
-    let mut awaiting: HashMap<u64, (&'static str, oneshot::Sender<Result<Value, CdpError>>)> = HashMap::new();
+    let mut awaiting = Awaiting::new();
     loop {
         tokio::select! {
             command = commands.recv() => {
@@ -126,17 +150,18 @@ async fn pump(
     let _ = sink.close().await;
 }
 
-fn route(
-    mut message: Value,
-    awaiting: &mut HashMap<u64, (&'static str, oneshot::Sender<Result<Value, CdpError>>)>,
-    events: &mpsc::UnboundedSender<CdpEvent>,
-) {
+fn route(mut message: Value, awaiting: &mut Awaiting, events: &mpsc::UnboundedSender<CdpEvent>) {
     if let Some(id) = message["id"].as_u64() {
-        let Some((method, reply)) = awaiting.remove(&id) else { return };
+        let Some((method, reply)) = awaiting.remove(&id) else {
+            return;
+        };
         let result = match message.get("error") {
             Some(error) => Err(CdpError::Rejected {
                 method,
-                message: error["message"].as_str().unwrap_or("unknown error").to_string(),
+                message: error["message"]
+                    .as_str()
+                    .unwrap_or("unknown error")
+                    .to_string(),
             }),
             None => Ok(message["result"].take()),
         };

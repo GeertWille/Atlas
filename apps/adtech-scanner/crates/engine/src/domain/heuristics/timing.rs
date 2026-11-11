@@ -43,7 +43,11 @@ impl Rule for AuctionTimeoutTooShort {
             FindingCategory::Timing,
             0.8,
             match timeout {
-                Some(timeout) => format!("Auction timeout of {} cuts off {} of bid requests", ms(timeout), pct(metrics.timeout_rate)),
+                Some(timeout) => format!(
+                    "Auction timeout of {} cuts off {} of bid requests",
+                    ms(timeout),
+                    pct(metrics.timeout_rate)
+                ),
                 None => format!("{} of bid requests time out", pct(metrics.timeout_rate)),
             },
         );
@@ -60,7 +64,9 @@ impl Rule for AuctionTimeoutTooShort {
              partners, start the auction earlier in the page lifecycle, and make sure bidder endpoints are \
              preconnected. Re-measure the timeout rate after each change."
             .into();
-        finding.impact = "Bids arriving after the deadline are dropped, lowering auction pressure on every slot".into();
+        finding.impact =
+            "Bids arriving after the deadline are dropped, lowering auction pressure on every slot"
+                .into();
         finding.estimated_revenue_impact_pct =
             Some(metrics.timeout_rate * super::HEADER_BIDDING_REVENUE_SHARE_PCT);
         finding.evidence.push(metric(
@@ -76,7 +82,11 @@ impl Rule for AuctionTimeoutTooShort {
         if let Some(median_response) = median(&responded) {
             finding.evidence.push(metric(
                 "Latency of bidders that did respond",
-                format!("median {}, slowest {}", ms(median_response), ms(responded.iter().copied().fold(0.0, f64::max))),
+                format!(
+                    "median {}, slowest {}",
+                    ms(median_response),
+                    ms(responded.iter().copied().fold(0.0, f64::max))
+                ),
             ));
         }
         finding.affected_bidders = timed_out;
@@ -167,13 +177,18 @@ impl Rule for LateFirstAuction {
             ms(started_at),
             ctx.capture
                 .page_load_ms
-                .map_or(String::new(), |load| format!(" (page load event at {})", ms(load))),
+                .map_or(String::new(), |load| format!(
+                    " (page load event at {})",
+                    ms(load)
+                )),
         );
         finding.recommendation = "Load Prebid and the wrapper with high priority (async in the head, not behind a \
              tag manager or consent callback chain that waits for unrelated work) and call `requestBids` as soon as \
              ad units and consent are available."
             .into();
-        finding.impact = "Late bids mean late ads: lower viewability and missed impressions on short visits".into();
+        finding.impact =
+            "Late bids mean late ads: lower viewability and missed impressions on short visits"
+                .into();
         finding.evidence.push(timeline(
             "Time to first auction",
             format!("auctionInit at {}", ms(started_at)),
@@ -190,7 +205,8 @@ impl Rule for SlowGptLoad {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
-        let Some(ready_at) = ctx.first_event_at(|kind| matches!(kind, Ev::GptDetected { .. })) else {
+        let Some(ready_at) = ctx.first_event_at(|kind| matches!(kind, Ev::GptDetected { .. }))
+        else {
             return Vec::new();
         };
         if ready_at < SLOW_GPT_MS || ctx.auction_gate().is_some() {
@@ -216,7 +232,10 @@ impl Rule for SlowGptLoad {
              `securepubads.g.doubleclick.net`, and do not chain it behind other third-party scripts."
             .into();
         finding.impact = "Every ad request on the page is delayed".into();
-        finding.evidence.push(timeline("GPT ready", format!("googletag detected at {}", ms(ready_at))));
+        finding.evidence.push(timeline(
+            "GPT ready",
+            format!("googletag detected at {}", ms(ready_at)),
+        ));
         vec![finding]
     }
 }

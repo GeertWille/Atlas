@@ -11,7 +11,8 @@ use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
 use crate::application::llm::{
-    AssistantBlock, AssistantTurn, LlmError, LlmMessage, LlmRequest, LlmResponse, StopReason, UserBlock,
+    AssistantBlock, AssistantTurn, LlmError, LlmMessage, LlmRequest, LlmResponse, StopReason,
+    UserBlock,
 };
 use crate::application::ports::LlmClient;
 use crate::domain::pricing::TokenUsage;
@@ -63,12 +64,6 @@ impl AnthropicClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             retry,
         })
-    }
-
-    /// Uses `ADSCAN_ANTHROPIC_BASE_URL` when set, otherwise the public API.
-    pub fn from_environment() -> Result<Self, LlmError> {
-        let base_url = std::env::var(BASE_URL_ENV).unwrap_or_else(|_| DEFAULT_BASE_URL.to_string());
-        Self::new(&base_url, RetryPolicy::default())
     }
 
     fn authorized(&self, request: RequestBuilder, api_key: &str) -> RequestBuilder {
@@ -134,7 +129,10 @@ impl LlmClient for AnthropicClient {
         let body = request_body(request);
         let url = format!("{}/v1/messages", self.base_url);
         let response = self
-            .send_with_retry(|| self.authorized(self.http.post(&url), api_key).json(&body), cancel)
+            .send_with_retry(
+                || self.authorized(self.http.post(&url), api_key).json(&body),
+                cancel,
+            )
             .await?;
         let message: MessageDto = tokio::select! {
             parsed = response.json() => parsed.map_err(|error| LlmError::InvalidResponse(error.to_string()))?,
@@ -221,7 +219,8 @@ fn user_block_json(block: &UserBlock) -> Value {
             content,
             is_error,
         } => {
-            let mut result = json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content });
+            let mut result =
+                json!({ "type": "tool_result", "tool_use_id": tool_use_id, "content": content });
             if *is_error {
                 result["is_error"] = json!(true);
             }
@@ -305,12 +304,21 @@ fn readable_block(block: &Value) -> Option<AssistantBlock> {
 // -- errors -------------------------------------------------------------------
 
 fn is_retryable(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::REQUEST_TIMEOUT || status.is_server_error()
+    status == StatusCode::TOO_MANY_REQUESTS
+        || status == StatusCode::REQUEST_TIMEOUT
+        || status.is_server_error()
 }
 
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let seconds: f64 = headers.get(RETRY_AFTER)?.to_str().ok()?.trim().parse().ok()?;
-    (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
+    let seconds: f64 = headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (seconds.is_finite() && seconds >= 0.0)
+        .then(|| Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
 }
 
 fn exhausted_error(status: StatusCode, attempts: u32) -> LlmError {
@@ -344,7 +352,12 @@ async fn error_message(response: Response) -> String {
         .and_then(|body| body.pointer("/error/message"))
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed").to_string())
+        .unwrap_or_else(|| {
+            status
+                .canonical_reason()
+                .unwrap_or("request failed")
+                .to_string()
+        })
 }
 
 /// reqwest errors can embed the request URL; keep only what went wrong.

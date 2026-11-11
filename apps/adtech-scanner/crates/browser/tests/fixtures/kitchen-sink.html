@@ -1,0 +1,202 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tracker kitchen sink</title>
+<link rel="icon" href="data:,">
+<script>
+// A header-bidding library under a custom global name that is completely
+// loaded, and has already run part of an auction, before anything could hook it.
+(function () {
+  var handlers = {};
+  var fired = [];
+  function emit(type, args) {
+    fired.push({ eventType: type, args: args, elapsedTime: performance.now() });
+    (handlers[type] || []).forEach(function (handler) { handler(args); });
+  }
+  var cyclic = { name: 'cyclic' };
+  cyclic.self = cyclic;
+  window._pbjsGlobals = ['acmeHb'];
+  window.acmeHb = {
+    version: 'v9.1.0',
+    installedModules: ['fooBidAdapter', 42, 'barBidAdapter'],
+    que: [],
+    onEvent: function (type, handler) { (handlers[type] = handlers[type] || []).push(handler); },
+    getEvents: function () { return fired.slice(); },
+    setConfig: function (config) { window.debugRequested = config.debug; },
+    getConfig: function () {
+      return {
+        debug: true,
+        bidderTimeout: 1500,
+        priceGranularity: { buckets: [{ max: 20, increment: 0.05 }] },
+        currency: { adServerCurrency: 'EUR', bidderCurrencyDefault: { foo: 'USD' } },
+        floors: { enforcement: { floorDeals: true }, data: { default: 0.5 } },
+        userSync: { syncEnabled: false },
+        consentManagement: { gdpr: { cmpApi: 'iab', timeout: 8000 } },
+        s2sConfig: { bidders: ['foo'], onTimeout: function () {}, loop: cyclic },
+        realTimeData: { dataProviders: [{ name: 'huge', blob: new Array(30001).join('x') }] },
+      };
+    },
+    emit: emit,
+  };
+  emit('auctionInit', {
+    auctionId: 'auction-1',
+    timeout: 1500,
+    adUnits: [
+      { code: 'unit-a', mediaTypes: { banner: { sizes: [[300, 250], [336, 280]] } }, bids: [{ bidder: 'foo' }, { bidder: 'bar' }, { bidder: 'foo' }] },
+      { code: 'unit-b', mediaTypes: { banner: { sizes: [728, 90] }, video: { playerSize: [640, 480] } }, bids: [{ bidder: 'bar' }] },
+      { code: 'unit-c', sizes: [[160, 600]], bids: [{ module: 'pubCommonId' }] },
+    ],
+  });
+  emit('bidRequested', {
+    bidderCode: 'foo',
+    auctionId: 'auction-1',
+    bids: [{ bidder: 'foo', adUnitCode: 'unit-a' }, { bidder: 'foo', adUnitCode: 'unit-a' }],
+  });
+  emit('bidRequested', { bidderCode: 'bar', auctionId: 'auction-1', bids: [{ adUnitCode: 'unit-a' }, { adUnitCode: 'unit-b' }] });
+  emit('unrelatedEvent', { ignored: true });
+})();
+</script>
+<script>
+// Amazon's bootstrap stub, a fetch through it, then the "real" library taking over.
+(function () {
+  function queue(command, args) { window.apstag._Q.push([command, args]); }
+  window.apstag = {
+    init: function () { queue('i', arguments); },
+    fetchBids: function () { queue('f', arguments); },
+    setDisplayBids: function () {},
+    _Q: [],
+  };
+  window.apsCallbacks = 0;
+  window.apstag.fetchBids({ slots: [{ slotID: 'unit-a' }, { slotID: 'unit-b' }], timeout: 900 }, function (bids) {
+    window.apsCallbacks += 1;
+    window.apsFirstBids = bids.length;
+  });
+  setTimeout(function () {
+    function fetchBids(config, callback) {
+      setTimeout(function () { callback([{ slotID: config.slots[0].slotID, amznbid: 'x' }]); }, 40);
+    }
+    var queued = window.apstag._Q;
+    window.apstag.fetchBids = fetchBids;
+    queued.forEach(function (call) { if (call[0] === 'f') fetchBids.apply(null, call[1]); });
+    setTimeout(function () {
+      window.apstag.fetchBids({ slots: [{ slotID: 'unit-c' }] }, function () { window.apsCallbacks += 1; });
+    }, 120);
+  }, 150);
+})();
+</script>
+</head>
+<body style="margin:0;height:5000px">
+<div id="unit-a" style="width:300px;height:250px"></div>
+<div id="unit-hidden" style="display:none"></div>
+<div id="unit-b" style="position:absolute;top:3000px;width:728px;height:90px"></div>
+<script>
+// An ad server library assigned to the page in one piece, with a slot already
+// defined, and later slots created through its factories.
+(function () {
+  var listeners = {};
+  var slots = [];
+  function size(width, height) {
+    return { getWidth: function () { return width; }, getHeight: function () { return height; } };
+  }
+  function slot(path, sizes, elementId) {
+    var targeting = {};
+    var made = {
+      getSlotElementId: function () { return elementId; },
+      getAdUnitPath: function () { return path; },
+      getSizes: function () { return sizes; },
+      getTargetingKeys: function () { return Object.keys(targeting); },
+      setTargeting: function (key, value) { targeting[key] = [value]; return made; },
+    };
+    slots.push(made);
+    return made;
+  }
+  function fire(type, detail) {
+    (listeners[type] || []).forEach(function (listener) { listener(detail); });
+  }
+  slot('/1/site/early', [size(300, 250), 'fluid'], 'unit-a');
+  window.googletag = {
+    apiReady: true,
+    cmd: { push: function (command) { command(); } },
+    getVersion: function () { return 20261101; },
+    defineSlot: function (path, sizes, elementId) { return slot(path, sizes.map(function (s) { return size(s[0], s[1]); }), elementId); },
+    defineOutOfPageSlot: function (path, elementId) { return slot(path, [], elementId); },
+    pubads: function () {
+      return {
+        getSlots: function () { return slots.slice(); },
+        addEventListener: function (type, listener) { (listeners[type] = listeners[type] || []).push(listener); },
+      };
+    },
+  };
+  window.defineSlotLooksNative = String(googletag.defineSlot).indexOf('return slot(path') >= 0;
+  var below = googletag.defineSlot('/1/site/below', [[728, 90]], 'unit-b');
+  var hidden = googletag.defineSlot('/1/site/hidden', [[1, 1]], 'unit-hidden');
+  var missing = googletag.defineOutOfPageSlot('/1/site/interstitial', 'unit-missing');
+  window.definedSlotsAreUntouched = below.getSlotElementId() === 'unit-b' && !!hidden && !!missing;
+
+  setTimeout(function () {
+    var early = slots[0];
+    early.setTargeting('hb_bidder', 'foo').setTargeting('hb_pb', '1.50').setTargeting('section', 'news');
+    fire('slotRequested', { slot: early });
+    fire('slotResponseReceived', { slot: early });
+    fire('slotRenderEnded', { slot: early, isEmpty: false, size: [300, 250], advertiserId: 123, lineItemId: 456 });
+    fire('slotOnload', { slot: early });
+    fire('impressionViewable', { slot: early });
+    fire('slotRequested', { slot: below });
+    fire('slotRenderEnded', { slot: below, isEmpty: true, size: null, advertiserId: null, lineItemId: null });
+    fire('slotRequested', { slot: missing });
+    fire('slotRenderEnded', { slot: missing, size: 'fluid', sourceAgnosticLineItemId: 789 });
+    fire('slotVisibilityChanged', { slot: early, inViewPercentage: 100 });
+  }, 250);
+})();
+</script>
+<script>
+// The rest of the auction, after the tracker has had time to attach.
+setTimeout(function () {
+  var hb = window.acmeHb;
+  hb.emit('bidResponse', { auctionId: 'auction-1', bidderCode: 'foo', adUnitCode: 'unit-a', cpm: '1.50', currency: 'EUR', width: 300, height: 250, timeToRespond: 187, dealId: 'deal-7' });
+  hb.emit('bidResponse', { auctionId: 'auction-1', bidder: 'bar', adUnitCode: 'unit-b', cpm: 0.42, size: '728x90' });
+  hb.emit('noBid', { auctionId: 'auction-1', bidder: 'bar', adUnitCode: 'unit-a' });
+  hb.emit('bidTimeout', [
+    { auctionId: 'auction-1', bidder: 'slow', adUnitCode: 'unit-a' },
+    { auctionId: 'auction-1', bidder: 'slow', adUnitCode: 'unit-b' },
+  ]);
+  hb.emit('bidderError', { error: { status: 503, statusText: '' }, bidderRequest: { bidderCode: 'broken', auctionId: 'auction-1' } });
+  hb.emit('bidderError', { error: new Error('adapter exploded'), bidderRequest: { bidderCode: 'worse' } });
+  hb.emit('auctionEnd', { auctionId: 'auction-1' });
+  hb.emit('setTargeting', { 'unit-a': { hb_bidder: 'foo' }, 'unit-b': { hb_bidder: 'bar' } });
+  hb.emit('bidWon', { auctionId: 'auction-1', bidderCode: 'foo', adUnitCode: 'unit-a', cpm: 1.5 });
+  hb.emit('adRenderSucceeded', { doc: document, bid: { bidderCode: 'foo', adUnitCode: 'unit-a' }, adId: 'ad-1' });
+  hb.emit('adRenderFailed', { reason: 'cannotFindAd', message: 'Cannot find ad', adId: 'ad-2' });
+  hb.emit('auctionDebug', { type: 'WARNING', arguments: ['Slow bidder', { bidder: 'slow', ms: 3000 }] });
+  hb.emit('auctionDebug', { type: 'ERROR', arguments: [new Error('boom')] });
+  console.info('%cPrebid', 'color: #fff', 'INFO:', 'Auction finished', { winners: 1 });
+  console.log('%cPrebid%cfoo', 'color: #fff', 'color: #000', 'MESSAGE:', 'adapter line');
+  console.warn('%cPrebid', 'color: #fff', 'WARNING:', 'already reported through auctionDebug');
+  console.log('not a prebid line');
+  // Everything a broken library could send must still fit the contract.
+  hb.emit('bidResponse', { cpm: NaN, width: 'wide' });
+  hb.emit('bidWon', null);
+  hb.emit('bidTimeout', { bidder: 'lonely' });
+  hb.emit('auctionInit', { auctionId: 'auction-2', adUnits: 'nonsense' });
+  hb.emit('setTargeting', undefined);
+
+  var injected = document.createElement('script');
+  injected.text = 'window.injectedByTagManager = "INJECTED_INLINE_MARKER"; /* ' + new Array(60).join('pad ') + '*/';
+  document.head.appendChild(injected);
+  eval('window.tinyEval = "TINY_EVAL_MARKER"');
+  console.log('PAGE_STATE ' + JSON.stringify({
+    debugRequested: window.debugRequested,
+    apsCallbacks: window.apsCallbacks,
+    apsFirstBids: window.apsFirstBids,
+    defineSlotLooksNative: window.defineSlotLooksNative,
+    definedSlotsAreUntouched: window.definedSlotsAreUntouched,
+    bindingVisible: '__adscan_emit' in window,
+    consoleLooksNative: /\[native code\]/.test(String(console.log)),
+    pbjsCreated: 'pbjs' in window,
+  }));
+}, 500);
+</script>
+</body>
+</html>

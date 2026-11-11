@@ -97,7 +97,11 @@ fn describe_one(
 /// Indexes (into the script list) of the scripts worth handing to Phase 2:
 /// ad-related code that can hold publisher logic, wrappers and first-party
 /// code first, bounded in count and total size.
-pub fn select_for_analysis(records: &[ScriptRecord], max_scripts: usize, max_total_bytes: f64) -> Vec<usize> {
+pub fn select_for_analysis(
+    records: &[ScriptRecord],
+    max_scripts: usize,
+    max_total_bytes: f64,
+) -> Vec<usize> {
     let mut candidates: Vec<usize> = records
         .iter()
         .enumerate()
@@ -127,7 +131,11 @@ pub fn select_for_analysis(records: &[ScriptRecord], max_scripts: usize, max_tot
 
 pub fn content_hash(body: &str) -> String {
     let digest = Sha256::digest(body.as_bytes());
-    digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 pub fn hostname_of(url: &str) -> String {
@@ -207,7 +215,10 @@ mod tests {
             false,
             "loadAds(window.adUnits)",
         )]));
-        assert_eq!(described[0].ambiguous_hints, Some(vec!["adUnit".to_string()]));
+        assert_eq!(
+            described[0].ambiguous_hints,
+            Some(vec!["adUnit".to_string()])
+        );
         assert!(!described[0].record.ad_related);
         assert_eq!(described[0].record.category, ScriptCategory::Unknown);
     }
@@ -215,9 +226,21 @@ mod tests {
     #[test]
     fn analysis_selection_prefers_wrappers_and_respects_limits() {
         let described = describe(&capture_with(vec![
-            script("https://cdn.jsdelivr.net/npm/prebid.js", false, &"x".repeat(900)),
-            script("https://securepubads.g.doubleclick.net/tag/js/gpt.js", false, "gpt"),
-            script("https://static.example.co.uk/ads.js", false, "pbjs.que.push(f)"),
+            script(
+                "https://cdn.jsdelivr.net/npm/prebid.js",
+                false,
+                &"x".repeat(900),
+            ),
+            script(
+                "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
+                false,
+                "gpt",
+            ),
+            script(
+                "https://static.example.co.uk/ads.js",
+                false,
+                "pbjs.que.push(f)",
+            ),
             script("https://static.example.co.uk/app.js", false, "boot()"),
         ]));
         let records: Vec<ScriptRecord> = described.into_iter().map(|d| d.record).collect();

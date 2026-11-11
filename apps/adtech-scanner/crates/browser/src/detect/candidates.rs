@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Os {
-    MacOs,
+    Mac,
     Linux,
     Windows,
 }
@@ -13,7 +13,7 @@ pub(crate) enum Os {
 impl Os {
     pub(crate) fn current() -> Self {
         if cfg!(target_os = "macos") {
-            Os::MacOs
+            Os::Mac
         } else if cfg!(target_os = "windows") {
             Os::Windows
         } else {
@@ -77,7 +77,7 @@ const WINDOWS_INSTALLS: &[&[&str]] = &[
 /// Executable paths worth checking, most preferred first.
 pub(crate) fn well_known_paths(os: Os, roots: &SearchRoots) -> Vec<PathBuf> {
     match os {
-        Os::MacOs => {
+        Os::Mac => {
             let mut bases = vec![PathBuf::from("/Applications")];
             bases.extend(roots.home.iter().map(|home| home.join("Applications")));
             MAC_APPS
@@ -97,10 +97,11 @@ pub(crate) fn well_known_paths(os: Os, roots: &SearchRoots) -> Vec<PathBuf> {
         Os::Windows => WINDOWS_INSTALLS
             .iter()
             .flat_map(|parts| {
-                roots
-                    .install_roots
-                    .iter()
-                    .map(move |root| parts.iter().fold(root.clone(), |path, part| path.join(part)))
+                roots.install_roots.iter().map(move |root| {
+                    parts
+                        .iter()
+                        .fold(root.clone(), |path, part| path.join(part))
+                })
             })
             .collect(),
     }
@@ -186,13 +187,16 @@ mod tests {
         SearchRoots {
             home: Some(PathBuf::from("/Users/ada")),
             path_dirs: vec![PathBuf::from("/usr/local/bin"), PathBuf::from("/usr/bin")],
-            install_roots: vec![PathBuf::from("C:/Program Files"), PathBuf::from("C:/Users/ada/AppData/Local")],
+            install_roots: vec![
+                PathBuf::from("C:/Program Files"),
+                PathBuf::from("C:/Users/ada/AppData/Local"),
+            ],
         }
     }
 
     #[test]
     fn macos_prefers_chrome_and_checks_both_application_folders() {
-        let paths = well_known_paths(Os::MacOs, &roots());
+        let paths = well_known_paths(Os::Mac, &roots());
         assert_eq!(
             paths[0],
             PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -202,18 +206,32 @@ mod tests {
             PathBuf::from("/Users/ada/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
         );
         assert_eq!(paths.len(), MAC_APPS.len() * 2);
-        for app in ["Chrome Beta", "Chrome Canary", "Chromium", "Brave Browser", "Microsoft Edge", "Arc"] {
+        for app in [
+            "Chrome Beta",
+            "Chrome Canary",
+            "Chromium",
+            "Brave Browser",
+            "Microsoft Edge",
+            "Arc",
+        ] {
             assert!(
-                paths.iter().any(|path| path.to_string_lossy().ends_with(app)),
+                paths
+                    .iter()
+                    .any(|path| path.to_string_lossy().ends_with(app)),
                 "missing {app}"
             );
         }
-        assert!(paths.last().unwrap().ends_with("Arc.app/Contents/MacOS/Arc"));
+        assert!(
+            paths
+                .last()
+                .unwrap()
+                .ends_with("Arc.app/Contents/MacOS/Arc")
+        );
     }
 
     #[test]
     fn macos_without_home_only_checks_system_applications() {
-        let paths = well_known_paths(Os::MacOs, &SearchRoots::default());
+        let paths = well_known_paths(Os::Mac, &SearchRoots::default());
         assert_eq!(paths.len(), MAC_APPS.len());
         assert!(paths.iter().all(|path| path.starts_with("/Applications")));
     }
@@ -221,7 +239,10 @@ mod tests {
     #[test]
     fn linux_checks_path_commands_before_fixed_locations() {
         let paths = well_known_paths(Os::Linux, &roots());
-        assert_eq!(paths[0], PathBuf::from("/usr/local/bin/google-chrome-stable"));
+        assert_eq!(
+            paths[0],
+            PathBuf::from("/usr/local/bin/google-chrome-stable")
+        );
         assert_eq!(paths[1], PathBuf::from("/usr/bin/google-chrome-stable"));
         let first_fixed = paths
             .iter()
@@ -247,14 +268,29 @@ mod tests {
     #[test]
     fn family_is_read_from_the_path() {
         let cases = [
-            ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "Google Chrome"),
-            ("/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta", "Google Chrome Beta"),
-            ("/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary", "Google Chrome Canary"),
+            (
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "Google Chrome",
+            ),
+            (
+                "/Applications/Google Chrome Beta.app/Contents/MacOS/Google Chrome Beta",
+                "Google Chrome Beta",
+            ),
+            (
+                "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
+                "Google Chrome Canary",
+            ),
             ("/usr/bin/chromium-browser", "Chromium"),
             ("/opt/brave.com/brave/brave", "Brave Browser"),
-            ("C:/Program Files/Microsoft/Edge/Application/msedge.exe", "Microsoft Edge"),
+            (
+                "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+                "Microsoft Edge",
+            ),
             ("/Applications/Arc.app/Contents/MacOS/Arc", "Arc"),
-            ("/opt/pw-browsers/chromium-1243/chrome-linux64/chrome", "Chromium"),
+            (
+                "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome",
+                "Chromium",
+            ),
             ("/opt/thing/browser", "Chromium-based browser"),
         ];
         for (path, expected) in cases {
@@ -269,7 +305,10 @@ mod tests {
         assert_eq!(parsed.number, "153.0.8010.12");
 
         let parsed = parse_version_line("\nChromium 141.0.7390.55 snap\n").unwrap();
-        assert_eq!((parsed.name.as_str(), parsed.number.as_str()), ("Chromium", "141.0.7390.55"));
+        assert_eq!(
+            (parsed.name.as_str(), parsed.number.as_str()),
+            ("Chromium", "141.0.7390.55")
+        );
 
         assert_eq!(parse_version_line("141.0.1").unwrap().name, "");
         assert_eq!(parse_version_line("command not found"), None);
@@ -283,12 +322,21 @@ mod tests {
             Some(PathBuf::from("/Applications/Arc.app/Contents/Info"))
         );
         assert_eq!(macos_bundle_info(Path::new("/usr/bin/chromium")), None);
-        assert_eq!(macos_bundle_info(Path::new("/opt/Contents/MacOS/chrome")), None);
+        assert_eq!(
+            macos_bundle_info(Path::new("/opt/Contents/MacOS/chrome")),
+            None
+        );
     }
 
     #[test]
     fn newest_version_dir_ignores_other_entries() {
-        let names = ["chrome.exe", "140.0.7339.208", "141.0.7390.55", "SetupMetrics", "9.0.1.2"];
+        let names = [
+            "chrome.exe",
+            "140.0.7339.208",
+            "141.0.7390.55",
+            "SetupMetrics",
+            "9.0.1.2",
+        ];
         assert_eq!(newest_version_dir(names).as_deref(), Some("141.0.7390.55"));
         assert_eq!(newest_version_dir(["chrome.exe"]), None);
     }

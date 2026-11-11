@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><title>Consent: unknown CMP, Dutch labels</title><link rel="icon" href="data:,"></head>
+<body>
+<button onclick="console.log('DECOY clicked')">Accepteren</button>
+<div class="privacy-wall">
+  <p>Wij gebruiken cookies om advertenties te tonen.</p>
+  <a role="button" href="#" onclick="console.log('CONSENT rejected'); return false">Instellingen</a>
+  <button style="display:none" onclick="console.log('DECOY clicked')">Alles accepteren</button>
+  <button onclick="console.log('CONSENT accepted')">
+    Alles   accepteren
+  </button>
+</div>
+</body></html>

@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: Sourcepoint-style cross-site iframe</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// The message lives on another site (localhost vs 127.0.0.1), so the browser
+// isolates it in its own process, as it does for a real CMP's iframe.
+var frame = document.createElement('iframe');
+frame.id = 'sp_message_iframe_1';
+frame.src = 'http://localhost:' + location.port + '/consent-frame.html';
+frame.style.cssText = 'width:480px;height:200px;border:0';
+document.body.appendChild(frame);
+addEventListener('message', function (event) {
+  if (event.data === 'sp.accept-all') {
+    frame.remove();
+    console.log('CONSENT accepted');
+  }
+});
+</script>
+</body></html>

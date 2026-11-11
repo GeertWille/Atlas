@@ -16,7 +16,9 @@ pub struct Classification {
 pub enum Verdict {
     Decided(Classification),
     /// The script mentions ad-tech identifiers but nothing conclusive.
-    Ambiguous { hints: Vec<String> },
+    Ambiguous {
+        hints: Vec<String>,
+    },
 }
 
 pub struct ScriptFacts<'a> {
@@ -28,13 +30,20 @@ pub struct ScriptFacts<'a> {
 }
 
 pub fn is_ad_related(category: ScriptCategory) -> bool {
-    matches!(category, Prebid | Wrapper | AdServer | Bidder | Cmp | AdQuality)
+    matches!(
+        category,
+        Prebid | Wrapper | AdServer | Bidder | Cmp | AdQuality
+    )
 }
 
 /// (hostname suffix, vendor, category)
 const KNOWN_HOSTS: &[(&str, &str, ScriptCategory)] = &[
     // Ad servers
-    ("securepubads.g.doubleclick.net", "Google Ad Manager", AdServer),
+    (
+        "securepubads.g.doubleclick.net",
+        "Google Ad Manager",
+        AdServer,
+    ),
     ("pagead2.googlesyndication.com", "Google", AdServer),
     ("googletagservices.com", "Google Ad Manager", AdServer),
     ("googlesyndication.com", "Google", AdServer),
@@ -112,7 +121,11 @@ const KNOWN_HOSTS: &[(&str, &str, ScriptCategory)] = &[
     ("privacy-mgmt.com", "Sourcepoint", Cmp),
     ("sp-prod.net", "Sourcepoint", Cmp),
     ("consensu.org", "IAB TCF CMP", Cmp),
-    ("fundingchoicesmessages.google.com", "Google Funding Choices", Cmp),
+    (
+        "fundingchoicesmessages.google.com",
+        "Google Funding Choices",
+        Cmp,
+    ),
     ("usercentrics.eu", "Usercentrics", Cmp),
     ("cookieyes.com", "CookieYes", Cmp),
     ("iubenda.com", "iubenda", Cmp),
@@ -167,6 +180,14 @@ const KNOWN_HOSTS: &[(&str, &str, ScriptCategory)] = &[
     ("platform.twitter.com", "X", Library),
 ];
 
+/// Vendor libraries recognised by file name when served from another host
+/// (self-hosted copies, first-party proxies).
+const KNOWN_LIBRARY_FILES: &[(&str, &str, ScriptCategory)] = &[
+    ("gpt.js", "Google Ad Manager", AdServer),
+    ("pubads_impl.js", "Google Ad Manager", AdServer),
+    ("apstag.js", "Amazon", Bidder),
+];
+
 /// Calls that only publisher ad orchestration code makes.
 const STRONG_SIGNATURES: &[&str] = &[
     ".defineSlot(",
@@ -200,7 +221,9 @@ const PREBID_LIBRARY_MARKERS: &[&str] = &["registerBidAdapter", "auctionManager"
 
 pub fn classify(facts: &ScriptFacts) -> Verdict {
     let strong = present(facts.body, STRONG_SIGNATURES);
-    let known_host = (!facts.inline).then(|| known_host(facts.hostname)).flatten();
+    let known_host = (!facts.inline)
+        .then(|| known_host(facts.hostname))
+        .flatten();
 
     if let Some((vendor, category)) = known_host {
         // Tag managers, analytics hosts and public CDNs can carry publisher ad code.
@@ -209,7 +232,12 @@ pub fn classify(facts: &ScriptFacts) -> Verdict {
             return decided(category, Some(vendor), 0.95, format!("Known {vendor} host"));
         }
         if is_prebid_library(facts) {
-            return decided(Prebid, None, 0.9, format!("Prebid.js build served from {vendor}"));
+            return decided(
+                Prebid,
+                None,
+                0.9,
+                format!("Prebid.js build served from {vendor}"),
+            );
         }
         if strong.is_empty() {
             return decided(category, Some(vendor), 0.9, format!("Known {vendor} host"));
@@ -224,6 +252,18 @@ pub fn classify(facts: &ScriptFacts) -> Verdict {
 
     if is_prebid_library(facts) {
         return decided(Prebid, None, 0.9, "Prebid.js library signature".into());
+    }
+    let name = file_name(facts.url);
+    if let Some((_, vendor, category)) = KNOWN_LIBRARY_FILES
+        .iter()
+        .find(|(file, _, _)| !facts.inline && *file == name)
+    {
+        return decided(
+            *category,
+            Some(vendor),
+            0.8,
+            format!("{vendor} library by file name ({name})"),
+        );
     }
     if !strong.is_empty() {
         return decided(
@@ -290,15 +330,18 @@ fn known_host(hostname: &str) -> Option<(&'static str, ScriptCategory)> {
         .map(|(_, vendor, category)| (*vendor, *category))
 }
 
-fn is_prebid_library(facts: &ScriptFacts) -> bool {
-    let file_name = facts
-        .url
-        .split(['?', '#'])
+fn file_name(url: &str) -> String {
+    url.split(['?', '#'])
         .next()
         .and_then(|path| path.rsplit('/').next())
         .unwrap_or_default()
-        .to_ascii_lowercase();
-    let named_prebid = !facts.inline && file_name.starts_with("prebid") && file_name.ends_with(".js");
+        .to_ascii_lowercase()
+}
+
+fn is_prebid_library(facts: &ScriptFacts) -> bool {
+    let file_name = file_name(facts.url);
+    let named_prebid =
+        !facts.inline && file_name.starts_with("prebid") && file_name.ends_with(".js");
     let has_library_internals = PREBID_LIBRARY_MARKERS
         .iter()
         .filter(|marker| facts.body.contains(*marker))
@@ -319,7 +362,12 @@ fn present<'a>(body: &str, needles: &[&'a str]) -> Vec<&'a str> {
 mod tests {
     use super::*;
 
-    fn facts<'a>(url: &'a str, hostname: &'a str, first_party: bool, body: &'a str) -> ScriptFacts<'a> {
+    fn facts<'a>(
+        url: &'a str,
+        hostname: &'a str,
+        first_party: bool,
+        body: &'a str,
+    ) -> ScriptFacts<'a> {
         ScriptFacts {
             url,
             hostname,
@@ -344,7 +392,10 @@ mod tests {
             false,
             "",
         )));
-        assert_eq!((gpt.category, gpt.vendor, gpt.ad_related), (AdServer, Some("Google Ad Manager"), true));
+        assert_eq!(
+            (gpt.category, gpt.vendor, gpt.ad_related),
+            (AdServer, Some("Google Ad Manager"), true)
+        );
 
         let bidder = decided_as(classify(&facts(
             "https://fastlane.rubiconproject.com/a/api/fastlane.json",
@@ -365,14 +416,24 @@ mod tests {
 
     #[test]
     fn host_suffix_must_match_on_a_label_boundary() {
-        let verdict = classify(&facts("https://notcriteo.com/x.js", "notcriteo.com", false, "var a=1"));
+        let verdict = classify(&facts(
+            "https://notcriteo.com/x.js",
+            "notcriteo.com",
+            false,
+            "var a=1",
+        ));
         assert_eq!(decided_as(verdict).category, Library);
     }
 
     #[test]
     fn first_party_wrapper_is_ad_related_by_content() {
         let body = "window.pbjs=window.pbjs||{};pbjs.que.push(function(){pbjs.requestBids({timeout:800})});googletag.defineSlot('/1/a',[300,250],'a')";
-        let wrapper = decided_as(classify(&facts("https://pub.example/js/ads.js", "pub.example", true, body)));
+        let wrapper = decided_as(classify(&facts(
+            "https://pub.example/js/ads.js",
+            "pub.example",
+            true,
+            body,
+        )));
         assert_eq!(wrapper.category, Wrapper);
         assert!(wrapper.ad_related);
         assert!(wrapper.reason.contains(".requestBids("));
@@ -397,6 +458,27 @@ mod tests {
     }
 
     #[test]
+    fn self_hosted_vendor_libraries_are_recognised_by_file_name() {
+        let gpt = decided_as(classify(&facts(
+            "https://pub.example/tag/js/gpt.js?v=2",
+            "pub.example",
+            true,
+            "googletag.cmd=googletag.cmd||[];function defineSlot(){}",
+        )));
+        assert_eq!(
+            (gpt.category, gpt.vendor),
+            (AdServer, Some("Google Ad Manager"))
+        );
+        let aps = decided_as(classify(&facts(
+            "https://pub.example/ads/apstag.js",
+            "pub.example",
+            true,
+            "apstag",
+        )));
+        assert_eq!((aps.category, aps.vendor), (Bidder, Some("Amazon")));
+    }
+
+    #[test]
     fn tag_manager_container_with_ad_code_becomes_wrapper() {
         let container = decided_as(classify(&facts(
             "https://www.googletagmanager.com/gtm.js?id=GTM-1",
@@ -416,7 +498,12 @@ mod tests {
 
     #[test]
     fn code_without_identifiers_is_not_sent_to_the_model() {
-        let app = decided_as(classify(&facts("https://pub.example/app.js", "pub.example", true, "render(App)")));
+        let app = decided_as(classify(&facts(
+            "https://pub.example/app.js",
+            "pub.example",
+            true,
+            "render(App)",
+        )));
         assert_eq!((app.category, app.ad_related), (Application, false));
     }
 

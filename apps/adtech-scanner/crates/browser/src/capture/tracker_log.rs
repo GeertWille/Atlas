@@ -111,7 +111,9 @@ mod tests {
         assert_eq!(log.events()[0].t, 12.5);
         assert_eq!(
             log.events()[1].kind,
-            TrackerEventKind::AuctionEnd { auction_id: "a1".into() }
+            TrackerEventKind::AuctionEnd {
+                auction_id: "a1".into()
+            }
         );
         assert_eq!(log.navigation_start(), Some(1_000.0));
         assert_eq!(log.malformed(), 0);
@@ -129,7 +131,10 @@ mod tests {
         ));
         assert_eq!(added, 0..1);
         assert_eq!(log.malformed(), 3);
-        assert_eq!(log.events()[0].kind, TrackerEventKind::Scroll { depth: 0.5 });
+        assert_eq!(
+            log.events()[0].kind,
+            TrackerEventKind::Scroll { depth: 0.5 }
+        );
     }
 
     #[test]

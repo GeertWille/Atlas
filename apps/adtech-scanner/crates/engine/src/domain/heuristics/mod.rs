@@ -16,7 +16,7 @@ use adscan_model::{
 };
 
 use super::finding::FindingDraft;
-use super::telemetry::Telemetry;
+use super::telemetry::{Telemetry, slot_matches_code};
 
 /// Share of ad revenue assumed to come from header bidding when a rule
 /// estimates the impact of slots that go to the ad server without bids.
@@ -44,6 +44,7 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(delivery::BiddersNeverBid),
         Box::new(setup::NoPriceFloors),
         Box::new(setup::DuplicatePrebid),
+        Box::new(setup::AdLibraryLoadedTwice),
         Box::new(setup::OutdatedPrebid),
         Box::new(setup::ConsentNotWired),
         Box::new(setup::ConsentTimeout),
@@ -74,12 +75,17 @@ pub struct RuleContext<'a> {
 }
 
 /// Why bidding did not start on page load.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AuctionGate {
     /// Prebid is on the page but no auction ran during the whole observation.
     NeverStarted { interaction_at_ms: Option<f64> },
-    /// The first auction started right after the first scroll / interaction.
-    AfterInteraction { interaction_at_ms: f64, auction_at_ms: f64 },
+    /// An auction started right after the first scroll / interaction.
+    AfterInteraction {
+        interaction_at_ms: f64,
+        auction_at_ms: f64,
+        /// Slots of that auction that had been on screen since page load.
+        waiting_slots: Vec<String>,
+    },
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -163,33 +169,65 @@ impl<'a> RuleContext<'a> {
     }
 
     pub(crate) fn prebid_config(&self) -> Option<PrebidConfig> {
-        self.capture.events.iter().find_map(|event| match &event.kind {
-            Ev::PrebidConfig {
-                has_floors,
-                has_consent_management,
-                ..
-            } => Some(PrebidConfig {
-                has_floors: *has_floors,
-                has_consent_management: *has_consent_management,
-            }),
-            _ => None,
-        })
+        self.capture
+            .events
+            .iter()
+            .find_map(|event| match &event.kind {
+                Ev::PrebidConfig {
+                    has_floors,
+                    has_consent_management,
+                    ..
+                } => Some(PrebidConfig {
+                    has_floors: *has_floors,
+                    has_consent_management: *has_consent_management,
+                }),
+                _ => None,
+            })
     }
 
+    /// Finds an auction that was waiting for the first interaction: it starts
+    /// right after it, long after Prebid was ready, and it is either the first
+    /// auction of the page or covers slots that were in the initial viewport
+    /// and had not been auctioned before. An auction for a below-the-fold slot
+    /// that scrolls into view is ordinary lazy loading, not a gate.
     pub(crate) fn auction_gate(&self) -> Option<AuctionGate> {
-        let prebid_ready_at = self.first_event_at(|kind| matches!(kind, Ev::PrebidDetected { .. }))?;
+        let prebid_ready_at =
+            self.first_event_at(|kind| matches!(kind, Ev::PrebidDetected { .. }))?;
         let interaction_at_ms = self.first_interaction_at();
-        let Some(first_auction) = self.auctions().first() else {
+        if self.auctions().is_empty() {
             return Some(AuctionGate::NeverStarted { interaction_at_ms });
-        };
+        }
         let interaction_at_ms = interaction_at_ms?;
-        let auction_at_ms = first_auction.started_at_ms;
-        let reacted_to_interaction = (0.0..=GATE_REACTION_WINDOW_MS).contains(&(auction_at_ms - interaction_at_ms));
-        let prebid_sat_idle = auction_at_ms - prebid_ready_at >= GATE_MIN_IDLE_MS;
-        (reacted_to_interaction && prebid_sat_idle).then_some(AuctionGate::AfterInteraction {
-            interaction_at_ms,
-            auction_at_ms,
-        })
+        self.auctions()
+            .iter()
+            .enumerate()
+            .find_map(|(index, auction)| {
+                let auction_at_ms = auction.started_at_ms;
+                let reacted_to_interaction =
+                    (0.0..=GATE_REACTION_WINDOW_MS).contains(&(auction_at_ms - interaction_at_ms));
+                let prebid_sat_idle = auction_at_ms - prebid_ready_at >= GATE_MIN_IDLE_MS;
+                if !reacted_to_interaction || !prebid_sat_idle {
+                    return None;
+                }
+                let earlier = &self.auctions()[..index];
+                let waiting_slots: Vec<String> = self
+                    .slots()
+                    .iter()
+                    .filter(|slot| slot.in_initial_viewport == Some(true))
+                    .filter(|slot| auction_covers(auction, slot))
+                    .filter(|slot| {
+                        !earlier
+                            .iter()
+                            .any(|previous| auction_covers(previous, slot))
+                    })
+                    .map(|slot| slot.element_id.clone())
+                    .collect();
+                (index == 0 || !waiting_slots.is_empty()).then_some(AuctionGate::AfterInteraction {
+                    interaction_at_ms,
+                    auction_at_ms,
+                    waiting_slots,
+                })
+            })
     }
 
     pub(crate) fn device_name(&self) -> &'static str {
@@ -202,6 +240,13 @@ impl<'a> RuleContext<'a> {
             DeviceProfile::Mobile => device_name(DeviceProfile::Desktop),
         }
     }
+}
+
+fn auction_covers(auction: &Auction, slot: &AdSlot) -> bool {
+    auction
+        .ad_units
+        .iter()
+        .any(|unit| slot_matches_code(slot, &unit.code))
 }
 
 fn device_name(device: DeviceProfile) -> &'static str {

@@ -10,7 +10,9 @@ impl SettingsRepository for SqliteStore {
     async fn load(&self) -> RepoResult<Option<Settings>> {
         self.call(|connection| {
             connection
-                .query_row("SELECT data FROM settings WHERE id = 1", [], |row| row.get::<_, String>(0))
+                .query_row("SELECT data FROM settings WHERE id = 1", [], |row| {
+                    row.get::<_, String>(0)
+                })
                 .optional()?
                 .map(|data| from_json(&data))
                 .transpose()

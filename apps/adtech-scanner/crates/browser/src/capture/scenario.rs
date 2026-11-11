@@ -24,7 +24,10 @@ const MAX_STEP_VIEWPORTS: f64 = 1.25;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ScrollAction {
     /// Scroll down one step. `steps_left` counts this step.
-    Down { stride: f64, steps_left: usize },
+    Down {
+        stride: f64,
+        steps_left: usize,
+    },
     BackToTop,
 }
 
@@ -54,18 +57,54 @@ pub(crate) fn scroll_plan(window: Duration) -> Vec<ScrollStep> {
         .enumerate()
         .map(|(index, at)| ScrollStep {
             at,
-            action: ScrollAction::Down { stride: STRIDES[index % STRIDES.len()], steps_left: total - index },
+            action: ScrollAction::Down {
+                stride: STRIDES[index % STRIDES.len()],
+                steps_left: total - index,
+            },
         })
-        .chain([ScrollStep { at: return_at, action: ScrollAction::BackToTop }])
+        .chain([ScrollStep {
+            at: return_at,
+            action: ScrollAction::BackToTop,
+        }])
         .collect()
+}
+
+/// The step to perform `elapsed` into the window: the latest one that is due.
+/// Steps that fell behind (a slow page, long swipes) are skipped rather than
+/// replayed late, so the return to the top still happens on time.
+pub(crate) fn due_step(plan: &[ScrollStep], next: usize, elapsed: Duration) -> Option<usize> {
+    let due = plan
+        .iter()
+        .skip(next)
+        .take_while(|step| step.at <= elapsed)
+        .count();
+    (due > 0).then(|| next + due - 1)
 }
 
 /// Pixels to scroll for one step: paced to reach the bottom by the last step,
 /// but never faster or slower than a person would plausibly scroll.
-pub(crate) fn step_distance(viewport_height: f64, remaining: f64, steps_left: usize, stride: f64) -> f64 {
+pub(crate) fn step_distance(
+    viewport_height: f64,
+    remaining: f64,
+    steps_left: usize,
+    stride: f64,
+) -> f64 {
     let even_share = remaining / steps_left.max(1) as f64;
-    let paced = even_share.clamp(MIN_STEP_VIEWPORTS * viewport_height, MAX_STEP_VIEWPORTS * viewport_height);
+    let paced = even_share.clamp(
+        MIN_STEP_VIEWPORTS * viewport_height,
+        MAX_STEP_VIEWPORTS * viewport_height,
+    );
     (paced * stride).round()
+}
+
+/// A thumb covers about this share of the screen in one swipe.
+const MAX_SWIPE_VIEWPORTS: f64 = 0.6;
+
+/// Splits a scroll distance into the finger swipes that cover it on a touch screen.
+pub(crate) fn swipe_lengths(distance: f64, viewport_height: f64) -> Vec<f64> {
+    let longest = (MAX_SWIPE_VIEWPORTS * viewport_height).max(1.0);
+    let swipes = (distance / longest).ceil().max(1.0);
+    vec![distance / swipes; swipes as usize]
 }
 
 const CONSENT_ATTEMPT_INTERVAL: Duration = Duration::from_millis(500);
@@ -88,9 +127,19 @@ mod tests {
 
         assert_eq!(plan.first().unwrap().at, Duration::from_secs(7));
         let (last, downs) = plan.split_last().unwrap();
-        assert_eq!(*last, ScrollStep { at: Duration::from_secs(17), action: ScrollAction::BackToTop });
+        assert_eq!(
+            *last,
+            ScrollStep {
+                at: Duration::from_secs(17),
+                action: ScrollAction::BackToTop
+            }
+        );
         assert!(downs.len() >= 10);
-        assert!(downs.iter().all(|step| matches!(step.action, ScrollAction::Down { .. })));
+        assert!(
+            downs
+                .iter()
+                .all(|step| matches!(step.action, ScrollAction::Down { .. }))
+        );
         assert!(plan.windows(2).all(|pair| pair[0].at < pair[1].at));
         assert!(plan.iter().all(|step| step.at < window));
     }
@@ -110,10 +159,27 @@ mod tests {
     }
 
     #[test]
+    fn overdue_steps_are_skipped_in_favour_of_the_latest() {
+        let plan = scroll_plan(observation_window(20));
+        assert_eq!(due_step(&plan, 0, Duration::from_secs(1)), None);
+        assert_eq!(due_step(&plan, 0, plan[0].at), Some(0));
+        assert_eq!(due_step(&plan, 1, plan[0].at), None);
+        assert_eq!(due_step(&plan, 1, plan[3].at), Some(3));
+        assert_eq!(
+            due_step(&plan, 2, Duration::from_secs(60)),
+            Some(plan.len() - 1)
+        );
+        assert_eq!(due_step(&plan, plan.len(), Duration::from_secs(60)), None);
+    }
+
+    #[test]
     fn shortest_window_still_scrolls_once() {
         let plan = scroll_plan(observation_window(0));
         assert_eq!(plan.len(), 2);
-        assert!(matches!(plan[0].action, ScrollAction::Down { steps_left: 1, .. }));
+        assert!(matches!(
+            plan[0].action,
+            ScrollAction::Down { steps_left: 1, .. }
+        ));
         assert_eq!(plan[1].action, ScrollAction::BackToTop);
     }
 
@@ -127,11 +193,23 @@ mod tests {
     }
 
     #[test]
+    fn long_scrolls_become_several_equal_swipes() {
+        assert_eq!(swipe_lengths(300.0, 1_000.0), vec![300.0]);
+        assert_eq!(swipe_lengths(600.0, 1_000.0), vec![600.0]);
+        assert_eq!(swipe_lengths(900.0, 1_000.0), vec![450.0, 450.0]);
+        assert_eq!(swipe_lengths(1_500.0, 1_000.0), vec![500.0; 3]);
+        assert_eq!(swipe_lengths(0.0, 1_000.0), vec![0.0]);
+    }
+
+    #[test]
     fn consent_is_retried_twice_a_second_for_ten_seconds() {
         assert!(consent_attempt_due(Duration::ZERO, 0));
         assert!(!consent_attempt_due(Duration::from_millis(400), 1));
         assert!(consent_attempt_due(Duration::from_millis(500), 1));
         assert!(consent_attempt_due(Duration::from_secs(9), 3));
-        assert!(!consent_attempt_due(Duration::from_secs(60), CONSENT_MAX_ATTEMPTS));
+        assert!(!consent_attempt_due(
+            Duration::from_secs(60),
+            CONSENT_MAX_ATTEMPTS
+        ));
     }
 }

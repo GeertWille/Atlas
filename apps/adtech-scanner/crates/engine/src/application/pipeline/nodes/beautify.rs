@@ -28,7 +28,8 @@ pub async fn beautify_scripts(run: &mut StepRun<'_>) -> NodeResult {
             formatted.method,
         );
         let data = json!({ "scriptId": record.id, "lines": formatted.lines.len() });
-        run.log(LogLevel::Debug, LogKind::Message, message, Some(data)).await?;
+        run.log(LogLevel::Debug, LogKind::Message, message, Some(data))
+            .await?;
         sources.push(SourceFile {
             script_index,
             lines: formatted.lines,

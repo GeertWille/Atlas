@@ -124,7 +124,8 @@ impl Recorder {
             "Network.responseReceived" => self.on_response(params),
             "Network.loadingFinished" => self.on_loading_finished(params, cdp, session_id),
             "Network.loadingFailed" => {
-                self.requests.remove(params["requestId"].as_str().unwrap_or_default());
+                self.requests
+                    .remove(params["requestId"].as_str().unwrap_or_default());
             }
             "Debugger.scriptParsed" => self.on_script_parsed(params, cdp, session_id),
             "Page.loadEventFired" => self.load_fired = true,
@@ -160,14 +161,19 @@ impl Recorder {
     }
 
     fn on_request(&mut self, params: &Value) {
-        let (Some(request_id), Some(url)) = (params["requestId"].as_str(), params["request"]["url"].as_str()) else {
+        let (Some(request_id), Some(url)) = (
+            params["requestId"].as_str(),
+            params["request"]["url"].as_str(),
+        ) else {
             return;
         };
         let wall_ms = params["wallTime"].as_f64().map(|seconds| seconds * 1000.0);
         if let (Some(wall_ms), Some(monotonic)) = (wall_ms, params["timestamp"].as_f64()) {
-            self.wall_clock_offset_ms.get_or_insert(wall_ms - monotonic * 1000.0);
+            self.wall_clock_offset_ms
+                .get_or_insert(wall_ms - monotonic * 1000.0);
         }
-        let is_main_document = params["type"] == "Document" && params["frameId"] == self.main_frame_id.as_str();
+        let is_main_document =
+            params["type"] == "Document" && params["frameId"] == self.main_frame_id.as_str();
         if is_main_document && params["redirectResponse"].is_null() {
             self.document_requested_at = wall_ms;
         }
@@ -175,17 +181,27 @@ impl Recorder {
             .or_else(|| params["documentURL"].as_str().map(str::to_string));
         self.requests.insert(
             request_id.to_string(),
-            Request { url: url.to_string(), initiator, is_script: params["type"] == "Script", failed_status: false },
+            Request {
+                url: url.to_string(),
+                initiator,
+                is_script: params["type"] == "Script",
+                failed_status: false,
+            },
         );
     }
 
     fn on_response(&mut self, params: &Value) {
-        let Some(request_id) = params["requestId"].as_str() else { return };
-        let status = params["response"]["status"].as_u64().and_then(|status| u16::try_from(status).ok());
-        if params["type"] == "Document" && params["frameId"] == self.main_frame_id.as_str() {
-            if let Some(status) = status {
-                self.document_statuses.insert(request_id.to_string(), status);
-            }
+        let Some(request_id) = params["requestId"].as_str() else {
+            return;
+        };
+        let status = params["response"]["status"]
+            .as_u64()
+            .and_then(|status| u16::try_from(status).ok());
+        let is_main_document =
+            params["type"] == "Document" && params["frameId"] == self.main_frame_id.as_str();
+        if let Some(status) = status.filter(|_| is_main_document) {
+            self.document_statuses
+                .insert(request_id.to_string(), status);
         }
         if let Some(request) = self.requests.get_mut(request_id) {
             request.is_script |= params["type"] == "Script";
@@ -196,8 +212,12 @@ impl Recorder {
     /// Bodies are requested the moment loading finishes: Chrome evicts them
     /// from its buffer as the page keeps loading.
     fn on_loading_finished(&mut self, params: &Value, cdp: &Cdp, session_id: &str) {
-        let Some(request_id) = params["requestId"].as_str() else { return };
-        let Some(request) = self.requests.remove(request_id) else { return };
+        let Some(request_id) = params["requestId"].as_str() else {
+            return;
+        };
+        let Some(request) = self.requests.remove(request_id) else {
+            return;
+        };
         if !request.is_script || request.failed_status || !is_page_script_url(&request.url) {
             return;
         }
@@ -205,7 +225,11 @@ impl Recorder {
             .wall_clock_offset_ms
             .zip(params["timestamp"].as_f64())
             .map(|(offset, monotonic)| offset + monotonic * 1000.0);
-        let response = cdp.send(Some(session_id), "Network.getResponseBody", json!({ "requestId": request_id }));
+        let response = cdp.send(
+            Some(session_id),
+            "Network.getResponseBody",
+            json!({ "requestId": request_id }),
+        );
         self.fetches.push(
             response
                 .map(move |response| Fetched::External {
@@ -223,7 +247,8 @@ impl Recorder {
     /// the page creates at run time.
     fn on_script_parsed(&mut self, params: &Value, cdp: &Cdp, session_id: &str) {
         let context = &params["executionContextAuxData"];
-        let in_page_world = context["isDefault"] == true && context["frameId"] == self.main_frame_id.as_str();
+        let in_page_world =
+            context["isDefault"] == true && context["frameId"] == self.main_frame_id.as_str();
         if !in_page_world || !(is_inline_block(params) || is_substantial_runtime_script(params)) {
             return;
         }
@@ -240,30 +265,52 @@ impl Recorder {
         );
         self.fetches.push(
             response
-                .map(move |response| Fetched::Inline { parsed_at_epoch_ms, creator, response })
+                .map(move |response| Fetched::Inline {
+                    parsed_at_epoch_ms,
+                    creator,
+                    response,
+                })
                 .boxed(),
         );
     }
 
     fn store(&mut self, fetched: Fetched) {
         let admission = match fetched {
-            Fetched::External { url, initiator, loaded_at_epoch_ms, response } => {
-                let Some(body) = response.ok().as_ref().and_then(response_text) else { return };
-                self.scripts.add_external(url, body, loaded_at_epoch_ms, initiator)
+            Fetched::External {
+                url,
+                initiator,
+                loaded_at_epoch_ms,
+                response,
+            } => {
+                let Some(body) = response.ok().as_ref().and_then(response_text) else {
+                    return;
+                };
+                self.scripts
+                    .add_external(url, body, loaded_at_epoch_ms, initiator)
             }
-            Fetched::Inline { parsed_at_epoch_ms, creator, response } => {
-                let Some(Value::String(body)) = response.ok().map(|mut result| result["scriptSource"].take()) else {
+            Fetched::Inline {
+                parsed_at_epoch_ms,
+                creator,
+                response,
+            } => {
+                let Some(Value::String(body)) = response
+                    .ok()
+                    .map(|mut result| result["scriptSource"].take())
+                else {
                     return;
                 };
                 if body == TRACKER_SOURCE {
                     return;
                 }
-                self.scripts.add_inline(body, Some(parsed_at_epoch_ms), Some(creator))
+                self.scripts
+                    .add_inline(body, Some(parsed_at_epoch_ms), Some(creator))
             }
         };
         if admission == Admission::OverBudget && !self.budget_announced {
             self.budget_announced = true;
-            (self.on_progress)("Script memory budget reached; further script bodies are not kept".into());
+            (self.on_progress)(
+                "Script memory budget reached; further script bodies are not kept".into(),
+            );
         }
     }
 }
@@ -281,7 +328,8 @@ fn is_inline_block(script_parsed: &Value) -> bool {
 /// they are kept, minus the one-liners that only pass data around.
 fn is_substantial_runtime_script(script_parsed: &Value) -> bool {
     const MIN_CHARS: u64 = 200;
-    script_parsed["url"].as_str().is_some_and(str::is_empty) && script_parsed["length"].as_u64().unwrap_or(0) >= MIN_CHARS
+    script_parsed["url"].as_str().is_some_and(str::is_empty)
+        && script_parsed["length"].as_u64().unwrap_or(0) >= MIN_CHARS
 }
 
 fn epoch_ms_now() -> f64 {

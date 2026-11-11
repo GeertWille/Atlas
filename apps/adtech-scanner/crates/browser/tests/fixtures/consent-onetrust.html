@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: OneTrust-style banner</title><link rel="icon" href="data:,"></head>
+<body>
+<form><p>Terms of the newsletter</p><button type="button" onclick="console.log('DECOY clicked')">Accept</button></form>
+<script>
+// The banner arrives late, like a real CMP script would add it.
+setTimeout(function () {
+  var banner = document.createElement('div');
+  banner.id = 'onetrust-banner-sdk';
+  banner.innerHTML =
+    '<p>We use cookies.</p>' +
+    '<button id="onetrust-reject-all-handler">Reject All</button>' +
+    '<button id="onetrust-accept-btn-handler">Allow</button>';
+  document.body.appendChild(banner);
+  document.getElementById('onetrust-reject-all-handler').onclick = function () { console.log('CONSENT rejected'); };
+  document.getElementById('onetrust-accept-btn-handler').onclick = function () {
+    banner.remove();
+    console.log('CONSENT accepted');
+  };
+}, 700);
+</script>
+</body></html>

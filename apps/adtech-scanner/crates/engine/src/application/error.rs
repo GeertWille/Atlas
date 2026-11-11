@@ -11,7 +11,9 @@ pub enum AppError {
     InvalidInput(String),
     #[error("{0} was not found")]
     NotFound(String),
-    #[error("No Chrome or Chromium installation was found. Install Chrome or set its path in Settings.")]
+    #[error(
+        "No Chrome or Chromium installation was found. Install Chrome or set its path in Settings."
+    )]
     BrowserNotFound,
     #[error("{0}")]
     BrowserFailed(String),
@@ -69,9 +71,9 @@ impl From<CaptureError> for AppError {
         match error {
             CaptureError::BrowserNotFound => Self::BrowserNotFound,
             CaptureError::Cancelled => Self::Cancelled,
-            failure @ (CaptureError::Launch(_) | CaptureError::Navigation(_) | CaptureError::Other(_)) => {
-                Self::BrowserFailed(failure.to_string())
-            }
+            failure @ (CaptureError::Launch(_)
+            | CaptureError::Navigation(_)
+            | CaptureError::Other(_)) => Self::BrowserFailed(failure.to_string()),
         }
     }
 }

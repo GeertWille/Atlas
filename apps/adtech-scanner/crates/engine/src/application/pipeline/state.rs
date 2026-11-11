@@ -70,7 +70,10 @@ impl ScanState {
     }
 
     pub fn script_records(&self) -> Vec<ScriptRecord> {
-        self.scripts.iter().map(|script| script.record.clone()).collect()
+        self.scripts
+            .iter()
+            .map(|script| script.record.clone())
+            .collect()
     }
 }
 

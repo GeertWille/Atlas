@@ -15,7 +15,9 @@ pub(crate) const CHROME_PATH_ENV: &str = "ADSCAN_CHROME_PATH";
 pub(crate) fn detect_browser(explicit: Option<&str>) -> Option<BrowserInfo> {
     let os = Os::current();
     let from_env = std::env::var_os(CHROME_PATH_ENV).map(PathBuf::from);
-    let configured = explicit.filter(|path| !path.trim().is_empty()).map(PathBuf::from);
+    let configured = explicit
+        .filter(|path| !path.trim().is_empty())
+        .map(PathBuf::from);
     let executable = from_env
         .into_iter()
         .chain(configured)
@@ -26,7 +28,9 @@ pub(crate) fn detect_browser(explicit: Option<&str>) -> Option<BrowserInfo> {
 
 fn describe(os: Os, executable: &Path) -> BrowserInfo {
     let identity = probe::read_identity(os, executable);
-    let name = identity.name.unwrap_or_else(|| family_name(executable).to_string());
+    let name = identity
+        .name
+        .unwrap_or_else(|| family_name(executable).to_string());
     let version = match identity.version {
         Some(number) => format!("{name} {number}"),
         None => name.clone(),

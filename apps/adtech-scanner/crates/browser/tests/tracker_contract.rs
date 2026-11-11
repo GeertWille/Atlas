@@ -1,0 +1,553 @@
+//! The tracker's side of the `TrackerEventKind` contract, checked in a real
+//! browser against a page that exercises every code path of the script.
+
+mod support;
+
+use std::collections::BTreeSet;
+
+use adscan_model::{Capture, DeviceProfile, TrackedAdUnit, TrackerEventKind as Kind};
+use serde_json::Value;
+
+/// Exhaustive on purpose: a new `TrackerEventKind` variant fails to compile
+/// here until this test covers it.
+fn variant(kind: &Kind) -> &'static str {
+    match kind {
+        Kind::PrebidDetected { .. } => "prebidDetected",
+        Kind::PrebidConfig { .. } => "prebidConfig",
+        Kind::GptDetected { .. } => "gptDetected",
+        Kind::AmazonDetected {} => "amazonDetected",
+        Kind::AuctionInit { .. } => "auctionInit",
+        Kind::BidRequested { .. } => "bidRequested",
+        Kind::BidResponse { .. } => "bidResponse",
+        Kind::NoBid { .. } => "noBid",
+        Kind::BidTimeout { .. } => "bidTimeout",
+        Kind::BidderError { .. } => "bidderError",
+        Kind::AuctionEnd { .. } => "auctionEnd",
+        Kind::SetTargeting { .. } => "setTargeting",
+        Kind::BidWon { .. } => "bidWon",
+        Kind::AdRenderFailed { .. } => "adRenderFailed",
+        Kind::AdRenderSucceeded { .. } => "adRenderSucceeded",
+        Kind::SlotDefined { .. } => "slotDefined",
+        Kind::SlotRequested { .. } => "slotRequested",
+        Kind::SlotResponseReceived { .. } => "slotResponseReceived",
+        Kind::SlotRenderEnded { .. } => "slotRenderEnded",
+        Kind::SlotOnload { .. } => "slotOnload",
+        Kind::ImpressionViewable { .. } => "impressionViewable",
+        Kind::ApsFetchBids { .. } => "apsFetchBids",
+        Kind::ApsBidsReturned { .. } => "apsBidsReturned",
+        Kind::PageLifecycle { .. } => "pageLifecycle",
+        Kind::Scroll { .. } => "scroll",
+        Kind::PrebidLog { .. } => "prebidLog",
+    }
+}
+
+const ALL_VARIANTS: [&str; 26] = [
+    "adRenderFailed",
+    "adRenderSucceeded",
+    "amazonDetected",
+    "apsBidsReturned",
+    "apsFetchBids",
+    "auctionEnd",
+    "auctionInit",
+    "bidRequested",
+    "bidResponse",
+    "bidTimeout",
+    "bidWon",
+    "bidderError",
+    "gptDetected",
+    "impressionViewable",
+    "noBid",
+    "pageLifecycle",
+    "prebidConfig",
+    "prebidDetected",
+    "prebidLog",
+    "scroll",
+    "setTargeting",
+    "slotDefined",
+    "slotOnload",
+    "slotRenderEnded",
+    "slotRequested",
+    "slotResponseReceived",
+];
+
+fn kinds<'a>(capture: &'a Capture, name: &str) -> Vec<&'a Kind> {
+    capture
+        .events
+        .iter()
+        .map(|event| &event.kind)
+        .filter(|kind| variant(kind) == name)
+        .collect()
+}
+
+fn strings(values: &[&str]) -> Vec<String> {
+    values.iter().map(|value| value.to_string()).collect()
+}
+
+async fn kitchen_sink() -> Capture {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(&fixtures.url("kitchen-sink.html"), DeviceProfile::Desktop);
+    request.auto_scroll = true;
+    request.observe_seconds = 4;
+    support::capture_ok(request).await
+}
+
+#[tokio::test]
+async fn every_event_the_tracker_emits_fits_the_contract() {
+    let capture = kitchen_sink().await;
+
+    let seen: BTreeSet<&str> = capture
+        .events
+        .iter()
+        .map(|event| variant(&event.kind))
+        .collect();
+    assert_eq!(seen.into_iter().collect::<Vec<_>>(), ALL_VARIANTS);
+    for event in &capture.events {
+        assert!(
+            event.t >= 0.0 && event.t < 60_000.0,
+            "implausible timestamp in {event:?}"
+        );
+        let round_trip = serde_json::to_value(event).unwrap();
+        assert_eq!(round_trip["type"], variant(&event.kind));
+    }
+
+    // -- Prebid under a custom global, attached late: history replayed once.
+    assert_eq!(
+        kinds(&capture, "prebidDetected"),
+        [&Kind::PrebidDetected {
+            global_name: "acmeHb".into(),
+            version: Some("v9.1.0".into()),
+            modules: strings(&["fooBidAdapter", "barBidAdapter"]),
+        }]
+    );
+    let auctions = kinds(&capture, "auctionInit");
+    assert_eq!(
+        auctions[0],
+        &Kind::AuctionInit {
+            auction_id: "auction-1".into(),
+            timeout: Some(1500.0),
+            ad_units: vec![
+                TrackedAdUnit {
+                    code: "unit-a".into(),
+                    sizes: strings(&["300x250", "336x280"]),
+                    bidders: strings(&["foo", "bar"])
+                },
+                TrackedAdUnit {
+                    code: "unit-b".into(),
+                    sizes: strings(&["728x90", "640x480"]),
+                    bidders: strings(&["bar"])
+                },
+                TrackedAdUnit {
+                    code: "unit-c".into(),
+                    sizes: strings(&["160x600"]),
+                    bidders: vec![]
+                },
+            ],
+        }
+    );
+    assert_eq!(
+        auctions[1],
+        &Kind::AuctionInit {
+            auction_id: "auction-2".into(),
+            timeout: None,
+            ad_units: vec![]
+        }
+    );
+    assert_eq!(auctions.len(), 2);
+    assert_eq!(
+        kinds(&capture, "bidRequested"),
+        [
+            &Kind::BidRequested {
+                auction_id: "auction-1".into(),
+                bidder: "foo".into(),
+                ad_unit_codes: strings(&["unit-a"])
+            },
+            &Kind::BidRequested {
+                auction_id: "auction-1".into(),
+                bidder: "bar".into(),
+                ad_unit_codes: strings(&["unit-a", "unit-b"]),
+            },
+        ]
+    );
+    let replayed = capture
+        .events
+        .iter()
+        .find(|event| variant(&event.kind) == "auctionInit")
+        .unwrap();
+    let detected = capture
+        .events
+        .iter()
+        .find(|event| variant(&event.kind) == "prebidDetected")
+        .unwrap();
+    assert!(
+        replayed.t < detected.t,
+        "replayed history keeps the time it originally happened"
+    );
+
+    assert_eq!(
+        kinds(&capture, "bidResponse"),
+        [
+            &Kind::BidResponse {
+                auction_id: "auction-1".into(),
+                bidder: "foo".into(),
+                ad_unit_code: "unit-a".into(),
+                cpm: 1.5,
+                currency: Some("EUR".into()),
+                size: Some("300x250".into()),
+                time_to_respond: Some(187.0),
+                deal_id: Some("deal-7".into()),
+            },
+            &Kind::BidResponse {
+                auction_id: "auction-1".into(),
+                bidder: "bar".into(),
+                ad_unit_code: "unit-b".into(),
+                cpm: 0.42,
+                currency: None,
+                size: Some("728x90".into()),
+                time_to_respond: None,
+                deal_id: None,
+            },
+            &Kind::BidResponse {
+                auction_id: "unknown".into(),
+                bidder: "unknown".into(),
+                ad_unit_code: "unknown".into(),
+                cpm: 0.0,
+                currency: None,
+                size: None,
+                time_to_respond: None,
+                deal_id: None,
+            },
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "noBid"),
+        [&Kind::NoBid {
+            auction_id: "auction-1".into(),
+            bidder: "bar".into(),
+            ad_unit_code: "unit-a".into()
+        }]
+    );
+    let timeout = |auction: &str, bidder: &str, unit: &str| Kind::BidTimeout {
+        auction_id: auction.into(),
+        bidder: bidder.into(),
+        ad_unit_code: unit.into(),
+    };
+    assert_eq!(
+        kinds(&capture, "bidTimeout"),
+        [
+            &timeout("auction-1", "slow", "unit-a"),
+            &timeout("auction-1", "slow", "unit-b"),
+            &timeout("unknown", "lonely", "unknown"),
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "bidderError"),
+        [
+            &Kind::BidderError {
+                auction_id: Some("auction-1".into()),
+                bidder: "broken".into(),
+                message: Some("HTTP 503".into())
+            },
+            &Kind::BidderError {
+                auction_id: None,
+                bidder: "worse".into(),
+                message: Some("adapter exploded".into())
+            },
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "auctionEnd"),
+        [&Kind::AuctionEnd {
+            auction_id: "auction-1".into()
+        }]
+    );
+    assert_eq!(
+        kinds(&capture, "setTargeting"),
+        [
+            &Kind::SetTargeting {
+                ad_unit_codes: strings(&["unit-a", "unit-b"])
+            },
+            &Kind::SetTargeting {
+                ad_unit_codes: vec![]
+            },
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "bidWon"),
+        [
+            &Kind::BidWon {
+                auction_id: Some("auction-1".into()),
+                bidder: "foo".into(),
+                ad_unit_code: "unit-a".into(),
+                cpm: 1.5
+            },
+            &Kind::BidWon {
+                auction_id: None,
+                bidder: "unknown".into(),
+                ad_unit_code: "unknown".into(),
+                cpm: 0.0
+            },
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "adRenderSucceeded"),
+        [&Kind::AdRenderSucceeded {
+            ad_unit_code: Some("unit-a".into()),
+            bidder: Some("foo".into())
+        }]
+    );
+    assert_eq!(
+        kinds(&capture, "adRenderFailed"),
+        [&Kind::AdRenderFailed {
+            ad_unit_code: None,
+            bidder: None,
+            reason: Some("cannotFindAd".into())
+        }]
+    );
+
+    // -- Prebid log lines: warnings and errors once (auctionDebug), the rest from the console.
+    let log = |level: &str, message: &str| Kind::PrebidLog {
+        level: level.into(),
+        message: message.into(),
+    };
+    assert_eq!(
+        kinds(&capture, "prebidLog"),
+        [
+            &log("warning", r#"Slow bidder {"bidder":"slow","ms":3000}"#),
+            &log("error", "boom"),
+            &log("info", r#"Auction finished {"winners":1}"#),
+            &log("log", "adapter line"),
+        ]
+    );
+
+    // -- GPT: one slot existed before the tracker saw the library, three were
+    //    defined through the wrapped factories.
+    let defined =
+        |id: &str, path: &str, sizes: &[&str], in_viewport: Option<bool>| Kind::SlotDefined {
+            element_id: id.into(),
+            ad_unit_path: Some(path.into()),
+            sizes: strings(sizes),
+            in_viewport,
+        };
+    assert_eq!(
+        kinds(&capture, "gptDetected"),
+        [&Kind::GptDetected {
+            version: Some("20261101".into())
+        }]
+    );
+    assert_eq!(
+        kinds(&capture, "slotDefined"),
+        [
+            &defined("unit-a", "/1/site/early", &["300x250", "fluid"], Some(true)),
+            &defined("unit-b", "/1/site/below", &["728x90"], Some(false)),
+            &defined("unit-hidden", "/1/site/hidden", &["1x1"], Some(false)),
+            &defined("unit-missing", "/1/site/interstitial", &[], None),
+        ]
+    );
+    let requested = |id: &str, keys: &[&str]| Kind::SlotRequested {
+        element_id: id.into(),
+        prebid_targeting_keys: strings(keys),
+    };
+    assert_eq!(
+        kinds(&capture, "slotRequested"),
+        [
+            &requested("unit-a", &["hb_bidder", "hb_pb"]),
+            &requested("unit-b", &[]),
+            &requested("unit-missing", &[]),
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "slotRenderEnded"),
+        [
+            &Kind::SlotRenderEnded {
+                element_id: "unit-a".into(),
+                is_empty: false,
+                size: Some("300x250".into()),
+                advertiser_id: Some("123".into()),
+                line_item_id: Some("456".into()),
+            },
+            &Kind::SlotRenderEnded {
+                element_id: "unit-b".into(),
+                is_empty: true,
+                size: None,
+                advertiser_id: None,
+                line_item_id: None,
+            },
+            &Kind::SlotRenderEnded {
+                element_id: "unit-missing".into(),
+                is_empty: true,
+                size: Some("fluid".into()),
+                advertiser_id: None,
+                line_item_id: Some("789".into()),
+            },
+        ]
+    );
+    for single in ["slotResponseReceived", "slotOnload", "impressionViewable"] {
+        assert_eq!(kinds(&capture, single).len(), 1, "{single}");
+    }
+
+    // -- Amazon: the fetch queued by the stub is reported once, not again when
+    //    the real library replays it.
+    assert_eq!(kinds(&capture, "amazonDetected").len(), 1);
+    assert_eq!(
+        kinds(&capture, "apsFetchBids"),
+        [
+            &Kind::ApsFetchBids {
+                slot_ids: strings(&["unit-a", "unit-b"]),
+                timeout: Some(900.0)
+            },
+            &Kind::ApsFetchBids {
+                slot_ids: strings(&["unit-c"]),
+                timeout: None
+            },
+        ]
+    );
+    let returned = kinds(&capture, "apsBidsReturned");
+    assert_eq!(returned.len(), 2);
+    assert!(
+        matches!(returned[0], Kind::ApsBidsReturned { slot_ids, duration: Some(duration) }
+            if slot_ids == &strings(&["unit-a"]) && (150.0..2_000.0).contains(duration)),
+        "{:?}",
+        returned[0]
+    );
+
+    // -- Page lifecycle.
+    let phases: Vec<&str> = kinds(&capture, "pageLifecycle")
+        .into_iter()
+        .map(|kind| match kind {
+            Kind::PageLifecycle { phase } => phase.as_str(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(phases[..2], ["domContentLoaded", "load"]);
+    assert_eq!(
+        phases[2..].iter().copied().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["firstInteraction", "firstScroll"])
+    );
+    assert!(
+        capture.max_scroll_depth > 0.3,
+        "depth {}",
+        capture.max_scroll_depth
+    );
+}
+
+#[tokio::test]
+async fn prebid_config_snapshot_is_bounded_and_json_safe() {
+    let capture = kitchen_sink().await;
+    let configs = kinds(&capture, "prebidConfig");
+    let [
+        Kind::PrebidConfig {
+            bidder_timeout,
+            price_granularity,
+            has_floors,
+            has_user_sync,
+            has_consent_management,
+            currency,
+            raw,
+        },
+    ] = configs[..]
+    else {
+        panic!("expected one config snapshot, got {configs:?}");
+    };
+    assert_eq!(*bidder_timeout, Some(1500.0));
+    assert_eq!(price_granularity.as_deref(), Some("custom"));
+    assert!(*has_floors && *has_consent_management && !*has_user_sync);
+    assert_eq!(currency.as_deref(), Some("EUR"));
+
+    assert_eq!(raw["bidderTimeout"], 1500);
+    assert_eq!(raw["consentManagement"]["gdpr"]["timeout"], 8000);
+    assert_eq!(raw["s2sConfig"]["bidders"][0], "foo");
+    assert_eq!(
+        raw["s2sConfig"].get("onTimeout"),
+        None,
+        "functions are stripped"
+    );
+    assert_eq!(raw["realTimeData"], "[omitted: too large]");
+    assert_eq!(
+        raw.get("debug"),
+        None,
+        "debug is the tracker's own switch, not the publisher's"
+    );
+    assert!(raw.to_string().len() < 20_000);
+    let config_event = capture
+        .events
+        .iter()
+        .position(|event| variant(&event.kind) == "prebidConfig")
+        .unwrap();
+    assert_eq!(
+        variant(&capture.events[config_event + 1].kind),
+        "auctionInit"
+    );
+}
+
+#[tokio::test]
+async fn the_tracker_stays_out_of_the_pages_way() {
+    let capture = kitchen_sink().await;
+    let state = capture
+        .console
+        .iter()
+        .find_map(|line| line.text.strip_prefix("PAGE_STATE "))
+        .expect("the page reports its state");
+    let state: Value = serde_json::from_str(state).unwrap();
+    assert_eq!(
+        state["debugRequested"], true,
+        "Prebid debug logging is switched on"
+    );
+    assert_eq!(
+        state["apsCallbacks"], 2,
+        "the page's own callbacks still run exactly once each"
+    );
+    assert_eq!(state["apsFirstBids"], 1);
+    assert_eq!(
+        state["defineSlotLooksNative"], true,
+        "wrapped functions print as the originals"
+    );
+    assert_eq!(state["definedSlotsAreUntouched"], true);
+    assert_eq!(state["consoleLooksNative"], true);
+    assert_eq!(
+        state["bindingVisible"], false,
+        "the transport binding is hidden from the page"
+    );
+    assert_eq!(
+        state["pbjsCreated"], false,
+        "no globals are created for libraries the page does not use"
+    );
+    assert!(
+        !capture.console.iter().any(|line| line.level == "error"),
+        "the tracker must not cause page errors: {:#?}",
+        capture.console
+    );
+
+    // Scripts: both inline blocks of the page, the tag-manager style injected
+    // script, but neither the tracker itself nor one-line evals.
+    let bodies: Vec<&str> = capture
+        .scripts
+        .iter()
+        .map(|script| script.body.as_str())
+        .collect();
+    assert!(capture.scripts.iter().all(|script| script.inline));
+    assert!(
+        bodies
+            .iter()
+            .any(|body| body.contains("window._pbjsGlobals = ['acmeHb']"))
+    );
+    assert!(
+        bodies
+            .iter()
+            .any(|body| body.starts_with("window.injectedByTagManager"))
+    );
+    assert!(
+        !bodies
+            .iter()
+            .any(|body| body.contains("TINY_EVAL_MARKER\"") && body.len() < 100)
+    );
+    assert!(!bodies.iter().any(|body| body.contains("Ad-stack tracker")));
+    let injected = capture
+        .scripts
+        .iter()
+        .find(|script| script.body.starts_with("window.injectedByTagManager"))
+        .unwrap();
+    assert_eq!(
+        injected.initiator.as_deref(),
+        Some(capture.final_url.as_str())
+    );
+}

@@ -23,7 +23,7 @@ const TAIL_CHARS: usize = 700;
 const OUTPUT_TOKENS_PER_SCRIPT: u64 = 120;
 const BASE_OUTPUT_TOKENS: u32 = 3_000;
 
-pub const SYSTEM_PROMPT: &str = "\
+const SYSTEM_PROMPT: &str = "\
 You are Jeff, the script triage step of a scanner that finds revenue leaks in publishers' ad stacks.
 
 For every script from one page load, decide whether it takes part in advertising. A later, expensive \
@@ -126,7 +126,11 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
     for batch in batches(candidates) {
         run.check_cancelled()?;
         let user_text = batch_prompt(&batch);
-        if !run.state.budget.can_afford(projected_cost(&model, &user_text, batch.len())) {
+        if !run
+            .state
+            .budget
+            .can_afford(projected_cost(&model, &user_text, batch.len()))
+        {
             out_of_budget += batch.len();
             continue;
         }
@@ -147,10 +151,15 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
             Some(json!({ "model": model, "scripts": batch.len() })),
         )
         .await?;
-        let response = run.deps.llm.complete(&api_key, &request, &run.job.cancel).await?;
+        let response = run
+            .deps
+            .llm
+            .complete(&api_key, &request, &run.job.cancel)
+            .await?;
         run.record_llm_call(&model, response.usage).await?;
         let text = response.turn.text();
-        run.log(LogLevel::Debug, LogKind::LlmResponse, text.clone(), None).await?;
+        run.log(LogLevel::Debug, LogKind::LlmResponse, text.clone(), None)
+            .await?;
         let answer = parse_answer(&response.stop_reason, &text)?;
         classified += apply_verdicts(run, &batch, answer).await?;
     }
@@ -163,13 +172,22 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
         telemetry.metrics.ad_script_count = ad_related;
         run.deps
             .scans
-            .save_telemetry(&scan_id, &telemetry.metrics, &telemetry.auctions, &telemetry.slots)
+            .save_telemetry(
+                &scan_id,
+                &telemetry.metrics,
+                &telemetry.auctions,
+                &telemetry.slots,
+            )
             .await?;
     }
 
-    let mut summary = format!("Classified {classified} of {asked} undecided scripts; {ad_related} scripts are ad-related");
+    let mut summary = format!(
+        "Classified {classified} of {asked} undecided scripts; {ad_related} scripts are ad-related"
+    );
     if out_of_budget > 0 {
-        let caveat = format!("{out_of_budget} scripts were not classified by AI because the scan budget was reached");
+        let caveat = format!(
+            "{out_of_budget} scripts were not classified by AI because the scan budget was reached"
+        );
         run.warn(caveat.clone()).await?;
         summary.push_str(&format!(" ({caveat})"));
         run.state.caveats.push(caveat);
@@ -177,9 +195,14 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
     Ok(summary)
 }
 
-fn describe_for_model(script: &DescribedScript, captured: &CapturedScript, hints: &[String]) -> String {
+fn describe_for_model(
+    script: &DescribedScript,
+    captured: &CapturedScript,
+    hints: &[String],
+) -> String {
     let record = &script.record;
-    let identifiers: BTreeMap<&str, usize> = identifier_counts(&captured.body).into_iter().collect();
+    let identifiers: BTreeMap<&str, usize> =
+        identifier_counts(&captured.body).into_iter().collect();
     format!(
         "<script id=\"{}\">\nurl: {}\nfirstParty: {}\ninline: {}\nsizeBytes: {}\ninitiator: {}\nhints: {}\nidentifierCounts: {}\nexcerpt:\n{}\n</script>",
         record.id,
@@ -195,7 +218,7 @@ fn describe_for_model(script: &DescribedScript, captured: &CapturedScript, hints
 }
 
 /// Head, middle and tail of the body. Never the whole body unless it is short.
-pub fn excerpt(body: &str) -> String {
+fn excerpt(body: &str) -> String {
     let chars: Vec<char> = body.chars().collect();
     if chars.len() <= HEAD_CHARS + MIDDLE_CHARS + TAIL_CHARS {
         return body.to_string();
@@ -216,7 +239,8 @@ fn batches(candidates: Vec<Candidate>) -> Vec<Vec<Candidate>> {
     let mut batch_chars = 0;
     for candidate in candidates {
         let fits = batches.last().is_some_and(|batch| {
-            batch.len() < MAX_SCRIPTS_PER_BATCH && batch_chars + candidate.prompt.len() <= MAX_BATCH_CHARS
+            batch.len() < MAX_SCRIPTS_PER_BATCH
+                && batch_chars + candidate.prompt.len() <= MAX_BATCH_CHARS
         });
         if !fits {
             batches.push(Vec::new());
@@ -231,7 +255,10 @@ fn batches(candidates: Vec<Candidate>) -> Vec<Vec<Candidate>> {
 }
 
 fn batch_prompt(batch: &[Candidate]) -> String {
-    let scripts: Vec<&str> = batch.iter().map(|candidate| candidate.prompt.as_str()).collect();
+    let scripts: Vec<&str> = batch
+        .iter()
+        .map(|candidate| candidate.prompt.as_str())
+        .collect();
     format!(
         "Classify these {} scripts.\n\n{}",
         batch.len(),
@@ -257,8 +284,9 @@ fn parse_answer(stop_reason: &StopReason, text: &str) -> Result<Answer, NodeErro
         StopReason::MaxTokens => Err(llm_failure(
             "the classification was cut off by the output token limit".into(),
         )),
-        _ => serde_json::from_str(text)
-            .map_err(|error| llm_failure(format!("the classification was not valid JSON: {error}"))),
+        _ => serde_json::from_str(text).map_err(|error| {
+            llm_failure(format!("the classification was not valid JSON: {error}"))
+        }),
     }
 }
 
@@ -268,14 +296,20 @@ fn llm_failure(message: String) -> NodeError {
 
 /// Applies the verdicts for scripts of this batch. Ids the model invented are
 /// ignored and ids it omitted keep their undecided state; both are logged.
-async fn apply_verdicts(run: &mut StepRun<'_>, batch: &[Candidate], answer: Answer) -> Result<usize, NodeError> {
+async fn apply_verdicts(
+    run: &mut StepRun<'_>,
+    batch: &[Candidate],
+    answer: Answer,
+) -> Result<usize, NodeError> {
     let mut applied = Vec::new();
     let mut invented = Vec::new();
     for verdict in answer.scripts {
         let target = batch
             .iter()
             .map(|candidate| candidate.script_index)
-            .find(|&index| run.state.scripts[index].record.id == verdict.id && !applied.contains(&index));
+            .find(|&index| {
+                run.state.scripts[index].record.id == verdict.id && !applied.contains(&index)
+            });
         let Some(script_index) = target else {
             invented.push(verdict.id);
             continue;
@@ -305,4 +339,48 @@ async fn apply_verdicts(run: &mut StepRun<'_>, batch: &[Candidate], answer: Answ
         run.warn(message).await?;
     }
     Ok(applied.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_bodies_are_sent_whole_and_long_ones_as_head_middle_tail() {
+        assert_eq!(excerpt("var a = 1;"), "var a = 1;");
+        let body = format!(
+            "{}{}{}",
+            "h".repeat(5_000),
+            "m".repeat(5_000),
+            "t".repeat(5_000)
+        );
+        let excerpt = excerpt(&body);
+        assert!(excerpt.len() < 3_100, "{}", excerpt.len());
+        assert!(excerpt.starts_with(&"h".repeat(HEAD_CHARS)));
+        assert!(excerpt.contains(&"m".repeat(MIDDLE_CHARS)));
+        assert!(excerpt.ends_with(&"t".repeat(TAIL_CHARS)));
+        assert!(excerpt.contains("[... 12100 characters omitted ...]"));
+    }
+
+    #[test]
+    fn excerpt_respects_multibyte_characters() {
+        let body = "é".repeat(10_000);
+        assert!(excerpt(&body).starts_with(&"é".repeat(HEAD_CHARS)));
+    }
+
+    #[test]
+    fn candidates_are_batched_by_count_and_size() {
+        let candidate = |chars: usize| Candidate {
+            script_index: 0,
+            prompt: "x".repeat(chars),
+        };
+        let by_count = batches((0..60).map(|_| candidate(10)).collect());
+        assert_eq!(
+            by_count.iter().map(Vec::len).collect::<Vec<_>>(),
+            [25, 25, 10]
+        );
+        let by_size = batches((0..5).map(|_| candidate(25_000)).collect());
+        assert_eq!(by_size.iter().map(Vec::len).collect::<Vec<_>>(), [2, 2, 1]);
+        assert!(batches(Vec::new()).is_empty());
+    }
 }

@@ -44,14 +44,22 @@ impl SourceFormatter for OxcFormatter {
         if source.len() > self.max_bytes {
             return unformatted(&source);
         }
-        let source: Arc<str> = source.into();
-        let worker_source = Arc::clone(&source);
-        let worker = tokio::task::spawn_blocking(move || format_blocking(&worker_source));
-        match tokio::time::timeout(self.timeout, worker).await {
-            Ok(Ok(formatted)) => formatted,
-            // Timed out or the formatter panicked: the raw source is still usable.
-            Ok(Err(_)) | Err(_) => unformatted(&source),
-        }
+        format_within(source.into(), self.timeout, format_blocking).await
+    }
+}
+
+/// Runs `work` on a blocking thread and gives up waiting after `timeout`.
+async fn format_within(
+    source: Arc<str>,
+    timeout: Duration,
+    work: fn(&str) -> FormattedSource,
+) -> FormattedSource {
+    let worker_source = Arc::clone(&source);
+    let worker = tokio::task::spawn_blocking(move || work(&worker_source));
+    match tokio::time::timeout(timeout, worker).await {
+        Ok(Ok(formatted)) => formatted,
+        // Timed out or the formatter panicked: the raw source is still usable.
+        Ok(Err(_)) | Err(_) => unformatted(&source),
     }
 }
 
@@ -66,7 +74,10 @@ fn format_blocking(source: &str) -> FormattedSource {
     }
     let printed = Codegen::new().build(&parsed.program).code;
     FormattedSource {
-        lines: printed.lines().map(|line| line.replace('\t', INDENT)).collect(),
+        lines: printed
+            .lines()
+            .map(|line| line.replace('\t', INDENT))
+            .collect(),
         method: FormatMethod::Parser,
     }
 }
@@ -163,7 +174,12 @@ mod tests {
         assert_eq!(formatted.method, FormatMethod::Parser);
         assert!(formatted.lines.len() >= 7, "{:#?}", formatted.lines);
         assert_eq!(formatted.lines[0], "function isMobile() {");
-        assert!(formatted.lines.iter().any(|line| line == "  return window.innerWidth > 768;"));
+        assert!(
+            formatted
+                .lines
+                .iter()
+                .any(|line| line == "  return window.innerWidth > 768;")
+        );
         assert!(formatted.lines.iter().all(|line| !line.contains('\t')));
     }
 
@@ -173,23 +189,43 @@ mod tests {
         let formatted = OxcFormatter::default().format(broken.to_string()).await;
         assert_eq!(formatted.method, FormatMethod::Reflow);
         assert!(formatted.lines.len() > 3, "{:#?}", formatted.lines);
-        assert!(formatted.lines.iter().any(|line| line.contains("call(\"}; {\");")));
-        assert!(formatted.lines.iter().any(|line| line.trim_start().starts_with("for(i=0;i<2;i++){")));
+        assert!(
+            formatted
+                .lines
+                .iter()
+                .any(|line| line.contains("call(\"}; {\");"))
+        );
+        assert!(
+            formatted
+                .lines
+                .iter()
+                .any(|line| line.trim_start().starts_with("for(i=0;i<2;i++){"))
+        );
     }
 
     #[tokio::test]
     async fn oversized_input_is_left_unformatted() {
         let formatter = OxcFormatter::with_limits(16, FORMAT_TIMEOUT);
-        let formatted = formatter.format("var a=1;\nvar b=2;var c=3;".to_string()).await;
+        let formatted = formatter
+            .format("var a=1;\nvar b=2;var c=3;".to_string())
+            .await;
         assert_eq!(formatted.method, FormatMethod::Unformatted);
         assert_eq!(formatted.lines, ["var a=1;", "var b=2;var c=3;"]);
     }
 
     #[tokio::test]
-    async fn slow_formatting_times_out_to_the_raw_source() {
-        let formatter = OxcFormatter::with_limits(MAX_FORMAT_BYTES, Duration::ZERO);
-        let formatted = formatter.format(MINIFIED.to_string()).await;
-        assert_eq!(formatted.method, FormatMethod::Unformatted);
-        assert_eq!(formatted.lines, [MINIFIED]);
+    async fn slow_or_panicking_formatting_falls_back_to_the_raw_source() {
+        fn slow(source: &str) -> FormattedSource {
+            std::thread::sleep(Duration::from_millis(300));
+            format_blocking(source)
+        }
+        fn panicking(_: &str) -> FormattedSource {
+            panic!("formatter bug");
+        }
+        for work in [slow as fn(&str) -> FormattedSource, panicking] {
+            let formatted = format_within(MINIFIED.into(), Duration::from_millis(20), work).await;
+            assert_eq!(formatted.method, FormatMethod::Unformatted);
+            assert_eq!(formatted.lines, [MINIFIED]);
+        }
     }
 }

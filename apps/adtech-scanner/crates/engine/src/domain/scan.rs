@@ -109,14 +109,30 @@ mod tests {
             ScanUrl::parse("http://127.0.0.1:4100/").unwrap().as_str(),
             "http://127.0.0.1:4100/"
         );
-        assert_eq!(ScanUrl::parse("localhost:3000").unwrap().hostname(), "localhost");
+        assert_eq!(
+            ScanUrl::parse("localhost:3000").unwrap().hostname(),
+            "localhost"
+        );
     }
 
     #[test]
     fn rejects_other_schemes_and_garbage() {
-        assert_eq!(ScanUrl::parse("ftp://example.com"), Err(DomainError::UnsupportedScheme));
-        assert_eq!(ScanUrl::parse("file:///etc/passwd"), Err(DomainError::UnsupportedScheme));
-        for bad in ["", "   ", "javascript:alert(1)", "not a url", "https://", "nodots"] {
+        assert_eq!(
+            ScanUrl::parse("ftp://example.com"),
+            Err(DomainError::UnsupportedScheme)
+        );
+        assert_eq!(
+            ScanUrl::parse("file:///etc/passwd"),
+            Err(DomainError::UnsupportedScheme)
+        );
+        for bad in [
+            "",
+            "   ",
+            "javascript:alert(1)",
+            "not a url",
+            "https://",
+            "nodots",
+        ] {
             assert_eq!(ScanUrl::parse(bad), Err(DomainError::InvalidUrl), "{bad}");
         }
     }

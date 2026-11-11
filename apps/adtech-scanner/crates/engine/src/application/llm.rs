@@ -57,7 +57,11 @@ pub enum AssistantBlock {
     Text(String),
     /// Summarised reasoning, when the provider returns it.
     Thinking(String),
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 impl AssistantTurn {
@@ -79,7 +83,9 @@ pub enum StopReason {
     ToolUse,
     MaxTokens,
     /// The provider declined the request; `category` says why when known.
-    Refusal { category: Option<String> },
+    Refusal {
+        category: Option<String>,
+    },
     PauseTurn,
     Other(String),
 }

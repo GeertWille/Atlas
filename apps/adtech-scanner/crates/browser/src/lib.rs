@@ -43,16 +43,26 @@ pub fn detect_browser(explicit: Option<&str>) -> Option<BrowserInfo> {
 }
 
 /// Load the page with the tracker injected, observe it, and return everything captured.
-pub async fn capture(request: CaptureRequest, hooks: CaptureHooks) -> Result<Capture, BrowserError> {
+pub async fn capture(
+    request: CaptureRequest,
+    hooks: CaptureHooks,
+) -> Result<Capture, BrowserError> {
     // The capture runs as its own task so that Chrome is shut down and its
     // profile removed even when the caller drops this future instead of
     // cancelling through `hooks.cancel`.
     let cancel = hooks.cancel.child_token();
     let cancel_if_dropped = cancel.clone().drop_guard();
-    let hooks = CaptureHooks { cancel, on_progress: hooks.on_progress };
+    let hooks = CaptureHooks {
+        cancel,
+        on_progress: hooks.on_progress,
+    };
     let outcome = tokio::spawn(capture::run(request, hooks)).await;
     cancel_if_dropped.disarm();
-    outcome.unwrap_or_else(|panic| Err(BrowserError::Other(format!("the capture task failed: {panic}"))))
+    outcome.unwrap_or_else(|panic| {
+        Err(BrowserError::Other(format!(
+            "the capture task failed: {panic}"
+        )))
+    })
 }
 
 /// Handle to the built-in demo publisher site. The server stops when dropped.

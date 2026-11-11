@@ -23,20 +23,44 @@ const JAVASCRIPT: &str = "text/javascript; charset=utf-8";
 
 macro_rules! asset {
     ($path:literal, $content_type:expr, $file:literal) => {
-        Asset { path: $path, content_type: $content_type, body: include_str!(concat!("../demo-site/", $file)) }
+        Asset {
+            path: $path,
+            content_type: $content_type,
+            body: include_str!(concat!("../demo-site/", $file)),
+        }
     };
 }
 
 const ASSETS: &[Asset] = &[
     asset!("/", HTML, "index.html"),
-    asset!("/static/css/site.css", "text/css; charset=utf-8", "static/css/site.css"),
+    asset!(
+        "/static/css/site.css",
+        "text/css; charset=utf-8",
+        "static/css/site.css"
+    ),
     asset!("/static/favicon.svg", "image/svg+xml", "static/favicon.svg"),
-    asset!("/static/js/app.9b3e7f.js", JAVASCRIPT, "static/js/app.9b3e7f.js"),
-    asset!("/static/js/vendors-ui.4c1d2a.chunk.js", JAVASCRIPT, "static/js/vendors-ui.4c1d2a.chunk.js"),
-    asset!("/static/js/analytics.js", JAVASCRIPT, "static/js/analytics.js"),
+    asset!(
+        "/static/js/app.9b3e7f.js",
+        JAVASCRIPT,
+        "static/js/app.9b3e7f.js"
+    ),
+    asset!(
+        "/static/js/vendors-ui.4c1d2a.chunk.js",
+        JAVASCRIPT,
+        "static/js/vendors-ui.4c1d2a.chunk.js"
+    ),
+    asset!(
+        "/static/js/analytics.js",
+        JAVASCRIPT,
+        "static/js/analytics.js"
+    ),
     asset!("/static/ads/prebid.js", JAVASCRIPT, "static/ads/prebid.js"),
     asset!("/static/ads/apstag.js", JAVASCRIPT, "static/ads/apstag.js"),
-    asset!("/static/ads/hb-wrapper.min.js", JAVASCRIPT, "static/ads/hb-wrapper.min.js"),
+    asset!(
+        "/static/ads/hb-wrapper.min.js",
+        JAVASCRIPT,
+        "static/ads/hb-wrapper.min.js"
+    ),
     asset!("/tag/js/gpt.js", JAVASCRIPT, "tag/js/gpt.js"),
 ];
 
@@ -68,7 +92,10 @@ async fn respond(method: Method, uri: Uri) -> Response {
     }
     (
         [
-            (header::CONTENT_TYPE, HeaderValue::from_static(asset.content_type)),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(asset.content_type),
+            ),
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
         ],
         asset.body,
@@ -88,10 +115,16 @@ mod tests {
             .filter(|part| part.starts_with("/static/") || part.starts_with("/tag/"));
         let mut checked = 0;
         for reference in references {
-            assert!(ASSETS.iter().any(|asset| asset.path == reference), "{reference} is not served");
+            assert!(
+                ASSETS.iter().any(|asset| asset.path == reference),
+                "{reference} is not served"
+            );
             checked += 1;
         }
-        assert!(checked >= 8, "expected the page to reference its scripts and styles, found {checked}");
+        assert!(
+            checked >= 8,
+            "expected the page to reference its scripts and styles, found {checked}"
+        );
     }
 
     #[test]
@@ -103,16 +136,29 @@ mod tests {
                     .match_indices(scheme)
                     .map(|(at, _)| &asset.body[at..(at + 40).min(asset.body.len())])
                     .find(|reference| !reference.contains("www.w3.org"));
-                assert_eq!(external, None, "{} references an external address", asset.path);
+                assert_eq!(
+                    external, None,
+                    "{} references an external address",
+                    asset.path
+                );
             }
         }
     }
 
     #[test]
     fn the_served_wrapper_is_minified() {
-        let wrapper = ASSETS.iter().find(|asset| asset.path.ends_with("hb-wrapper.min.js")).unwrap();
+        let wrapper = ASSETS
+            .iter()
+            .find(|asset| asset.path.ends_with("hb-wrapper.min.js"))
+            .unwrap();
         let longest_line = wrapper.body.lines().map(str::len).max().unwrap();
-        assert!(longest_line > 2_000, "the wrapper should be one long minified line");
-        assert!(!wrapper.body.contains("isMobileViewport"), "identifiers should be mangled");
+        assert!(
+            longest_line > 2_000,
+            "the wrapper should be one long minified line"
+        );
+        assert!(
+            !wrapper.body.contains("isMobileViewport"),
+            "identifiers should be mangled"
+        );
     }
 }

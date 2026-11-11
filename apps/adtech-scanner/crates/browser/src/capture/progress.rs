@@ -15,7 +15,11 @@ impl Milestones {
     /// The line to show for `event`, if it is worth one.
     pub(crate) fn announce(&mut self, event: &TrackerEventKind) -> Option<String> {
         match event {
-            TrackerEventKind::PrebidDetected { global_name, version, .. } => Some(match version {
+            TrackerEventKind::PrebidDetected {
+                global_name,
+                version,
+                ..
+            } => Some(match version {
                 Some(version) => format!("Prebid.js {version} detected (window.{global_name})"),
                 None => format!("Prebid.js detected (window.{global_name})"),
             }),
@@ -34,7 +38,11 @@ impl Milestones {
                     count(bidders.len(), "bidder"),
                 ))
             }
-            TrackerEventKind::SlotRenderEnded { element_id, is_empty: false, .. } if !self.first_ad_announced => {
+            TrackerEventKind::SlotRenderEnded {
+                element_id,
+                is_empty: false,
+                ..
+            } if !self.first_ad_announced => {
                 self.first_ad_announced = true;
                 Some(format!("First ad rendered in #{element_id}"))
             }
@@ -47,7 +55,11 @@ impl Milestones {
 }
 
 fn count(n: usize, noun: &str) -> String {
-    if n == 1 { format!("1 {noun}") } else { format!("{n} {noun}s") }
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
 }
 
 #[cfg(test)]
@@ -70,7 +82,10 @@ mod tests {
         let first = TrackerEventKind::AuctionInit {
             auction_id: "a".into(),
             timeout: None,
-            ad_units: vec![unit("top", &["appnexus", "rubicon"]), unit("side", &["rubicon"])],
+            ad_units: vec![
+                unit("top", &["appnexus", "rubicon"]),
+                unit("side", &["rubicon"]),
+            ],
         };
         let second = TrackerEventKind::AuctionInit {
             auction_id: "b".into(),
@@ -98,7 +113,10 @@ mod tests {
             line_item_id: None,
         };
         assert_eq!(milestones.announce(&render("ad-a", true)), None);
-        assert_eq!(milestones.announce(&render("ad-b", false)).unwrap(), "First ad rendered in #ad-b");
+        assert_eq!(
+            milestones.announce(&render("ad-b", false)).unwrap(),
+            "First ad rendered in #ad-b"
+        );
         assert_eq!(milestones.announce(&render("ad-c", false)), None);
     }
 
@@ -114,6 +132,9 @@ mod tests {
             milestones.announce(&detected).unwrap(),
             "Prebid.js v10.2.0 detected (window.acmeHb)"
         );
-        assert_eq!(milestones.announce(&TrackerEventKind::Scroll { depth: 0.2 }), None);
+        assert_eq!(
+            milestones.announce(&TrackerEventKind::Scroll { depth: 0.2 }),
+            None
+        );
     }
 }

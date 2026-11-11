@@ -35,7 +35,9 @@ impl Rule for NoPriceFloors {
              (static or from a floor provider) and keep them aligned with the unified pricing rules in the ad server."
             .into();
         finding.impact = "Bidders may bid below the price the inventory could clear at".into();
-        finding.evidence.push(metric("Prebid config", "floors: not configured"));
+        finding
+            .evidence
+            .push(metric("Prebid config", "floors: not configured"));
         vec![finding]
     }
 }
@@ -52,7 +54,9 @@ impl Rule for DuplicatePrebid {
         let mut versions = BTreeSet::new();
         for event in &ctx.capture.events {
             if let Ev::PrebidDetected {
-                global_name, version, ..
+                global_name,
+                version,
+                ..
             } = &event.kind
             {
                 globals.insert(global_name.as_str());
@@ -90,7 +94,8 @@ impl Rule for DuplicatePrebid {
         finding.recommendation = "Keep a single Prebid build on the page. Find which tag (wrapper, tag manager, \
              video player or a third-party widget) injects the second copy and remove it or share one instance."
             .into();
-        finding.impact = "Duplicate bid requests, slower auctions and conflicting key-values".into();
+        finding.impact =
+            "Duplicate bid requests, slower auctions and conflicting key-values".into();
         finding.evidence.push(metric(
             "Prebid instances",
             ctx.scripts
@@ -104,6 +109,71 @@ impl Rule for DuplicatePrebid {
     }
 }
 
+/// The same ad server or bidder library is fetched from more than one URL.
+pub struct AdLibraryLoadedTwice;
+
+impl Rule for AdLibraryLoadedTwice {
+    fn id(&self) -> &'static str {
+        "ad-library-loaded-twice"
+    }
+
+    fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
+        let libraries: Vec<_> = ctx
+            .scripts
+            .iter()
+            .filter(|script| !script.inline)
+            .filter(|script| {
+                matches!(
+                    script.category,
+                    ScriptCategory::AdServer | ScriptCategory::Bidder
+                )
+            })
+            .collect();
+        let mut duplicates: Vec<Vec<&str>> = Vec::new();
+        let mut seen = BTreeSet::new();
+        for script in &libraries {
+            if !seen.insert(script.hash.as_str()) {
+                continue;
+            }
+            let urls: Vec<&str> = libraries
+                .iter()
+                .filter(|other| other.hash == script.hash)
+                .map(|other| other.url.as_str())
+                .collect();
+            if urls.len() > 1 {
+                duplicates.push(urls);
+            }
+        }
+        if duplicates.is_empty() {
+            return Vec::new();
+        }
+        let mut finding = heuristic(
+            Severity::Low,
+            FindingCategory::Hygiene,
+            0.8,
+            format!(
+                "{} ad library file(s) are loaded more than once",
+                duplicates.len()
+            ),
+        );
+        finding.description = "The same ad library is downloaded and executed from more than one URL. The second \
+             copy costs load time before the first ad request and can re-initialise state the first copy set up \
+             (slot definitions, command queues)."
+            .into();
+        finding.recommendation =
+            "Load each library from one URL. Loader code that checks whether a script is \
+             already present must compare the path, not the full URL with its query string."
+                .into();
+        finding.impact = "Slower ad start and a risk of double initialisation".into();
+        for urls in duplicates {
+            finding
+                .evidence
+                .push(metric("Identical library content", urls.join("\n")));
+        }
+        vec![finding]
+    }
+}
+
 pub struct OutdatedPrebid;
 
 impl Rule for OutdatedPrebid {
@@ -112,15 +182,19 @@ impl Rule for OutdatedPrebid {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
-        let outdated = ctx.capture.events.iter().find_map(|event| match &event.kind {
-            Ev::PrebidDetected {
-                version: Some(version),
-                ..
-            } => major_version(version)
-                .filter(|major| *major <= OUTDATED_PREBID_MAJOR)
-                .map(|major| (version.clone(), major)),
-            _ => None,
-        });
+        let outdated = ctx
+            .capture
+            .events
+            .iter()
+            .find_map(|event| match &event.kind {
+                Ev::PrebidDetected {
+                    version: Some(version),
+                    ..
+                } => major_version(version)
+                    .filter(|major| *major <= OUTDATED_PREBID_MAJOR)
+                    .map(|major| (version.clone(), major)),
+                _ => None,
+            });
         let Some((version, major)) = outdated else {
             return Vec::new();
         };
@@ -135,9 +209,10 @@ impl Rule for OutdatedPrebid {
              only maintained for recent majors; partners gradually stop supporting old adapter versions, which \
              shows up as lower bid rates and CPMs rather than as errors."
         );
-        finding.recommendation = "Plan an upgrade to a current Prebid.js major, following the release notes for \
+        finding.recommendation =
+            "Plan an upgrade to a current Prebid.js major, following the release notes for \
              breaking changes, and rebuild with only the adapters and modules in use."
-            .into();
+                .into();
         finding.impact = "Outdated adapters bid less often and lack newer demand features".into();
         finding.evidence.push(metric("Prebid version", version));
         vec![finding]
@@ -182,17 +257,25 @@ impl Rule for ConsentNotWired {
              `consentManagement` section. Prebid then neither waits for the user's choice nor passes the TCF / GPP \
              string to bidders. In regulated regions bidders without a consent string bid far less or not at all."
             .into();
-        finding.recommendation = "Add the `consentManagementTcf` (and GPP / USP where relevant) module to the Prebid \
+        finding.recommendation =
+            "Add the `consentManagementTcf` (and GPP / USP where relevant) module to the Prebid \
              build and configure `consentManagement` with a `cmpApi` and a sensible `timeout`."
-            .into();
-        finding.impact = "Bidders receive no consent signal and suppress or lower their bids".into();
+                .into();
+        finding.impact =
+            "Bidders receive no consent signal and suppress or lower their bids".into();
         finding.evidence.push(metric(
             "Consent setup",
             format!(
                 "CMP: {} | Prebid consentManagement: not configured",
-                cmp.map_or("consent banner accepted during scan".to_string(), |script| {
-                    script.vendor.clone().unwrap_or_else(|| script.hostname.clone())
-                }),
+                cmp.map_or(
+                    "consent banner accepted during scan".to_string(),
+                    |script| {
+                        script
+                            .vendor
+                            .clone()
+                            .unwrap_or_else(|| script.hostname.clone())
+                    }
+                ),
             ),
         ));
         vec![finding]
@@ -213,7 +296,9 @@ impl Rule for ConsentTimeout {
             .events
             .iter()
             .filter_map(|event| match &event.kind {
-                Ev::PrebidLog { message, .. } if is_consent_failure(message) => Some((event.t, message.as_str())),
+                Ev::PrebidLog { message, .. } if is_consent_failure(message) => {
+                    Some((event.t, message.as_str()))
+                }
                 _ => None,
             })
             .collect();
@@ -233,7 +318,8 @@ impl Rule for ConsentTimeout {
         finding.recommendation = "Load the CMP stub before Prebid, make sure the CMP API (`__tcfapi` / `__gpp`) is \
              reachable from the frame Prebid runs in, and raise `consentManagement.timeout` if the CMP is slow."
             .into();
-        finding.impact = "Auctions are blocked or run without consent, losing most header bidding demand".into();
+        finding.impact =
+            "Auctions are blocked or run without consent, losing most header bidding demand".into();
         for (t, message) in complaints.into_iter().take(5) {
             finding.evidence.push(log_line(
                 format!("Prebid log at {}", ms(t)),
@@ -247,8 +333,14 @@ impl Rule for ConsentTimeout {
 fn is_consent_failure(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     let about_consent = message.contains("consent") || message.contains("cmp");
-    let failed = ["timed out", "timeout", "did not load", "not found", "failed"]
-        .iter()
-        .any(|marker| message.contains(marker));
+    let failed = [
+        "timed out",
+        "timeout",
+        "did not load",
+        "not found",
+        "failed",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker));
     about_consent && failed
 }

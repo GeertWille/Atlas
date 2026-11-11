@@ -17,8 +17,7 @@ use crate::application::ports::{RepoResult, RepositoryError};
 const DATABASE_FILE: &str = "adtech-scanner.sqlite3";
 
 /// Each entry migrates the schema from `user_version = index` to `index + 1`.
-const MIGRATIONS: &[&str] = &[
-    "
+const MIGRATIONS: &[&str] = &["
     CREATE TABLE scans (
         id TEXT PRIMARY KEY,
         url TEXT NOT NULL,
@@ -102,8 +101,7 @@ const MIGRATIONS: &[&str] = &[
         id INTEGER PRIMARY KEY CHECK (id = 1),
         data TEXT NOT NULL
     );
-    ",
-];
+    "];
 
 /// Implements the scan, log and settings repositories on one database.
 #[derive(Clone)]
@@ -114,8 +112,9 @@ pub struct SqliteStore {
 impl SqliteStore {
     /// Opens (creating if needed) the database in `data_dir`.
     pub fn open(data_dir: &Path) -> RepoResult<Self> {
-        std::fs::create_dir_all(data_dir)
-            .map_err(|error| RepositoryError(format!("cannot create {}: {error}", data_dir.display())))?;
+        std::fs::create_dir_all(data_dir).map_err(|error| {
+            RepositoryError(format!("cannot create {}: {error}", data_dir.display()))
+        })?;
         Self::prepare(Connection::open(data_dir.join(DATABASE_FILE)).map_err(storage_error)?)
     }
 
@@ -143,7 +142,9 @@ impl SqliteStore {
     {
         let connection = Arc::clone(&self.connection);
         tokio::task::spawn_blocking(move || {
-            let mut guard = connection.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let mut guard = connection
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             work(&mut guard)
         })
         .await
@@ -168,7 +169,8 @@ fn storage_error(error: rusqlite::Error) -> RepositoryError {
 }
 
 fn to_json<T: Serialize>(value: &T) -> rusqlite::Result<String> {
-    serde_json::to_string(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+    serde_json::to_string(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
 
 fn from_json<T: DeserializeOwned>(text: &str) -> rusqlite::Result<T> {

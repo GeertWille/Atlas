@@ -44,7 +44,9 @@ fn summary_section(out: &mut String, detail: &ScanDetail) {
     let _ = writeln!(
         out,
         "- **Health score:** {}",
-        summary.health_score.map_or("n/a".to_string(), |score| format!("{score}/100"))
+        summary
+            .health_score
+            .map_or("n/a".to_string(), |score| format!("{score}/100"))
     );
     let counts = summary.finding_counts;
     let _ = writeln!(
@@ -71,7 +73,10 @@ fn metrics_section(out: &mut String, metrics: &ScanMetrics) {
     let _ = writeln!(out, "\n## Metrics\n\n| Metric | Value |\n|---|---|");
     let rows = [
         ("Page load", ms(metrics.page_load_ms)),
-        ("Time to first auction", ms(metrics.time_to_first_auction_ms)),
+        (
+            "Time to first auction",
+            ms(metrics.time_to_first_auction_ms),
+        ),
         ("Time to first ad", ms(metrics.time_to_first_ad_ms)),
         ("Auctions", metrics.auction_count.to_string()),
         ("Ad units", metrics.ad_unit_count.to_string()),
@@ -80,16 +85,27 @@ fn metrics_section(out: &mut String, metrics: &ScanMetrics) {
             "Bid requests / responses / timeouts / no-bids",
             format!(
                 "{} / {} / {} / {}",
-                metrics.bid_request_count, metrics.bid_response_count, metrics.bid_timeout_count, metrics.no_bid_count
+                metrics.bid_request_count,
+                metrics.bid_response_count,
+                metrics.bid_timeout_count,
+                metrics.no_bid_count
             ),
         ),
-        ("Timeout rate", format!("{:.0}%", metrics.timeout_rate * 100.0)),
+        (
+            "Timeout rate",
+            format!("{:.0}%", metrics.timeout_rate * 100.0),
+        ),
         ("Prebid timeout", ms(metrics.prebid_timeout_ms)),
-        ("Slots (empty)", format!("{} ({})", metrics.slot_count, metrics.empty_slot_count)),
+        (
+            "Slots (empty)",
+            format!("{} ({})", metrics.slot_count, metrics.empty_slot_count),
+        ),
         ("Fill rate", format!("{:.0}%", metrics.fill_rate * 100.0)),
         (
             "Average winning CPM",
-            metrics.avg_winning_cpm.map_or("n/a".to_string(), |cpm| format!("{cpm:.2}")),
+            metrics
+                .avg_winning_cpm
+                .map_or("n/a".to_string(), |cpm| format!("{cpm:.2}")),
         ),
         (
             "Scripts (ad-related)",
@@ -118,16 +134,26 @@ fn findings_section(out: &mut String, findings: &[Finding]) {
             finding.confidence * 100.0,
             finding
                 .estimated_revenue_impact_pct
-                .map_or(String::new(), |pct| format!(" | **Estimated revenue at risk:** {pct:.0}%")),
+                .map_or(String::new(), |pct| format!(
+                    " | **Estimated revenue at risk:** {pct:.0}%"
+                )),
         );
         let _ = writeln!(out, "{}\n", finding.description);
         let _ = writeln!(out, "**Impact:** {}\n", finding.impact);
         let _ = writeln!(out, "**Recommendation:** {}\n", finding.recommendation);
         if !finding.affected_slots.is_empty() {
-            let _ = writeln!(out, "**Affected slots:** {}\n", finding.affected_slots.join(", "));
+            let _ = writeln!(
+                out,
+                "**Affected slots:** {}\n",
+                finding.affected_slots.join(", ")
+            );
         }
         if !finding.affected_bidders.is_empty() {
-            let _ = writeln!(out, "**Affected bidders:** {}\n", finding.affected_bidders.join(", "));
+            let _ = writeln!(
+                out,
+                "**Affected bidders:** {}\n",
+                finding.affected_bidders.join(", ")
+            );
         }
         for evidence in &finding.evidence {
             let location = match (&evidence.script_url, evidence.line) {
@@ -135,9 +161,21 @@ fn findings_section(out: &mut String, findings: &[Finding]) {
                 (Some(url), None) => format!(" ({url})"),
                 _ => String::new(),
             };
-            let _ = writeln!(out, "*{:?} evidence: {}{location}*\n", evidence.kind, evidence.label);
-            let language = if evidence.kind == EvidenceKind::Code { "js" } else { "text" };
-            let _ = writeln!(out, "```{language}\n{}\n```\n", evidence.body.replace("```", "` ` `"));
+            let _ = writeln!(
+                out,
+                "*{:?} evidence: {}{location}*\n",
+                evidence.kind, evidence.label
+            );
+            let language = if evidence.kind == EvidenceKind::Code {
+                "js"
+            } else {
+                "text"
+            };
+            let _ = writeln!(
+                out,
+                "```{language}\n{}\n```\n",
+                evidence.body.replace("```", "` ` `")
+            );
         }
     }
 }
@@ -203,7 +241,11 @@ fn slots_section(out: &mut String, detail: &ScanDetail) {
 }
 
 fn scripts_section(out: &mut String, detail: &ScanDetail) {
-    let ad_scripts: Vec<_> = detail.scripts.iter().filter(|script| script.ad_related).collect();
+    let ad_scripts: Vec<_> = detail
+        .scripts
+        .iter()
+        .filter(|script| script.ad_related)
+        .collect();
     let _ = writeln!(out, "\n## Ad-related scripts\n");
     if ad_scripts.is_empty() {
         let _ = writeln!(out, "No ad-related scripts were identified.");
@@ -238,7 +280,8 @@ fn pipeline_section(out: &mut String, detail: &ScanDetail) {
             "| {} | {:?} | {} | {} | {} / {} | ${:.4} | {} |",
             node_label(step.node),
             step.status,
-            step.duration_ms.map_or("-".to_string(), |ms| format!("{ms:.0}")),
+            step.duration_ms
+                .map_or("-".to_string(), |ms| format!("{ms:.0}")),
             step.model.as_deref().unwrap_or("-"),
             step.input_tokens,
             step.output_tokens,

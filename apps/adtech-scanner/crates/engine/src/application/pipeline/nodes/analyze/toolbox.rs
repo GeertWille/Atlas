@@ -183,7 +183,11 @@ impl Toolbox {
             .ok_or_else(|| {
                 ToolOutcome::error(format!(
                     "No script with id `{id}`. Available ids: {}.",
-                    self.scripts.iter().map(|script| script.id.as_str()).collect::<Vec<_>>().join(", ")
+                    self.scripts
+                        .iter()
+                        .map(|script| script.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ))
             })
     }
@@ -200,7 +204,10 @@ impl Toolbox {
         }
         let requested_end = (args.end_line.max(args.start_line).max(1) as usize).min(total);
         let end = requested_end.min(start + MAX_READ_LINES - 1);
-        let mut out = format!("{} lines {start}-{end} of {total} ({})\n", script.id, script.url);
+        let mut out = format!(
+            "{} lines {start}-{end} of {total} ({})\n",
+            script.id, script.url
+        );
         out.push_str(&numbered(script, start, end));
         if end < requested_end {
             out.push_str(&format!(
@@ -212,13 +219,14 @@ impl Toolbox {
     }
 
     fn search_scripts(&self, args: SearchScriptsInput) -> ToolOutcome {
-        let scripts: Vec<&ScriptSource> = match args.script_id.as_deref().filter(|id| !id.trim().is_empty()) {
-            Some(id) => match self.script(id) {
-                Ok(script) => vec![script],
-                Err(outcome) => return outcome,
-            },
-            None => self.scripts.iter().collect(),
-        };
+        let scripts: Vec<&ScriptSource> =
+            match args.script_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                Some(id) => match self.script(id) {
+                    Ok(script) => vec![script],
+                    Err(outcome) => return outcome,
+                },
+                None => self.scripts.iter().collect(),
+            };
         if args.pattern.is_empty() {
             return ToolOutcome::error("`pattern` must not be empty.");
         }
@@ -238,7 +246,12 @@ impl Toolbox {
                 shown += 1;
                 let start = index.saturating_sub(SEARCH_CONTEXT_LINES) + 1;
                 let end = (index + 1 + SEARCH_CONTEXT_LINES).min(script.lines.len());
-                out.push_str(&format!("--- {} line {}\n{}\n", script.id, index + 1, numbered(script, start, end)));
+                out.push_str(&format!(
+                    "--- {} line {}\n{}\n",
+                    script.id,
+                    index + 1,
+                    numbered(script, start, end)
+                ));
             }
         }
         if total == 0 {
@@ -375,7 +388,10 @@ struct VerifiedCitation {
     evidence: Evidence,
 }
 
-fn with_input<T: for<'de> Deserialize<'de>>(input: &Value, run: impl FnOnce(T) -> ToolOutcome) -> ToolOutcome {
+fn with_input<T: for<'de> Deserialize<'de>>(
+    input: &Value,
+    run: impl FnOnce(T) -> ToolOutcome,
+) -> ToolOutcome {
     match T::deserialize(input) {
         Ok(args) => run(args),
         Err(error) => ToolOutcome::error(format!(
@@ -385,11 +401,17 @@ fn with_input<T: for<'de> Deserialize<'de>>(input: &Value, run: impl FnOnce(T) -
 }
 
 fn compile_pattern(pattern: &str) -> (Regex, bool) {
-    let build = |source: &str| RegexBuilder::new(source).case_insensitive(true).size_limit(1 << 20).build();
+    let build = |source: &str| {
+        RegexBuilder::new(source)
+            .case_insensitive(true)
+            .size_limit(1 << 20)
+            .build()
+    };
     match build(pattern) {
         Ok(regex) => (regex, false),
         Err(_) => (
-            build(&regex::escape(pattern)).unwrap_or_else(|_| Regex::new("$^").expect("static regex")),
+            build(&regex::escape(pattern))
+                .unwrap_or_else(|_| Regex::new("$^").expect("static regex")),
             true,
         ),
     }
@@ -406,15 +428,25 @@ fn numbered(script: &ScriptSource, start: usize, end: usize) -> String {
 
 fn shorten(line: &str) -> String {
     match line.char_indices().nth(MAX_LINE_CHARS) {
-        Some((cut, _)) => format!("{} [line truncated, {} chars total]", &line[..cut], line.chars().count()),
+        Some((cut, _)) => format!(
+            "{} [line truncated, {} chars total]",
+            &line[..cut],
+            line.chars().count()
+        ),
         None => line.to_string(),
     }
 }
 
 /// The smallest line range inside `start..start+span` whose text contains the
 /// excerpt, ignoring whitespace.
-fn tightest_match(script: &ScriptSource, start: usize, span: usize, needle: &str) -> Option<(usize, usize)> {
-    let contains = |from: usize, to: usize| squash(&script.lines[from - 1..to].join("\n")).contains(needle);
+fn tightest_match(
+    script: &ScriptSource,
+    start: usize,
+    span: usize,
+    needle: &str,
+) -> Option<(usize, usize)> {
+    let contains =
+        |from: usize, to: usize| squash(&script.lines[from - 1..to].join("\n")).contains(needle);
     let mut first = start;
     let mut last = (start + span - 1).min(script.lines.len());
     if !contains(first, last) {
@@ -516,11 +548,21 @@ mod tests {
 
     #[test]
     fn read_script_numbers_lines_and_clamps_the_range() {
-        let outcome = toolbox().execute("read_script", &json!({ "script_id": "s1", "start_line": 2, "end_line": 99 }));
+        let outcome = toolbox().execute(
+            "read_script",
+            &json!({ "script_id": "s1", "start_line": 2, "end_line": 99 }),
+        );
         assert!(!outcome.is_error);
         assert!(outcome.content.starts_with("s1 lines 2-8 of 8"));
-        assert!(outcome.content.contains("    2|   return window.innerWidth > 768;"));
-        let beyond = toolbox().execute("read_script", &json!({ "script_id": "s1", "start_line": 50, "end_line": 60 }));
+        assert!(
+            outcome
+                .content
+                .contains("    2|   return window.innerWidth > 768;")
+        );
+        let beyond = toolbox().execute(
+            "read_script",
+            &json!({ "script_id": "s1", "start_line": 50, "end_line": 60 }),
+        );
         assert!(beyond.is_error);
     }
 
@@ -528,23 +570,39 @@ mod tests {
     fn read_script_caps_lines_per_call_with_a_truncation_note() {
         let mut toolbox = toolbox();
         toolbox.scripts[0].lines = (0..600).map(|n| format!("line{n}();")).collect();
-        let outcome = toolbox.execute("read_script", &json!({ "script_id": "s1", "start_line": 1, "end_line": 600 }));
+        let outcome = toolbox.execute(
+            "read_script",
+            &json!({ "script_id": "s1", "start_line": 1, "end_line": 600 }),
+        );
         assert!(outcome.content.contains("  250| line249();"));
         assert!(!outcome.content.contains("line250();"));
-        assert!(outcome.content.contains("[truncated: 250 lines per call; continue with start_line=251]"));
+        assert!(
+            outcome
+                .content
+                .contains("[truncated: 250 lines per call; continue with start_line=251]")
+        );
     }
 
     #[test]
     fn search_supports_regex_literal_fallback_and_context() {
         let toolbox = toolbox();
-        let regex = toolbox.execute("search_scripts", &json!({ "pattern": "innerwidth\\s*>", "script_id": null }));
+        let regex = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "innerwidth\\s*>", "script_id": null }),
+        );
         assert!(regex.content.starts_with("1 matching lines"));
         assert!(regex.content.contains("--- s1 line 2"));
         assert!(regex.content.contains("    4| if (isMobile()) {"));
-        let literal = toolbox.execute("search_scripts", &json!({ "pattern": "isMobile(", "script_id": "s1" }));
+        let literal = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "isMobile(", "script_id": "s1" }),
+        );
         assert!(literal.content.contains("searched as literal text"));
         assert!(literal.content.starts_with("2 matching lines"));
-        let none = toolbox.execute("search_scripts", &json!({ "pattern": "requestBids", "script_id": null }));
+        let none = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "requestBids", "script_id": null }),
+        );
         assert_eq!(none.content, "No matches for `requestBids`.");
     }
 
@@ -552,14 +610,20 @@ mod tests {
     fn search_results_are_capped() {
         let mut toolbox = toolbox();
         toolbox.scripts[0].lines = (0..100).map(|n| format!("bid({n});")).collect();
-        let outcome = toolbox.execute("search_scripts", &json!({ "pattern": "bid", "script_id": null }));
+        let outcome = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "bid", "script_id": null }),
+        );
         assert!(outcome.content.contains("100 matching lines"));
         assert!(outcome.content.contains("showing the first 40"));
     }
 
     #[test]
     fn valid_citation_is_recorded_with_the_real_source_text() {
-        let outcome = toolbox().execute("report_finding", &finding_input(2, "return window.innerWidth>768;"));
+        let outcome = toolbox().execute(
+            "report_finding",
+            &finding_input(2, "return window.innerWidth>768;"),
+        );
         assert!(!outcome.is_error, "{}", outcome.content);
         let ToolEffect::Finding(draft) = outcome.effect else {
             panic!("expected a finding");
@@ -570,12 +634,18 @@ mod tests {
         let evidence = &draft.evidence[0];
         assert_eq!(evidence.line, Some(2));
         assert_eq!(evidence.body, "  return window.innerWidth > 768;");
-        assert_eq!(evidence.script_url.as_deref(), Some("https://pub.example/ads.js"));
+        assert_eq!(
+            evidence.script_url.as_deref(),
+            Some("https://pub.example/ads.js")
+        );
     }
 
     #[test]
     fn citation_on_the_wrong_line_is_relocated_and_the_model_is_told() {
-        let outcome = toolbox().execute("report_finding", &finding_input(8, "window.addEventListener('scroll', startAuction"));
+        let outcome = toolbox().execute(
+            "report_finding",
+            &finding_input(8, "window.addEventListener('scroll', startAuction"),
+        );
         assert!(!outcome.is_error);
         assert!(outcome.content.contains("found at line 5 instead of 8"));
         let ToolEffect::Finding(draft) = outcome.effect else {
@@ -587,7 +657,10 @@ mod tests {
     #[test]
     fn invented_citations_are_rejected() {
         let toolbox = toolbox();
-        let made_up = toolbox.execute("report_finding", &finding_input(2, "if (navigator.userAgent.match(/iPad/))"));
+        let made_up = toolbox.execute(
+            "report_finding",
+            &finding_input(2, "if (navigator.userAgent.match(/iPad/))"),
+        );
         assert!(made_up.is_error);
         assert_eq!(made_up.effect, ToolEffect::None);
         assert!(made_up.content.contains("does not appear in s1"));
@@ -597,17 +670,30 @@ mod tests {
 
         let mut unknown_script = finding_input(2, "startAuction();");
         unknown_script["evidence"][0]["script_id"] = json!("s9");
-        assert!(toolbox.execute("report_finding", &unknown_script).content.contains("no script `s9`"));
+        assert!(
+            toolbox
+                .execute("report_finding", &unknown_script)
+                .content
+                .contains("no script `s9`")
+        );
 
         let mut no_evidence = finding_input(2, "x");
         no_evidence["evidence"] = json!([]);
-        assert!(toolbox.execute("report_finding", &no_evidence).content.contains("at least one code citation"));
+        assert!(
+            toolbox
+                .execute("report_finding", &no_evidence)
+                .content
+                .contains("at least one code citation")
+        );
     }
 
     #[test]
     fn malformed_input_and_unknown_tools_are_error_results() {
         let toolbox = toolbox();
-        let malformed = toolbox.execute("read_script", &json!({ "script_id": "s1", "start_line": "one" }));
+        let malformed = toolbox.execute(
+            "read_script",
+            &json!({ "script_id": "s1", "start_line": "one" }),
+        );
         assert!(malformed.is_error);
         assert!(malformed.content.starts_with("Invalid tool input"));
         let unknown = toolbox.execute("run_code", &json!({}));

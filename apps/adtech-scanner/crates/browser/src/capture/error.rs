@@ -25,11 +25,13 @@ impl From<CaptureError> for BrowserError {
     fn from(error: CaptureError) -> Self {
         match error {
             CaptureError::Cancelled => BrowserError::Cancelled,
-            CaptureError::Launch(_) | CaptureError::Protocol(CdpError::Connect(_)) | CaptureError::NoPage => {
-                BrowserError::Launch(error.to_string())
-            }
+            CaptureError::Launch(_)
+            | CaptureError::Protocol(CdpError::Connect(_))
+            | CaptureError::NoPage => BrowserError::Launch(error.to_string()),
             CaptureError::Navigation(failure) => BrowserError::Navigation(failure.to_string()),
-            CaptureError::Protocol(_) | CaptureError::PageCrashed => BrowserError::Other(error.to_string()),
+            CaptureError::Protocol(_) | CaptureError::PageCrashed => {
+                BrowserError::Other(error.to_string())
+            }
         }
     }
 }

@@ -52,7 +52,16 @@ impl ScriptLibrary {
         if let Some(rejection) = self.rejection(fingerprint, &body) {
             return rejection;
         }
-        self.store(fingerprint, Entry { url, inline: false, body, loaded_at_epoch_ms, initiator })
+        self.store(
+            fingerprint,
+            Entry {
+                url,
+                inline: false,
+                body,
+                loaded_at_epoch_ms,
+                initiator,
+            },
+        )
     }
 
     /// Inline blocks get the synthetic URL `inline:<n>`; `document_url` becomes
@@ -69,7 +78,16 @@ impl ScriptLibrary {
         }
         self.inline_count += 1;
         let url = format!("inline:{}", self.inline_count);
-        self.store(fingerprint, Entry { url, inline: true, body, loaded_at_epoch_ms, initiator: document_url })
+        self.store(
+            fingerprint,
+            Entry {
+                url,
+                inline: true,
+                body,
+                loaded_at_epoch_ms,
+                initiator: document_url,
+            },
+        )
     }
 
     fn rejection(&self, fingerprint: u64, body: &str) -> Option<Admission> {
@@ -129,21 +147,35 @@ fn truncate_at_char_boundary(text: &mut String, max_bytes: usize) {
 
 /// Scripts of the browser itself or of extensions say nothing about the page.
 pub(crate) fn is_page_script_url(url: &str) -> bool {
-    const INTERNAL_SCHEMES: &[&str] = &["chrome-extension:", "chrome:", "devtools:", "about:", "extensions:"];
-    !url.is_empty() && !INTERNAL_SCHEMES.iter().any(|scheme| url.starts_with(scheme))
+    const INTERNAL_SCHEMES: &[&str] = &[
+        "chrome-extension:",
+        "chrome:",
+        "devtools:",
+        "about:",
+        "extensions:",
+    ];
+    !url.is_empty()
+        && !INTERNAL_SCHEMES
+            .iter()
+            .any(|scheme| url.starts_with(scheme))
 }
 
 /// URL of the script or document behind a CDP `Network.Initiator`.
 pub(crate) fn initiator_url(initiator: &Value) -> Option<String> {
     let direct = initiator["url"].as_str().filter(|url| !url.is_empty());
-    direct.or_else(|| first_stack_url(&initiator["stack"])).map(str::to_string)
+    direct
+        .or_else(|| first_stack_url(&initiator["stack"]))
+        .map(str::to_string)
 }
 
 fn first_stack_url(stack: &Value) -> Option<&str> {
     let mut stack = stack;
     while stack.is_object() {
         let frames = stack["callFrames"].as_array().into_iter().flatten();
-        if let Some(url) = frames.filter_map(|frame| frame["url"].as_str()).find(|url| !url.is_empty()) {
+        if let Some(url) = frames
+            .filter_map(|frame| frame["url"].as_str())
+            .find(|url| !url.is_empty())
+        {
             return Some(url);
         }
         stack = &stack["parent"];
@@ -157,7 +189,9 @@ pub(crate) fn response_text(result: &Value) -> Option<String> {
     if result["base64Encoded"].as_bool() != Some(true) {
         return Some(body.to_string());
     }
-    let bytes = base64::engine::general_purpose::STANDARD.decode(body).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body)
+        .ok()?;
     Some(String::from_utf8_lossy(&bytes).into_owned())
 }
 
@@ -174,8 +208,14 @@ mod tests {
     #[test]
     fn same_url_and_body_is_stored_once() {
         let mut library = ScriptLibrary::default();
-        assert_eq!(external(&mut library, "https://a.test/x.js", "let a = 1"), Admission::Stored);
-        assert_eq!(external(&mut library, "https://a.test/x.js", "let a = 1"), Admission::Duplicate);
+        assert_eq!(
+            external(&mut library, "https://a.test/x.js", "let a = 1"),
+            Admission::Stored
+        );
+        assert_eq!(
+            external(&mut library, "https://a.test/x.js", "let a = 1"),
+            Admission::Duplicate
+        );
         assert_eq!(library.len(), 1);
     }
 
@@ -183,8 +223,14 @@ mod tests {
     fn same_body_under_another_url_and_changed_body_are_both_kept() {
         let mut library = ScriptLibrary::default();
         external(&mut library, "https://a.test/gpt.js", "gpt()");
-        assert_eq!(external(&mut library, "https://a.test/gpt.js?again", "gpt()"), Admission::Stored);
-        assert_eq!(external(&mut library, "https://a.test/gpt.js", "gpt(2)"), Admission::Stored);
+        assert_eq!(
+            external(&mut library, "https://a.test/gpt.js?again", "gpt()"),
+            Admission::Stored
+        );
+        assert_eq!(
+            external(&mut library, "https://a.test/gpt.js", "gpt(2)"),
+            Admission::Stored
+        );
         assert_eq!(library.len(), 3);
     }
 
@@ -192,10 +238,22 @@ mod tests {
     fn inline_scripts_are_numbered_and_deduped_by_body() {
         let mut library = ScriptLibrary::default();
         let page = Some("https://a.test/".to_string());
-        assert_eq!(library.add_inline("one()".into(), Some(1_500.0), page.clone()), Admission::Stored);
-        assert_eq!(library.add_inline("  \n".into(), None, page.clone()), Admission::Empty);
-        assert_eq!(library.add_inline("one()".into(), None, page.clone()), Admission::Duplicate);
-        assert_eq!(library.add_inline("two()".into(), None, page), Admission::Stored);
+        assert_eq!(
+            library.add_inline("one()".into(), Some(1_500.0), page.clone()),
+            Admission::Stored
+        );
+        assert_eq!(
+            library.add_inline("  \n".into(), None, page.clone()),
+            Admission::Empty
+        );
+        assert_eq!(
+            library.add_inline("one()".into(), None, page.clone()),
+            Admission::Duplicate
+        );
+        assert_eq!(
+            library.add_inline("two()".into(), None, page),
+            Admission::Stored
+        );
 
         let scripts = library.into_captured(1_000.0);
         let urls: Vec<&str> = scripts.iter().map(|script| script.url.as_str()).collect();
@@ -209,7 +267,10 @@ mod tests {
     fn oversized_body_is_truncated_on_a_character_boundary() {
         let mut library = ScriptLibrary::default();
         let body = "é".repeat(MAX_SCRIPT_BYTES / 2 + 10);
-        assert_eq!(external(&mut library, "https://a.test/big.js", &body), Admission::Stored);
+        assert_eq!(
+            external(&mut library, "https://a.test/big.js", &body),
+            Admission::Stored
+        );
         let scripts = library.into_captured(0.0);
         assert!(scripts[0].body.len() <= MAX_SCRIPT_BYTES);
         assert!(scripts[0].body.len() >= MAX_SCRIPT_BYTES - 1);
@@ -226,8 +287,14 @@ mod tests {
                 Admission::Stored
             );
         }
-        assert_eq!(external(&mut library, "https://a.test/late.js", "late()"), Admission::OverBudget);
-        assert_eq!(external(&mut library, "https://a.test/0.js", &body), Admission::Duplicate);
+        assert_eq!(
+            external(&mut library, "https://a.test/late.js", "late()"),
+            Admission::OverBudget
+        );
+        assert_eq!(
+            external(&mut library, "https://a.test/0.js", &body),
+            Admission::Duplicate
+        );
     }
 
     #[test]
@@ -248,12 +315,18 @@ mod tests {
         let from_script = json!({"type": "script", "stack": {
             "callFrames": [{"url": ""}, {"url": "https://a.test/wrapper.js"}]
         }});
-        assert_eq!(initiator_url(&from_script).as_deref(), Some("https://a.test/wrapper.js"));
+        assert_eq!(
+            initiator_url(&from_script).as_deref(),
+            Some("https://a.test/wrapper.js")
+        );
         let from_async_parent = json!({"type": "script", "stack": {
             "callFrames": [],
             "parent": {"callFrames": [{"url": "https://a.test/loader.js"}]}
         }});
-        assert_eq!(initiator_url(&from_async_parent).as_deref(), Some("https://a.test/loader.js"));
+        assert_eq!(
+            initiator_url(&from_async_parent).as_deref(),
+            Some("https://a.test/loader.js")
+        );
         assert_eq!(initiator_url(&json!({"type": "other"})), None);
     }
 
@@ -267,7 +340,10 @@ mod tests {
             response_text(&json!({"body": "bGV0IGE=", "base64Encoded": true})).as_deref(),
             Some("let a")
         );
-        assert_eq!(response_text(&json!({"body": "***", "base64Encoded": true})), None);
+        assert_eq!(
+            response_text(&json!({"body": "***", "base64Encoded": true})),
+            None
+        );
         assert_eq!(response_text(&json!({})), None);
     }
 }

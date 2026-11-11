@@ -80,7 +80,9 @@ impl MemorySecretStore {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
-        self.key.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.key
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 

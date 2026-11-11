@@ -561,7 +561,7 @@
 
   var gptReported = false;
   var gptWrappers = new WeakSet();
-  var gptServices = new WeakSet();
+  var listenedLibraries = new WeakSet();
   var knownSlots = new WeakSet();
   // Slots defined before their container exists, waiting to be measured.
   var unmeasuredSlots = [];
@@ -595,9 +595,10 @@
     }
     wrapSlotFactory(googletag, 'defineSlot');
     wrapSlotFactory(googletag, 'defineOutOfPageSlot');
+    if (listenedLibraries.has(googletag)) return;
     var pubads = googletag.pubads();
-    if (!pubads || gptServices.has(pubads) || typeof pubads.addEventListener !== 'function') return;
-    gptServices.add(pubads);
+    if (!pubads || typeof pubads.addEventListener !== 'function') return;
+    listenedLibraries.add(googletag);
     var existing = typeof pubads.getSlots === 'function' ? pubads.getSlots() : [];
     for (var i = 0; isArray(existing) && i < existing.length; i++) noteSlot(existing[i]);
     GPT_SLOT_EVENTS.forEach(function (eventType) {

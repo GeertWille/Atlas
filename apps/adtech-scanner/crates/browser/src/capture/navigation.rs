@@ -9,8 +9,15 @@ pub(crate) enum NavigationFailure {
     #[error("{0}")]
     Network(String),
     #[error("{host} answered with an error page (HTTP {status} {reason}). {advice}")]
-    HttpStatus { host: String, status: u16, reason: &'static str, advice: &'static str },
-    #[error("{host} did not answer within {seconds} seconds. Check that the site is up and try again")]
+    HttpStatus {
+        host: String,
+        status: u16,
+        reason: &'static str,
+        advice: &'static str,
+    },
+    #[error(
+        "{host} did not answer within {seconds} seconds. Check that the site is up and try again"
+    )]
     Timeout { host: String, seconds: u64 },
 }
 
@@ -30,30 +37,42 @@ pub(crate) fn network_failure(error_text: &str, host: &str) -> NavigationFailure
     let code = error_text.trim_start_matches("net::");
     let explanation = match code {
         "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => {
-            format!("The address {host} does not exist (DNS lookup failed). Check the spelling of the domain")
+            format!(
+                "The address {host} does not exist (DNS lookup failed). Check the spelling of the domain"
+            )
         }
         "ERR_INTERNET_DISCONNECTED" | "ERR_NETWORK_CHANGED" | "ERR_ADDRESS_UNREACHABLE" => {
             format!("{host} could not be reached. Check your internet connection")
         }
         "ERR_CONNECTION_REFUSED" => {
-            format!("{host} refused the connection. Check that the site is running and the port is correct")
+            format!(
+                "{host} refused the connection. Check that the site is running and the port is correct"
+            )
         }
         "ERR_CONNECTION_RESET" | "ERR_CONNECTION_CLOSED" | "ERR_EMPTY_RESPONSE" => {
-            format!("{host} closed the connection without answering. The site may be down or blocking automated visits")
+            format!(
+                "{host} closed the connection without answering. The site may be down or blocking automated visits"
+            )
         }
         "ERR_CONNECTION_TIMED_OUT" | "ERR_TIMED_OUT" => {
             format!("{host} took too long to answer. Check that the site is up and try again")
         }
         "ERR_TOO_MANY_REDIRECTS" => {
-            format!("{host} redirects in a loop. Open the page in a normal browser to check it works")
+            format!(
+                "{host} redirects in a loop. Open the page in a normal browser to check it works"
+            )
         }
         "ERR_HTTP_RESPONSE_CODE_FAILURE" => format!("{host} answered with an error and no page"),
         "ERR_BLOCKED_BY_CLIENT" | "ERR_BLOCKED_BY_RESPONSE" | "ERR_BLOCKED_BY_ADMINISTRATOR" => {
             format!("The request to {host} was blocked before it left the browser")
         }
-        "ERR_ABORTED" => format!("{host} did not return a web page (the address may be a download)"),
+        "ERR_ABORTED" => {
+            format!("{host} did not return a web page (the address may be a download)")
+        }
         _ if is_certificate_error(code) => {
-            format!("The security certificate of {host} is not valid ({code}), so the browser refused to open it")
+            format!(
+                "The security certificate of {host} is not valid ({code}), so the browser refused to open it"
+            )
         }
         _ if code.starts_with("ERR_SSL") => {
             format!("A secure connection to {host} could not be established ({code})")
@@ -71,15 +90,35 @@ fn is_certificate_error(code: &str) -> bool {
 pub(crate) fn http_failure(status: u16, host: &str) -> Option<NavigationFailure> {
     let (reason, advice) = match status {
         0..=399 => return None,
-        401 | 407 => ("Unauthorized", "The page needs a login the scanner does not have"),
-        403 => ("Forbidden", "The site refuses this visitor; it may block automated browsers or your network"),
+        401 | 407 => (
+            "Unauthorized",
+            "The page needs a login the scanner does not have",
+        ),
+        403 => (
+            "Forbidden",
+            "The site refuses this visitor; it may block automated browsers or your network",
+        ),
         404 | 410 => ("Not Found", "Check the address: this page does not exist"),
-        429 => ("Too Many Requests", "The site is rate limiting you; wait a moment and try again"),
+        429 => (
+            "Too Many Requests",
+            "The site is rate limiting you; wait a moment and try again",
+        ),
         400..=499 => ("Client Error", "Check the address and try again"),
-        502..=504 => ("Bad Gateway", "The site is temporarily unavailable; try again later"),
-        _ => ("Server Error", "The site is failing on its own; try again later"),
+        502..=504 => (
+            "Bad Gateway",
+            "The site is temporarily unavailable; try again later",
+        ),
+        _ => (
+            "Server Error",
+            "The site is failing on its own; try again later",
+        ),
     };
-    Some(NavigationFailure::HttpStatus { host: host.to_string(), status, reason, advice })
+    Some(NavigationFailure::HttpStatus {
+        host: host.to_string(),
+        status,
+        reason,
+        advice,
+    })
 }
 
 #[cfg(test)]
@@ -88,9 +127,19 @@ mod tests {
 
     #[test]
     fn accepts_only_absolute_web_addresses() {
-        assert_eq!(host_of(&parse_address(" https://news.example/a?b=1 ").unwrap()), "news.example");
+        assert_eq!(
+            host_of(&parse_address(" https://news.example/a?b=1 ").unwrap()),
+            "news.example"
+        );
         assert!(parse_address("http://127.0.0.1:8080/").is_ok());
-        for bad in ["news.example", "ftp://news.example", "file:///etc/passwd", "javascript:alert(1)", "", "about:blank"] {
+        for bad in [
+            "news.example",
+            "ftp://news.example",
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "",
+            "about:blank",
+        ] {
             assert_eq!(
                 parse_address(bad),
                 Err(NavigationFailure::InvalidAddress(bad.to_string())),
@@ -127,14 +176,33 @@ mod tests {
         }
         let not_found = http_failure(404, "a.test").unwrap().to_string();
         assert!(not_found.contains("HTTP 404 Not Found") && not_found.contains("does not exist"));
-        assert!(http_failure(403, "a.test").unwrap().to_string().contains("block"));
-        assert!(http_failure(503, "a.test").unwrap().to_string().contains("temporarily unavailable"));
-        assert!(http_failure(500, "a.test").unwrap().to_string().contains("HTTP 500"));
+        assert!(
+            http_failure(403, "a.test")
+                .unwrap()
+                .to_string()
+                .contains("block")
+        );
+        assert!(
+            http_failure(503, "a.test")
+                .unwrap()
+                .to_string()
+                .contains("temporarily unavailable")
+        );
+        assert!(
+            http_failure(500, "a.test")
+                .unwrap()
+                .to_string()
+                .contains("HTTP 500")
+        );
     }
 
     #[test]
     fn timeout_names_host_and_duration() {
-        let message = NavigationFailure::Timeout { host: "a.test".into(), seconds: 30 }.to_string();
+        let message = NavigationFailure::Timeout {
+            host: "a.test".into(),
+            seconds: 30,
+        }
+        .to_string();
         assert!(message.contains("a.test") && message.contains("30 seconds"));
     }
 }

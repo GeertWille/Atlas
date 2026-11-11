@@ -23,7 +23,7 @@ pub const MAX_CONCURRENT_SCANS: usize = 2;
 const DEFAULT_LOG_SEARCH_LIMIT: u32 = 50;
 const MAX_LOG_SEARCH_LIMIT: u32 = 200;
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
-pub const INTERRUPTED_MESSAGE: &str = "The app was closed while this scan was running";
+const INTERRUPTED_MESSAGE: &str = "The app was closed while this scan was running";
 
 struct ActiveScan {
     cancel: CancellationToken,
@@ -140,7 +140,11 @@ impl ScanService {
     }
 
     pub async fn get(&self, scan_id: &str) -> Result<ScanDetail, AppError> {
-        self.deps.scans.detail(scan_id).await?.ok_or_else(|| not_found(scan_id))
+        self.deps
+            .scans
+            .detail(scan_id)
+            .await?
+            .ok_or_else(|| not_found(scan_id))
     }
 
     pub async fn delete(&self, scan_id: &str) -> Result<(), AppError> {
@@ -157,13 +161,23 @@ impl ScanService {
         Ok(self.deps.scans.delete_all().await?)
     }
 
-    pub async fn logs(&self, scan_id: &str, step_id: Option<&str>) -> Result<Vec<LogEntry>, AppError> {
+    pub async fn logs(
+        &self,
+        scan_id: &str,
+        step_id: Option<&str>,
+    ) -> Result<Vec<LogEntry>, AppError> {
         self.summary(scan_id).await?;
         Ok(self.deps.logs.list(scan_id, step_id).await?)
     }
 
-    pub async fn search_logs(&self, query: &str, limit: Option<u32>) -> Result<Vec<LogSearchHit>, AppError> {
-        let limit = limit.unwrap_or(DEFAULT_LOG_SEARCH_LIMIT).clamp(1, MAX_LOG_SEARCH_LIMIT);
+    pub async fn search_logs(
+        &self,
+        query: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<LogSearchHit>, AppError> {
+        let limit = limit
+            .unwrap_or(DEFAULT_LOG_SEARCH_LIMIT)
+            .clamp(1, MAX_LOG_SEARCH_LIMIT);
         Ok(self.deps.logs.search(query, limit).await?)
     }
 
@@ -189,7 +203,11 @@ impl ScanService {
     }
 
     async fn summary(&self, scan_id: &str) -> Result<ScanSummary, AppError> {
-        self.deps.scans.summary(scan_id).await?.ok_or_else(|| not_found(scan_id))
+        self.deps
+            .scans
+            .summary(scan_id)
+            .await?
+            .ok_or_else(|| not_found(scan_id))
     }
 
     async fn stop_and_wait(&self, scan_id: Option<&str>) {
@@ -208,7 +226,9 @@ impl ScanService {
     }
 
     fn lock_active(&self) -> std::sync::MutexGuard<'_, HashMap<String, ActiveScan>> {
-        self.active.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -252,7 +272,13 @@ async fn supervise(
         Err(_) => {
             let stored = deps.scans.summary(&scan_id).await.ok().flatten();
             let error = "The scan stopped because of an internal error".to_string();
-            close_without_pipeline(&deps, stored.unwrap_or(fallback), ScanStatus::Failed, Some(error)).await;
+            close_without_pipeline(
+                &deps,
+                stored.unwrap_or(fallback),
+                ScanStatus::Failed,
+                Some(error),
+            )
+            .await;
         }
     }
     active

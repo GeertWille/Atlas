@@ -5,12 +5,18 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::candidates::{Os, SearchRoots, macos_bundle_info, newest_version_dir, parse_version_line};
+use super::candidates::{
+    Os, SearchRoots, macos_bundle_info, newest_version_dir, parse_version_line,
+};
 
 const VERSION_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub(super) fn search_roots_from_env() -> SearchRoots {
-    let dir = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(Into::into);
+    let dir = |name: &str| {
+        std::env::var_os(name)
+            .filter(|value| !value.is_empty())
+            .map(Into::into)
+    };
     SearchRoots {
         home: dir("HOME").or_else(|| dir("USERPROFILE")),
         path_dirs: std::env::var_os("PATH")
@@ -33,7 +39,7 @@ pub(super) fn read_identity(os: Os, executable: &Path) -> Identity {
     match os {
         // Running the binary inside an app bundle can open a window (Arc does), so
         // the version comes from the bundle's Info.plist instead.
-        Os::MacOs => match macos_bundle_info(executable) {
+        Os::Mac => match macos_bundle_info(executable) {
             Some(info) => Identity {
                 name: None,
                 version: run_for_output(
@@ -64,7 +70,10 @@ fn identity_from_version_flag(executable: &Path) -> Identity {
             name: Some(line.name).filter(|name| !name.is_empty()),
             version: Some(line.number),
         },
-        None => Identity { name: None, version: None },
+        None => Identity {
+            name: None,
+            version: None,
+        },
     }
 }
 

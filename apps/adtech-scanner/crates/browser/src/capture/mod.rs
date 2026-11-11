@@ -26,17 +26,29 @@ use crate::{BrowserError, CaptureHooks, detect};
 use error::CaptureError;
 use navigation::{NavigationFailure, host_of, http_failure, network_failure, parse_address};
 use page::Page;
-use scenario::{ScrollAction, ScrollStep, consent_attempt_due, observation_window, scroll_plan, step_distance};
+use scenario::{
+    ScrollAction, ScrollStep, consent_attempt_due, due_step, observation_window, scroll_plan,
+    step_distance,
+};
 
 const NAVIGATION_TIMEOUT: Duration = Duration::from_secs(30);
-const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ad-heavy pages often never fire `load`; past this point the scan goes on anyway.
+const LOAD_TIMEOUT: Duration = Duration::from_secs(15);
 const OBSERVATION_TICK: Duration = Duration::from_millis(100);
 const BODY_PATIENCE: Duration = Duration::from_secs(3);
 
-pub(crate) async fn run(request: CaptureRequest, hooks: CaptureHooks) -> Result<Capture, BrowserError> {
+pub(crate) async fn run(
+    request: CaptureRequest,
+    hooks: CaptureHooks,
+) -> Result<Capture, BrowserError> {
     let address = parse_address(&request.url).map_err(CaptureError::from)?;
-    let browser = detect::detect_browser(request.chrome_path.as_deref()).ok_or(BrowserError::NotFound)?;
-    let mode = if request.headless { "headless" } else { "visible" };
+    let browser =
+        detect::detect_browser(request.chrome_path.as_deref()).ok_or(BrowserError::NotFound)?;
+    let mode = if request.headless {
+        "headless"
+    } else {
+        "visible"
+    };
     (hooks.on_progress)(format!("Launching {} ({mode})", browser.version));
 
     let mut chrome = Chrome::spawn(LaunchOptions {
@@ -86,8 +98,14 @@ async fn open(page: &mut Page, address: &Url, hooks: &CaptureHooks) -> Result<()
         page.call("Page.navigate", json!({ "url": address.as_str() })),
     )
     .await
-    .map_err(|_| NavigationFailure::Timeout { host: host.clone(), seconds: NAVIGATION_TIMEOUT.as_secs() })??;
-    if let Some(error_text) = navigation["errorText"].as_str().filter(|text| !text.is_empty()) {
+    .map_err(|_| NavigationFailure::Timeout {
+        host: host.clone(),
+        seconds: NAVIGATION_TIMEOUT.as_secs(),
+    })??;
+    if let Some(error_text) = navigation["errorText"]
+        .as_str()
+        .filter(|text| !text.is_empty())
+    {
         return Err(network_failure(error_text, &host).into());
     }
 
@@ -112,10 +130,21 @@ async fn open(page: &mut Page, address: &Url, hooks: &CaptureHooks) -> Result<()
 
 /// Watches the loaded page for the requested time, accepting the consent
 /// banner and scrolling as planned. Returns whether consent was accepted.
-async fn observe(page: &mut Page, request: &CaptureRequest, hooks: &CaptureHooks) -> Result<bool, CaptureError> {
+async fn observe(
+    page: &mut Page,
+    request: &CaptureRequest,
+    hooks: &CaptureHooks,
+) -> Result<bool, CaptureError> {
     let window = observation_window(request.observe_seconds);
-    let plan = if request.auto_scroll { scroll_plan(window) } else { Vec::new() };
-    (hooks.on_progress)(format!("Observing the page for {} seconds", window.as_secs()));
+    let plan = if request.auto_scroll {
+        scroll_plan(window)
+    } else {
+        Vec::new()
+    };
+    (hooks.on_progress)(format!(
+        "Observing the page for {} seconds",
+        window.as_secs()
+    ));
 
     let loaded_at = Instant::now();
     let mut window_started = loaded_at;
@@ -135,31 +164,46 @@ async fn observe(page: &mut Page, request: &CaptureRequest, hooks: &CaptureHooks
             }
             continue;
         }
-        match plan.get(next_step) {
-            Some(step) if window_started.elapsed() >= step.at => {
-                next_step += 1;
-                perform(page, step, hooks).await?;
+        match due_step(&plan, next_step, window_started.elapsed()) {
+            Some(due) => {
+                next_step = due + 1;
+                perform(page, &plan[due], hooks).await?;
             }
-            _ => {
+            None => {
                 let window_ends = window_started + window;
-                page.record_until(window_ends.min(Instant::now() + OBSERVATION_TICK)).await?;
+                page.record_until(window_ends.min(Instant::now() + OBSERVATION_TICK))
+                    .await?;
             }
         }
     }
     Ok(consent_accepted)
 }
 
-async fn perform(page: &mut Page, step: &ScrollStep, hooks: &CaptureHooks) -> Result<(), CaptureError> {
+async fn perform(
+    page: &mut Page,
+    step: &ScrollStep,
+    hooks: &CaptureHooks,
+) -> Result<(), CaptureError> {
     match step.action {
         ScrollAction::Down { stride, steps_left } => {
-            let Some(position) = page.scroll_position().await? else { return Ok(()) };
+            let Some(position) = page.scroll_position().await? else {
+                return Ok(());
+            };
             if position.remaining() < 1.0 {
                 return Ok(());
             }
-            let distance = step_distance(position.viewport_height, position.remaining(), steps_left, stride)
-                .min(position.remaining());
+            let distance = step_distance(
+                position.viewport_height,
+                position.remaining(),
+                steps_left,
+                stride,
+            )
+            .min(position.remaining());
             page.scroll_down(distance).await?;
-            (hooks.on_progress)(format!("Scrolling ({:.0}%)", position.depth_after(distance) * 100.0));
+            (hooks.on_progress)(format!(
+                "Scrolling ({:.0}%)",
+                position.depth_after(distance) * 100.0
+            ));
         }
         ScrollAction::BackToTop => {
             page.scroll_to_top().await?;

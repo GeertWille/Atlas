@@ -43,7 +43,8 @@ impl ScanRepository for SqliteStore {
 
     async fn save_summary(&self, summary: &ScanSummary) -> RepoResult<()> {
         let summary = summary.clone();
-        self.call(move |connection| write_summary(connection, &summary)).await
+        self.call(move |connection| write_summary(connection, &summary))
+            .await
     }
 
     async fn save_telemetry(
@@ -102,7 +103,10 @@ impl ScanRepository for SqliteStore {
         let scan_id = scan_id.to_string();
         let overview = overview.to_string();
         self.call(move |connection| {
-            connection.execute("UPDATE scans SET overview = ?2 WHERE id = ?1", params![scan_id, overview])?;
+            connection.execute(
+                "UPDATE scans SET overview = ?2 WHERE id = ?1",
+                params![scan_id, overview],
+            )?;
             Ok(())
         })
         .await
@@ -123,7 +127,8 @@ impl ScanRepository for SqliteStore {
 
     async fn summary(&self, scan_id: &str) -> RepoResult<Option<ScanSummary>> {
         let scan_id = scan_id.to_string();
-        self.call(move |connection| read_summary_by_id(connection, &scan_id)).await
+        self.call(move |connection| read_summary_by_id(connection, &scan_id))
+            .await
     }
 
     async fn detail(&self, scan_id: &str) -> RepoResult<Option<ScanDetail>> {
@@ -132,15 +137,20 @@ impl ScanRepository for SqliteStore {
             let Some(summary) = read_summary_by_id(connection, &scan_id)? else {
                 return Ok(None);
             };
-            let (options, metrics, overview): (String, Option<String>, Option<String>) = connection.query_row(
-                "SELECT options, metrics, overview FROM scans WHERE id = ?1",
-                [&scan_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )?;
+            let (options, metrics, overview): (String, Option<String>, Option<String>) = connection
+                .query_row(
+                    "SELECT options, metrics, overview FROM scans WHERE id = ?1",
+                    [&scan_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
             Ok(Some(ScanDetail {
                 summary,
                 options: from_json(&options)?,
-                metrics: metrics.as_deref().map(from_json).transpose()?.unwrap_or_default(),
+                metrics: metrics
+                    .as_deref()
+                    .map(from_json)
+                    .transpose()?
+                    .unwrap_or_default(),
                 findings: read_rows(connection, "findings", "position", &scan_id)?,
                 auctions: read_rows(connection, "auctions", "position", &scan_id)?,
                 slots: read_rows(connection, "slots", "position", &scan_id)?,
@@ -157,7 +167,12 @@ impl ScanRepository for SqliteStore {
         self.call(move |connection| {
             let mut conditions = Vec::new();
             let mut values: Vec<SqlValue> = Vec::new();
-            if let Some(search) = query.search.as_deref().map(str::trim).filter(|search| !search.is_empty()) {
+            if let Some(search) = query
+                .search
+                .as_deref()
+                .map(str::trim)
+                .filter(|search| !search.is_empty())
+            {
                 values.push(SqlValue::Text(format!("%{}%", escape_like(search))));
                 conditions.push(format!("url LIKE ?{} ESCAPE '\\'", values.len()));
             }
@@ -179,7 +194,10 @@ impl ScanRepository for SqliteStore {
                 params_from_iter(values.iter()),
                 |row| row.get(0),
             )?;
-            let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE);
+            let limit = query
+                .limit
+                .unwrap_or(DEFAULT_PAGE_SIZE)
+                .clamp(1, MAX_PAGE_SIZE);
             let offset = query.offset.unwrap_or(0);
             let mut statement = connection.prepare(&format!(
                 "SELECT {SUMMARY_COLUMNS} FROM scans {filter}
@@ -195,8 +213,10 @@ impl ScanRepository for SqliteStore {
 
     async fn delete(&self, scan_id: &str) -> RepoResult<bool> {
         let scan_id = scan_id.to_string();
-        self.call(move |connection| Ok(connection.execute("DELETE FROM scans WHERE id = ?1", [scan_id])? > 0))
-            .await
+        self.call(move |connection| {
+            Ok(connection.execute("DELETE FROM scans WHERE id = ?1", [scan_id])? > 0)
+        })
+        .await
     }
 
     async fn delete_all(&self) -> RepoResult<()> {
@@ -306,7 +326,10 @@ fn write_summary(connection: &Connection, summary: &ScanSummary) -> rusqlite::Re
     Ok(())
 }
 
-fn read_summary_by_id(connection: &Connection, scan_id: &str) -> rusqlite::Result<Option<ScanSummary>> {
+fn read_summary_by_id(
+    connection: &Connection,
+    scan_id: &str,
+) -> rusqlite::Result<Option<ScanSummary>> {
     connection
         .query_row(
             &format!("SELECT {SUMMARY_COLUMNS} FROM scans WHERE id = ?1"),
@@ -348,8 +371,9 @@ fn read_rows<T: DeserializeOwned>(
     order_by: &str,
     scan_id: &str,
 ) -> rusqlite::Result<Vec<T>> {
-    let mut statement =
-        connection.prepare(&format!("SELECT data FROM {table} WHERE scan_id = ?1 ORDER BY {order_by}"))?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT data FROM {table} WHERE scan_id = ?1 ORDER BY {order_by}"
+    ))?;
     statement
         .query_map([scan_id], |row| from_json(&row.get::<_, String>(0)?))?
         .collect()
@@ -361,9 +385,13 @@ fn replace_rows<T: Serialize>(
     scan_id: &str,
     rows: &[T],
 ) -> rusqlite::Result<()> {
-    transaction.execute(&format!("DELETE FROM {table} WHERE scan_id = ?1"), [scan_id])?;
-    let mut insert =
-        transaction.prepare(&format!("INSERT INTO {table} (scan_id, position, data) VALUES (?1, ?2, ?3)"))?;
+    transaction.execute(
+        &format!("DELETE FROM {table} WHERE scan_id = ?1"),
+        [scan_id],
+    )?;
+    let mut insert = transaction.prepare(&format!(
+        "INSERT INTO {table} (scan_id, position, data) VALUES (?1, ?2, ?3)"
+    ))?;
     for (position, row) in rows.iter().enumerate() {
         insert.execute(params![scan_id, position as i64, to_json(row)?])?;
     }
@@ -371,5 +399,7 @@ fn replace_rows<T: Serialize>(
 }
 
 fn escape_like(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    text.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }

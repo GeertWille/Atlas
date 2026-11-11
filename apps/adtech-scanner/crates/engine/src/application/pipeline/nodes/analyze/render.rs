@@ -8,14 +8,23 @@ pub fn auctions_overview(auctions: &[Auction]) -> String {
         return "No Prebid auction started during the observation.".into();
     }
     lines(auctions.iter().map(|auction| {
-        let bids = auction.ad_units.iter().map(|unit| unit.bids.len()).sum::<usize>();
+        let bids = auction
+            .ad_units
+            .iter()
+            .map(|unit| unit.bids.len())
+            .sum::<usize>();
         format!(
             "auction {} start={} end={} timeout={} adUnits=[{}] bids={}",
             short_id(&auction.id),
             ms(Some(auction.started_at_ms)),
             ms(auction.ended_at_ms),
             ms(auction.timeout_ms),
-            auction.ad_units.iter().map(|unit| unit.code.as_str()).collect::<Vec<_>>().join(", "),
+            auction
+                .ad_units
+                .iter()
+                .map(|unit| unit.code.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             bids,
         )
     }))
@@ -124,13 +133,19 @@ pub fn prebid_config(capture: &Capture) -> String {
 
 pub fn console(capture: &Capture) -> String {
     let prebid_logs = capture.events.iter().filter_map(|event| match &event.kind {
-        Ev::PrebidLog { level, message } => Some(format!("t={} prebid {level}: {message}", ms(Some(event.t)))),
+        Ev::PrebidLog { level, message } => {
+            Some(format!("t={} prebid {level}: {message}", ms(Some(event.t))))
+        }
         _ => None,
     });
-    let console_lines = capture
-        .console
-        .iter()
-        .map(|line| format!("t={} console {}: {}", ms(Some(line.t)), line.level, line.text));
+    let console_lines = capture.console.iter().map(|line| {
+        format!(
+            "t={} console {}: {}",
+            ms(Some(line.t)),
+            line.level,
+            line.text
+        )
+    });
     let all: Vec<String> = prebid_logs.chain(console_lines).collect();
     if all.is_empty() {
         "No console output or Prebid log lines were captured.".into()
@@ -156,10 +171,16 @@ pub fn page_events(capture: &Capture) -> String {
             Ev::AmazonDetected {} => "amazon apstag detected".into(),
             Ev::AuctionInit { auction_id, .. } => format!("auctionInit {}", short_id(auction_id)),
             Ev::AuctionEnd { auction_id } => format!("auctionEnd {}", short_id(auction_id)),
-            Ev::SetTargeting { ad_unit_codes } => format!("setTargeting [{}]", ad_unit_codes.join(", ")),
+            Ev::SetTargeting { ad_unit_codes } => {
+                format!("setTargeting [{}]", ad_unit_codes.join(", "))
+            }
             Ev::SlotRequested { element_id, .. } => format!("gpt request {element_id}"),
-            Ev::ApsFetchBids { slot_ids, .. } => format!("apstag.fetchBids [{}]", slot_ids.join(", ")),
-            Ev::ApsBidsReturned { slot_ids, .. } => format!("apstag bids back [{}]", slot_ids.join(", ")),
+            Ev::ApsFetchBids { slot_ids, .. } => {
+                format!("apstag.fetchBids [{}]", slot_ids.join(", "))
+            }
+            Ev::ApsBidsReturned { slot_ids, .. } => {
+                format!("apstag bids back [{}]", slot_ids.join(", "))
+            }
             _ => return None,
         };
         Some(format!("t={} {what}", ms(Some(event.t))))

@@ -16,7 +16,10 @@ pub fn merge_and_rank(findings: Vec<Finding>) -> Vec<Finding> {
         .partition(|finding| finding.source == FindingSource::Ai);
     let mut merged = Vec::new();
     for rule_finding in heuristic {
-        match ai.iter_mut().find(|candidate| same_root_cause(candidate, &rule_finding)) {
+        match ai
+            .iter_mut()
+            .find(|candidate| same_root_cause(candidate, &rule_finding))
+        {
             Some(ai_finding) => absorb(ai_finding, rule_finding),
             None => merged.push(rule_finding),
         }
@@ -60,7 +63,10 @@ fn compatible(a: &[String], b: &[String]) -> bool {
 fn absorb(ai: &mut Finding, heuristic: Finding) {
     ai.severity = ai.severity.max(heuristic.severity);
     ai.confidence = ai.confidence.max(heuristic.confidence);
-    ai.estimated_revenue_impact_pct = match (ai.estimated_revenue_impact_pct, heuristic.estimated_revenue_impact_pct) {
+    ai.estimated_revenue_impact_pct = match (
+        ai.estimated_revenue_impact_pct,
+        heuristic.estimated_revenue_impact_pct,
+    ) {
         (Some(a), Some(b)) => Some(a.max(b)),
         (a, b) => a.or(b),
     };
@@ -169,7 +175,10 @@ pub fn template_overview(
         ));
     }
     if let Some(top) = findings.first() {
-        overview.push_str(&format!(" Most important: {}.", top.title.trim_end_matches('.')));
+        overview.push_str(&format!(
+            " Most important: {}.",
+            top.title.trim_end_matches('.')
+        ));
     }
     overview
 }
@@ -193,7 +202,11 @@ mod tests {
             impact: String::new(),
             estimated_revenue_impact_pct: None,
             evidence: vec![Evidence {
-                kind: if source == FindingSource::Ai { EvidenceKind::Code } else { EvidenceKind::Metric },
+                kind: if source == FindingSource::Ai {
+                    EvidenceKind::Code
+                } else {
+                    EvidenceKind::Metric
+                },
                 label: format!("{source:?} evidence"),
                 body: String::new(),
                 script_url: None,
@@ -209,7 +222,11 @@ mod tests {
         let mut ai = finding(FindingSource::Ai, FindingCategory::LogicBug, Severity::High);
         ai.confidence = 0.7;
         ai.affected_slots = vec!["top".into()];
-        let mut rule = finding(FindingSource::Heuristic, FindingCategory::LazyLoad, Severity::Critical);
+        let mut rule = finding(
+            FindingSource::Heuristic,
+            FindingCategory::LazyLoad,
+            Severity::Critical,
+        );
         rule.affected_slots = vec!["top".into(), "side".into()];
         rule.estimated_revenue_impact_pct = Some(30.0);
 
@@ -231,40 +248,83 @@ mod tests {
     fn unrelated_or_disjoint_findings_stay_separate() {
         let mut ai = finding(FindingSource::Ai, FindingCategory::Timing, Severity::Medium);
         ai.affected_bidders = vec!["rubicon".into()];
-        let mut other_bidder = finding(FindingSource::Heuristic, FindingCategory::Timing, Severity::Medium);
+        let mut other_bidder = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Timing,
+            Severity::Medium,
+        );
         other_bidder.affected_bidders = vec!["criteo".into()];
-        let pricing = finding(FindingSource::Heuristic, FindingCategory::Pricing, Severity::Low);
+        let pricing = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Pricing,
+            Severity::Low,
+        );
         assert_eq!(merge_and_rank(vec![ai, other_bidder, pricing]).len(), 3);
     }
 
     #[test]
     fn unscoped_findings_merge_only_within_the_same_category() {
         let ai = finding(FindingSource::Ai, FindingCategory::LogicBug, Severity::High);
-        let lazy = finding(FindingSource::Heuristic, FindingCategory::LazyLoad, Severity::High);
+        let lazy = finding(
+            FindingSource::Heuristic,
+            FindingCategory::LazyLoad,
+            Severity::High,
+        );
         assert_eq!(merge_and_rank(vec![ai.clone(), lazy]).len(), 2);
-        let mut same = finding(FindingSource::Heuristic, FindingCategory::LogicBug, Severity::Low);
+        let mut same = finding(
+            FindingSource::Heuristic,
+            FindingCategory::LogicBug,
+            Severity::Low,
+        );
         same.id = "rule".into();
         assert_eq!(merge_and_rank(vec![ai, same]).len(), 1);
     }
 
     #[test]
     fn ranking_is_severity_then_impact_then_confidence() {
-        let low = finding(FindingSource::Heuristic, FindingCategory::Pricing, Severity::Low);
-        let mut high_small = finding(FindingSource::Heuristic, FindingCategory::Fill, Severity::High);
+        let low = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Pricing,
+            Severity::Low,
+        );
+        let mut high_small = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Fill,
+            Severity::High,
+        );
         high_small.estimated_revenue_impact_pct = Some(5.0);
-        let mut high_big = finding(FindingSource::Heuristic, FindingCategory::Timing, Severity::High);
+        let mut high_big = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Timing,
+            Severity::High,
+        );
         high_big.estimated_revenue_impact_pct = Some(20.0);
         let ranked = merge_and_rank(vec![low, high_small, high_big]);
         let categories: Vec<FindingCategory> = ranked.iter().map(|f| f.category).collect();
-        assert_eq!(categories, [FindingCategory::Timing, FindingCategory::Fill, FindingCategory::Pricing]);
+        assert_eq!(
+            categories,
+            [
+                FindingCategory::Timing,
+                FindingCategory::Fill,
+                FindingCategory::Pricing
+            ]
+        );
     }
 
     #[test]
     fn health_score_follows_the_documented_formula() {
         assert_eq!(health_score(&[]), 100);
-        let mut critical = finding(FindingSource::Heuristic, FindingCategory::LazyLoad, Severity::Critical);
+        let mut critical = finding(
+            FindingSource::Heuristic,
+            FindingCategory::LazyLoad,
+            Severity::Critical,
+        );
         critical.confidence = 0.5;
-        let medium = finding(FindingSource::Heuristic, FindingCategory::Fill, Severity::Medium);
+        let medium = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Fill,
+            Severity::Medium,
+        );
         // 100 - 30*0.5 - 8*0.8 = 78.6
         assert_eq!(health_score(&[critical.clone(), medium]), 79);
         let many: Vec<Finding> = (0..10).map(|_| critical.clone()).collect();
@@ -274,8 +334,16 @@ mod tests {
     #[test]
     fn severity_counts_and_overview_summarise_findings() {
         let findings = vec![
-            finding(FindingSource::Ai, FindingCategory::LogicBug, Severity::Critical),
-            finding(FindingSource::Heuristic, FindingCategory::Pricing, Severity::Low),
+            finding(
+                FindingSource::Ai,
+                FindingCategory::LogicBug,
+                Severity::Critical,
+            ),
+            finding(
+                FindingSource::Heuristic,
+                FindingCategory::Pricing,
+                Severity::Low,
+            ),
         ];
         let counts = severity_counts(&findings);
         assert_eq!((counts.critical, counts.low, counts.high), (1, 1, 0));
@@ -285,7 +353,13 @@ mod tests {
             auction_count: 2,
             ..ScanMetrics::default()
         };
-        let overview = template_overview("pub.example", DeviceProfile::Mobile, &metrics, &findings, 67);
+        let overview = template_overview(
+            "pub.example",
+            DeviceProfile::Mobile,
+            &metrics,
+            &findings,
+            67,
+        );
         assert!(overview.contains("pub.example (mobile)"));
         assert!(overview.contains("67/100"));
         assert!(overview.contains("Most important: Ai LogicBug."));

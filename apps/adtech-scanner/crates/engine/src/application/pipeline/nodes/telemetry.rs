@@ -10,17 +10,31 @@ pub async fn derive_telemetry(run: &mut StepRun<'_>) -> NodeResult {
     let mut derived = telemetry::derive(capture);
     let described = scripts::describe(capture);
     let prebid_version = telemetry::prebid_version(capture);
-    derived.metrics.ad_script_count = described.iter().filter(|script| script.record.ad_related).count() as u32;
+    derived.metrics.ad_script_count = described
+        .iter()
+        .filter(|script| script.record.ad_related)
+        .count() as u32;
 
     let scan_id = run.state.summary.id.clone();
-    let records: Vec<_> = described.iter().map(|script| script.record.clone()).collect();
+    let records: Vec<_> = described
+        .iter()
+        .map(|script| script.record.clone())
+        .collect();
     run.deps
         .scans
-        .save_telemetry(&scan_id, &derived.metrics, &derived.auctions, &derived.slots)
+        .save_telemetry(
+            &scan_id,
+            &derived.metrics,
+            &derived.auctions,
+            &derived.slots,
+        )
         .await?;
     run.deps.scans.save_scripts(&scan_id, &records).await?;
 
-    let undecided = described.iter().filter(|script| script.ambiguous_hints.is_some()).count();
+    let undecided = described
+        .iter()
+        .filter(|script| script.ambiguous_hints.is_some())
+        .count();
     let summary = format!(
         "{} auctions, {} slots, {} scripts ({} ad-related, {} undecided)",
         derived.auctions.len(),

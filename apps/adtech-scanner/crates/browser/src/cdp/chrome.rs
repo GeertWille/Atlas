@@ -5,6 +5,12 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
+#[cfg(target_os = "linux")]
+use nix::sys::signal::kill;
+#[cfg(unix)]
+use nix::sys::signal::{Signal, killpg};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStderr, Command};
@@ -18,7 +24,10 @@ pub(crate) enum LaunchError {
     #[error("could not create a temporary browser profile: {0}")]
     Profile(std::io::Error),
     #[error("could not start {path}: {source}")]
-    Spawn { path: String, source: std::io::Error },
+    Spawn {
+        path: String,
+        source: std::io::Error,
+    },
     #[error("the browser exited during startup. {0}")]
     Exited(String),
     #[error("the browser did not become ready within {} seconds", STARTUP_TIMEOUT.as_secs())]
@@ -63,7 +72,11 @@ impl Chrome {
         if let Some(stderr) = child.stderr.take() {
             tokio::spawn(watch_stderr(stderr, found));
         }
-        Ok(Self { child, profile: Some(profile), devtools_url: Some(devtools_url) })
+        Ok(Self {
+            child,
+            profile: Some(profile),
+            devtools_url: Some(devtools_url),
+        })
     }
 
     /// Waits for Chrome to announce its DevTools WebSocket endpoint.
@@ -81,7 +94,11 @@ impl Chrome {
     pub(crate) async fn shutdown(mut self) {
         self.kill_process_tree();
         let _ = self.child.wait().await;
-        let Some(profile) = self.profile.take() else { return };
+        // Once more, for helpers that were still starting when the tree was killed.
+        self.kill_process_tree();
+        let Some(profile) = self.profile.take() else {
+            return;
+        };
         // Helper processes can take a moment to die and release their files.
         let path = profile.path().to_path_buf();
         drop(profile);
@@ -96,10 +113,40 @@ impl Chrome {
     fn kill_process_tree(&mut self) {
         #[cfg(unix)]
         if let Some(pid) = self.child.id().and_then(|pid| i32::try_from(pid).ok()) {
-            use nix::sys::signal::{Signal, killpg};
-            let _ = killpg(nix::unistd::Pid::from_raw(pid), Signal::SIGKILL);
+            let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
         }
         let _ = self.child.start_kill();
+        #[cfg(target_os = "linux")]
+        if let Some(profile) = &self.profile {
+            kill_detached_helpers(profile.path());
+        }
+    }
+}
+
+/// Chrome's crash handler detaches into its own session, out of reach of the
+/// process-group kill, and keeps writing into the profile while it winds
+/// down. It is found by the profile path on its command line.
+#[cfg(target_os = "linux")]
+fn kill_detached_helpers(profile: &Path) {
+    let profile = profile.to_string_lossy();
+    let Ok(processes) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for process in processes.flatten() {
+        let Some(pid) = process
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse::<i32>().ok())
+        else {
+            continue;
+        };
+        let uses_profile =
+            std::fs::read(process.path().join("cmdline")).is_ok_and(|command_line| {
+                String::from_utf8_lossy(&command_line).contains(profile.as_ref())
+            });
+        if uses_profile {
+            let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
+        }
     }
 }
 
@@ -121,17 +168,22 @@ fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> 
             "--no-first-run",
             "--no-default-browser-check",
             "--disable-default-apps",
+            // The scan's only traffic should be the scanned page's. Chrome's own
+            // services (account listing, search suggestions) cannot all be switched
+            // off, so the ones that remain are pointed at a closed local port.
+            "--disable-background-networking",
+            "--disable-client-side-phishing-detection",
+            "--google-base-url=http://127.0.0.1:9/",
+            "--gaia-url=http://127.0.0.1:9/",
             "--disable-extensions",
             "--disable-component-update",
             "--disable-sync",
-            "--disable-breakpad",
-            "--disable-crash-reporter",
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
             // Without this `navigator.webdriver` is true and ad stacks see a bot.
             "--disable-blink-features=AutomationControlled",
-            "--disable-features=Translate,MediaRouter,OptimizationHints,DialMediaRouteProvider",
+            "--disable-features=Translate,MediaRouter,OptimizationHints,DialMediaRouteProvider,NetworkTimeServiceQuerying",
             "--password-store=basic",
             "--use-mock-keychain",
             "--mute-audio",

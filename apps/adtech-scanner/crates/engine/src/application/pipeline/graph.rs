@@ -69,7 +69,11 @@ pub fn skip_reason(node: PipelineNode, job: &ScanJob, state: &ScanState) -> Opti
 }
 
 pub fn analysis_selection(state: &ScanState) -> Vec<usize> {
-    select_for_analysis(&state.script_records(), MAX_ANALYZED_SCRIPTS, MAX_ANALYZED_BYTES)
+    select_for_analysis(
+        &state.script_records(),
+        MAX_ANALYZED_SCRIPTS,
+        MAX_ANALYZED_BYTES,
+    )
 }
 
 fn ai_unavailable(job: &ScanJob, state: &ScanState) -> Option<String> {

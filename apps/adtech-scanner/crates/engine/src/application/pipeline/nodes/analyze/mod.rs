@@ -8,21 +8,23 @@ mod toolbox;
 use adscan_model::{Effort, FindingSource, LogKind, LogLevel};
 use serde_json::json;
 
-pub use self::prompt::SYSTEM_PROMPT;
+use self::prompt::SYSTEM_PROMPT;
 use self::toolbox::{ScriptSource, ToolEffect, ToolOutcome, Toolbox};
 use crate::application::AppError;
-use crate::application::llm::{AssistantBlock, AssistantTurn, LlmMessage, LlmRequest, StopReason, UserBlock};
+use crate::application::llm::{
+    AssistantBlock, AssistantTurn, LlmMessage, LlmRequest, StopReason, UserBlock,
+};
 use crate::application::pipeline::audit::{StepRun, truncate_chars};
 use crate::application::pipeline::state::{NodeError, NodeResult};
-use crate::domain::pricing::{TokenUsage, cost_of, estimate_tokens};
+use crate::domain::pricing::{TokenUsage, affordable_output_tokens, estimate_tokens};
 
 const MAX_TOKENS_PER_TURN: u32 = 8_000;
+/// Below this a turn cannot hold thinking plus a useful tool call, so the
+/// loop stops instead of paying for a turn that will be cut off.
+const MIN_USEFUL_OUTPUT_TOKENS: u64 = 1_000;
 /// Tool results can be long stretches of script source; the audit trail keeps
 /// only the beginning.
 const MAX_LOGGED_TOOL_RESULT_CHARS: usize = 4_000;
-/// Output assumed for a turn when projecting its cost.
-const EXPECTED_OUTPUT_TOKENS: u64 = 1_500;
-
 fn max_iterations(effort: Effort) -> u32 {
     match effort {
         Effort::Low => 12,
@@ -68,9 +70,22 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
         .filter(|finding| finding.source == FindingSource::Heuristic)
         .cloned()
         .collect();
-    let opening = prompt::opening_message(run.state.capture()?, run.state.telemetry()?, &heuristic_findings, &toolbox);
+    let opening = prompt::opening_message(
+        run.state.capture()?,
+        run.state.telemetry()?,
+        &heuristic_findings,
+        &toolbox,
+    );
     let tools = prompt::tool_specs();
-    let prefix_chars = SYSTEM_PROMPT.len() + json!(tools.iter().map(|tool| &tool.input_schema).collect::<Vec<_>>()).to_string().len();
+    let prefix_chars = SYSTEM_PROMPT.len()
+        + json!(
+            tools
+                .iter()
+                .map(|tool| &tool.input_schema)
+                .collect::<Vec<_>>()
+        )
+        .to_string()
+        .len();
     run.log(
         LogLevel::Debug,
         LogKind::LlmRequest,
@@ -92,14 +107,21 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
 
     while iterations < max_iterations(effort) {
         run.check_cancelled()?;
-        if !run.state.budget.can_afford(projected_cost(&model, last_usage, pending_chars)) {
+        // The output limit of each call is what the budget still pays for, so
+        // a turn cannot overspend however long the model would like to write.
+        let affordable = affordable_output_tokens(
+            &model,
+            projected_prompt(last_usage, pending_chars),
+            run.state.budget.remaining_usd(),
+        );
+        if affordable < MIN_USEFUL_OUTPUT_TOKENS {
             stop = StopCause::BudgetReached;
             break;
         }
         iterations += 1;
         let request = LlmRequest {
             model: model.clone(),
-            max_tokens: MAX_TOKENS_PER_TURN,
+            max_tokens: affordable.min(u64::from(MAX_TOKENS_PER_TURN)) as u32,
             effort,
             system: SYSTEM_PROMPT.to_string(),
             tools: tools.clone(),
@@ -107,7 +129,11 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
             output_schema: None,
             cache_prefix: true,
         };
-        let response = run.deps.llm.complete(&api_key, &request, &run.job.cancel).await?;
+        let response = run
+            .deps
+            .llm
+            .complete(&api_key, &request, &run.job.cancel)
+            .await?;
         run.record_llm_call(&model, response.usage).await?;
         last_usage = Some(response.usage);
         log_model_output(run, &response.turn).await?;
@@ -132,9 +158,14 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
                 pending_chars = 0;
             }
             StopReason::ToolUse => {
-                let (results, finished) = run_tool_calls(run, &toolbox, &response.turn, &mut reported).await?;
+                let (results, finished) =
+                    run_tool_calls(run, &toolbox, &response.turn, &mut reported).await?;
                 if finished || results.is_empty() {
-                    stop = if finished { StopCause::Finished } else { StopCause::EndedTurn };
+                    stop = if finished {
+                        StopCause::Finished
+                    } else {
+                        StopCause::EndedTurn
+                    };
                     break;
                 }
                 pending_chars = results.iter().map(result_chars).sum();
@@ -153,8 +184,12 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
     }
 
     if stop != StopCause::Finished && stop != StopCause::EndedTurn {
-        run.warn(format!("Logic analysis {}", stop.describe())).await?;
-        run.state.caveats.push(format!("The AI logic analysis is partial ({})", stop.describe()));
+        run.warn(format!("Logic analysis {}", stop.describe()))
+            .await?;
+        run.state.caveats.push(format!(
+            "The AI logic analysis is partial ({})",
+            stop.describe()
+        ));
     }
     Ok(format!(
         "{iterations} model turns, {reported} findings reported; {}",
@@ -178,46 +213,58 @@ fn build_toolbox(run: &StepRun<'_>) -> Result<Toolbox, NodeError> {
             }
         })
         .collect();
-    Ok(Toolbox::new(scripts, run.state.capture()?, run.state.telemetry()?))
+    Ok(Toolbox::new(
+        scripts,
+        run.state.capture()?,
+        run.state.telemetry()?,
+    ))
 }
 
 async fn mark_scripts_analyzed(run: &mut StepRun<'_>) -> Result<(), NodeError> {
-    let indexes: Vec<usize> = run.state.sources.iter().map(|source| source.script_index).collect();
+    let indexes: Vec<usize> = run
+        .state
+        .sources
+        .iter()
+        .map(|source| source.script_index)
+        .collect();
     for index in indexes {
         run.state.scripts[index].record.analyzed = true;
     }
     let scan_id = run.state.summary.id.clone();
-    run.deps.scans.save_scripts(&scan_id, &run.state.script_records()).await?;
+    run.deps
+        .scans
+        .save_scripts(&scan_id, &run.state.script_records())
+        .await?;
     Ok(())
 }
 
-/// Before the first call the whole prompt is new input; afterwards the
-/// conversation so far is a cache read and only the latest results are new.
-fn projected_cost(model: &str, last_usage: Option<TokenUsage>, pending_chars: usize) -> f64 {
-    let usage = match last_usage {
+/// Prompt of the next call. Before the first call everything is new input;
+/// afterwards the conversation so far is a cache read and only the latest
+/// tool results are new.
+fn projected_prompt(last_usage: Option<TokenUsage>, pending_chars: usize) -> TokenUsage {
+    match last_usage {
         None => TokenUsage {
             input: estimate_tokens(pending_chars),
-            output: EXPECTED_OUTPUT_TOKENS,
             ..TokenUsage::default()
         },
         Some(last) => TokenUsage {
             cache_read: last.prompt_tokens() + last.output,
             cache_write: estimate_tokens(pending_chars),
-            output: last.output.max(EXPECTED_OUTPUT_TOKENS),
             ..TokenUsage::default()
         },
-    };
-    cost_of(model, usage).usd
+    }
 }
 
 async fn log_model_output(run: &mut StepRun<'_>, turn: &AssistantTurn) -> Result<(), NodeError> {
     for block in &turn.blocks {
         match block {
             AssistantBlock::Thinking(summary) if !summary.trim().is_empty() => {
-                run.log(LogLevel::Debug, LogKind::Thinking, summary.clone(), None).await?;
+                run.log(LogLevel::Debug, LogKind::Thinking, summary.clone(), None)
+                    .await?;
             }
             AssistantBlock::Text(text) if !text.trim().is_empty() => {
-                run.log(LogLevel::Info, LogKind::LlmResponse, text.clone(), None).await?;
+                run.log(LogLevel::Info, LogKind::LlmResponse, text.clone(), None)
+                    .await?;
             }
             _ => {}
         }
@@ -251,7 +298,11 @@ async fn run_tool_calls(
             is_error,
             effect,
         } = toolbox.execute(name, input);
-        let level = if is_error { LogLevel::Warn } else { LogLevel::Debug };
+        let level = if is_error {
+            LogLevel::Warn
+        } else {
+            LogLevel::Debug
+        };
         run.log(
             level,
             LogKind::ToolResult,
@@ -262,7 +313,8 @@ async fn run_tool_calls(
         match effect {
             ToolEffect::None => {}
             ToolEffect::Finding(draft) => {
-                run.add_finding(*draft, json!({ "tool": "report_finding" })).await?;
+                run.add_finding(*draft, json!({ "tool": "report_finding" }))
+                    .await?;
                 *reported += 1;
             }
             ToolEffect::Finish { overview } => {

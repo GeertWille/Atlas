@@ -12,7 +12,8 @@ const MATCH_START: char = '\u{E000}';
 const MATCH_END: char = '\u{E001}';
 const SNIPPET_TOKENS: u32 = 24;
 
-const LOG_COLUMNS: &str = "l.id, l.scan_id, l.step_id, l.node, l.ts, l.level, l.kind, l.message, l.data";
+const LOG_COLUMNS: &str =
+    "l.id, l.scan_id, l.step_id, l.node, l.ts, l.level, l.kind, l.message, l.data";
 
 #[async_trait]
 impl LogRepository for SqliteStore {
@@ -179,17 +180,25 @@ mod tests {
 
     #[test]
     fn fts_query_quotes_terms_and_prefixes_the_last() {
-        assert_eq!(fts_query("device detect").as_deref(), Some("\"device\" \"detect\"*"));
+        assert_eq!(
+            fts_query("device detect").as_deref(),
+            Some("\"device\" \"detect\"*")
+        );
         assert_eq!(fts_query("  isMobile( ").as_deref(), Some("\"isMobile\"*"));
         assert_eq!(fts_query("a-b").as_deref(), Some("\"a\" \"b\"*"));
-        assert_eq!(fts_query("\"OR\" NEAR(").as_deref(), Some("\"OR\" \"NEAR\"*"));
+        assert_eq!(
+            fts_query("\"OR\" NEAR(").as_deref(),
+            Some("\"OR\" \"NEAR\"*")
+        );
         assert_eq!(fts_query("\"*:^()-"), None);
         assert_eq!(fts_query(""), None);
     }
 
     #[test]
     fn projection_flattens_keys_and_values() {
-        let text = text_projection(&json!({ "tool": "read_script", "input": { "start_line": 10, "ok": true } }));
+        let text = text_projection(
+            &json!({ "tool": "read_script", "input": { "start_line": 10, "ok": true } }),
+        );
         assert_eq!(text, "input ok true start_line 10 tool read_script");
     }
 
