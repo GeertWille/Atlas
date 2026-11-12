@@ -225,3 +225,25 @@ test("with no configurations the screen explains them and home stays uncluttered
   await startScan(page, "example.com");
   await expect(page).toHaveURL(/#\/scans\/scan-/);
 });
+
+test("re-scanning a scan whose configuration was deleted scans it with its own options", async ({ page }) => {
+  await openApp(page, "/configurations");
+  await row(page, "Morning Ledger, no proxy")
+    .getByRole("button", { name: /^Actions for/ })
+    .click();
+  await page.getByRole("menuitem", { name: "Delete…" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
+  await expect(row(page, "Morning Ledger, no proxy")).toHaveCount(0);
+
+  await page.goto("/#/scans/seed-morningledger-desktop");
+  const header = page.getByRole("main").locator("header");
+  // The report still says where the scan came from.
+  await expect(header.getByText("Morning Ledger, no proxy")).toBeVisible();
+  await page.getByRole("button", { name: "Re-scan" }).hover();
+  await expect(page.getByRole("tooltip")).toHaveText("Scan this page again with the same options");
+  await page.getByRole("button", { name: "Re-scan" }).click();
+  await expect(page).toHaveURL(/#\/scans\/scan-/);
+  await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
+  await expect(header.getByText("Morning Ledger, no proxy")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Overview" }).getByText("No proxy", { exact: true })).toBeVisible();
+});

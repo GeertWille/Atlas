@@ -1,7 +1,7 @@
 import type { LogEntry, PageReach } from "@/bindings";
 import { describeSkipped, visitorActivity } from "@/shared/domain/visitor-log";
 
-export type VisitPage = {
+type VisitPage = {
   index: number;
   url: string;
   title: string | null;
@@ -23,7 +23,7 @@ export type VisitState = {
   environment: string | null;
 };
 
-const ACTIONS_SHOWN = 4;
+const ACTIONS_SHOWN = 3;
 
 /** The state of a visit as far as the audit trail has told it: nothing here is known from anywhere else. */
 export function deriveVisit(logs: LogEntry[]): VisitState {

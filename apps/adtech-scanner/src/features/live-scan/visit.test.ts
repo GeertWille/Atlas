@@ -49,14 +49,13 @@ test("pages, the current page, the latest actions and the skip summary come from
     [1, "https://site.example/sport/final", "linkClick", "Final"],
   ]);
   expect(visit.current?.index).toBe(1);
-  // The four newest, oldest first; the consent click has scrolled out.
+  // The three newest, oldest first; the earlier gestures have scrolled out.
   expect(visit.actions.map((action) => action.message)).toEqual([
-    "Scrolled to 30%",
     "Scrolled to 60%",
     "Following link: /sport/final (best of 5)",
     "Closed a pop-up window (partner.example): not recorded",
   ]);
-  expect(visit.actions.map((action) => action.warning)).toEqual([false, false, false, true]);
+  expect(visit.actions.map((action) => action.warning)).toEqual([false, false, true]);
   expect(visit.skipped).toBe("Skipped 14 links: 9 off-site, 3 inside ads, 2 sign-in, checkout and the like");
   expect(visit.environment).toBe("This visit is identifiable as automated: navigator.webdriver is true");
 });

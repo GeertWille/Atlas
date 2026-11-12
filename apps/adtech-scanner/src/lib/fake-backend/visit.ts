@@ -29,7 +29,7 @@ export type VisitPlan = {
 };
 
 /** What went wrong on a later page view, for the rules that only a multi-page visit can trigger. */
-export type PageStory = "normal" | "noBidsAfterNavigation" | "slotsNotReset" | "consentAskedAgain";
+type PageStory = "normal" | "noBidsAfterNavigation" | "slotsNotReset" | "consentAskedAgain";
 
 export type VisitedPage = { view: PageView; site: CapturedSite; story: PageStory };
 

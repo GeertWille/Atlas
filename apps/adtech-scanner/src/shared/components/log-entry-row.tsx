@@ -186,38 +186,23 @@ function LinkChoiceSummary({ choice }: { choice: LinkChoice }) {
   return (
     <div className="flex flex-col gap-2.5 rounded-md border bg-card px-3 py-2.5 text-xs">
       {candidates.length > 0 ? (
-        <table className="w-full table-fixed border-separate border-spacing-y-1">
-          <caption className="sr-only">Links considered</caption>
-          <thead className="text-left text-muted-foreground">
-            <tr>
-              <th scope="col" className="w-[38%] font-normal">
-                Link
-              </th>
-              <th scope="col" className="font-normal">
-                Address
-              </th>
-              <th scope="col" className="w-12 text-right font-normal">
-                Score
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {candidates.map((link) => (
-              <tr key={link.href} className={link.picked ? "font-medium" : "text-muted-foreground"}>
-                <td className="truncate pr-3">
-                  {link.picked ? (
-                    <Badge tone="green" className="mr-1.5">
-                      Followed
-                    </Badge>
-                  ) : null}
+        <ol aria-label="Links considered" className="flex flex-col gap-2">
+          {candidates.map((link) => (
+            <li
+              key={link.href}
+              className={cn("flex min-w-0 flex-col gap-0.5", !link.picked && "text-muted-foreground")}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                {link.picked ? <Badge tone="green">Followed</Badge> : null}
+                <span className={cn("min-w-0 flex-1 truncate", link.picked && "font-medium")}>
                   {link.text || "(no text)"}
-                </td>
-                <td className="selectable truncate pr-3 font-mono font-normal">{link.href}</td>
-                <td className="text-right tabular-nums">{link.score ?? "–"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                </span>
+                {link.score === null ? null : <span className="shrink-0 tabular-nums">score {link.score}</span>}
+              </span>
+              <span className="selectable truncate font-mono text-[11px] text-subtle-foreground">{link.href}</span>
+            </li>
+          ))}
+        </ol>
       ) : (
         <p className="text-muted-foreground">No link on this page was safe and worth following.</p>
       )}

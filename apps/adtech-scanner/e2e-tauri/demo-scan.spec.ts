@@ -188,11 +188,12 @@ test("every report tab shows what the scan captured, including the planted bugs"
   expect(details).toContain("Wrapper");
 
   await browser.$(reportTab("Audit trail")).click();
-  const steps = await seeText(browser, "27 rules evaluated, 9 findings", { within: labelled("Pipeline steps") });
+  const steps = await seeText(browser, "33 rules evaluated, 10 findings", { within: labelled("Pipeline steps") });
   expect(steps).toContain("7 bidders checked: 3 problems, 0 notices; ads.txt has 6 records; sellers.json not checked");
   expect(steps).toContain("AI analysis is turned off for this scan");
   await browser.$(`${labelled("Pipeline steps")}//button[contains(., "Deterministic checks")]`).click();
-  await seeText(browser, /9 of 42 entries[\s\S]*\[High\] Bidding waits for the first scroll on desktop/, {
+  // How many entries the trail has depends on how many gestures the visitor made; the step's share does not.
+  await seeText(browser, /10 of \d+ entries[\s\S]*\[High\] Bidding waits for the first scroll on desktop/, {
     within: MAIN,
   });
 });

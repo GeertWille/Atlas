@@ -58,18 +58,11 @@ test("a link choice opens into the link followed, why, the runners-up and what w
   await renderWithApp(<AuditTrail steps={steps} logs={logs} onOpenFinding={() => {}} />);
   await user.click(within(entries()).getByRole("button", { name: /Following link: \/sport\/final/ }));
 
-  const table = within(entries()).getByRole("table", { name: "Links considered" });
-  const rows = within(table).getAllByRole("row").slice(1);
-  expect(
-    rows.map((row) =>
-      within(row)
-        .getAllByRole("cell")
-        .map((cell) => cell.textContent),
-    ),
-  ).toEqual([
-    ["FollowedCup final preview", "https://site.example/sport/final", "6"],
-    ["Rail strike called off", "https://site.example/news/rail-strike", "5"],
-    ["(no text)", "https://site.example/sport", "2"],
+  const links = within(within(entries()).getByRole("list", { name: "Links considered" })).getAllByRole("listitem");
+  expect(links.map((link) => link.textContent)).toEqual([
+    "FollowedCup final previewscore 6https://site.example/sport/final",
+    "Rail strike called offscore 5https://site.example/news/rail-strike",
+    "(no text)score 2https://site.example/sport",
   ]);
   expect(within(entries()).getByText("Chosen for: content link, article-like path")).toBeInTheDocument();
   expect(within(entries()).getByText("Not considered:")).toHaveTextContent(
@@ -79,11 +72,11 @@ test("a link choice opens into the link followed, why, the runners-up and what w
   expect(within(entries()).getByText(/"activity"/)).toBeInTheDocument();
 });
 
-test("a page without a link to follow says so instead of showing an empty table", async () => {
+test("a page without a link to follow says so instead of showing an empty list", async () => {
   const user = userEvent.setup();
   await renderWithApp(<AuditTrail steps={steps} logs={logs} onOpenFinding={() => {}} />);
   await user.click(within(entries()).getByRole("button", { name: /No link to follow/ }));
-  expect(within(entries()).queryByRole("table")).toBeNull();
+  expect(within(entries()).queryByRole("list", { name: "Links considered" })).toBeNull();
   expect(within(entries()).getByText("No link on this page was safe and worth following.")).toBeInTheDocument();
   expect(within(entries()).getByText("Not considered:")).toHaveTextContent("Not considered: 4 hidden");
 });

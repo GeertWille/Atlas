@@ -180,7 +180,6 @@ export function LiveScanView({
         <div className="flex min-h-0 flex-col gap-4">
           <Panel
             // Scrolls when the visit panel or a short window leaves it less room: keyboard reachable then.
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: scroll container
             tabIndex={0}
             className="min-h-0 shrink overflow-y-auto p-4"
           >

@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import type { ExportFormat, ScanDetail } from "@/bindings";
-import { useExportScan } from "@/lib/query/hooks";
+import { useExportScan, useScanConfigurations } from "@/lib/query/hooks";
 import { HealthRing } from "@/shared/components/health-ring";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceIcon, DeviceLabel, ScanStatusBadge, SeverityCountPills } from "@/shared/components/status";
@@ -75,7 +75,10 @@ function ExportMenu({ detail }: { detail: ScanDetail }) {
 
 export function ReportHeader({ detail }: { detail: ScanDetail }) {
   const { summary } = detail;
-  const { configuration } = summary;
+  const configurations = useScanConfigurations();
+  // The chip keeps the name the scan was started under; only a configuration that still exists can run again.
+  const { configuration: startedFrom } = summary;
+  const configuration = configurations.data?.some((saved) => saved.id === startedFrom?.id) ? startedFrom : null;
   const options = rescanOptions(detail.options);
   const repeatVisit = repeatVisitOptions(detail);
   const { launch, launchConfiguration, isPending } = useLaunchScan();
@@ -114,10 +117,10 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
           </p>
           <div className="flex items-center gap-2">
             <SeverityCountPills counts={summary.findingCounts} />
-            {configuration ? (
-              <Badge tone="outline" title={`Started from the configuration “${configuration.name}”`}>
+            {startedFrom ? (
+              <Badge tone="outline" title={`Started from the configuration “${startedFrom.name}”`}>
                 <BookmarkIcon />
-                <span className="max-w-48 truncate">{configuration.name}</span>
+                <span className="max-w-48 truncate">{startedFrom.name}</span>
               </Badge>
             ) : null}
             {completed ? (

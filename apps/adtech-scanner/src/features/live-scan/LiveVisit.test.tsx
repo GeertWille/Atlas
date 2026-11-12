@@ -156,7 +156,8 @@ test("Finish capture ends the recording, keeps the pages seen and lets the scan 
   );
   const { queryClient } = await renderWithApp(<ConnectedLive scanId={scan.id} />);
   const bar = await screen.findByRole("region", { name: "Manual session" });
-  expect(within(bar).getByText("Recorded").nextElementSibling).toHaveTextContent("3 pages");
+  // The count comes from the audit trail, which loads after the scan itself.
+  await waitFor(() => expect(within(bar).getByText("Recorded").nextElementSibling).toHaveTextContent("3 pages"));
 
   await user.click(within(bar).getByRole("button", { name: "Finish capture" }));
   expect(await within(bar).findByRole("button", { name: "Finishing…" })).toBeDisabled();

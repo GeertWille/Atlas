@@ -297,10 +297,11 @@ test("the audit trail explains each link the visitor followed", async ({ page })
   await expect(entries.getByText("Closed a pop-up window (partner-offers.example): not recorded")).toBeVisible();
 
   await entries.getByRole("button", { name: /Following link: \/2026\/11\/council-approves-harbour-plan/ }).click();
-  const considered = entries.getByRole("table", { name: "Links considered" });
-  await expect(considered.getByRole("row")).toHaveCount(6);
-  await expect(considered.getByRole("row").nth(1)).toContainText("Followed");
-  await expect(considered.getByRole("row").nth(1)).toContainText("Council approves harbour plan");
+  const considered = entries.getByRole("list", { name: "Links considered" }).getByRole("listitem");
+  await expect(considered).toHaveCount(5);
+  await expect(considered.first()).toContainText("Followed");
+  await expect(considered.first()).toContainText("Council approves harbour plan");
+  await expect(considered.first()).toContainText("score 6");
   await expect(
     entries.getByText("Chosen for: content link, article-like path, text of 25-120 characters"),
   ).toBeVisible();

@@ -213,7 +213,7 @@ const NO_ANTHROPIC_KEY = "No Anthropic API key is configured";
 /** Estimated extra telemetry the logic analysis reads for each page view after the first. */
 const TOKENS_PER_EXTRA_PAGE = 1_500;
 /** A manual session visits this many pages unless the user finishes it earlier. */
-export const MANUAL_SESSION_PAGES = 3;
+const MANUAL_SESSION_PAGES = 3;
 /** Simulated time the person spends on a page of a manual session before moving on. */
 const MANUAL_PAGE_MS = 5_000;
 

@@ -1,6 +1,6 @@
 import type { LogEntry, PageReach } from "@/bindings";
 
-export type LinkCandidate = { text: string; href: string; score: number | null };
+type LinkCandidate = { text: string; href: string; score: number | null };
 
 export type VisitorActivity =
   | {
@@ -35,7 +35,7 @@ const PAGE_REACHES: readonly PageReach[] = [
 ];
 
 /** What the scanner calls each reason it would not follow a link, in words a report reader knows. */
-export const SKIP_REASON_LABEL: Record<string, string> = {
+const SKIP_REASON_LABEL: Record<string, string> = {
   hidden: "hidden",
   "inside-ad": "inside ads",
   scheme: "not a web link",

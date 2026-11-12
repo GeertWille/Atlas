@@ -188,12 +188,12 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
         ) : (
           <HistoryTable
             scans={scans}
-            // A scan that came from a configuration is repeated as a run of that configuration.
-            onRescan={(scan) =>
-              scan.configuration
-                ? launchConfiguration(scan.configuration.id)
-                : launch(defaultScanOptions(settings, scan.url, scan.device))
-            }
+            // A scan that came from a configuration that still exists is repeated as a run of it.
+            onRescan={(scan) => {
+              const configuration = configurations.find((saved) => saved.id === scan.configuration?.id);
+              if (configuration) launchConfiguration(configuration.id);
+              else launch(defaultScanOptions(settings, scan.url, scan.device));
+            }}
             onDelete={(scan) => setConfirmation({ kind: "one", scan })}
           />
         )}
