@@ -288,8 +288,7 @@ impl PageLog {
                 .filter(move |(_, view)| view.document == document)
         };
         of_document()
-            .filter(|(_, view)| view.offset_ms <= t)
-            .last()
+            .rfind(|(_, view)| view.offset_ms <= t)
             .or_else(|| of_document().next())
             .map(|(index, _)| index)
     }

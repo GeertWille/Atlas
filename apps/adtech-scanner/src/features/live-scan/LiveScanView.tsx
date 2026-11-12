@@ -178,7 +178,12 @@ export function LiveScanView({
 
       <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] gap-4">
         <div className="flex min-h-0 flex-col gap-4">
-          <Panel className="min-h-0 shrink overflow-y-auto p-4">
+          <Panel
+            // Scrolls when the visit panel or a short window leaves it less room: keyboard reachable then.
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: scroll container
+            tabIndex={0}
+            className="min-h-0 shrink overflow-y-auto p-4"
+          >
             <PipelineStepper steps={steps} now={now} />
           </Panel>
           {/* Beside the feed, not above it: the feed follows its newest line and must not change height mid-scan. */}

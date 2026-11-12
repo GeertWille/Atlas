@@ -113,9 +113,12 @@ async fn failed_and_finished_captures_leave_no_chrome_behind() {
     }
 }
 
+/// Whether a report of the visit shows that it got to some state.
+type Reached = fn(&CaptureActivity) -> bool;
+
 /// The moments of a browsing visit at which it is cancelled below, each
 /// recognised by what the visit has reported by then.
-const STATES: [(&str, fn(&CaptureActivity) -> bool); 5] = [
+const STATES: [(&str, Reached); 5] = [
     ("settling", |activity| {
         activity.message.starts_with("Browsing like a visitor")
     }),

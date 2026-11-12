@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { expectNoAxeViolations, expectNoHorizontalOverflow, openApp } from "./app";
 
 const REPORT = "/scans/seed-sportsdesk-desktop";
+const MULTI_PAGE_REPORT = "/scans/seed-sportsdesk-browse";
 
 const SCREENS: { name: string; route: string; ready: (page: Page) => Promise<void> }[] = [
   {
@@ -46,6 +47,42 @@ const SCREENS: { name: string; route: string; ready: (page: Page) => Promise<voi
     ready: (page) => expect(page.getByRole("region", { name: /Matches in/ }).first()).toBeVisible(),
   },
   { name: "settings", route: "/settings", ready: (page) => expect(page.getByLabel("Budget per scan")).toBeVisible() },
+  {
+    name: "configurations",
+    route: "/configurations",
+    ready: (page) =>
+      expect(page.getByRole("region", { name: "Configurations" }).getByText("Never run").first()).toBeVisible(),
+  },
+  {
+    name: "composer with a configuration that needs fixing",
+    route: "/?configuration=config-sportsdesk-germany",
+    ready: (page) => expect(page.getByText("This proxy was deleted. Choose another one.")).toBeVisible(),
+  },
+  {
+    name: "multi-page report findings",
+    route: MULTI_PAGE_REPORT,
+    ready: (page) => expect(page.getByRole("radiogroup", { name: "Page view" })).toBeVisible(),
+  },
+  {
+    name: "multi-page report auctions",
+    route: `${MULTI_PAGE_REPORT}?tab=auctions`,
+    ready: (page) => expect(page.getByRole("region", { name: "Auctions on page 3" })).toBeVisible(),
+  },
+  {
+    name: "multi-page report slots",
+    route: `${MULTI_PAGE_REPORT}?tab=slots`,
+    ready: (page) => expect(page.getByRole("region", { name: "Ad slots on page 2" })).toBeVisible(),
+  },
+  {
+    name: "multi-page report, one page, scripts",
+    route: `${MULTI_PAGE_REPORT}?tab=scripts&page=1`,
+    ready: (page) => expect(page.getByRole("columnheader", { name: "Pages" })).toBeVisible(),
+  },
+  {
+    name: "report with the automated-traffic finding",
+    route: "/scans/seed-techpulse-desktop",
+    ready: (page) => expect(page.getByRole("note", { name: "Scan environment" })).toBeVisible(),
+  },
 ];
 
 const VIEWPORTS = [
