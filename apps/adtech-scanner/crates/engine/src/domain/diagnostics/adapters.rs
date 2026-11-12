@@ -23,7 +23,7 @@ pub enum ParamType {
     PositiveNumeric,
     /// A string of exactly this many characters from `[A-Za-z0-9_-]`.
     Guid(usize),
-    /// A string of letters, digits, `_` and `+` only.
+    /// Letters, digits, `_` and `+` only, as a string or a number.
     Word,
 }
 

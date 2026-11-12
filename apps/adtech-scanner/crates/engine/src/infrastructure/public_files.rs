@@ -1,11 +1,16 @@
 //! Reads public text files (ads.txt, sellers.json) from the open web.
 //!
 //! The addresses come from the scanned page and from files it publishes, so
-//! every hop is checked before it is contacted: https only, public addresses
-//! only, no credentials, no cookies, redirects followed by hand within the
-//! scope the specifications allow, and hard limits on size and time. The one
-//! exception is the scanned page's own origin when that page is served from
-//! this machine, as the built-in demo site is.
+//! every hop is checked before it is contacted: https on its standard port
+//! only, public addresses only, no credentials, no cookies, redirects followed
+//! by hand within the scope the specifications allow, and hard limits on size
+//! (after decompression) and time. The one exception is the scanned page's own
+//! origin when that page is served from this machine, as the built-in demo
+//! site is.
+//!
+//! Behind a system proxy the proxy resolves the host name, so the address
+//! check covers IP addresses and whatever this machine's resolver answers;
+//! what the proxy may reach is the proxy's to decide.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -18,10 +23,11 @@ use url::{Host, Url};
 
 use super::http::describe_transport_error;
 use crate::application::ports::{FetchError, PublicFile, PublicFileFetcher, PublicFileRequest};
-use crate::domain::diagnostics::site::RedirectScope;
+use crate::domain::diagnostics::site::{RedirectScope, is_loopback};
 
 const CLIENT_NAME: &str = concat!("adtech-scanner/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const HTTPS_PORT: u16 = 443;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpPublicFileFetcher;
@@ -103,11 +109,12 @@ enum Route {
     /// The scanned page's own origin on this machine: directly, never
     /// through a proxy.
     ScannedOrigin,
-    /// A public host. For a host name these are the addresses that were
-    /// checked, so the connection goes to exactly those and a second DNS
-    /// answer cannot point it elsewhere. Empty for an IP address, and for a
-    /// name only the system's proxy can resolve.
-    Public(Vec<SocketAddr>),
+    /// A public IP address.
+    PublicAddress,
+    /// A public host name with the addresses that were checked. A direct
+    /// connection goes to exactly those, so a second DNS answer cannot point
+    /// it elsewhere; with none, only the system's proxy can reach the host.
+    PublicName(Vec<SocketAddr>),
 }
 
 /// Decides whether `url` may be contacted, and how.
@@ -115,42 +122,61 @@ async fn admit(url: &Url, loopback_origin: Option<&str>) -> Result<Route, FetchE
     if !url.username().is_empty() || url.password().is_some() {
         return Err(refused("it carries credentials"));
     }
-    let is_scanned_origin =
-        loopback_origin.is_some_and(|origin| url.origin().ascii_serialization() == origin);
-    if is_scanned_origin && matches!(url.scheme(), "http" | "https") {
+    let is_scanned_origin = matches!(url.scheme(), "http" | "https")
+        && url.host().is_some_and(|host| is_loopback(&host))
+        && loopback_origin.is_some_and(|origin| url.origin().ascii_serialization() == origin);
+    if is_scanned_origin {
         return Ok(Route::ScannedOrigin);
     }
     if url.scheme() != "https" {
         return Err(refused("only https addresses are read"));
     }
-    match url.host() {
-        Some(Host::Ipv4(ip)) => require_public(IpAddr::V4(ip)).map(|()| Route::Public(Vec::new())),
-        Some(Host::Ipv6(ip)) => require_public(IpAddr::V6(ip)).map(|()| Route::Public(Vec::new())),
-        Some(Host::Domain(domain)) => {
-            let port = url.port_or_known_default().unwrap_or(443);
-            let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, port))
-                .await
-                .map(Iterator::collect)
-                .unwrap_or_default();
-            for address in &resolved {
-                require_public(address.ip())?;
-            }
-            Ok(Route::Public(resolved))
+    // An address on this machine or a private network is refused as that,
+    // whatever its port.
+    let host = url.host().ok_or_else(|| refused("it has no host"))?;
+    let domain = match host {
+        // `localhost` in any spelling, whether or not this machine resolves
+        // it: a proxy would resolve it to itself.
+        Host::Domain(_) if is_loopback(&host) => return Err(not_public()),
+        Host::Ipv4(ip) => {
+            require_public(IpAddr::V4(ip))?;
+            None
         }
-        None => Err(refused("it has no host")),
+        Host::Ipv6(ip) => {
+            require_public(IpAddr::V6(ip))?;
+            None
+        }
+        Host::Domain(domain) => Some(domain),
+    };
+    // `port()` is `None` for the scheme's own port.
+    if url.port().is_some() {
+        return Err(refused("only the standard https port is read"));
     }
+    let Some(domain) = domain else {
+        return Ok(Route::PublicAddress);
+    };
+    let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, HTTPS_PORT))
+        .await
+        .map(Iterator::collect)
+        .unwrap_or_default();
+    for address in &resolved {
+        require_public(address.ip())?;
+    }
+    Ok(Route::PublicName(resolved))
 }
 
 fn client(url: &Url, route: &Route) -> Result<reqwest::Client, FetchError> {
     let builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(CONNECT_TIMEOUT);
-    let builder = match (route, url.host_str()) {
-        (Route::ScannedOrigin, _) => builder.no_proxy(),
-        (Route::Public(pinned), Some(host)) if !pinned.is_empty() => {
-            builder.resolve_to_addrs(host, pinned)
+    let builder = match route {
+        Route::ScannedOrigin => builder.no_proxy(),
+        Route::PublicAddress => builder,
+        // Pinned even when nothing was resolved: the client then has no
+        // address of its own to connect to, instead of asking DNS again.
+        Route::PublicName(pinned) => {
+            builder.resolve_to_addrs(url.host_str().unwrap_or_default(), pinned)
         }
-        (Route::Public(_), _) => builder,
     };
     builder.build().map_err(network)
 }
@@ -159,17 +185,42 @@ fn require_public(ip: IpAddr) -> Result<(), FetchError> {
     if is_public(ip) {
         Ok(())
     } else {
-        Err(refused("it points to this machine or a private network"))
+        Err(not_public())
     }
+}
+
+fn not_public() -> FetchError {
+    refused("it points to this machine or a private network")
 }
 
 fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_public_v4(ip),
-        IpAddr::V6(ip) => match ip.to_ipv4_mapped() {
-            Some(mapped) => is_public_v4(mapped),
+        IpAddr::V6(ip) => match embedded_v4(ip) {
+            Some(embedded) => is_public_v4(embedded),
             None => is_public_v6(ip),
         },
+    }
+}
+
+/// The IPv4 address an IPv6 address stands for, where it is a wrapper around
+/// one: IPv4-mapped and IPv4-compatible addresses, NAT64 and 6to4.
+fn embedded_v4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = ip.segments();
+    let last_32_bits = || {
+        let [.., a, b, c, d] = ip.octets();
+        Ipv4Addr::new(a, b, c, d)
+    };
+    match segments {
+        [0, 0, 0, 0, 0, 0xffff, ..] => Some(last_32_bits()),
+        [0, 0, 0, 0, 0, 0, high, low] if high != 0 || low > 1 => Some(last_32_bits()),
+        [0x64, 0xff9b, 0, 0, 0, 0, ..] => Some(last_32_bits()),
+        [0x2002, high, low, ..] => {
+            let [a, b] = high.to_be_bytes();
+            let [c, d] = low.to_be_bytes();
+            Some(Ipv4Addr::new(a, b, c, d))
+        }
+        _ => None,
     }
 }
 
@@ -196,7 +247,16 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
     let first = ip.segments()[0];
     let unique_local = first & 0xfe00 == 0xfc00;
     let link_local = first & 0xffc0 == 0xfe80;
-    !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || unique_local || link_local)
+    let site_local = first & 0xffc0 == 0xfec0;
+    // Teredo (which hides an IPv4 address) and the documentation range.
+    let special_purpose = first == 0x2001 && matches!(ip.segments()[1], 0 | 0xdb8);
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || unique_local
+        || link_local
+        || site_local
+        || special_purpose)
 }
 
 fn refused(reason: &str) -> FetchError {
@@ -241,6 +301,20 @@ mod tests {
             ("::ffff:127.0.0.1", false),
             ("::ffff:10.0.0.1", false),
             ("::ffff:8.8.8.8", true),
+            ("::ffff:169.254.169.254", false),
+            ("::127.0.0.1", false),
+            ("::10.0.0.1", false),
+            ("64:ff9b::7f00:1", false),
+            ("64:ff9b::a9fe:a9fe", false),
+            ("64:ff9b::808:808", true),
+            ("2002:7f00:1::1", false),
+            ("2002:c0a8:101::1", false),
+            ("2002:808:808::1", true),
+            ("fec0::1", false),
+            ("2001:db8::1", false),
+            ("2001:0:4136:e378:8000:63bf:3fff:fdd2", false),
+            ("100.127.255.255", false),
+            ("100.128.0.1", true),
         ];
         for (address, expected) in cases {
             assert_eq!(is_public(address.parse().unwrap()), expected, "{address}");
@@ -261,7 +335,7 @@ mod tests {
         );
         assert_eq!(
             admitted("https://93.184.216.34/ads.txt", None).await,
-            Ok(Route::Public(Vec::new()))
+            Ok(Route::PublicAddress)
         );
 
         let private = Err(
@@ -302,5 +376,97 @@ mod tests {
             admitted("https://user:secret@example.com/ads.txt", None).await,
             Err("the address was not contacted: it carries credentials".to_string())
         );
+        assert_eq!(
+            admitted("https://user@93.184.216.34/ads.txt", None).await,
+            Err("the address was not contacted: it carries credentials".to_string())
+        );
+        let standard_port =
+            Err("the address was not contacted: only the standard https port is read".to_string());
+        for other_port in [
+            "https://93.184.216.34:8443/ads.txt",
+            "https://93.184.216.34:22/",
+            "https://example.com:6379/sellers.json",
+        ] {
+            assert_eq!(admitted(other_port, scanned).await, standard_port);
+        }
+        assert_eq!(
+            admitted("https://93.184.216.34:443/ads.txt", None).await,
+            Ok(Route::PublicAddress)
+        );
+        // Every spelling of a private address is the same address.
+        for spelling in [
+            "https://2130706433/ads.txt",
+            "https://0x7f.1/ads.txt",
+            "https://017700000001/ads.txt",
+            "https://[::ffff:7f00:1]/ads.txt",
+            "https://[::ffff:169.254.169.254]/latest/meta-data/",
+            "https://169.254.169.254/latest/meta-data/",
+            "https://localhost./ads.txt",
+            "https://LOCALHOST/ads.txt",
+            "https://app.localhost/ads.txt",
+        ] {
+            assert_eq!(admitted(spelling, None).await, private, "{spelling}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_caller_cannot_name_a_public_origin_as_the_scanned_one() {
+        let admitted = admit(
+            &Url::parse("http://93.184.216.34/ads.txt").unwrap(),
+            Some("http://93.184.216.34"),
+        )
+        .await;
+        assert_eq!(
+            admitted.map_err(|error| error.to_string()),
+            Err("the address was not contacted: only https addresses are read".to_string())
+        );
+    }
+
+    /// Answers one HTTP request on loopback with "pinned" and returns its port.
+    async fn one_shot_server() -> u16 {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = stream.read(&mut request).await;
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\nconnection: close\r\n\r\npinned")
+                .await;
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn a_host_name_is_connected_at_the_checked_addresses_only() {
+        // The name does not exist, so only the pinned address can answer for it.
+        let port = one_shot_server().await;
+        let url = Url::parse(&format!("http://files.pinned.invalid:{port}/ads.txt")).unwrap();
+        let pinned = Route::PublicName(vec![SocketAddr::from(([127, 0, 0, 1], port))]);
+        let body = client(&url, &pinned)
+            .unwrap()
+            .get(url.clone())
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert_eq!(body, "pinned");
+    }
+
+    #[tokio::test]
+    async fn a_name_that_did_not_resolve_is_not_looked_up_a_second_time() {
+        // `localhost` resolves on every machine. With no checked address the
+        // client must have nowhere to connect to rather than resolve it itself.
+        let port = one_shot_server().await;
+        let url = Url::parse(&format!("http://localhost:{port}/ads.txt")).unwrap();
+        let outcome = client(&url, &Route::PublicName(Vec::new()))
+            .unwrap()
+            .get(url.clone())
+            .send()
+            .await;
+        assert!(outcome.is_err(), "{outcome:?}");
     }
 }

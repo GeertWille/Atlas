@@ -130,6 +130,7 @@ fn wrong_types(adapter: &AdapterSpec, bids: &[BidConfig]) -> Vec<DiagnosticCheck
                     bid.params
                         .get(key)
                         .is_some_and(|value| !value.is_null() && !fits(value, *expected))
+                        && !is_valid_without(adapter, bid.params, key)
                 })
                 .collect();
             let first = offending.first()?;
@@ -152,6 +153,23 @@ fn wrong_types(adapter: &AdapterSpec, bids: &[BidConfig]) -> Vec<DiagnosticCheck
         .collect()
 }
 
+/// Whether another of the adapter's alternatives is complete and well typed
+/// without `key`. The adapter may then never look at `key`, so its type is
+/// not held against the bid.
+fn is_valid_without(adapter: &AdapterSpec, params: &Value, key: &str) -> bool {
+    adapter.required.iter().any(|alternative| {
+        let keys = || alternative.iter().flat_map(|keys| keys.iter());
+        !keys().any(|other| *other == key)
+            && missing_in(alternative, params).is_empty()
+            && adapter.types.iter().all(|(typed, expected)| {
+                !keys().any(|other| other == typed)
+                    || params
+                        .get(typed)
+                        .is_none_or(|value| value.is_null() || fits(value, *expected))
+            })
+    })
+}
+
 fn fits(value: &Value, expected: ParamType) -> bool {
     match expected {
         ParamType::Text | ParamType::OptionalText => value.is_string(),
@@ -165,7 +183,9 @@ fn fits(value: &Value, expected: ParamType) -> bool {
                     .chars()
                     .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
         }),
-        ParamType::Word => value.as_str().is_some_and(|text| {
+        // The adapter tests the value with a regular expression, which
+        // turns a number into its text first.
+        ParamType::Word => scalar_text(Some(value)).is_some_and(|text| {
             !text.is_empty()
                 && text
                     .chars()
@@ -175,10 +195,17 @@ fn fits(value: &Value, expected: ParamType) -> bool {
 }
 
 /// What JavaScript's `parseInt` makes of the value, when it is a number.
+/// Adapters that use `parseFloat` instead also take `".5"`, so any text
+/// that is a number counts.
 fn leading_integer(value: &Value) -> Option<f64> {
     match value {
         Value::Number(number) => number.as_f64().map(f64::trunc),
         Value::String(text) => {
+            if let Ok(number) = text.trim().parse::<f64>()
+                && number.is_finite()
+            {
+                return Some(number.trunc());
+            }
             let text = text.trim_start();
             let (sign, digits) = match text.strip_prefix('-') {
                 Some(rest) => (-1.0, rest),
@@ -430,6 +457,22 @@ mod tests {
             ("unruly", json!({ "siteId": 1 })),
             ("kargo", json!({ "placementId": "_abc" })),
             ("33across", json!({ "siteId": "abcdefghij_klmnopqr-12" })),
+            // The adapter reads `zoneId` first and never looks at `siteId` then.
+            (
+                "33across",
+                json!({ "zoneId": "abcdefghij_klmnopqr-12", "siteId": 4711 }),
+            ),
+            (
+                "ttd",
+                json!({ "supplySourceId": 12345, "publisherId": "1" }),
+            ),
+            ("sovrn", json!({ "tagid": 500123 })),
+            ("sovrn", json!({ "tagid": "500123.0" })),
+            ("sovrn", json!({ "tagid": ".5" })),
+            (
+                "rubicon",
+                json!({ "accountId": "1001abc", "siteId": " 2", "zoneId": 3.7 }),
+            ),
         ];
         for (bidder, params) in cases {
             let checks = run(bidder, &[unit("top", "728x90", params.clone())]);
@@ -533,6 +576,11 @@ mod tests {
                 "33across",
                 json!({ "siteId": "too-short" }),
                 "`siteId` must be a 22-character id, found \"too-short\" on its 1 ad unit",
+            ),
+            (
+                "33across",
+                json!({ "zoneId": "too-short" }),
+                "`zoneId` must be a 22-character id, found \"too-short\" on its 1 ad unit",
             ),
             (
                 "ttd",

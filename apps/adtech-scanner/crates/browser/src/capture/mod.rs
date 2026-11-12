@@ -20,7 +20,7 @@ use serde_json::json;
 use tokio::time::Instant;
 use url::Url;
 
-use crate::cdp::{Cdp, Chrome, LaunchOptions};
+use crate::cdp::{Chrome, LaunchOptions};
 use crate::device::{emulation_for, window_size};
 use crate::{BrowserError, CaptureHooks, detect};
 
@@ -79,7 +79,7 @@ async fn scan(
     address: &Url,
     hooks: &CaptureHooks,
 ) -> Result<Capture, CaptureError> {
-    let (cdp, events) = Cdp::connect(&chrome.devtools_url().await?).await?;
+    let (cdp, events) = crate::cdp::connect(chrome).await?;
     // A scanned page must not be able to put files in the user's Downloads.
     cdp.send(
         None,

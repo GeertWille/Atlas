@@ -7,7 +7,7 @@
 
 use adscan_model::ObservedBidResponse;
 use serde_json::Value;
-use url::Url;
+use url::{Host, Url};
 
 /// Longest reason kept per response.
 pub(crate) const MAX_REASON_CHARS: usize = 200;
@@ -22,25 +22,14 @@ struct Endpoint {
     host: &'static str,
     /// The request path starts with this. Empty when the path varies.
     path: &'static str,
-    /// The path belongs to this adapter alone, so it is recognised on any
-    /// host: publishers proxy bid endpoints through their own domains.
-    unmistakable: bool,
 }
 
 const fn endpoint(bidder: &'static str, host: &'static str, path: &'static str) -> Endpoint {
-    Endpoint {
-        bidder,
-        host,
-        path,
-        unmistakable: false,
-    }
+    Endpoint { bidder, host, path }
 }
 
 const ENDPOINTS: &[Endpoint] = &[
-    Endpoint {
-        unmistakable: true,
-        ..endpoint("appnexus", "ib.adnxs.com", "/ut/v3/prebid")
-    },
+    endpoint("appnexus", "ib.adnxs.com", "/ut/v3/prebid"),
     endpoint("appnexus", "ib.adnxs-simple.com", "/ut/v3/prebid"),
     endpoint(
         "rubicon",
@@ -59,10 +48,7 @@ const ENDPOINTS: &[Endpoint] = &[
         "grid-bidder.criteo.com",
         "/openrtb_2_5/pbjs/auction/request",
     ),
-    Endpoint {
-        unmistakable: true,
-        ..endpoint("openx", "rtb.openx.net", "/openrtbb/prebidjs")
-    },
+    endpoint("openx", "rtb.openx.net", "/openrtbb/prebidjs"),
     endpoint("triplelift", "tlx.3lift.com", "/header/auction"),
     endpoint("sovrn", "ap.lijit.com", "/rtb/bid"),
     endpoint("seedtag", "s.seedtag.com", "/c/hb/bid"),
@@ -91,21 +77,36 @@ pub(crate) struct BidRequest {
     pub host: String,
 }
 
-/// The bidder a request URL belongs to, if it is a known bid endpoint.
-pub(crate) fn bid_request(url: &str) -> Option<BidRequest> {
+/// The bidder a request URL belongs to, if it is a known bid endpoint: one
+/// of the adapters' own hosts. A page served from this machine, as the
+/// built-in demo site is, may stand in for an exchange at its own origin, so
+/// there the path alone decides. On any real host a path proves nothing: the
+/// site chooses what it serves under it.
+pub(crate) fn bid_request(url: &str, page_url: &str) -> Option<BidRequest> {
     let url = Url::parse(url).ok()?;
     let host = url.host_str()?.to_ascii_lowercase();
     let path = url.path();
+    let is_local_stand_in = Url::parse(page_url).is_ok_and(|page| {
+        page.origin() == url.origin() && page.host().is_some_and(|host| is_this_machine(&host))
+    });
     ENDPOINTS
         .iter()
         .find(|endpoint| {
             (endpoint.host == host && path.starts_with(endpoint.path))
-                || (endpoint.unmistakable && path == endpoint.path)
+                || (is_local_stand_in && !endpoint.path.is_empty() && path == endpoint.path)
         })
         .map(|endpoint| BidRequest {
             bidder: endpoint.bidder,
             host,
         })
+}
+
+fn is_this_machine(host: &Host<&str>) -> bool {
+    match host {
+        Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+        Host::Ipv4(ip) => ip.is_loopback(),
+        Host::Ipv6(ip) => ip.is_loopback(),
+    }
 }
 
 /// Why the endpoint did not bid, when its answer says so. The body is read
@@ -115,6 +116,13 @@ pub(crate) fn no_bid_reason(bidder: &str, body: &str) -> Option<String> {
         return None;
     }
     let answer: Value = serde_json::from_str(body).ok()?;
+    // An answer that carries bids is not a refusal, whatever else it says.
+    if answer["seatbid"]
+        .as_array()
+        .is_some_and(|seats| !seats.is_empty())
+    {
+        return None;
+    }
     let text = |value: &Value| {
         value
             .as_str()
@@ -165,11 +173,16 @@ fn openrtb_no_bid_reason(code: u64) -> String {
     format!("no-bid reason {code} ({meaning})")
 }
 
-/// One line of printable text, at most `MAX_REASON_CHARS` characters.
+/// One line of printable text, at most `MAX_REASON_CHARS` characters. The
+/// text is the endpoint's, so nothing in it may steer how it is displayed.
 pub(crate) fn short(text: &str) -> String {
+    let is_invisible = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    };
     let mut line: String = text
         .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| if is_invisible(c) { ' ' } else { c })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -237,8 +250,10 @@ impl BidResponseLog {
 mod tests {
     use super::*;
 
+    const PAGE: &str = "https://www.pub.example/article";
+
     fn bidder_of(url: &str) -> Option<&'static str> {
-        bid_request(url).map(|request| request.bidder)
+        bid_request(url, PAGE).map(|request| request.bidder)
     }
 
     #[test]
@@ -277,31 +292,64 @@ mod tests {
     }
 
     #[test]
-    fn unmistakable_paths_are_recognised_behind_any_host() {
+    fn a_path_alone_only_counts_at_the_own_origin_of_a_page_on_this_machine() {
+        let demo = "http://127.0.0.1:4455/";
+        let on = |url: &str, page: &str| bid_request(url, page).map(|request| request.bidder);
         assert_eq!(
-            bidder_of("https://bids.pub.example/ut/v3/prebid"),
+            on("http://127.0.0.1:4455/openrtbb/prebidjs", demo),
+            Some("openx")
+        );
+        assert_eq!(
+            on(
+                "http://localhost:3000/ut/v3/prebid",
+                "http://localhost:3000/demo"
+            ),
             Some("appnexus")
         );
         assert_eq!(
-            bidder_of("http://127.0.0.1:4455/openrtbb/prebidjs"),
+            on("http://[::1]:8080/openrtbb/prebidjs", "http://[::1]:8080/"),
             Some("openx")
         );
-        // A path that only starts the same, or that other adapters share, is not enough.
+        // A path that only starts the same is not the endpoint.
         assert_eq!(
-            bidder_of("https://bids.pub.example/ut/v3/prebid/extra"),
+            on("http://127.0.0.1:4455/openrtbb/prebidjs/extra", demo),
             None
         );
-        assert_eq!(bidder_of("https://bids.pub.example/translator"), None);
-        assert_eq!(bidder_of("https://bids.pub.example/hb/"), None);
+        // Another service on this machine is not the page's stand-in.
+        assert_eq!(on("http://127.0.0.1:9999/openrtbb/prebidjs", demo), None);
+        assert_eq!(on("https://127.0.0.1:4455/openrtbb/prebidjs", demo), None);
+        assert_eq!(on("http://localhost:4455/openrtbb/prebidjs", demo), None);
+
+        // Real hosts: the site, its subdomains, anyone else's server.
+        for (url, page) in [
+            ("https://bids.pub.example/ut/v3/prebid", PAGE),
+            ("https://www.pub.example/ut/v3/prebid", PAGE),
+            ("https://www.pub.example/openrtbb/prebidjs", PAGE),
+            ("https://evil.example/openrtbb/prebidjs", PAGE),
+            ("http://127.0.0.1:4455/openrtbb/prebidjs", PAGE),
+            ("https://evil.example/openrtbb/prebidjs", demo),
+            (
+                "http://192.168.1.20/openrtbb/prebidjs",
+                "http://192.168.1.20/",
+            ),
+            ("http://127.0.0.1:4455/openrtbb/prebidjs", ""),
+            ("http://127.0.0.1:4455/openrtbb/prebidjs", "about:blank"),
+        ] {
+            assert_eq!(on(url, page), None, "{url} on {page}");
+        }
+        // The adapters' own hosts are recognised wherever the page is.
+        assert_eq!(
+            on("https://rtb.openx.net/openrtbb/prebidjs", demo),
+            Some("openx")
+        );
     }
 
     #[test]
-    fn every_endpoint_has_a_host_and_unmistakable_ones_a_path() {
+    fn every_endpoint_has_a_lower_case_host_and_a_rooted_path() {
         for endpoint in ENDPOINTS {
             assert!(endpoint.host.contains('.'), "{}", endpoint.bidder);
             assert_eq!(endpoint.host, endpoint.host.to_ascii_lowercase());
             assert!(endpoint.path.is_empty() || endpoint.path.starts_with('/'));
-            assert!(!endpoint.unmistakable || endpoint.path.len() > 8);
         }
     }
 
@@ -354,7 +402,20 @@ mod tests {
                 r#"{"id":"1","seatbid":[{"bid":[{"price":1.2}]}]}"#,
                 None,
             ),
+            // Bids together with a note are bids.
+            (
+                "pubmatic",
+                r#"{"id":"1","message":"ok","nbr":0,"seatbid":[{"bid":[{"price":1.2}]}]}"#,
+                None,
+            ),
+            (
+                "pubmatic",
+                r#"{"id":"1","message":"no fill","seatbid":[]}"#,
+                Some("error: no fill"),
+            ),
             ("rubicon", r#"{"error":""}"#, None),
+            ("rubicon", r#"{"error":{"code":7}}"#, None),
+            ("rubicon", r#"[{"error":"not an object"}]"#, None),
             ("rubicon", "", None),
             ("rubicon", "<html>Bad gateway</html>", None),
         ];
@@ -381,7 +442,7 @@ mod tests {
 
     #[test]
     fn observations_are_dated_from_navigation_start_and_bounded() {
-        let request = || bid_request("https://rtb.openx.net/openrtbb/prebidjs").unwrap();
+        let request = || bid_request("https://rtb.openx.net/openrtbb/prebidjs", PAGE).unwrap();
         let mut log = BidResponseLog::default();
         log.record(
             request(),

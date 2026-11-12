@@ -211,8 +211,12 @@ async fn look_up_sellers(
     lookup: SellersLookup,
     cancel: CancellationToken,
 ) -> (String, Result<SellersOutcome, NodeError>) {
+    let Some(url) = sellers_json_url(&lookup.ad_system_domain) else {
+        let outcome = SellersOutcome::Unavailable("it is not a public domain name".into());
+        return (lookup.ad_system_domain, Ok(outcome));
+    };
     let request = PublicFileRequest {
-        url: sellers_json_url(&lookup.ad_system_domain),
+        url,
         max_bytes: SELLERS_JSON_MAX_BYTES,
         timeout: SELLERS_JSON_TIMEOUT,
         loopback_origin: None,

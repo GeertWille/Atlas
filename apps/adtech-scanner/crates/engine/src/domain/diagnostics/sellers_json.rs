@@ -6,6 +6,7 @@ use std::fmt;
 use adscan_model::{DiagnosticArea, DiagnosticCheck, DiagnosticStatus};
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::Value;
 
 use super::ads_txt::{Record, Relationship};
 use super::{brief, check, codes, excerpt};
@@ -38,6 +39,8 @@ pub enum SellersOutcome {
 /// The entries of `wanted` seller ids. The file can list tens of thousands of
 /// sellers, so everything else is skipped while parsing instead of collected.
 pub fn find_sellers(json: &[u8], wanted: &[String]) -> Result<Vec<Seller>, String> {
+    // Some servers put a byte order mark in front, which JSON does not allow.
+    let json = json.strip_prefix(b"\xef\xbb\xbf").unwrap_or(json);
     let mut deserializer = serde_json::Deserializer::from_slice(json);
     deserializer
         .deserialize_map(FileVisitor { wanted })
@@ -92,7 +95,7 @@ impl<'de> Visitor<'de> for SellersSeed<'_> {
     fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> Result<Self::Value, A::Error> {
         let mut found = Vec::new();
         while let Some(entry) = sequence.next_element::<RawSeller>()? {
-            let Some(seller_id) = entry.seller_id.map(IdText::into_text) else {
+            let Some(seller_id) = entry.seller_id.as_ref().and_then(id_text) else {
                 continue;
             };
             if self
@@ -102,10 +105,16 @@ impl<'de> Visitor<'de> for SellersSeed<'_> {
             {
                 found.push(Seller {
                     seller_id,
-                    seller_type: entry.seller_type.as_deref().and_then(seller_type),
-                    is_confidential: entry.is_confidential.is_some_and(Flag::into_bool),
+                    seller_type: entry
+                        .seller_type
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .and_then(seller_type),
+                    is_confidential: entry.is_confidential.as_ref().is_some_and(is_set),
                     domain: entry
                         .domain
+                        .as_ref()
+                        .and_then(Value::as_str)
                         .map(|domain| domain.trim().to_ascii_lowercase())
                         .filter(|domain| !domain.is_empty()),
                 });
@@ -115,45 +124,32 @@ impl<'de> Visitor<'de> for SellersSeed<'_> {
     }
 }
 
-/// Real files write the id as a string or a number and the confidentiality
-/// flag as 0/1 or a boolean.
+/// The fields of one seller entry, in whatever JSON type the file gives
+/// them: one entry with a field of the wrong type must not make the other
+/// tens of thousands unreadable.
 #[derive(Deserialize)]
 struct RawSeller {
-    seller_id: Option<IdText>,
-    seller_type: Option<String>,
-    is_confidential: Option<Flag>,
-    domain: Option<String>,
+    seller_id: Option<Value>,
+    seller_type: Option<Value>,
+    is_confidential: Option<Value>,
+    domain: Option<Value>,
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum IdText {
-    Text(String),
-    Number(serde_json::Number),
-}
-
-impl IdText {
-    fn into_text(self) -> String {
-        match self {
-            Self::Text(text) => text.trim().to_string(),
-            Self::Number(number) => number.to_string(),
-        }
+/// Real files write the id as a string or a number.
+fn id_text(id: &Value) -> Option<String> {
+    match id {
+        Value::String(text) => Some(text.trim().to_string()).filter(|text| !text.is_empty()),
+        Value::Number(number) => Some(number.to_string()),
+        _ => None,
     }
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Flag {
-    Bool(bool),
-    Number(f64),
-}
-
-impl Flag {
-    fn into_bool(self) -> bool {
-        match self {
-            Self::Bool(flag) => flag,
-            Self::Number(number) => number != 0.0,
-        }
+/// Real files write the confidentiality flag as 0/1 or a boolean.
+fn is_set(flag: &Value) -> bool {
+    match flag {
+        Value::Bool(flag) => *flag,
+        Value::Number(number) => number.as_f64().is_some_and(|number| number != 0.0),
+        _ => false,
     }
 }
 
@@ -353,6 +349,105 @@ mod tests {
                 "{body}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn one_odd_entry_does_not_make_the_file_unreadable() {
+        let file = r#"{
+            "sellers": [
+                { "seller_id": null, "domain": "a.example" },
+                { "seller_id": true },
+                { "seller_id": ["7"] },
+                { "seller_id": { "id": "7" } },
+                { "seller_id": "" },
+                { "seller_id": " 7 ", "seller_type": 3, "domain": 12, "is_confidential": "yes" },
+                { "seller_id": 7, "seller_type": "PUBLISHER", "domain": null, "is_confidential": null },
+                { "seller_id": 7.5, "name": { "deep": [[[{}]]] }, "ext": [1, 2, 3] },
+                { "seller_id": 18446744073709551615 },
+                {}
+            ],
+            "sellers_note": "the key above is the only one read",
+            "ext": { "sellers": "not this one" }
+        }"#;
+        let sellers = find_sellers(
+            file.as_bytes(),
+            &wanted(&["7", "7.5", "18446744073709551615", "", "true"]),
+        )
+        .unwrap();
+        let found: Vec<(&str, Option<SellerType>, bool, Option<&str>)> = sellers
+            .iter()
+            .map(|seller| {
+                (
+                    seller.seller_id.as_str(),
+                    seller.seller_type,
+                    seller.is_confidential,
+                    seller.domain.as_deref(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                ("7", None, false, None),
+                ("7", Some(SellerType::Publisher), false, None),
+                ("7.5", None, false, None),
+                ("18446744073709551615", None, false, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn truncated_malformed_and_hostile_files_are_errors_not_panics() {
+        let deeply_nested = format!("{{\"sellers\":{}", "[".repeat(100_000));
+        let many_sellers = format!(
+            "{{\"sellers\":[{}",
+            r#"{"seller_id":"1","name":"x"},"#.repeat(50_000)
+        );
+        for body in [
+            r#"{"sellers":["#,
+            r#"{"sellers":[{"seller_id":"1","#,
+            r#"{"sellers":[{"seller_id":"1"},]}"#,
+            r#"{"sellers":[null]}"#,
+            r#"{"sellers":["1"]}"#,
+            r#"{"sellers":null}"#,
+            r#"{"sellers":"none"}"#,
+            r#"{"SELLERS":[]}"#,
+            "null",
+            "1",
+            "\"sellers\"",
+            deeply_nested.as_str(),
+            many_sellers.as_str(),
+        ] {
+            let outcome = find_sellers(body.as_bytes(), &wanted(&["1"]));
+            assert!(
+                outcome
+                    .as_ref()
+                    .is_err_and(|error| error.starts_with("the file is not valid sellers.json")),
+                "{}: {outcome:?}",
+                &body[..body.len().min(40)]
+            );
+        }
+        assert!(find_sellers(&[0xff, 0xfe, 0x00], &wanted(&["1"])).is_err());
+        assert_eq!(
+            find_sellers("\u{feff}{\"sellers\":[]}".as_bytes(), &wanted(&["1"])),
+            Ok(vec![]),
+            "a byte order mark is not part of the file"
+        );
+    }
+
+    #[test]
+    fn a_large_file_is_searched_without_keeping_what_is_not_wanted() {
+        let mut file = String::from(r#"{"version":"1.0","sellers":["#);
+        for id in 0..200_000 {
+            file.push_str(&format!(
+                r#"{{"seller_id":"{id}","name":"Seller {id}","domain":"s{id}.example","seller_type":"PUBLISHER"}},"#
+            ));
+        }
+        file.push_str(r#"{"seller_id":"199999","seller_type":"BOTH"}]}"#);
+        let sellers = find_sellers(file.as_bytes(), &wanted(&["199999", "17"])).unwrap();
+        let ids: Vec<&str> = sellers.iter().map(|seller| seller.seller_id.as_str()).collect();
+        assert_eq!(ids, ["17", "199999", "199999"], "duplicates are kept in file order");
+        assert_eq!(sellers[1].seller_type, Some(SellerType::Publisher));
     }
 
     fn record(line: &str) -> Record {

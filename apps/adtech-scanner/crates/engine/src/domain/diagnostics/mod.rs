@@ -33,6 +33,7 @@ pub mod codes {
     pub const PARAMS_REJECTED: &str = "params-rejected";
     pub const PARAMS_UNKNOWN_ADAPTER: &str = "params-unknown-adapter";
     pub const PARAMS_NOT_CAPTURED: &str = "params-not-captured";
+    pub const PARAMS_SERVER_SIDE: &str = "params-server-side";
 
     pub const RESPONSE_OK: &str = "response-ok";
     pub const RESPONSE_REASON: &str = "response-reason";
@@ -68,6 +69,8 @@ const MAX_REPORTED_INVALID_LINES: usize = 10;
 /// Seller ids looked up per ad system when the bid request does not say
 /// which account is in use.
 const MAX_SELLER_IDS_PER_SYSTEM: usize = 10;
+/// Exchanges whose sellers.json one scan reads, however many ads.txt names.
+const MAX_SELLERS_JSON_HOSTS: usize = 12;
 /// Distinct endpoint reasons quoted for one bidder.
 const MAX_QUOTED_REASONS: usize = 3;
 
@@ -103,30 +106,38 @@ pub(crate) fn check(
     }
 }
 
-/// Cuts text down to what may be stored: one line of at most 300 characters.
+/// Cuts text down to what may be stored: one line of at most 300 printable
+/// characters.
 pub(crate) fn excerpt(text: &str) -> String {
-    let line = text.lines().next().unwrap_or_default().trim();
-    if line.chars().count() <= MAX_EXCERPT_CHARS {
-        return line.to_string();
-    }
-    let mut cut: String = line.chars().take(MAX_EXCERPT_CHARS - 1).collect();
-    cut.push('…');
-    cut
+    clipped(text.lines().next().unwrap_or_default(), MAX_EXCERPT_CHARS)
 }
 
 /// An id or name quoted inside a summary: ids come from the page and from
 /// files it publishes, so their length is not ours to trust.
 pub(crate) fn brief(text: &str) -> String {
     const MAX_QUOTED_ID_CHARS: usize = 40;
-    let text = text.trim();
-    if text.chars().count() > MAX_QUOTED_ID_CHARS {
-        format!(
-            "{}…",
-            text.chars().take(MAX_QUOTED_ID_CHARS).collect::<String>()
-        )
-    } else {
-        text.to_string()
+    clipped(text, MAX_QUOTED_ID_CHARS + 1)
+}
+
+/// At most `max` characters, the last one an ellipsis when text was cut.
+/// The text is the site's or an exchange's: control characters and the
+/// invisible ones that reorder or hide text are not passed on.
+fn clipped(text: &str, max: usize) -> String {
+    let is_invisible = |c: char| {
+        c.is_control()
+            || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+    };
+    let printable: String = text
+        .chars()
+        .map(|c| if is_invisible(c) { ' ' } else { c })
+        .collect();
+    let printable = printable.trim();
+    if printable.chars().count() <= max {
+        return printable.to_string();
     }
+    let mut cut: String = printable.chars().take(max - 1).collect();
+    cut.push('…');
+    cut
 }
 
 pub(crate) fn capitalized(text: &str) -> String {
@@ -254,7 +265,9 @@ fn records_to_verify<'a>(bidder: &BidderFacts, file: &'a AdsTxt) -> Vec<&'a Reco
         .collect()
 }
 
-/// Which sellers.json files to read, and which ids to look for in each.
+/// Which sellers.json files to read, and which ids to look for in each. Only
+/// ad systems of the adapter table are asked, never a domain that is merely
+/// written in the site's ads.txt.
 pub fn sellers_lookups(capture: &Capture, file: &AdsTxt) -> Vec<SellersLookup> {
     let mut by_domain: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for bidder in bidder_facts(capture) {
@@ -267,6 +280,8 @@ pub fn sellers_lookups(capture: &Capture, file: &AdsTxt) -> Vec<SellersLookup> {
     }
     by_domain
         .into_iter()
+        .filter(|(domain, _)| site::sellers_json_url(domain).is_some())
+        .take(MAX_SELLERS_JSON_HOSTS)
         .map(|(domain, ids)| SellersLookup {
             ad_system_domain: domain.to_string(),
             seller_ids: ids.into_iter().map(str::to_string).collect(),
@@ -287,6 +302,7 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
     let config_has = |key: &str| {
         prebid_config.is_some_and(|(_, raw)| raw.get(key).is_some_and(|value| !value.is_null()))
     };
+    let server_side = server_side_bidders(prebid_config.map(|(_, raw)| raw));
     let auctions_with_consent: BTreeSet<&str> = capture
         .events
         .iter()
@@ -308,7 +324,12 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
         .map(|bidder| {
             let mut checks = Vec::new();
             checks.extend(response_checks(capture, &bidder));
-            checks.extend(param_checks(capture, &bidder, config_has));
+            checks.extend(param_checks(
+                capture,
+                &bidder,
+                server_side.contains(bidder.name),
+                config_has,
+            ));
             checks.extend(timeline.bidder_checks(
                 &bidder.requests,
                 bidder.adapter.map(|adapter| (adapter.gvl_id, bidder.name)),
@@ -402,9 +423,28 @@ fn ads_txt_report(files: &SiteFiles) -> AdsTxtReport {
     report
 }
 
+/// The bidders Prebid hands to a Prebid Server (`s2sConfig.bidders`). The
+/// server validates their params by its own rules, which differ from the
+/// adapter's: several accept fewer or other params.
+fn server_side_bidders(prebid_config: Option<&serde_json::Value>) -> BTreeSet<&str> {
+    let configs = match prebid_config.map(|raw| &raw["s2sConfig"]) {
+        Some(serde_json::Value::Array(configs)) => configs.iter().collect(),
+        Some(config) => vec![config],
+        None => Vec::new(),
+    };
+    configs
+        .into_iter()
+        .filter(|config| config["enabled"] != false)
+        .filter_map(|config| config["bidders"].as_array())
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect()
+}
+
 fn param_checks(
     capture: &Capture,
     bidder: &BidderFacts,
+    runs_server_side: bool,
     config_has: impl Fn(&str) -> bool,
 ) -> Vec<DiagnosticCheck> {
     let not_checked = |code: &str, summary: &str| {
@@ -419,6 +459,10 @@ fn param_checks(
         None => vec![not_checked(
             codes::PARAMS_UNKNOWN_ADAPTER,
             "The scanner has no built-in knowledge of this adapter's params",
+        )],
+        Some(_) if runs_server_side => vec![not_checked(
+            codes::PARAMS_SERVER_SIDE,
+            "This bidder runs through Prebid Server, which checks params by its own rules",
         )],
         Some(_) if bidder.configs.is_empty() => vec![not_checked(
             codes::PARAMS_NOT_CAPTURED,

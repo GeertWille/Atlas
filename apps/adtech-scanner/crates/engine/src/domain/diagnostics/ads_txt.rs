@@ -93,18 +93,29 @@ pub fn read_response(status: u16, content_type: Option<&str>, body: &[u8]) -> Ad
             "the site answered with a web page instead of a text file".into(),
         );
     }
-    AdsTxtOutcome::Found(parse(&text))
+    let parsed = parse(&text);
+    // Buyers treat a file without a single record like a missing one: an
+    // error page, a soft 404 or an empty file authorises and forbids nobody.
+    // A site that means "nobody is authorised" publishes the placeholder
+    // record of the specification, which is a record.
+    if parsed.records.is_empty() {
+        return AdsTxtOutcome::Unreadable(
+            if parsed.invalid.is_empty() {
+                "the file has no seller records"
+            } else {
+                "none of the lines in the answer is an ads.txt record"
+            }
+            .into(),
+        );
+    }
+    AdsTxtOutcome::Found(parsed)
 }
 
+/// No ads.txt line starts with a tag.
 fn looks_like_markup(text: &str) -> bool {
-    let start: String = text
-        .trim_start_matches('\u{feff}')
+    text.trim_start_matches('\u{feff}')
         .trim_start()
-        .chars()
-        .take(15)
-        .collect::<String>()
-        .to_ascii_lowercase();
-    start.starts_with("<!doctype") || start.starts_with("<html") || start.starts_with("<?xml")
+        .starts_with('<')
 }
 
 pub fn parse(text: &str) -> AdsTxt {
@@ -122,7 +133,17 @@ pub fn parse(text: &str) -> AdsTxt {
             continue;
         }
         match record(line, content) {
-            Ok(record) => parsed.records.push(record),
+            Ok(record) => {
+                // A line repeated in the file authorises the seller once.
+                let is_repeated = parsed.records.iter().any(|known| {
+                    known.domain == record.domain
+                        && known.account_id == record.account_id
+                        && known.relationship == record.relationship
+                });
+                if !is_repeated {
+                    parsed.records.push(record);
+                }
+            }
             Err(problem) => parsed.invalid.push(InvalidLine {
                 line,
                 text: excerpt(content),
@@ -178,7 +199,11 @@ fn push_unique(list: &mut Vec<String>, value: String) {
 fn record(line: u32, content: &str) -> Result<Record, &'static str> {
     // Extension fields follow the first semicolon and are not interpreted.
     let data = content.split(';').next().unwrap_or_default();
-    let fields: Vec<&str> = data.split(',').map(str::trim).collect();
+    let mut fields: Vec<&str> = data.split(',').map(str::trim).collect();
+    // Trailing commas are common in real files and change nothing.
+    while fields.len() > 4 && fields.last().is_some_and(|field| field.is_empty()) {
+        fields.pop();
+    }
     if fields.len() < 3 {
         return Err("a record needs an ad system domain, an account id and DIRECT or RESELLER");
     }
@@ -352,6 +377,87 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
     }
 
     #[test]
+    fn the_shapes_real_files_come_in_are_read_as_the_spec_says() {
+        /// Line, and the record it is: domain, account id, relationship.
+        type Case = (&'static str, Option<(&'static str, &'static str, Relationship)>);
+        let direct = Relationship::Direct;
+        let cases: [Case; 22] = [
+            ("a.com,1,DIRECT", Some(("a.com", "1", direct))),
+            ("  a.com ,\t1 , direct  ", Some(("a.com", "1", direct))),
+            ("A.COM, AbC-1, Direct", Some(("a.com", "AbC-1", direct))),
+            ("a.com, 1, DIRECT,", Some(("a.com", "1", direct))),
+            ("a.com, 1, DIRECT, f08c47fec0942fa0,", Some(("a.com", "1", direct))),
+            ("a.com, 1, DIRECT, cert, , ,", Some(("a.com", "1", direct))),
+            ("a.com, 1, DIRECT # comment, with, commas", Some(("a.com", "1", direct))),
+            ("a.com, 1, DIRECT; ext=a,b,c; other=1", Some(("a.com", "1", direct))),
+            ("a.com, 1, DIRECT, cert ;ext", Some(("a.com", "1", direct))),
+            ("a.com, pub-1 2, DIRECT", Some(("a.com", "pub-1 2", direct))),
+            ("sub.a-b.co.uk, 1, RESELLER", Some(("sub.a-b.co.uk", "1", Relationship::Reseller))),
+            ("a.com, 1, DIRECT, cert, extra", None),
+            ("a.com, 1", None),
+            ("a.com; 1; DIRECT", None),
+            ("a.com 1 DIRECT", None),
+            ("https://a.com, 1, DIRECT", None),
+            ("a.com/path, 1, DIRECT", None),
+            ("localhost, 1, DIRECT", None),
+            (".a.com, 1, DIRECT", None),
+            ("a.com., 1, DIRECT", None),
+            ("a.com, 1, BOTH", None),
+            ("<p>a.com, 1, DIRECT</p>", None),
+        ];
+        for (line, expected) in cases {
+            let parsed = parse(line);
+            let record = parsed
+                .records
+                .first()
+                .map(|record| (record.domain.as_str(), record.account_id.as_str(), record.relationship));
+            assert_eq!(record, expected, "{line:?}");
+            assert_eq!(parsed.invalid.len(), usize::from(expected.is_none()), "{line:?}");
+        }
+    }
+
+    #[test]
+    fn variables_are_told_from_records_and_read_without_regard_to_case() {
+        let parsed = parse(
+            "OwnerDomain = Owner.Example \n\
+             OWNERDOMAIN=second.example\n\
+             MANAGERDOMAIN=m.example\nmanagerdomain=M.example, US\n\
+             SUBDOMAIN=a.site.example\nSUBDOMAIN=not a domain\n\
+             INVENTORYPARTNERDOMAIN=partner.example\nCONTACT=https://site.example/contact?a=b\n\
+             FUTURE_VARIABLE=anything, at all\n\
+             =nameless\n\
+             a.com, 1, DIRECT; k=v\n",
+        );
+        assert_eq!(parsed.owner_domain.as_deref(), Some("owner.example"));
+        assert_eq!(parsed.manager_domains, ["m.example"]);
+        assert_eq!(parsed.subdomains, ["a.site.example"]);
+        assert_eq!(parsed.records.len(), 1);
+        let invalid: Vec<&str> = parsed.invalid.iter().map(|line| line.text.as_str()).collect();
+        assert_eq!(invalid, ["=nameless"]);
+    }
+
+    #[test]
+    fn a_repeated_record_counts_once() {
+        let parsed = parse(
+            "a.com, 1, DIRECT\nA.com, 1, direct, cert\na.com, 1, RESELLER\na.com, 2, DIRECT\n",
+        );
+        let records: Vec<(u32, &str, Relationship)> = parsed
+            .records
+            .iter()
+            .map(|record| (record.line, record.account_id.as_str(), record.relationship))
+            .collect();
+        assert_eq!(
+            records,
+            [
+                (1, "1", Relationship::Direct),
+                (3, "1", Relationship::Reseller),
+                (4, "2", Relationship::Direct),
+            ]
+        );
+        assert!(parsed.invalid.is_empty());
+    }
+
+    #[test]
     fn records_are_looked_up_by_any_of_an_ad_systems_domains() {
         let parsed = parse("xandr.com, 1, DIRECT\nappnexus.com, 2, RESELLER\nopenx.com, 3, DIRECT");
         let ids: Vec<&str> = parsed
@@ -421,6 +527,41 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
             ),
             web_page
         );
+        // Error pages and soft 404s that do not announce themselves as HTML.
+        for page in [
+            "<head><title>404 Not Found</title></head>",
+            "\u{feff}  <script>location.href='/'</script>",
+            "<svg xmlns='http://www.w3.org/2000/svg'/>",
+        ] {
+            assert_eq!(
+                read_response(200, Some("text/plain"), page.as_bytes()),
+                web_page,
+                "{page}"
+            );
+        }
+        assert_eq!(
+            read_response(
+                200,
+                None,
+                b"Page not found\nThe page you requested, /ads.txt, does not exist.\n"
+            ),
+            AdsTxtOutcome::Unreadable(
+                "none of the lines in the answer is an ads.txt record".into()
+            )
+        );
+        for no_records in ["", "# nothing yet\n", "CONTACT=ads@example.com\n"] {
+            assert_eq!(
+                read_response(200, Some("text/plain"), no_records.as_bytes()),
+                AdsTxtOutcome::Unreadable("the file has no seller records".into()),
+                "{no_records:?}"
+            );
+        }
+        // The specification's way of saying that nobody is authorised.
+        assert!(found(read_response(
+            200,
+            Some("text/plain"),
+            b"placeholder.example.com, placeholder, DIRECT, placeholder\n"
+        )));
         let not_text =
             AdsTxtOutcome::Unreadable("the site answered with data that is not text".into());
         assert_eq!(

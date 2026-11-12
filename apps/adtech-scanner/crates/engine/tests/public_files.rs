@@ -272,6 +272,18 @@ async fn redirects_to_private_plain_http_or_unusable_targets_are_refused() {
             "https://user:pw@example.com/ads.txt".to_string(),
             "the address was not contacted: it carries credentials",
         ),
+        (
+            "https://example.com:8443/ads.txt".to_string(),
+            "the address was not contacted: only the standard https port is read",
+        ),
+        (
+            "https://[::ffff:127.0.0.1]/ads.txt".to_string(),
+            "the address was not contacted: it points to this machine or a private network",
+        ),
+        (
+            "https://localhost./ads.txt".to_string(),
+            "the address was not contacted: it points to this machine or a private network",
+        ),
     ];
     for (index, (target, expected)) in cases.iter().enumerate() {
         let file = format!("/case-{index}/ads.txt");
@@ -335,6 +347,40 @@ async fn an_oversized_file_is_an_error_not_a_truncated_file() {
     let mut exact = request(&server, "/exact/ads.txt");
     exact.max_bytes = 1_024;
     assert_eq!(fetch(&exact).await.unwrap().body.len(), 1_024);
+}
+
+#[tokio::test]
+async fn the_size_limit_counts_decompressed_bytes() {
+    // 100,000 line feeds, gzip-compressed to 133 bytes.
+    const BOMB: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xed, 0xc1, 0x21, 0x01, 0x00,
+        0x00, 0x00, 0xc3, 0x20, 0xbf, 0xfe, 0x81, 0x5f, 0xe3, 0x02, 0x28, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0xe0, 0xd5, 0x00, 0x7c, 0x0a, 0x6d, 0xd2, 0xa0, 0x86, 0x01, 0x00,
+    ];
+    let server = MockServer::start().await;
+    serve(
+        &server,
+        "/ads.txt",
+        ResponseTemplate::new(200)
+            .insert_header("content-encoding", "gzip")
+            .set_body_raw(BOMB.to_vec(), "text/plain"),
+    )
+    .await;
+
+    let mut limited = request(&server, "/ads.txt");
+    limited.max_bytes = 64 * 1024;
+    assert!(BOMB.len() < limited.max_bytes);
+    assert_eq!(fetch(&limited).await, Err(FetchError::TooLarge(64 * 1024)));
+
+    let mut roomy = request(&server, "/ads.txt");
+    roomy.max_bytes = 100_000;
+    assert_eq!(fetch(&roomy).await.unwrap().body.len(), 100_000);
 }
 
 #[tokio::test]

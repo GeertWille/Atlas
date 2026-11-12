@@ -1,0 +1,232 @@
+//! The throwaway Chrome profile of one launch, and the removal of profiles
+//! whose owning process died before it could remove them.
+//!
+//! A profile is owned through an advisory lock on a file inside it. The
+//! operating system releases the lock when the owning process ends, however it
+//! ends, so "nobody holds the lock" means "nobody is using this profile"
+//! without relying on process ids, which get reused.
+
+use std::fs::File;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+const PREFIX: &str = "adscan-profile-";
+/// A profile is created under this prefix and renamed once it is locked, so
+/// that no unlocked profile of a live launch is ever visible under `PREFIX`.
+const STAGING_PREFIX: &str = "adscan-starting-";
+const LOCK_FILE: &str = "adscan-owner.lock";
+/// How old a profile without a lock file must be before it counts as
+/// abandoned: longer than any capture lasts. Such profiles come from versions
+/// of the app that did not lock them, and from dying Chrome processes that
+/// recreate the directory after it was removed.
+const UNLOCKED_PROFILE_GRACE: Duration = Duration::from_secs(60 * 60);
+
+pub(crate) struct Profile {
+    path: PathBuf,
+    /// Holds the lock for as long as the profile is in use.
+    _owner: File,
+}
+
+impl Profile {
+    pub(crate) fn create_in(root: &Path) -> std::io::Result<Self> {
+        let staging = tempfile::Builder::new()
+            .prefix(STAGING_PREFIX)
+            .tempdir_in(root)?;
+        let owner = File::create(staging.path().join(LOCK_FILE))?;
+        owner.lock()?;
+        let unique_suffix = staging
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_prefix(STAGING_PREFIX))
+            .ok_or_else(|| std::io::Error::other("unexpected temporary directory name"))?;
+        let path = root.join(format!("{PREFIX}{unique_suffix}"));
+        std::fs::rename(staging.path(), &path)?;
+        // Renamed away; there is nothing left for `staging` to delete.
+        let _ = staging.keep();
+        Ok(Self {
+            path,
+            _owner: owner,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for Profile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Removes the profiles in `root` that no live process owns and returns how
+/// many were removed. Profiles of running captures, in this process or in
+/// another instance of the app, are left alone.
+pub(crate) fn remove_abandoned(root: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|entry| {
+            let is_profile = entry.file_name().to_string_lossy().starts_with(PREFIX);
+            // `file_type` does not follow symlinks: a link is never a profile.
+            is_profile && entry.file_type().is_ok_and(|kind| kind.is_dir())
+        })
+        .filter(|entry| is_abandoned(&entry.path()))
+        .filter(|entry| std::fs::remove_dir_all(entry.path()).is_ok())
+        .count()
+}
+
+fn is_abandoned(profile: &Path) -> bool {
+    match File::open(profile.join(LOCK_FILE)) {
+        Ok(owner) => owner.try_lock().is_ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => std::fs::metadata(profile)
+            .and_then(|metadata| metadata.modified())
+            .is_ok_and(|modified| {
+                modified
+                    .elapsed()
+                    .is_ok_and(|age| age > UNLOCKED_PROFILE_GRACE)
+            }),
+        Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::SystemTime;
+
+    use super::*;
+
+    fn profile_names(root: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(root)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn name_of(profile: &Profile) -> String {
+        profile
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// What a process that was killed leaves behind: the directory with its
+    /// lock file, and nobody holding the lock.
+    fn left_behind_by_a_dead_owner(root: &Path, name: &str) -> PathBuf {
+        let path = root.join(format!("{PREFIX}{name}"));
+        std::fs::create_dir_all(path.join("Default")).unwrap();
+        std::fs::write(path.join("Default/Cookies"), "data").unwrap();
+        File::create(path.join(LOCK_FILE)).unwrap();
+        path
+    }
+
+    fn age(directory: &Path, age: Duration) {
+        File::open(directory)
+            .unwrap()
+            .set_modified(SystemTime::now() - age)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_profile_is_locked_before_it_appears_under_its_final_name() {
+        let root = tempfile::tempdir().unwrap();
+
+        let profile = Profile::create_in(root.path()).unwrap();
+
+        assert_eq!(profile_names(root.path()), [name_of(&profile)]);
+        assert!(name_of(&profile).starts_with(PREFIX));
+        let lock = File::open(profile.path().join(LOCK_FILE)).unwrap();
+        assert!(matches!(
+            lock.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn dropping_a_profile_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = Profile::create_in(root.path()).unwrap();
+        std::fs::create_dir(profile.path().join("Default")).unwrap();
+
+        drop(profile);
+
+        assert!(profile_names(root.path()).is_empty());
+    }
+
+    #[test]
+    fn profiles_of_dead_owners_are_removed_and_live_ones_are_kept() {
+        let root = tempfile::tempdir().unwrap();
+        let live = Profile::create_in(root.path()).unwrap();
+        let another_live = Profile::create_in(root.path()).unwrap();
+        let dead = left_behind_by_a_dead_owner(root.path(), "killed");
+        let also_dead = left_behind_by_a_dead_owner(root.path(), "crashed");
+
+        assert_eq!(remove_abandoned(root.path()), 2);
+
+        assert!(!dead.exists() && !also_dead.exists());
+        let mut kept = [name_of(&live), name_of(&another_live)];
+        kept.sort();
+        assert_eq!(profile_names(root.path()), kept);
+        assert_eq!(remove_abandoned(root.path()), 0, "nothing more to remove");
+    }
+
+    #[test]
+    fn a_profile_without_a_lock_file_is_only_removed_once_it_is_old() {
+        let root = tempfile::tempdir().unwrap();
+        let fresh = root.path().join(format!("{PREFIX}fresh"));
+        let nearly_old = root.path().join(format!("{PREFIX}nearly-old"));
+        let old = root.path().join(format!("{PREFIX}old"));
+        for profile in [&fresh, &nearly_old, &old] {
+            std::fs::create_dir_all(profile.join("Default")).unwrap();
+        }
+        age(
+            &nearly_old,
+            UNLOCKED_PROFILE_GRACE - Duration::from_secs(60),
+        );
+        age(&old, UNLOCKED_PROFILE_GRACE + Duration::from_secs(60));
+
+        assert_eq!(remove_abandoned(root.path()), 1);
+
+        assert!(fresh.exists() && nearly_old.exists() && !old.exists());
+    }
+
+    #[test]
+    fn only_profile_directories_are_ever_touched() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let precious = elsewhere.path().join("precious");
+        std::fs::create_dir(&precious).unwrap();
+        std::fs::write(precious.join("file"), "keep").unwrap();
+        age(&precious, UNLOCKED_PROFILE_GRACE * 2);
+
+        let other_app = root.path().join("other-app-profile-1");
+        std::fs::create_dir(&other_app).unwrap();
+        age(&other_app, UNLOCKED_PROFILE_GRACE * 2);
+        let starting = root.path().join(format!("{STAGING_PREFIX}abc"));
+        std::fs::create_dir(&starting).unwrap();
+        File::create(starting.join(LOCK_FILE)).unwrap();
+        let file = root.path().join(format!("{PREFIX}a-file"));
+        std::fs::write(&file, "not a directory").unwrap();
+        let link = root.path().join(format!("{PREFIX}a-link"));
+        std::os::unix::fs::symlink(&precious, &link).unwrap();
+
+        assert_eq!(remove_abandoned(root.path()), 0);
+
+        assert!(other_app.exists() && starting.exists() && file.exists());
+        assert!(link.is_symlink() && precious.join("file").exists());
+    }
+
+    #[test]
+    fn a_missing_root_is_nothing_to_clean() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(remove_abandoned(&root.path().join("missing")), 0);
+    }
+}

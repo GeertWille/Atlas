@@ -198,7 +198,7 @@ impl Recorder {
                 is_script: params["type"] == "Script",
                 status: None,
                 // A CORS preflight goes to the same URL and is not the bid request.
-                bid: bid_request(url).filter(|_| params["type"] != "Preflight"),
+                bid: bid_request(url, &self.document_url).filter(|_| params["type"] != "Preflight"),
             },
         );
     }

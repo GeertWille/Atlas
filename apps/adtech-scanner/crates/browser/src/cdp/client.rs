@@ -1,4 +1,5 @@
-//! A small Chrome DevTools Protocol client over the browser WebSocket.
+//! A small Chrome DevTools Protocol client. It speaks over any byte stream
+//! pair; `pipe` frames the messages.
 //!
 //! Messages stay untyped JSON on purpose: the handful of methods the scanner
 //! uses are stable, and generated protocol bindings break on events they do not
@@ -8,19 +9,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
-use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
+
+use super::pipe::{MessageReader, write_message};
 
 /// Generous: a wedged renderer must not hang a scan forever, nothing more.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CdpError {
-    #[error("could not connect to the browser: {0}")]
-    Connect(String),
     #[error("the connection to the browser closed")]
     Closed,
     #[error("{method} failed: {message}")]
@@ -58,28 +57,32 @@ pub(crate) struct Cdp {
 }
 
 impl Cdp {
-    /// Connects and returns the client plus the stream of protocol events.
-    /// Dropping the client closes the connection.
-    pub(crate) async fn connect(
-        ws_url: &str,
-    ) -> Result<(Self, mpsc::UnboundedReceiver<CdpEvent>), CdpError> {
-        // Script bodies arrive as single messages; the default 64 MiB cap is too tight.
-        let config = WebSocketConfig::default()
-            .max_message_size(None)
-            .max_frame_size(None);
-        let (socket, _) = tokio_tungstenite::connect_async_with_config(ws_url, Some(config), false)
-            .await
-            .map_err(|error| CdpError::Connect(error.to_string()))?;
+    /// Starts talking to the browser at the other end of the two streams and
+    /// returns the client plus the stream of protocol events. Dropping the
+    /// client closes `to_browser`.
+    pub(crate) fn start<R, W>(
+        from_browser: R,
+        to_browser: W,
+    ) -> (Self, mpsc::UnboundedReceiver<CdpEvent>)
+    where
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    {
         let (commands, command_queue) = mpsc::unbounded_channel();
         let (events, event_stream) = mpsc::unbounded_channel();
-        tokio::spawn(pump(socket, command_queue, events));
-        Ok((
+        tokio::spawn(pump(
+            MessageReader::new(from_browser),
+            to_browser,
+            command_queue,
+            events,
+        ));
+        (
             Self {
                 commands,
                 next_id: AtomicU64::new(1),
             },
             event_stream,
-        ))
+        )
     }
 
     /// Queues the command immediately and returns a future for its result, so
@@ -118,36 +121,32 @@ impl Cdp {
     }
 }
 
-type Socket =
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
-
-async fn pump(
-    socket: Socket,
+async fn pump<R, W>(
+    mut from_browser: MessageReader<R>,
+    mut to_browser: W,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<CdpEvent>,
-) {
-    let (mut sink, mut stream) = socket.split();
+) where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     let mut awaiting = Awaiting::new();
     loop {
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 awaiting.insert(command.id, (command.method, command.reply));
-                if sink.send(Message::text(command.text)).await.is_err() {
+                if write_message(&mut to_browser, &command.text).await.is_err() {
                     break;
                 }
             }
-            frame = stream.next() => match frame {
-                Some(Ok(Message::Text(text))) => {
-                    let Ok(message) = serde_json::from_str::<Value>(text.as_str()) else { continue };
-                    route(message, &mut awaiting, &events);
-                }
-                Some(Ok(_)) => {}
-                Some(Err(_)) | None => break,
-            },
+            message = from_browser.next() => {
+                let Ok(Some(message)) = message else { break };
+                let Ok(message) = serde_json::from_slice::<Value>(&message) else { continue };
+                route(message, &mut awaiting, &events);
+            }
         }
     }
-    let _ = sink.close().await;
 }
 
 fn route(mut message: Value, awaiting: &mut Awaiting, events: &mpsc::UnboundedSender<CdpEvent>) {
@@ -174,5 +173,137 @@ fn route(mut message: Value, awaiting: &mut Awaiting, events: &mpsc::UnboundedSe
             session_id: message["sessionId"].as_str().map(str::to_string),
             params: message["params"].take(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncWriteExt, DuplexStream};
+
+    use super::*;
+
+    /// The browser's side of the connection.
+    struct Browser {
+        commands: MessageReader<DuplexStream>,
+        replies: DuplexStream,
+    }
+
+    impl Browser {
+        async fn received(&mut self) -> Value {
+            let command = self.commands.next().await.unwrap().unwrap();
+            serde_json::from_slice(&command).unwrap()
+        }
+
+        async fn say(&mut self, message: Value) {
+            write_message(&mut self.replies, &message.to_string())
+                .await
+                .unwrap();
+        }
+    }
+
+    fn connected() -> (Cdp, mpsc::UnboundedReceiver<CdpEvent>, Browser) {
+        let (to_browser, commands) = tokio::io::duplex(1024);
+        let (replies, from_browser) = tokio::io::duplex(1024);
+        let (cdp, events) = Cdp::start(from_browser, to_browser);
+        let browser = Browser {
+            commands: MessageReader::new(commands),
+            replies,
+        };
+        (cdp, events, browser)
+    }
+
+    #[tokio::test]
+    async fn replies_reach_their_commands_in_whatever_order_they_arrive() {
+        let (cdp, _events, mut browser) = connected();
+        let version = cdp.send(None, "Browser.getVersion", json!({}));
+        let frames = cdp.send(Some("tab"), "Page.getFrameTree", json!({ "depth": 1 }));
+
+        assert_eq!(
+            browser.received().await,
+            json!({ "id": 1, "method": "Browser.getVersion", "params": {} })
+        );
+        assert_eq!(
+            browser.received().await,
+            json!({
+                "id": 2,
+                "method": "Page.getFrameTree",
+                "params": { "depth": 1 },
+                "sessionId": "tab",
+            })
+        );
+        browser
+            .say(json!({ "id": 2, "result": { "frameTree": {} }, "sessionId": "tab" }))
+            .await;
+        browser
+            .say(json!({ "id": 1, "result": { "product": "Chrome/141" } }))
+            .await;
+
+        assert_eq!(frames.await, Ok(json!({ "frameTree": {} })));
+        assert_eq!(version.await, Ok(json!({ "product": "Chrome/141" })));
+    }
+
+    #[tokio::test]
+    async fn a_protocol_error_names_the_method_that_failed() {
+        let (cdp, _events, mut browser) = connected();
+        let reply = cdp.send(None, "Target.attachToTarget", json!({}));
+        browser.received().await;
+        browser
+            .say(json!({ "id": 1, "error": { "code": -32602, "message": "No target" } }))
+            .await;
+
+        assert_eq!(
+            reply.await,
+            Err(CdpError::Rejected {
+                method: "Target.attachToTarget",
+                message: "No target".to_string(),
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn events_carry_their_session_and_garbage_is_skipped() {
+        let (_cdp, mut events, mut browser) = connected();
+        browser.replies.write_all(b"not json\0").await.unwrap();
+        browser
+            .say(json!({ "method": "Target.targetCreated", "params": { "n": 1 } }))
+            .await;
+        browser
+            .say(json!({ "method": "Page.loadEventFired", "params": {}, "sessionId": "tab" }))
+            .await;
+
+        let browser_level = events.recv().await.unwrap();
+        assert_eq!(browser_level.method, "Target.targetCreated");
+        assert_eq!(browser_level.params, json!({ "n": 1 }));
+        assert_eq!(browser_level.session_id, None);
+        let from_tab = events.recv().await.unwrap();
+        assert_eq!(from_tab.method, "Page.loadEventFired");
+        assert_eq!(from_tab.session_id.as_deref(), Some("tab"));
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_goes_away_fails_pending_and_later_commands() {
+        let (cdp, mut events, mut browser) = connected();
+        let pending = cdp.send(None, "Browser.getVersion", json!({}));
+        browser.received().await;
+
+        drop(browser);
+
+        assert_eq!(pending.await, Err(CdpError::Closed));
+        assert_eq!(
+            cdp.send(None, "Browser.getVersion", json!({})).await,
+            Err(CdpError::Closed)
+        );
+        assert!(events.recv().await.is_none());
+    }
+
+    /// Chrome exits when its end of the pipe reports end of file; this is
+    /// what makes it go away with the app.
+    #[tokio::test]
+    async fn dropping_the_client_closes_the_stream_to_the_browser() {
+        let (cdp, _events, mut browser) = connected();
+
+        drop(cdp);
+
+        assert_eq!(browser.commands.next().await.unwrap(), None);
     }
 }

@@ -48,8 +48,22 @@ pub fn subdomain_ads_txt_url(page_url: &str, declared_subdomains: &[String]) -> 
         .then(|| format!("https://{host}/ads.txt"))
 }
 
-pub fn sellers_json_url(ad_system_domain: &str) -> String {
-    format!("https://{ad_system_domain}/sellers.json")
+/// Where an ad system publishes its sellers.json. The name comes from the
+/// scanned site's ads.txt, so it is only turned into an address when it is a
+/// host name under a registrable domain of the public internet: not an IP
+/// address, not a single label, not a made-up suffix.
+pub fn sellers_json_url(ad_system_domain: &str) -> Option<String> {
+    let domain = ad_system_domain.to_ascii_lowercase();
+    let is_host_name = domain.len() <= 253
+        && domain.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        });
+    let is_registrable = psl::domain(domain.as_bytes())
+        .is_some_and(|registrable| registrable.suffix().is_known());
+    (is_host_name && is_registrable).then(|| format!("https://{domain}/sellers.json"))
 }
 
 pub fn is_loopback(host: &Host<&str>) -> bool {
@@ -180,6 +194,50 @@ mod tests {
             subdomain_ads_txt_url("https://www.example.com/", &declared),
             None
         );
+    }
+
+    #[test]
+    fn sellers_json_is_only_asked_of_public_domain_names() {
+        for (domain, url) in [
+            ("appnexus.com", "https://appnexus.com/sellers.json"),
+            ("RubiconProject.com", "https://rubiconproject.com/sellers.json"),
+            (
+                "video.unrulymedia.com",
+                "https://video.unrulymedia.com/sellers.json",
+            ),
+            ("media.net", "https://media.net/sellers.json"),
+            ("example.co.uk", "https://example.co.uk/sellers.json"),
+        ] {
+            assert_eq!(sellers_json_url(domain).as_deref(), Some(url), "{domain}");
+        }
+        for not_a_public_domain in [
+            "",
+            "localhost",
+            "intranet",
+            "127.0.0.1",
+            "169.254.169.254",
+            "2130706433",
+            "[::1]",
+            "router.local",
+            "db.internal",
+            "printer.lan",
+            "co.uk",
+            "com",
+            "example.com.",
+            ".example.com",
+            "exa mple.com",
+            "example.com/admin",
+            "example.com:8443",
+            "user@example.com",
+            "example.com#x",
+            "example.com?x=1",
+            "-bad.example.com",
+            "ex\u{e4}mple.com",
+            "a..example.com",
+        ] {
+            assert_eq!(sellers_json_url(not_a_public_domain), None, "{not_a_public_domain:?}");
+        }
+        assert_eq!(sellers_json_url(&format!("{}.com", "a".repeat(64))), None);
     }
 
     #[test]

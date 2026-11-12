@@ -2,6 +2,9 @@
 //! Chromium and serving fixture pages.
 #![allow(dead_code)]
 
+#[cfg(target_os = "linux")]
+pub mod chrome_processes;
+
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
