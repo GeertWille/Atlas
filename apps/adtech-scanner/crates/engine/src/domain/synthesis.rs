@@ -78,6 +78,12 @@ fn absorb(ai: &mut Finding, heuristic: Finding) {
     );
     extend_unique(&mut ai.affected_slots, heuristic.affected_slots);
     extend_unique(&mut ai.affected_bidders, heuristic.affected_bidders);
+    for page in heuristic.pages {
+        if !ai.pages.contains(&page) {
+            ai.pages.push(page);
+        }
+    }
+    ai.pages.sort_unstable();
 }
 
 fn extend_unique(target: &mut Vec<String>, extra: Vec<String>) {
@@ -137,9 +143,11 @@ fn severity_penalty(severity: Severity) -> f64 {
 }
 
 /// Executive summary used when the analysis model did not write one.
+/// `page_views` is how many pages the visit covered.
 pub fn template_overview(
     hostname: &str,
     device: DeviceProfile,
+    page_views: usize,
     metrics: &ScanMetrics,
     findings: &[Finding],
     score: u32,
@@ -161,6 +169,11 @@ pub fn template_overview(
         metrics.slot_count,
         metrics.fill_rate * 100.0,
     );
+    if page_views > 1 {
+        overview.push_str(&format!(
+            " The visit covered {page_views} page views; the counts are their sum."
+        ));
+    }
     let counts = severity_counts(findings);
     if findings.is_empty() {
         overview.push_str(" No revenue leaks were detected in this scan.");

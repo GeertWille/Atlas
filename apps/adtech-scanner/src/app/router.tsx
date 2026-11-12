@@ -12,9 +12,13 @@ import { AppShell } from "./shell/AppShell";
 export const REPORT_TABS = ["findings", "auctions", "slots", "scripts", "audit"] as const;
 export type ReportTab = (typeof REPORT_TABS)[number];
 
-/** Deep links into a report: a tab, plus the finding, script or log entry to reveal. */
+/** The saved configuration the composer has open for editing. */
+const homeSearchSchema = z.object({ configuration: z.string().optional().catch(undefined) });
+
+/** Deep links into a report: a tab, the page view it is narrowed to, plus the finding, script or log entry to reveal. */
 const scanSearchSchema = z.object({
   tab: z.enum(REPORT_TABS).optional().catch(undefined),
+  page: z.number().int().min(0).optional().catch(undefined),
   finding: z.string().optional().catch(undefined),
   script: z.string().optional().catch(undefined),
   log: z.string().optional().catch(undefined),
@@ -45,13 +49,24 @@ function ScreenError({ error, reset }: { error: unknown; reset: () => void }) {
 
 const rootRoute = createRootRoute({ component: AppShell, notFoundComponent: NotFound });
 
-const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: HomeRoute });
+const homeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/",
+  validateSearch: homeSearchSchema,
+  component: HomeRoute,
+});
 
 export const scanRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/scans/$scanId",
   validateSearch: scanSearchSchema,
   component: lazyRouteComponent(() => import("./routes/ScanRoute"), "ScanRoute"),
+});
+
+const configurationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/configurations",
+  component: lazyRouteComponent(() => import("./routes/ConfigurationsRoute"), "ConfigurationsRoute"),
 });
 
 const historyRoute = createRoute({
@@ -73,7 +88,14 @@ const settingsRoute = createRoute({
   component: lazyRouteComponent(() => import("./routes/SettingsRoute"), "SettingsRoute"),
 });
 
-const routeTree = rootRoute.addChildren([homeRoute, scanRoute, historyRoute, logSearchRoute, settingsRoute]);
+const routeTree = rootRoute.addChildren([
+  homeRoute,
+  scanRoute,
+  configurationsRoute,
+  historyRoute,
+  logSearchRoute,
+  settingsRoute,
+]);
 
 /** Hash history: the packaged app is served from a custom protocol with no server-side routing. */
 export const router = createRouter({

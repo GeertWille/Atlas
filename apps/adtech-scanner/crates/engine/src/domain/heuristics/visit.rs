@@ -9,7 +9,7 @@ use adscan_model::{
     TrackerEvent, TrackerEventKind as Ev,
 };
 
-use super::{Rule, RuleContext, heuristic, ms, page_label};
+use super::{AUTOMATION_RULE, Rule, RuleContext, heuristic, ms, page_label};
 use crate::domain::finding::{FindingDraft, metric, timeline};
 use crate::domain::telemetry::{ScanTelemetry, auction_covers};
 
@@ -613,7 +613,7 @@ pub struct ScanIdentifiableAsAutomated;
 
 impl Rule for ScanIdentifiableAsAutomated {
     fn id(&self) -> &'static str {
-        "scan-identifiable-as-automated"
+        AUTOMATION_RULE
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {

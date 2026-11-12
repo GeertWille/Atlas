@@ -9,6 +9,7 @@ use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
     RuleContext, RuleScope, bidders, estimate_impact, heuristic, ms, pct, share,
 };
+use super::visit::{automation_indicators, unbid_after_navigation};
 use crate::domain::diagnostics::capitalized;
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
 use crate::domain::telemetry::{auction_covers, slot_matches_code};
@@ -360,10 +361,18 @@ impl Rule for SlotsOutsideHeaderBidding {
                 .iter()
                 .any(|size| size != "1x1" && size != "fluid")
         };
+        // Slots that were auctioned on an earlier page view and lost their
+        // bids after a navigation are that rule's finding: they do have a
+        // Prebid ad unit.
+        let lost_after_navigation = ctx
+            .page
+            .map(|page| unbid_after_navigation(ctx, page.index))
+            .unwrap_or_default();
         let outside: Vec<&AdSlot> = ctx
             .slots()
             .iter()
             .filter(|slot| slot.requested_at_ms.is_some() && is_display(slot))
+            .filter(|slot| !lost_after_navigation.contains(&slot.element_id))
             .filter(|slot| {
                 !ctx.auctions()
                     .iter()
@@ -644,6 +653,16 @@ impl Rule for BiddersNeverBid {
                 silent.len(),
             ),
         ));
+        // A page that can tell the visit is automated may get no bids for
+        // that reason alone.
+        if let Some(indicators) = automation_indicators(ctx.environment) {
+            finding.evidence.push(metric(
+                "Caveat: this scan was identifiable as automated",
+                format!(
+                    "{indicators}. Bidders may have declined for that reason; confirm with a visit a person drives."
+                ),
+            ));
+        }
         finding.affected_bidders = names;
         vec![finding]
     }

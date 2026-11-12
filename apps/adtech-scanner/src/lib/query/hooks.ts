@@ -189,9 +189,7 @@ export function useDeleteProxyProfile() {
 }
 
 export function useSetProxyPassword() {
-  return useSettingsCommand(({ id, password }: { id: string; password: string }) =>
-    api.setProxyPassword(id, password),
-  );
+  return useSettingsCommand(({ id, password }: { id: string; password: string }) => api.setProxyPassword(id, password));
 }
 
 export function useClearProxyPassword() {

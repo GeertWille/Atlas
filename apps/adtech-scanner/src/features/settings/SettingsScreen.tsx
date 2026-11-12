@@ -6,7 +6,7 @@ import { useDeleteAllScans, useUpdateSettings } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
 import { aiAvailability } from "@/shared/domain/ai-availability";
 import { modelLabel, PRICED_MODELS } from "@/shared/domain/model-pricing";
-import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
+import { BUDGET_USD, OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { notifyError } from "@/shared/lib/notify-error";
 import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
 import {
@@ -28,7 +28,7 @@ import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { ApiKeyField } from "./ApiKeyField";
 import { CommitInput } from "./CommitInput";
-import { BUDGET_USD, parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
+import { parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
 
 const MODEL_SUGGESTIONS_ID = "model-suggestions";
 

@@ -254,8 +254,13 @@ fn build_toolbox(run: &StepRun<'_>) -> Result<Toolbox, NodeError> {
         })
         .collect();
     Ok(
-        Toolbox::new(scripts, run.state.capture()?, run.state.telemetry()?)
-            .with_bidder_checks(run.state.diagnostics.as_ref()),
+        Toolbox::new(
+            scripts,
+            run.state.capture()?,
+            run.state.telemetry()?,
+            run.state.environment.as_ref(),
+        )
+        .with_bidder_checks(run.state.diagnostics.as_ref()),
     )
 }
 

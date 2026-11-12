@@ -13,7 +13,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use adscan_model::{
     AdsTxtLineProblem, AdsTxtReport, AdsTxtStatus, BidStatus, BidderDiagnosis, BidderDiagnostics,
-    Capture, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, SchainNode, TrackerEventKind as Ev,
+    Capture, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, ObservedBidResponse, SchainNode,
+    TrackerEventKind as Ev,
 };
 use serde_json::Value;
 

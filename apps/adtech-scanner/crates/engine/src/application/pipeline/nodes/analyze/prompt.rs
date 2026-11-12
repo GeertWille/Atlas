@@ -1,19 +1,26 @@
 //! Phase 2 prompt: the stable system prompt, the tool definitions and the
 //! per-scan opening message.
 
+use std::collections::BTreeSet;
+
 use adscan_model::{Capture, DeviceProfile, Finding};
 use serde_json::{Value, json};
 
 use super::aids::ReadingAids;
-use super::render;
+use super::render::{self, Scope};
 use super::toolbox::Toolbox;
 use crate::application::llm::ToolSpec;
-use crate::domain::telemetry::Telemetry;
+use crate::domain::telemetry::ScanTelemetry;
+
+/// Timelines of page views beyond the entry page that the opening message
+/// carries in full.
+const MAX_EXTRA_TIMELINES: usize = 2;
 
 /// Byte-stable across scans so the tools + system prefix can be cached.
 pub const SYSTEM_PROMPT: &str = "\
 You are a senior ad-ops engineer who specialises in header bidding (Prebid.js, Google Publisher Tag / \
-Google Ad Manager, Amazon TAM). You are auditing one page load of a publisher's site. Your goal is to \
+Google Ad Manager, Amazon TAM). You are auditing one visit of one or more page views to a publisher's \
+site. Your goal is to \
 find logic bugs in the publisher's ad code that directly cause lost revenue, and to prove each one from \
 the code and the measurements.
 
@@ -31,6 +38,12 @@ detected device class the auction does not start until the user scrolls, so abov
 bids, and users who never scroll generate no header-bidding revenue. The scan was taken with one device \
 profile; when a branch depends on device, viewport or user agent, work out which branch ran in this \
 scan and say what the other profile would do.
+
+A visit can have several page views: pages the visitor navigated to, and route changes of a \
+single-page application. Page views are numbered from 1 and every time counts from the start of its own \
+page view. Bugs that only show after the first page belong to the same class: state kept across \
+navigations that stops later auctions, ad slots that are not reset on a route change, slots refreshed \
+without a new auction or with bids that were already used.
 
 How to work
 1. Read the scan context, metrics, timelines and the deterministic findings in the first message. They \
@@ -95,15 +108,19 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "get_telemetry",
-            description: "Get detailed telemetry for one section: auctions (every bid with status and timing), slots (GPT slot lifecycle), prebid_config (version, modules, getConfig snapshot), console (console and Prebid log lines), page_events (lifecycle, scroll and auction timeline) or bidder_checks (per bidder: adapter params, endpoint answers, ads.txt, sellers.json and consent, as verified by the scanner).",
+            description: "Get detailed telemetry for one section: pages (how the visit was made and its page views), auctions (every bid with status and timing), slots (GPT slot lifecycle, with every ad request of a refreshed slot), prebid_config (version, modules, getConfig snapshot), console (console and Prebid log lines), page_events (lifecycle, scroll, route-change and auction timeline) or bidder_checks (per bidder: adapter params, endpoint answers, ads.txt, sellers.json and consent, as verified by the scanner). auctions, slots, console and page_events can be limited to one page view.",
             input_schema: object_schema(
                 json!({
                     "section": {
                         "type": "string",
-                        "enum": ["auctions", "slots", "prebid_config", "console", "page_events", "bidder_checks"]
+                        "enum": ["pages", "auctions", "slots", "prebid_config", "console", "page_events", "bidder_checks"]
+                    },
+                    "page": {
+                        "anyOf": [{ "type": "integer" }, { "type": "null" }],
+                        "description": "Page view number, counted from 1, or null for the whole visit"
                     }
                 }),
-                &["section"],
+                &["section", "page"],
             ),
         },
         ToolSpec {
@@ -141,7 +158,12 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                         }
                     },
                     "affected_slots": { "type": "array", "items": { "type": "string" } },
-                    "affected_bidders": { "type": "array", "items": { "type": "string" } }
+                    "affected_bidders": { "type": "array", "items": { "type": "string" } },
+                    "pages": {
+                        "type": "array",
+                        "items": { "type": "integer" },
+                        "description": "Page view numbers (from 1) the bug shows on; empty when it is not specific to a page view"
+                    }
                 }),
                 &[
                     "title",
@@ -155,6 +177,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                     "evidence",
                     "affected_slots",
                     "affected_bidders",
+                    "pages",
                 ],
             ),
         },
@@ -187,7 +210,7 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
 /// there is one, and the source the analysis should start with.
 pub fn opening_message(
     capture: &Capture,
-    telemetry: &Telemetry,
+    telemetry: &ScanTelemetry,
     heuristic_findings: &[Finding],
     toolbox: &Toolbox,
     aids: &ReadingAids,
@@ -203,21 +226,26 @@ pub fn opening_message(
             .iter()
             .map(|finding| {
                 format!(
-                    "- [{:?}] {} (slots: {}; bidders: {})",
+                    "- [{:?}] {} (slots: {}; bidders: {}{})",
                     finding.severity,
                     finding.title,
                     list_or_dash(&finding.affected_slots),
                     list_or_dash(&finding.affected_bidders),
+                    seen_on(finding, telemetry.pages.len()),
                 )
             })
             .collect::<Vec<_>>()
             .join("\n")
+    };
+    let scope = Scope::Visit {
+        pages: telemetry.pages.len(),
     };
     format!(
         "# Scan context\n\
          url: {url}\n\
          device profile: {device} (viewport {width}x{height}, deviceScaleFactor {scale}, mobile emulation: {mobile})\n\
          user agent: {user_agent}\n\n\
+         # Visit\n{visit}\n\n\
          # Metrics\n{metrics}\n\n\
          # Page timeline\n{timeline}\n\n\
          # Auctions\n{auctions}\n\n\
@@ -232,10 +260,11 @@ pub fn opening_message(
         scale = capture.viewport.device_scale_factor,
         mobile = capture.viewport.mobile,
         user_agent = capture.user_agent,
-        metrics = json!(telemetry.metrics),
-        timeline = render::page_events(capture),
-        auctions = render::auctions_overview(&telemetry.auctions),
-        slots = render::slots(&telemetry.slots),
+        visit = toolbox.visit(),
+        metrics = json!(telemetry.total.metrics),
+        timeline = timelines(telemetry, heuristic_findings, toolbox),
+        auctions = render::auctions_overview(&telemetry.total.auctions, scope),
+        slots = render::slots(&telemetry.total.slots, scope),
         index = toolbox.script_index(),
         guide = section(
             "# Reading guide\n\
@@ -251,6 +280,48 @@ pub fn opening_message(
             &aids.source,
         ),
     )
+}
+
+/// The timeline of the entry page, and of the page views the rules found
+/// something on. Every other page view is one `get_telemetry` call away.
+fn timelines(telemetry: &ScanTelemetry, findings: &[Finding], toolbox: &Toolbox) -> String {
+    let entry = toolbox.page_timeline(0).unwrap_or_default();
+    if telemetry.pages.len() < 2 {
+        return entry.to_string();
+    }
+    let with_findings: BTreeSet<u32> = findings
+        .iter()
+        .flat_map(|finding| &finding.pages)
+        .copied()
+        .filter(|page| *page > 0)
+        .collect();
+    let mut out = vec![format!("## page 1\n{entry}")];
+    for page in with_findings.into_iter().take(MAX_EXTRA_TIMELINES) {
+        if let Some(timeline) = toolbox.page_timeline(page) {
+            out.push(format!("## page {}\n{timeline}", page + 1));
+        }
+    }
+    let shown = out.len();
+    if shown < telemetry.pages.len() {
+        out.push(format!(
+            "({} more page view(s): use get_telemetry with section page_events and the page number)",
+            telemetry.pages.len() - shown
+        ));
+    }
+    out.join("\n\n")
+}
+
+/// Which page views a finding was seen on, when the visit has several.
+fn seen_on(finding: &Finding, page_count: usize) -> String {
+    if page_count < 2 || finding.pages.is_empty() {
+        return String::new();
+    }
+    let pages: Vec<String> = finding
+        .pages
+        .iter()
+        .map(|page| (page + 1).to_string())
+        .collect();
+    format!("; page views: {}", pages.join(", "))
 }
 
 /// The heading and body as one block, or nothing when there is no body.

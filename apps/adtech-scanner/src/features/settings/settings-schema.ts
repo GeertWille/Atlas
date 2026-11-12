@@ -1,7 +1,5 @@
 import { z } from "zod";
-import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
-
-export const BUDGET_USD = { min: 0.05, max: 20 } as const;
+import { BUDGET_USD, OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 
 const modelId = z
   .string()

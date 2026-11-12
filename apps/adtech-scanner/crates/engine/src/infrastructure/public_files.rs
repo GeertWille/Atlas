@@ -8,9 +8,19 @@
 //! origin when that page is served from this machine, as the built-in demo
 //! site is.
 //!
-//! Behind a system proxy the proxy resolves the host name, so the address
-//! check covers IP addresses and whatever this machine's resolver answers;
-//! what the proxy may reach is the proxy's to decide.
+//! A request leaves the way its scan's browser did: directly, through the
+//! system's proxy, or through the proxy profile the scan chose. Behind any
+//! proxy the proxy resolves the host name, so two of the protections above
+//! are weaker there, and nothing here can restore them:
+//!
+//! - the address check covers IP addresses and whatever this machine's own
+//!   resolver answers, not the address the proxy ends up connecting to;
+//! - the connection cannot be pinned to the checked addresses.
+//!
+//! What a proxy may reach is the proxy's to decide. Everything else holds
+//! behind a proxy too: https only, no credentials or cookies, redirects by
+//! hand, size and time limits. The proxy's own password is sent to the proxy
+//! and to nothing else.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
@@ -22,7 +32,11 @@ use tokio_util::sync::CancellationToken;
 use url::{Host, Url};
 
 use super::http::describe_transport_error;
-use crate::application::ports::{FetchError, PublicFile, PublicFileFetcher, PublicFileRequest};
+use adscan_model::{CaptureProxy, ProxyScheme};
+
+use crate::application::ports::{
+    FetchError, FetchProxy, PublicFile, PublicFileFetcher, PublicFileRequest,
+};
 use crate::domain::diagnostics::site::{RedirectScope, is_loopback};
 
 const CLIENT_NAME: &str = concat!("adtech-scanner/", env!("CARGO_PKG_VERSION"));
@@ -53,7 +67,7 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
     let mut scope = RedirectScope::starting_at(url.host_str().unwrap_or_default());
     loop {
         let route = admit(&url, request.loopback_origin.as_deref()).await?;
-        let mut response = client(&url, &route)?
+        let mut response = client(&url, &route, &request.proxy)?
             .get(url.clone())
             .header(USER_AGENT, CLIENT_NAME)
             .header(ACCEPT, "text/plain, application/json;q=0.9, */*;q=0.1")
@@ -165,11 +179,29 @@ async fn admit(url: &Url, loopback_origin: Option<&str>) -> Result<Route, FetchE
     Ok(Route::PublicName(resolved))
 }
 
-fn client(url: &Url, route: &Route) -> Result<reqwest::Client, FetchError> {
+fn client(url: &Url, route: &Route, proxy: &FetchProxy) -> Result<reqwest::Client, FetchError> {
     let builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(CONNECT_TIMEOUT);
     let host = url.host_str().unwrap_or_default();
+    // The scanned origin on this machine is exempt below: `no_proxy` there
+    // is set last and wins.
+    let builder = match &proxy.route {
+        CaptureProxy::System => builder,
+        CaptureProxy::None => builder.no_proxy(),
+        CaptureProxy::Custom {
+            scheme,
+            host,
+            port,
+            username,
+        } => builder.proxy(custom_proxy(
+            *scheme,
+            host,
+            *port,
+            username.as_deref(),
+            proxy.password.as_deref(),
+        )?),
+    };
     let builder = match route {
         // `localhost` is this machine whatever a resolver says.
         Route::ScannedOrigin => builder.no_proxy().resolve_to_addrs(
@@ -185,6 +217,32 @@ fn client(url: &Url, route: &Route) -> Result<reqwest::Client, FetchError> {
         Route::PublicName(pinned) => builder.resolve_to_addrs(host, pinned),
     };
     builder.build().map_err(network)
+}
+
+fn custom_proxy(
+    scheme: ProxyScheme,
+    host: &str,
+    port: u16,
+    username: Option<&str>,
+    password: Option<&str>,
+) -> Result<reqwest::Proxy, FetchError> {
+    let scheme = match scheme {
+        ProxyScheme::Http => "http",
+        ProxyScheme::Https => "https",
+        // `socks5h`: the proxy resolves the name, as an http proxy does, so
+        // the file is looked up from where the scan's pages were.
+        ProxyScheme::Socks5 => "socks5h",
+    };
+    let host = match host.parse::<Ipv6Addr>() {
+        Ok(address) => format!("[{address}]"),
+        Err(_) => host.to_string(),
+    };
+    let proxy = reqwest::Proxy::all(format!("{scheme}://{host}:{port}"))
+        .map_err(|_| FetchError::Network("the proxy address is not valid".into()))?;
+    Ok(match username {
+        Some(username) => proxy.basic_auth(username, password.unwrap_or_default()),
+        None => proxy,
+    })
 }
 
 fn require_public(ip: IpAddr) -> Result<(), FetchError> {

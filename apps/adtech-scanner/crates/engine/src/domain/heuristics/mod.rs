@@ -83,6 +83,9 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
     ]
 }
 
+/// Id of the rule that reports a visit the page could tell was automated.
+pub const AUTOMATION_RULE: &str = "scan-identifiable-as-automated";
+
 pub struct RuleHit {
     pub rule: &'static str,
     pub finding: FindingDraft,

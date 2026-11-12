@@ -13,8 +13,12 @@ mod watchdog;
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions};
+pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions, ProfileChoice, ProxyServer};
 pub(crate) use client::{Cdp, CdpError, CdpEvent};
+pub(crate) use profile::{
+    PersistentProfileError, PersistentProfileState, clear as clear_persistent_profile,
+    inspect as inspect_persistent_profile, remove_abandoned as remove_abandoned_profiles,
+};
 
 /// Connects to a browser that was just spawned and waits until it answers.
 pub(crate) async fn connect(

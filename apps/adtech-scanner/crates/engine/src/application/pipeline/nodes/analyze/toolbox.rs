@@ -2,16 +2,16 @@
 
 use adscan_model::{
     BidderDiagnostics, Capture, Evidence, EvidenceKind, FindingCategory, FindingSource,
-    ScriptCategory, Severity,
+    ScanEnvironment, ScriptCategory, Severity,
 };
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::render;
+use super::render::{self, Scope};
 use crate::domain::chunks::LineRange;
 use crate::domain::finding::FindingDraft;
-use crate::domain::telemetry::Telemetry;
+use crate::domain::telemetry::ScanTelemetry;
 
 const MAX_READ_LINES: usize = 250;
 const MAX_LINE_CHARS: usize = 300;
@@ -67,7 +67,9 @@ impl ScriptSource {
     }
 }
 
+/// Telemetry of the whole visit, rendered once.
 struct TelemetrySections {
+    pages: String,
     auctions: String,
     slots: String,
     prebid_config: String,
@@ -76,9 +78,19 @@ struct TelemetrySections {
     bidder_checks: String,
 }
 
+/// The sections that can be asked for one page view at a time.
+struct PageSections {
+    auctions: String,
+    slots: String,
+    console: String,
+    page_events: String,
+}
+
 pub struct Toolbox {
     scripts: Vec<ScriptSource>,
     sections: TelemetrySections,
+    /// One entry per page view of the visit.
+    page_sections: Vec<PageSections>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -130,6 +142,9 @@ struct SearchScriptsInput {
 #[derive(Deserialize)]
 struct TelemetryInput {
     section: String,
+    /// Page view, counted from one; absent for the whole visit.
+    #[serde(default)]
+    page: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -153,6 +168,9 @@ struct FindingInput {
     affected_slots: Vec<String>,
     #[serde(default)]
     affected_bidders: Vec<String>,
+    /// Page views the bug shows on, counted from one.
+    #[serde(default)]
+    pages: Vec<i64>,
 }
 
 #[derive(Deserialize)]
@@ -164,18 +182,61 @@ struct CitationInput {
 }
 
 impl Toolbox {
-    pub fn new(scripts: Vec<ScriptSource>, capture: &Capture, telemetry: &Telemetry) -> Self {
+    pub fn new(
+        scripts: Vec<ScriptSource>,
+        capture: &Capture,
+        telemetry: &ScanTelemetry,
+        environment: Option<&ScanEnvironment>,
+    ) -> Self {
+        let visit = Scope::Visit {
+            pages: telemetry.pages.len(),
+        };
+        let page_sections: Vec<PageSections> = (0u32..)
+            .zip(&telemetry.pages)
+            .map(|(page, _)| {
+                let scope = Scope::Page(page);
+                PageSections {
+                    auctions: render::auctions_detail(&telemetry.total.auctions, scope),
+                    slots: render::slots(&telemetry.total.slots, scope),
+                    console: render::console(capture, scope),
+                    page_events: render::page_events(capture, page),
+                }
+            })
+            .collect();
+        // One page view reads without a heading, as it always did.
+        let page_events = match page_sections.as_slice() {
+            [only] => only.page_events.clone(),
+            several => (1usize..)
+                .zip(several)
+                .map(|(number, page)| format!("## page {number}\n{}", page.page_events))
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        };
         Self {
             scripts,
             sections: TelemetrySections {
-                auctions: render::auctions_detail(&telemetry.auctions),
-                slots: render::slots(&telemetry.slots),
+                pages: render::visit(environment, &telemetry.pages),
+                auctions: render::auctions_detail(&telemetry.total.auctions, visit),
+                slots: render::slots(&telemetry.total.slots, visit),
                 prebid_config: render::prebid_config(capture),
-                console: render::console(capture),
-                page_events: render::page_events(capture),
+                console: render::console(capture, visit),
+                page_events,
                 bidder_checks: render::bidder_checks(None),
             },
+            page_sections,
         }
+    }
+
+    /// The visit block of the opening message.
+    pub fn visit(&self) -> &str {
+        &self.sections.pages
+    }
+
+    /// The event timeline of one page view, by index.
+    pub fn page_timeline(&self, page: u32) -> Option<&str> {
+        self.page_sections
+            .get(page as usize)
+            .map(|sections| sections.page_events.as_str())
     }
 
     /// Adds what the bidder checks found, when they ran for this scan.
@@ -367,20 +428,44 @@ impl Toolbox {
     }
 
     fn get_telemetry(&self, args: TelemetryInput) -> ToolOutcome {
-        let section = match args.section.as_str() {
-            "auctions" => &self.sections.auctions,
-            "slots" => &self.sections.slots,
-            "prebid_config" => &self.sections.prebid_config,
-            "console" => &self.sections.console,
-            "page_events" => &self.sections.page_events,
-            "bidder_checks" => &self.sections.bidder_checks,
-            other => {
+        let page = match args.page {
+            None => None,
+            Some(number) => match self.page_index(number) {
+                Some(index) => Some(&self.page_sections[index]),
+                None => {
+                    return ToolOutcome::error(format!(
+                        "There is no page view {number}. This visit has {} page view(s), counted from 1.",
+                        self.page_sections.len()
+                    ));
+                }
+            },
+        };
+        // What is not recorded per page view is the same whatever page is asked for.
+        let section = match (args.section.as_str(), page) {
+            ("pages", _) => &self.sections.pages,
+            ("prebid_config", _) => &self.sections.prebid_config,
+            ("bidder_checks", _) => &self.sections.bidder_checks,
+            ("auctions", None) => &self.sections.auctions,
+            ("auctions", Some(page)) => &page.auctions,
+            ("slots", None) => &self.sections.slots,
+            ("slots", Some(page)) => &page.slots,
+            ("console", None) => &self.sections.console,
+            ("console", Some(page)) => &page.console,
+            ("page_events", None) => &self.sections.page_events,
+            ("page_events", Some(page)) => &page.page_events,
+            (other, _) => {
                 return ToolOutcome::error(format!(
-                    "Unknown section `{other}`. Use auctions, slots, prebid_config, console, page_events or bidder_checks."
+                    "Unknown section `{other}`. Use pages, auctions, slots, prebid_config, console, page_events or bidder_checks."
                 ));
             }
         };
         ToolOutcome::ok(section.clone())
+    }
+
+    /// Index of the page view the model calls `number` (it counts from one).
+    fn page_index(&self, number: i64) -> Option<usize> {
+        let index = usize::try_from(number.checked_sub(1)?).ok()?;
+        (index < self.page_sections.len()).then_some(index)
     }
 
     fn report_finding(&self, args: FindingInput) -> ToolOutcome {
@@ -412,6 +497,15 @@ impl Toolbox {
                 }
             }
         }
+        let mut pages: Vec<u32> = Vec::new();
+        for number in &args.pages {
+            match self.page_index(*number) {
+                Some(index) => pages.push(index as u32),
+                None => corrections.push(format!("page view {number} does not exist and was left out")),
+            }
+        }
+        pages.sort_unstable();
+        pages.dedup();
         let draft = FindingDraft {
             severity: args.severity,
             category: args.category,
@@ -425,7 +519,7 @@ impl Toolbox {
             evidence,
             affected_slots: args.affected_slots,
             affected_bidders: args.affected_bidders,
-            pages: Vec::new(),
+            pages,
         };
         let mut content = "Finding recorded.".to_string();
         if !corrections.is_empty() {

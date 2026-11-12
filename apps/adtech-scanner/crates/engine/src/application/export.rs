@@ -3,8 +3,8 @@
 use std::fmt::Write;
 
 use adscan_model::{
-    EvidenceKind, Finding, LogEntry, LogKind, PipelineNode, ScanDetail, ScanMetrics,
-    ScriptCategory, ScriptRecord,
+    AdSlot, Auction, EvidenceKind, LogEntry, LogKind, PageView, PipelineNode, ProxyKind,
+    ScanDetail, ScanMetrics, ScriptCategory, ScriptRecord, VisitorBehavior,
 };
 
 use super::AppError;
@@ -21,8 +21,9 @@ pub fn json(detail: &ScanDetail) -> Result<String, AppError> {
 pub fn markdown(detail: &ScanDetail, logs: &[LogEntry]) -> String {
     let mut out = String::new();
     summary_section(&mut out, detail);
+    visit_section(&mut out, detail);
     metrics_section(&mut out, &detail.metrics);
-    findings_section(&mut out, &detail.findings);
+    findings_section(&mut out, detail);
     auctions_section(&mut out, detail);
     slots_section(&mut out, detail);
     scripts_section(&mut out, detail);
@@ -38,6 +39,9 @@ fn summary_section(out: &mut String, detail: &ScanDetail) {
     let _ = writeln!(out, "# Ad stack scan: {}\n", summary.hostname);
     let _ = writeln!(out, "- **URL:** {}", summary.url);
     let _ = writeln!(out, "- **Device profile:** {:?}", summary.device);
+    if let Some(configuration) = &summary.configuration {
+        let _ = writeln!(out, "- **Scan configuration:** {}", configuration.name);
+    }
     let _ = writeln!(out, "- **Status:** {:?}", summary.status);
     if let Some(error) = &summary.error {
         let _ = writeln!(out, "- **Error:** {error}");
@@ -66,6 +70,97 @@ fn summary_section(out: &mut String, detail: &ScanDetail) {
     }
     if let Some(overview) = &detail.overview {
         let _ = writeln!(out, "\n## Summary\n\n{overview}");
+    }
+}
+
+/// How the pages were visited and what they could tell about the visit.
+/// Scans stored before this was recorded have no such section.
+fn visit_section(out: &mut String, detail: &ScanDetail) {
+    if let Some(environment) = &detail.environment {
+        let _ = writeln!(out, "\n## Visit\n");
+        let visitor = match environment.visitor {
+            VisitorBehavior::None => "Observed only, no input",
+            VisitorBehavior::Scroll => "Scrolled through the page",
+            VisitorBehavior::Browse => "Browsed like a visitor, following links",
+            VisitorBehavior::Manual => "A person browsed; the scanner recorded",
+        };
+        let _ = writeln!(out, "- **Visitor:** {visitor} (seed {})", environment.seed);
+        let _ = writeln!(
+            out,
+            "- **Browser:** {}, {} profile{}",
+            if environment.headless { "headless" } else { "shown" },
+            if environment.persistent_profile { "persistent scan" } else { "throwaway" },
+            if environment.emulated_mobile { ", mobile emulation" } else { "" },
+        );
+        let proxy = match environment.proxy.kind {
+            ProxyKind::None => "none (direct connection)".to_string(),
+            ProxyKind::System => "system setting".to_string(),
+            ProxyKind::Profile => format!(
+                "{} ({})",
+                environment.proxy.name.as_deref().unwrap_or("unnamed"),
+                environment.proxy.host.as_deref().unwrap_or("unknown host"),
+            ),
+        };
+        let _ = writeln!(out, "- **Proxy:** {}", cell(&proxy));
+        let _ = writeln!(
+            out,
+            "- **Automation signals the pages could see:** navigator.webdriver {}, user agent {}, viewport {}",
+            match environment.webdriver {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "not read",
+            },
+            if environment.user_agent_overridden { "overridden" } else { "the browser's own" },
+            if environment.viewport_overridden { "overridden" } else { "the window's own" },
+        );
+        if !environment.detectors.is_empty() {
+            let _ = writeln!(
+                out,
+                "- **Detection vendors on the page:** {}",
+                environment
+                    .detectors
+                    .iter()
+                    .map(|detector| format!("{} ({})", detector.vendor, cell(&detector.host)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
+    if detail.pages.len() < 2 {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\n### Page views\n\n| # | URL | Reached by | Start (ms) | Dwell (ms) | Load (ms) | Auctions | Slots (empty) | Fill rate |\n|---|---|---|---|---|---|---|---|---|"
+    );
+    for page in &detail.pages {
+        let _ = writeln!(
+            out,
+            "| {} | {} | {:?} | {:.0} | {:.0} | {} | {} | {} ({}) | {:.0}% |",
+            page.index + 1,
+            cell(&page.url),
+            page.reached_by,
+            page.started_at_ms,
+            page.dwell_ms,
+            page.load_ms
+                .map_or("-".to_string(), |load| format!("{load:.0}")),
+            page.metrics.auction_count,
+            page.metrics.slot_count,
+            page.metrics.empty_slot_count,
+            page.metrics.fill_rate * 100.0,
+        );
+    }
+    let _ = writeln!(
+        out,
+        "\nTimes of auctions and slots below count from the start of their page view."
+    );
+}
+
+/// "page 2 (https://site/path)", numbered from one.
+fn page_name(pages: &[PageView], page: u32) -> String {
+    match pages.get(page as usize) {
+        Some(view) => format!("page {} ({})", page + 1, view.url),
+        None => format!("page {}", page + 1),
     }
 }
 
@@ -118,7 +213,8 @@ fn metrics_section(out: &mut String, metrics: &ScanMetrics) {
     }
 }
 
-fn findings_section(out: &mut String, findings: &[Finding]) {
+fn findings_section(out: &mut String, detail: &ScanDetail) {
+    let findings = &detail.findings;
     let _ = writeln!(out, "\n## Findings\n");
     if findings.is_empty() {
         let _ = writeln!(out, "No findings.");
@@ -156,6 +252,18 @@ fn findings_section(out: &mut String, findings: &[Finding]) {
                 finding.affected_bidders.join(", ")
             );
         }
+        if detail.pages.len() > 1 && !finding.pages.is_empty() {
+            let _ = writeln!(
+                out,
+                "**Seen on:** {}\n",
+                finding
+                    .pages
+                    .iter()
+                    .map(|page| page_name(&detail.pages, *page))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         for evidence in &finding.evidence {
             let location = match (&evidence.script_url, evidence.line) {
                 (Some(url), Some(line)) => format!(" ({url}:{line})"),
@@ -187,6 +295,45 @@ fn auctions_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(out, "No Prebid auctions were observed.");
         return;
     }
+    for (heading, auctions) in by_page(&detail.pages, &detail.auctions, |auction| auction.page) {
+        if let Some(heading) = heading {
+            let _ = writeln!(out, "\n### {heading}\n");
+        }
+        auctions_table(out, &auctions);
+    }
+}
+
+/// One group for a visit of a single page view, without a heading; else one
+/// group per page view that has any of the items.
+fn by_page<'a, T>(
+    pages: &[PageView],
+    items: &'a [T],
+    page_of: impl Fn(&T) -> u32,
+) -> Vec<(Option<String>, Vec<(usize, &'a T)>)> {
+    let numbered = || items.iter().enumerate();
+    if pages.len() < 2 {
+        return vec![(None, numbered().collect())];
+    }
+    (0u32..)
+        .zip(pages)
+        .map(|(page, _)| {
+            let on_page: Vec<_> = numbered().filter(|(_, item)| page_of(item) == page).collect();
+            (Some(capitalized(&page_name(pages, page))), on_page)
+        })
+        .filter(|(_, on_page)| !on_page.is_empty())
+        .collect()
+}
+
+fn capitalized(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// `auctions` carry their position in the scan, which numbers them.
+fn auctions_table(out: &mut String, auctions: &[(usize, &Auction)]) {
     let _ = writeln!(
         out,
         "| Auction | Start (ms) | Duration (ms) | Ad unit | Bidder | Status | CPM | Response (ms) |\n|---|---|---|---|---|---|---|---|"
@@ -194,7 +341,7 @@ fn auctions_section(out: &mut String, detail: &ScanDetail) {
     let number = |value: Option<f64>, digits: usize| {
         value.map_or("-".to_string(), |value| format!("{value:.digits$}"))
     };
-    for (position, auction) in detail.auctions.iter().enumerate() {
+    for (position, auction) in auctions {
         for unit in &auction.ad_units {
             for bid in &unit.bids {
                 let _ = writeln!(
@@ -220,13 +367,22 @@ fn slots_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(out, "No GPT slots were observed.");
         return;
     }
+    for (heading, slots) in by_page(&detail.pages, &detail.slots, |slot| slot.page) {
+        if let Some(heading) = heading {
+            let _ = writeln!(out, "\n### {heading}\n");
+        }
+        slots_table(out, &slots);
+    }
+}
+
+fn slots_table(out: &mut String, slots: &[(usize, &AdSlot)]) {
     let _ = writeln!(
         out,
         "| Slot | Ad unit path | Outcome | Requested (ms) | Rendered (ms) | Prebid targeting | Requested before auction end |\n|---|---|---|---|---|---|---|"
     );
     let time = |value: Option<f64>| value.map_or("-".to_string(), |value| format!("{value:.0}"));
     let flag = |value: Option<bool>| value.map_or("-", |value| if value { "yes" } else { "no" });
-    for slot in &detail.slots {
+    for (_, slot) in slots {
         let _ = writeln!(
             out,
             "| {} | {} | {:?} | {} | {} | {} | {} |",

@@ -4,6 +4,7 @@ use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
     RuleContext, RuleScope, estimate_impact, heuristic, ms,
 };
+use super::visit::unbid_after_navigation;
 use crate::domain::finding::{FindingDraft, timeline};
 
 /// Share of header-bidding revenue assumed lost when bidding waits for a
@@ -26,6 +27,11 @@ impl Rule for AuctionGatedOnInteraction {
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         match ctx.auction_gate() {
+            // A later page view that lost its bids to state kept across the
+            // navigation has its own finding; a scroll gate is not the cause.
+            Some(AuctionGate::NeverStarted { .. }) if lost_bids_after_navigation(ctx) => {
+                Vec::new()
+            }
             Some(AuctionGate::NeverStarted { interaction_at_ms }) => {
                 vec![never_started(ctx, interaction_at_ms)]
             }
@@ -42,6 +48,11 @@ impl Rule for AuctionGatedOnInteraction {
             None => Vec::new(),
         }
     }
+}
+
+fn lost_bids_after_navigation(ctx: &RuleContext) -> bool {
+    ctx.page
+        .is_some_and(|page| !unbid_after_navigation(ctx, page.index).is_empty())
 }
 
 fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDraft {

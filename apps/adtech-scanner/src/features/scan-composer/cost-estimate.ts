@@ -15,6 +15,11 @@ const JEV_TRIAGE_TOKENS = 35_000;
  * yet: the modelled volume, rescaled to the measured characters per token.
  */
 const JEV_READING_GUIDE_TOKENS = 195_000;
+/**
+ * Telemetry of each page view after the first that the logic analysis reads. The backend's own
+ * estimate, not measured yet.
+ */
+const TOKENS_PER_EXTRA_PAGE = 1_500;
 /** The backend lets the analysis loop run 12, 20 or 30 turns. */
 const EFFORT_SCALE: Record<Effort, number> = { low: 0.6, medium: 1, high: 1.5 };
 
@@ -32,7 +37,14 @@ export function estimateScanCost(
     Settings,
     "filterModel" | "analysisModel" | "analysisEffort" | "budgetUsd" | "hasApiKey" | "hasTypesafeKey" | "jevEnabled"
   >,
+  /** What this scan changes about the estimate: pages followed after the entry page, and its own cap. */
+  scan: { extraPages?: number; budgetUsd?: number } = {},
 ): CostEstimate {
+  const budgetUsd = scan.budgetUsd ?? settings.budgetUsd;
+  const analysisTokens = {
+    input: ANALYSIS_TOKENS.input + (scan.extraPages ?? 0) * TOKENS_PER_EXTRA_PAGE,
+    output: ANALYSIS_TOKENS.output,
+  };
   const { triage, logicAnalysis } = aiAvailability(settings);
   const filter =
     triage === "jev"
@@ -41,11 +53,11 @@ export function estimateScanCost(
           output: 0,
         })
       : costOf(settings.filterModel, FILTER_TOKENS);
-  const analysis = logicAnalysis ? costOf(settings.analysisModel, ANALYSIS_TOKENS) : { usd: 0, knownModel: true };
+  const analysis = logicAnalysis ? costOf(settings.analysisModel, analysisTokens) : { usd: 0, knownModel: true };
   const uncapped = filter.usd + analysis.usd * EFFORT_SCALE[settings.analysisEffort];
   return {
-    expectedUsd: Math.min(uncapped, settings.budgetUsd),
-    cappedByBudget: uncapped > settings.budgetUsd,
+    expectedUsd: Math.min(uncapped, budgetUsd),
+    cappedByBudget: uncapped > budgetUsd,
     fallbackPricing: !filter.knownModel || !analysis.knownModel,
   };
 }

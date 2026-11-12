@@ -117,6 +117,11 @@ impl PageLog {
         self.opening = false;
     }
 
+    /// Whether the current page view is still loading its first document.
+    pub(crate) fn is_opening(&self) -> bool {
+        self.opening
+    }
+
     pub(crate) fn consent_clicked(&mut self, now: f64) {
         self.replace_until = Some(now + CONSENT_RELOAD_WINDOW_MS);
     }

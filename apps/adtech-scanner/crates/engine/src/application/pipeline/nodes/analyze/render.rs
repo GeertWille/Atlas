@@ -1,22 +1,116 @@
 //! Compact text views of the telemetry for the analysis model.
+//!
+//! Page views are numbered from one here. Lines of a visit with more than
+//! one page view say which page view they belong to; a single-page visit
+//! reads as it always did.
 
 use adscan_model::{
-    AdSlot, AdsTxtStatus, Auction, BidderDiagnostics, Capture, TrackerEventKind as Ev,
+    AdSlot, AdsTxtStatus, Auction, BidderDiagnostics, Capture, PageView, ScanEnvironment,
+    TrackerEventKind as Ev,
 };
 use serde_json::json;
 
-pub fn auctions_overview(auctions: &[Auction]) -> String {
-    if auctions.is_empty() {
+/// The page table shows at most this many page views.
+const MAX_PAGE_ROWS: usize = 8;
+
+/// Says which records the views below cover and how they are labelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// One page view only; nothing is labelled.
+    Page(u32),
+    /// Every page view, each line labelled with its page view when the
+    /// visit has more than one.
+    Visit { pages: usize },
+}
+
+impl Scope {
+    fn covers(self, page: u32) -> bool {
+        match self {
+            Self::Page(only) => only == page,
+            Self::Visit { .. } => true,
+        }
+    }
+
+    fn label(self, page: u32) -> String {
+        match self {
+            Self::Visit { pages } if pages > 1 => format!("page {} ", page + 1),
+            Self::Page(_) | Self::Visit { .. } => String::new(),
+        }
+    }
+}
+
+/// How the visit was made and what its page views were.
+pub fn visit(environment: Option<&ScanEnvironment>, pages: &[PageView]) -> String {
+    let mut out = Vec::new();
+    if let Some(environment) = environment {
+        out.push(format!(
+            "visitor: {:?} (seed {}), browser {}, {} profile, proxy {:?}",
+            environment.visitor,
+            environment.seed,
+            if environment.headless { "headless" } else { "shown" },
+            if environment.persistent_profile { "persistent" } else { "throwaway" },
+            environment.proxy.kind,
+        ));
+        out.push(format!(
+            "what the pages could see: navigator.webdriver={} headless={} userAgentOverridden={} viewportOverridden={} detectionVendors=[{}]",
+            flag(environment.webdriver),
+            environment.headless,
+            environment.user_agent_overridden,
+            environment.viewport_overridden,
+            environment
+                .detectors
+                .iter()
+                .map(|detector| detector.vendor.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        ));
+    }
+    out.push(format!(
+        "{} page view(s). Times of auctions, slots and events count from the start of their page view.",
+        pages.len()
+    ));
+    out.extend(pages.iter().take(MAX_PAGE_ROWS).map(|page| {
+        format!(
+            "page {} {} reachedBy={:?} startedAt={} dwell={} load={} maxScroll={:.0}% auctions={} slots={} emptySlots={} firstAuction={}",
+            page.index + 1,
+            page.url,
+            page.reached_by,
+            ms(Some(page.started_at_ms)),
+            ms(Some(page.dwell_ms)),
+            ms(page.load_ms),
+            page.max_scroll_depth * 100.0,
+            page.metrics.auction_count,
+            page.metrics.slot_count,
+            page.metrics.empty_slot_count,
+            ms(page.metrics.time_to_first_auction_ms),
+        )
+    }));
+    if pages.len() > MAX_PAGE_ROWS {
+        out.push(format!(
+            "... and {} more page view(s)",
+            pages.len() - MAX_PAGE_ROWS
+        ));
+    }
+    out.join("\n")
+}
+
+pub fn auctions_overview(auctions: &[Auction], scope: Scope) -> String {
+    let mut auctions = auctions
+        .iter()
+        .filter(|auction| scope.covers(auction.page))
+        .peekable();
+    if auctions.peek().is_none() {
         return "No Prebid auction started during the observation.".into();
     }
-    lines(auctions.iter().map(|auction| {
+    lines(auctions.map(|auction| {
         let bids = auction
             .ad_units
             .iter()
             .map(|unit| unit.bids.len())
             .sum::<usize>();
         format!(
-            "auction {} start={} end={} timeout={} adUnits=[{}] bids={}",
+            "{}auction {} start={} end={} timeout={} adUnits=[{}] bids={}",
+            scope.label(auction.page),
             short_id(&auction.id),
             ms(Some(auction.started_at_ms)),
             ms(auction.ended_at_ms),
@@ -32,14 +126,15 @@ pub fn auctions_overview(auctions: &[Auction]) -> String {
     }))
 }
 
-pub fn auctions_detail(auctions: &[Auction]) -> String {
-    if auctions.is_empty() {
-        return auctions_overview(auctions);
-    }
+pub fn auctions_detail(auctions: &[Auction], scope: Scope) -> String {
     let mut out = Vec::new();
-    for auction in auctions {
+    for auction in auctions
+        .iter()
+        .filter(|auction| scope.covers(auction.page))
+    {
         out.push(format!(
-            "auction {} start={} end={} timeout={}",
+            "{}auction {} start={} end={} timeout={}",
+            scope.label(auction.page),
             short_id(&auction.id),
             ms(Some(auction.started_at_ms)),
             ms(auction.ended_at_ms),
@@ -64,16 +159,42 @@ pub fn auctions_detail(auctions: &[Auction]) -> String {
             }
         }
     }
+    if out.is_empty() {
+        return auctions_overview(&[], scope);
+    }
     out.join("\n")
 }
 
-pub fn slots(slots: &[AdSlot]) -> String {
-    if slots.is_empty() {
+pub fn slots(slots: &[AdSlot], scope: Scope) -> String {
+    let mut slots = slots
+        .iter()
+        .filter(|slot| scope.covers(slot.page))
+        .peekable();
+    if slots.peek().is_none() {
         return "No GPT slot was defined during the observation.".into();
     }
-    lines(slots.iter().map(|slot| {
+    lines(slots.map(|slot| {
+        // Only a refreshed slot has more to say than its first request.
+        let refreshes = if slot.requests.len() > 1 {
+            format!(
+                " requests=[{}]",
+                slot.requests
+                    .iter()
+                    .map(|request| format!(
+                        "{} hb={} hb_adid={}",
+                        ms(Some(request.at_ms)),
+                        if request.had_prebid_targeting { "yes" } else { "no" },
+                        request.prebid_ad_id.as_deref().unwrap_or("-"),
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "slot {} path={} sizes=[{}] outcome={:?} inInitialViewport={} defined={} requested={} rendered={} hbTargetingOnRequest={} requestedBeforeAuctionEnd={}",
+            "{}slot {} path={} sizes=[{}] outcome={:?} inInitialViewport={} defined={} requested={} rendered={} hbTargetingOnRequest={} requestedBeforeAuctionEnd={}{refreshes}",
+            scope.label(slot.page),
             slot.element_id,
             slot.ad_unit_path.as_deref().unwrap_or("-"),
             slot.sizes.join(","),
@@ -133,21 +254,32 @@ pub fn prebid_config(capture: &Capture) -> String {
     }
 }
 
-pub fn console(capture: &Capture) -> String {
-    let prebid_logs = capture.events.iter().filter_map(|event| match &event.kind {
-        Ev::PrebidLog { level, message } => {
-            Some(format!("t={} prebid {level}: {message}", ms(Some(event.t))))
-        }
-        _ => None,
-    });
-    let console_lines = capture.console.iter().map(|line| {
-        format!(
-            "t={} console {}: {}",
-            ms(Some(line.t)),
-            line.level,
-            line.text
-        )
-    });
+pub fn console(capture: &Capture, scope: Scope) -> String {
+    let prebid_logs = capture
+        .events
+        .iter()
+        .filter(|event| scope.covers(event.page))
+        .filter_map(|event| match &event.kind {
+            Ev::PrebidLog { level, message } => Some(format!(
+                "{}t={} prebid {level}: {message}",
+                scope.label(event.page),
+                ms(Some(event.t))
+            )),
+            _ => None,
+        });
+    let console_lines = capture
+        .console
+        .iter()
+        .filter(|line| scope.covers(line.page))
+        .map(|line| {
+            format!(
+                "{}t={} console {}: {}",
+                scope.label(line.page),
+                ms(Some(line.t)),
+                line.level,
+                line.text
+            )
+        });
     let all: Vec<String> = prebid_logs.chain(console_lines).collect();
     if all.is_empty() {
         "No console output or Prebid log lines were captured.".into()
@@ -156,15 +288,23 @@ pub fn console(capture: &Capture) -> String {
     }
 }
 
-/// Page lifecycle, scroll and library-detection events in time order.
-pub fn page_events(capture: &Capture) -> String {
+/// Page lifecycle, scroll and library-detection events of one page view in
+/// time order.
+pub fn page_events(capture: &Capture, page: u32) -> String {
+    let (load_ms, max_scroll_depth) = capture
+        .pages
+        .get(page as usize)
+        .map_or((capture.page_load_ms, capture.max_scroll_depth), |view| {
+            (view.load_ms, view.max_scroll_depth)
+        });
     let mut out = vec![format!(
         "navigation start t=0, load event {}, max scroll depth {:.0}%, consent accepted: {}",
-        ms(capture.page_load_ms),
-        capture.max_scroll_depth * 100.0,
+        ms(load_ms),
+        max_scroll_depth * 100.0,
         capture.consent_accepted,
     )];
-    out.extend(capture.events.iter().filter_map(|event| {
+    let events = capture.events.iter().filter(|event| event.page == page);
+    out.extend(events.filter_map(|event| {
         let what = match &event.kind {
             Ev::PageLifecycle { phase } => phase.clone(),
             Ev::Scroll { depth } => format!("scroll depth {:.0}%", depth * 100.0),
@@ -177,6 +317,16 @@ pub fn page_events(capture: &Capture) -> String {
                 format!("setTargeting [{}]", ad_unit_codes.join(", "))
             }
             Ev::SlotRequested { element_id, .. } => format!("gpt request {element_id}"),
+            Ev::RouteChange {
+                url,
+                navigation_type,
+            } => format!("route change ({navigation_type}) to {url}"),
+            Ev::SlotsDestroyed { element_ids } => {
+                format!("gpt destroySlots [{}]", element_ids.join(", "))
+            }
+            Ev::SlotDefinitionRejected { element_id } => {
+                format!("gpt defineSlot rejected for {element_id}: the container already has a slot")
+            }
             Ev::ApsFetchBids { slot_ids, .. } => {
                 format!("apstag.fetchBids [{}]", slot_ids.join(", "))
             }

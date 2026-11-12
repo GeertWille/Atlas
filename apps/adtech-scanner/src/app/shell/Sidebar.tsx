@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import {
+  BookmarkIcon,
   HistoryIcon,
   HomeIcon,
   type LucideIcon,
@@ -26,7 +27,7 @@ function NavLink({
   label,
   exact = false,
 }: {
-  to: "/" | "/history" | "/logs" | "/settings";
+  to: "/" | "/configurations" | "/history" | "/logs" | "/settings";
   icon: LucideIcon;
   label: string;
   exact?: boolean;
@@ -130,6 +131,7 @@ export function Sidebar({
 
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-3">
         <NavLink to="/" icon={HomeIcon} label="Home" exact />
+        <NavLink to="/configurations" icon={BookmarkIcon} label="Configurations" />
         <NavLink to="/history" icon={HistoryIcon} label="History" />
         <NavLink to="/logs" icon={ScrollTextIcon} label="Log search" />
       </nav>

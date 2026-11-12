@@ -13,7 +13,7 @@ oxc = { version = "0.158", features = ["codegen"] }
 psl = "2"
 regex = "1"
 # Web servers compress ads.txt and sellers.json whether asked to or not.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "system-proxy", "gzip", "brotli", "deflate"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "http2", "system-proxy", "socks", "gzip", "brotli", "deflate"] }
 rusqlite = { version = "0.42", features = ["bundled"] }
 serde.workspace = true
 # Scan data is stored as JSON; without this a float can come back one bit off.

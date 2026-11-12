@@ -1,4 +1,5 @@
 import {
+  BookmarkIcon,
   HistoryIcon,
   HomeIcon,
   MonitorIcon,
@@ -10,7 +11,7 @@ import {
   SunIcon,
 } from "lucide-react";
 import { useState } from "react";
-import type { ScanSummary, ThemePreference } from "@/bindings";
+import type { ScanConfiguration, ScanSummary, ThemePreference } from "@/bindings";
 import { DeviceIcon } from "@/shared/components/status";
 import { useReturnFocus } from "@/shared/hooks/use-return-focus";
 import { formatRelativeTime } from "@/shared/lib/format";
@@ -29,7 +30,8 @@ import { MOD_KEY } from "./shortcuts";
 export type PaletteActions = {
   newScan: () => void;
   scanDemo: () => void;
-  goTo: (to: "/" | "/history" | "/logs" | "/settings") => void;
+  runConfiguration: (configurationId: string) => void;
+  goTo: (to: "/" | "/configurations" | "/history" | "/logs" | "/settings") => void;
   openScan: (scanId: string) => void;
   searchLogs: (query: string) => void;
   setTheme: (theme: ThemePreference) => void;
@@ -49,10 +51,12 @@ function matchesEveryTerm(value: string, search: string): number {
 /** Mounted only while the palette is open, so every opening starts with an empty query. */
 function PaletteCommands({
   recentScans,
+  configurations,
   actions,
   onClose,
 }: {
   recentScans: ScanSummary[];
+  configurations: ScanConfiguration[];
   actions: PaletteActions;
   onClose: () => void;
 }) {
@@ -79,10 +83,29 @@ function PaletteCommands({
             Scan the demo site
           </CommandItem>
         </CommandGroup>
+        {configurations.length > 0 ? (
+          <CommandGroup heading="Configurations">
+            {configurations.map((configuration) => (
+              <CommandItem
+                key={configuration.id}
+                value={`run configuration ${configuration.name} ${configuration.options.url} ${configuration.id}`}
+                onSelect={run(() => actions.runConfiguration(configuration.id))}
+              >
+                <PlayIcon />
+                <span className="min-w-0 flex-1 truncate">Run configuration: {configuration.name}</span>
+                <DeviceIcon device={configuration.options.device} />
+              </CommandItem>
+            ))}
+          </CommandGroup>
+        ) : null}
         <CommandGroup heading="Go to">
           <CommandItem onSelect={run(() => actions.goTo("/"))}>
             <HomeIcon />
             Home
+          </CommandItem>
+          <CommandItem onSelect={run(() => actions.goTo("/configurations"))}>
+            <BookmarkIcon />
+            Configurations
           </CommandItem>
           <CommandItem onSelect={run(() => actions.goTo("/history"))}>
             <HistoryIcon />
@@ -149,11 +172,14 @@ export function CommandPalette({
   open,
   onOpenChange,
   recentScans,
+  configurations,
   actions,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   recentScans: ScanSummary[];
+  /** The ones that can run as saved. */
+  configurations: ScanConfiguration[];
   actions: PaletteActions;
 }) {
   const returnFocus = useReturnFocus();
@@ -165,8 +191,15 @@ export function CommandPalette({
         {...returnFocus}
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <DialogDescription className="sr-only">Search scans, navigate, or run a command.</DialogDescription>
-        <PaletteCommands recentScans={recentScans} actions={actions} onClose={() => onOpenChange(false)} />
+        <DialogDescription className="sr-only">
+          Search scans, run a saved configuration, navigate, or run a command.
+        </DialogDescription>
+        <PaletteCommands
+          recentScans={recentScans}
+          configurations={configurations}
+          actions={actions}
+          onClose={() => onOpenChange(false)}
+        />
       </DialogContent>
     </Dialog>
   );

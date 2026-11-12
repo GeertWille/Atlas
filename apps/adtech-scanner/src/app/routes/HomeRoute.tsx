@@ -1,10 +1,18 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { TriangleAlertIcon } from "lucide-react";
 import { useState } from "react";
+import { ConfigurationsPanel } from "@/features/configurations";
 import { DashboardStats, RecentScans, RunningScans } from "@/features/dashboard";
 import { isOnboardingDismissed, needsOnboarding, OnboardingScreen } from "@/features/onboarding";
 import { ScanComposer } from "@/features/scan-composer";
-import { useActiveScans, useBrowser, useDashboardStats, useRecentScans, useSettings } from "@/lib/query/hooks";
+import {
+  useActiveScans,
+  useBrowser,
+  useDashboardStats,
+  useRecentScans,
+  useScanConfigurations,
+  useSettings,
+} from "@/lib/query/hooks";
 import { Page, PageContent } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
 import { isActive } from "@/shared/domain/vocabulary";
@@ -21,6 +29,8 @@ export function HomeRoute() {
   const stats = useDashboardStats();
   const activeScans = useActiveScans();
   const recent = useRecentScans();
+  const configurations = useScanConfigurations();
+  const { configuration: editingId } = useSearch({ from: "/" });
   const [dismissed, setDismissed] = useState(isOnboardingDismissed);
 
   if (settings.isError) {
@@ -30,7 +40,9 @@ export function HomeRoute() {
       </Page>
     );
   }
-  if (!settings.data || browser.isPending) {
+  // A configuration opened for editing has to be known before the composer can start from it.
+  const awaitingConfiguration = editingId !== undefined && configurations.isPending;
+  if (!settings.data || browser.isPending || awaitingConfiguration) {
     return (
       <Page title="Home">
         <PageContent>
@@ -49,6 +61,8 @@ export function HomeRoute() {
       </Page>
     );
   }
+
+  const editing = configurations.data?.find((configuration) => configuration.id === editingId);
 
   return (
     <Page title="Home">
@@ -72,9 +86,15 @@ export function HomeRoute() {
               </AlertDescription>
             </Alert>
           ) : null}
-          <ScanComposer settings={settings.data} />
+          <ScanComposer
+            // Opening or closing a configuration starts the composer afresh from it.
+            key={editing?.id ?? "new"}
+            settings={settings.data}
+            configuration={editing}
+          />
         </div>
         <RunningScans scans={activeScans} />
+        <ConfigurationsPanel configurations={configurations.data ?? []} settings={settings.data} />
         {stats.isError ? null : <DashboardStats stats={stats.data} />}
         {recent.isError ? (
           <QueryError title="Could not load recent scans" error={recent.error} onRetry={() => void recent.refetch()} />
