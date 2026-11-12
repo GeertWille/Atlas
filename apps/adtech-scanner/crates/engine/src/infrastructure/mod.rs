@@ -7,6 +7,7 @@ pub mod keychain;
 pub mod pack_store;
 pub mod public_files;
 pub mod secrets;
+pub mod sellers_cache;
 pub mod sqlite;
 pub mod system;
 pub mod typesafe;

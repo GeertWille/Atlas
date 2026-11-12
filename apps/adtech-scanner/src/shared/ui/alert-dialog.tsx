@@ -43,14 +43,23 @@ function AlertDialogAction({
 }: ComponentProps<typeof AlertDialogPrimitive.Action> & { destructive?: boolean }) {
   return (
     <AlertDialogPrimitive.Action
-      className={cn(buttonVariants({ variant: destructive ? "destructive" : "default" }), className)}
+      className={cn(
+        buttonVariants({ variant: destructive ? "destructive" : "default" }),
+        "pointer-input:outline-none",
+        className,
+      )}
       {...props}
     />
   );
 }
 
 function AlertDialogCancel({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
-  return <AlertDialogPrimitive.Cancel className={cn(buttonVariants({ variant: "outline" }), className)} {...props} />;
+  return (
+    <AlertDialogPrimitive.Cancel
+      className={cn(buttonVariants({ variant: "outline" }), "pointer-input:outline-none", className)}
+      {...props}
+    />
+  );
 }
 
 export {

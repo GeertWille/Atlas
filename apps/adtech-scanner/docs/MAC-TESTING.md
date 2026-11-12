@@ -33,9 +33,10 @@ For anything that fails, the most useful things to send back are:
 - [ ] Cmd+N new scan, Cmd+K search, Cmd+, settings
 - [ ] Home: Cmd+Enter starts the scan, Cmd+S saves or updates the configuration
 - [ ] Script viewer: Cmd+F find (type a word key by key), Cmd+G next match, Ctrl+G go to line, Cmd+P quick-open, Cmd+B file list, Cmd+Alt+B side panel
-- [ ] Script viewer: F8 / Shift+F8 next and previous finding. On a Mac laptop F8 is a media key by default (needs Fn). Note whether that is acceptable; an alternative shortcut is not built yet.
+- [ ] Script viewer: Option+Down / Option+Up go to the next and previous finding (F8 / Shift+F8 do the same, but F8 is a media key on a Mac laptop and needs Fn). Check that Option+Down does not also move the caret or scroll, and that in the find field (Cmd+F) it is left to the field. The "Next (F8)" button of a finding shows both shortcuts when you hover it.
 - [ ] Network view: arrow keys move the row, Enter opens details, Esc closes, `[` and `]` change page view, Cmd+F or `/` focuses the filter, Cmd+C copies the URL
 - [ ] No shortcut fires while typing in a text field unless it should
+- [ ] Focus rings: with the mouse, pick an option in a select (Settings → Visitor), open and close a menu (History → the "…" of a scan), open a dialog (Settings → "Delete all scans…") and click a report tab. None of those controls should show a focus ring afterwards. Then press Tab: the ring must appear. (On Linux only the select showed the ring before the fix; macOS may differ.)
 
 ## 3. Keychain
 
@@ -99,6 +100,7 @@ This is the site that exposed most of the real-world problems.
 - [ ] "I'll browse myself": Chrome opens, you browse, "Finish capture" ends it and produces a report
 - [ ] Closing Chrome's last window also ends a manual session with a report (on macOS Chrome stays running after its last window closes; check the app still notices)
 - [ ] Cancel during a manual session discards it
+- [ ] Cancel a scripted scan while it runs: in the audit trail the step that was running has a grey "cancelled" icon and the summary "Cancelled", not the red "failed" icon; the steps after it read as skipped
 - [ ] The scripted visitor never clicks an ad, a sign-in link, a download, or leaves the site (watch one visible scan on a real news site)
 - [ ] "Repeat this visit" repeats the same scripted path
 
@@ -131,7 +133,12 @@ This is the site that exposed most of the real-world problems.
 
 - [ ] A real site's "never returned a bid" finding names a cause per bidder where one was found (ads.txt, parameters, endpoint reason, consent)
 - [ ] ads.txt: pick one bidder the app says is missing and check the site's real ads.txt by hand
-- [ ] With "Check sellers.json at ad exchanges" on: the scan still finishes in reasonable time; check one reported mismatch by hand
+- [ ] "Check sellers.json at ad exchanges" is now on by default (also after updating an existing install). First scan of a real site: note the scan time, and how long the "Bidder checks" step took (audit trail); check one reported mismatch by hand
+- [ ] Scan the same site again, or another site with the same exchanges: the Bidder checks step should be clearly faster, and its audit trail should say "kept copy, fetched … ago" per exchange instead of "downloaded"
+- [ ] Settings → Bidder checks shows the size of the kept sellers.json files and the number of exchanges; "Clear kept files" empties it, and the next scan downloads again
+- [ ] A scan through a proxy profile: the sellers.json requests must not show up at the proxy (they go directly, or through the system's proxy); the site's ads.txt must
+- [ ] Switch the check off: the next report says "Not looked up for this scan" under Bidder checks
+- [ ] `~/Library/Application Support/com.webclew.adtech-scanner/cache/sellers-json` is readable only by you
 
 ## 13. Signing and release (ticket #2)
 
@@ -148,5 +155,7 @@ These calibrate estimates that are currently guesses.
 | Model cost per scan, 5–10 real sites | Report header | |
 | Jev: any publisher wrapper dropped, any analytics bundle kept | Audit trail, Classification entries | |
 | Requests per scan and archive size per scan | Network view footer; Settings → Stored scan data | |
+| Scan time with the sellers.json check on: first scan of a site, and second scan | Report header; audit trail, Bidder checks step | |
+| Size of the kept sellers.json files after 5–10 sites | Settings → Bidder checks | |
 | Time from pressing Scan to the report | Report header | |
 | Network view: time to first rows on a 3,000+ request scan | By eye | |

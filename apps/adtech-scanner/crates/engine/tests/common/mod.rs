@@ -12,16 +12,18 @@ use adscan_engine::application::archive::source::ScriptSources;
 use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureError, CaptureSession, CaptureSource, EventSink, FetchError, PublicFile,
+    CaptureError, CaptureSession, CaptureSource, EventSink, FetchError, FileVersion, PublicFile,
     PublicFileFetcher, PublicFileRequest, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
+use adscan_engine::application::sellers_json::SellersJsonSource;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::keychain::Keychain;
 use adscan_engine::infrastructure::pack_store::LocalPackStore;
 use adscan_engine::infrastructure::secrets::{MemorySecretStore, VaultSecretStore};
+use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::TypesafeClient;
@@ -529,6 +531,8 @@ pub fn text_file(status: u16, body: &str) -> Result<PublicFile, FetchError> {
         status,
         content_type: Some("text/plain".into()),
         body: body.as_bytes().to_vec(),
+        final_url: String::new(),
+        version: FileVersion::default(),
     })
 }
 
@@ -622,6 +626,7 @@ pub struct Harness {
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
     pub files: Arc<FakePublicFiles>,
+    pub sellers_json: Arc<SellersJsonSource>,
     pub archive: Archive,
     pub network: NetworkView,
     pub sources: ScriptSources,
@@ -781,6 +786,11 @@ fn assemble_in(
     let events = Arc::new(RecordingSink::default());
     let capture = Arc::new(FakeCaptureSource::new(behavior));
     let files = Arc::new(FakePublicFiles::default());
+    let sellers_json = Arc::new(SellersJsonSource::new(
+        files.clone(),
+        Arc::new(LocalSellersJsonCache::new(data_dir.path())),
+        Arc::new(SystemClock),
+    ));
     let deps = PipelineDeps {
         scans: Arc::new(store.clone()),
         logs: Arc::new(store.clone()),
@@ -788,6 +798,7 @@ fn assemble_in(
         judge,
         capture: capture.clone(),
         files: files.clone(),
+        sellers_json: sellers_json.clone(),
         formatter: formatter.clone(),
         archive: archive.clone(),
         events: events.clone(),
@@ -802,6 +813,7 @@ fn assemble_in(
         events,
         capture,
         files,
+        sellers_json,
         network: NetworkView::new(archive.clone(), Arc::new(store.clone())),
         sources: ScriptSources::new(
             archive.clone(),

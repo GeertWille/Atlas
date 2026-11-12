@@ -57,6 +57,8 @@ export function createTauriAdapter(): ApiPort {
       }),
     getArchiveStorage: () => call("get_archive_storage"),
     clearArchive: () => call("clear_archive"),
+    getSellersJsonCache: () => call("get_sellers_json_cache"),
+    clearSellersJsonCache: () => call("clear_sellers_json_cache"),
     subscribeScanEvents: (handler) => listen<ScanEvent>("scan-event", (event) => handler(event.payload)),
     pickExportPath: (defaultFileName, format) =>
       save({

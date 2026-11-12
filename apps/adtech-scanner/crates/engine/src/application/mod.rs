@@ -9,6 +9,7 @@ pub mod llm;
 pub mod pipeline;
 pub mod ports;
 pub mod scans;
+pub mod sellers_json;
 pub mod settings;
 
 pub use error::AppError;

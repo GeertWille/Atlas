@@ -7,7 +7,7 @@ use adscan_model::{
     ErrorCode, ExportFormat, LogEntry, LogSearchHit, NetworkBodyChunk, NetworkRequestDetail,
     NetworkRowChunk, NetworkSummary, ProxyProfileDraft, ScanConfiguration, ScanConfigurationDraft,
     ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo, ScanSummary, ScriptSource,
-    Settings, SettingsPatch, SourceView,
+    SellersJsonCacheInfo, Settings, SettingsPatch, SourceView,
 };
 use std::path::Path;
 
@@ -132,6 +132,24 @@ pub async fn get_archive_storage(state: State<'_, AppState>) -> CommandResult<Ar
 pub async fn clear_archive(state: State<'_, AppState>) -> CommandResult<ArchiveStorage> {
     state.sources.forget_formatted();
     state.settings.clear_archive().await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_sellers_json_cache(
+    state: State<'_, AppState>,
+) -> CommandResult<SellersJsonCacheInfo> {
+    Ok(state.sellers_json.cache_info().await)
+}
+
+#[tauri::command]
+pub async fn clear_sellers_json_cache(
+    state: State<'_, AppState>,
+) -> CommandResult<SellersJsonCacheInfo> {
+    state
+        .sellers_json
+        .clear_cache()
+        .await
+        .map_err(command_error)
 }
 
 /// `provider` defaults to Anthropic, the only provider older callers know.

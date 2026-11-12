@@ -23,6 +23,7 @@ import type {
   ScanProfileInfo,
   ScanSummary,
   ScriptSource,
+  SellersJsonCacheInfo,
   Settings,
   SettingsPatch,
   SourceView,
@@ -99,6 +100,9 @@ export interface ApiPort {
   getArchiveStorage(): Promise<ArchiveStorage>;
   /** Removes the network data of every finished scan. The reports stay. */
   clearArchive(): Promise<ArchiveStorage>;
+  /** The sellers.json files of ad exchanges that are kept between scans. */
+  getSellersJsonCache(): Promise<SellersJsonCacheInfo>;
+  clearSellersJsonCache(): Promise<SellersJsonCacheInfo>;
   subscribeScanEvents(handler: (event: ScanEvent) => void): Promise<Unsubscribe>;
 
   /** Native save dialog. Resolves to `null` when the user cancels. */

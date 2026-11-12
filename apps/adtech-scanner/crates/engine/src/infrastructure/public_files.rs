@@ -26,7 +26,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, LOCATION, USER_AGENT};
+use reqwest::StatusCode;
+use reqwest::header::{
+    ACCEPT, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+    LAST_MODIFIED, LOCATION, USER_AGENT,
+};
 use reqwest::redirect::Policy;
 use tokio_util::sync::CancellationToken;
 use url::{Host, Url};
@@ -35,7 +39,7 @@ use super::http::describe_transport_error;
 use adscan_model::{CaptureProxy, ProxyScheme};
 
 use crate::application::ports::{
-    FetchError, FetchProxy, PublicFile, PublicFileFetcher, PublicFileRequest,
+    FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
 use crate::domain::diagnostics::site::{RedirectScope, is_loopback};
 
@@ -67,15 +71,23 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
     let mut scope = RedirectScope::starting_at(url.host_str().unwrap_or_default());
     loop {
         let route = admit(&url, request.loopback_origin.as_deref()).await?;
-        let mut response = client(&url, &route, &request.proxy)?
+        let mut asked = client(&url, &route, &request.proxy)?
             .get(url.clone())
             .header(USER_AGENT, CLIENT_NAME)
-            .header(ACCEPT, "text/plain, application/json;q=0.9, */*;q=0.1")
-            .send()
-            .await
-            .map_err(network)?;
+            .header(ACCEPT, "text/plain, application/json;q=0.9, */*;q=0.1");
+        // Sent on every hop: the version was stated by whichever address
+        // answered in the end, and a server ignores one it does not know.
+        let known = request.known_version.as_ref();
+        if let Some(etag) = known.and_then(|version| version.etag.as_deref()) {
+            asked = asked.header(IF_NONE_MATCH, etag);
+        }
+        if let Some(date) = known.and_then(|version| version.last_modified.as_deref()) {
+            asked = asked.header(IF_MODIFIED_SINCE, date);
+        }
+        let mut response = asked.send().await.map_err(network)?;
         let status = response.status();
-        if status.is_redirection() {
+        // "Not modified" is in the 3xx range and is no redirect.
+        if status.is_redirection() && status != StatusCode::NOT_MODIFIED {
             let next = response
                 .headers()
                 .get(LOCATION)
@@ -88,11 +100,17 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
             url = next;
             continue;
         }
-        let content_type = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_string);
+        let stated = |headers: &HeaderMap, name: HeaderName| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+        };
+        let content_type = stated(response.headers(), CONTENT_TYPE);
+        let version = FileVersion {
+            etag: stated(response.headers(), ETAG),
+            last_modified: stated(response.headers(), LAST_MODIFIED),
+        };
         let mut body = Vec::new();
         if status.is_success() {
             let too_large = || FetchError::TooLarge(request.max_bytes);
@@ -113,6 +131,8 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
             status: status.as_u16(),
             content_type,
             body,
+            final_url: url.into(),
+            version,
         });
     }
 }

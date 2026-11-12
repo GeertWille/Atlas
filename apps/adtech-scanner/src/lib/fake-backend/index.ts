@@ -12,6 +12,7 @@ import type {
   ScanOptions,
   ScanProfileInfo,
   ScanSummary,
+  SellersJsonCacheInfo,
   Settings,
 } from "@/bindings";
 import { ApiError } from "@/lib/api/error";
@@ -19,6 +20,7 @@ import type { ApiPort } from "@/lib/api/port";
 import { isProxyHost, PROXY_NAME_MAX } from "@/shared/domain/proxy";
 import { CONFIGURATION_NAME_MAX, MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/shared/domain/scan-options";
 import { type FakeConfig, readFakeConfig } from "./config";
+import { isOnThisMachine } from "./diagnostics";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
 import { bodyChunk, type FakeNetwork, listRows, materializeNetwork, requestDetail, summarise } from "./network";
@@ -41,7 +43,7 @@ const DEFAULT_SETTINGS: Settings = {
   hasApiKey: false,
   jevEnabled: false,
   hasTypesafeKey: false,
-  checkSellersJson: false,
+  checkSellersJson: true,
   defaultVisitor: "scroll",
   defaultExtraPages: 2,
   persistentProfile: false,
@@ -51,6 +53,10 @@ const DEFAULT_SETTINGS: Settings = {
   archiveLimitBytes: 5 * 1024 ** 3,
   storeFullHeaders: false,
 };
+
+/** The sellers.json files of the exchanges the simulated sites sell through, as a scan with the check on leaves them. */
+const KEPT_SELLERS_JSON: SellersJsonCacheInfo = { entries: 6, storedBytes: 7_340_000 };
+const NO_SELLERS_JSON: SellersJsonCacheInfo = { entries: 0, storedBytes: 0 };
 
 /** What one scan adds to the kept profile (cache, cookies, storage), and where Chrome's cache cap stops it. */
 const PROFILE_GROWTH_BYTES = 21_400_000;
@@ -75,6 +81,7 @@ type Persisted = {
   scanProfile?: StoredProfile;
   /** Seeded scans whose network data "Clear stored scan data" removed. */
   clearedSeedArchives?: string[];
+  sellersJsonCache?: SellersJsonCacheInfo;
 };
 
 const ARCHIVE_LIMIT_MIN_BYTES = 100 * 1024 ** 2;
@@ -105,6 +112,7 @@ class FakeBackend {
   private configurations: ScanConfiguration[];
   private scanProfile: StoredProfile;
   private clearedSeedArchives: string[];
+  private sellersJsonCache: SellersJsonCacheInfo;
   /** Request lists are derived from the scans on demand and kept while the page lives. */
   private readonly networks = new Map<string, FakeNetwork>();
 
@@ -129,6 +137,8 @@ class FakeBackend {
     this.configurations = persisted?.configurations ?? (seeded ? seedConfigurations(Date.now()) : []);
     this.scanProfile = persisted?.scanProfile ?? { sizeBytes: 0, lastUsedAt: null };
     this.clearedSeedArchives = persisted?.clearedSeedArchives ?? [];
+    // The seeded history was scanned with the check on.
+    this.sellersJsonCache = persisted?.sellersJsonCache ?? (seeded ? KEPT_SELLERS_JSON : NO_SELLERS_JSON);
     const seeds = seeded ? seedScans(this.settings, Date.now(), config.rows) : [];
     for (const seed of seeds) {
       if (this.clearedSeedArchives.includes(seed.detail.summary.id)) clearNetworkData(seed);
@@ -161,6 +171,7 @@ class FakeBackend {
       configurations: this.configurations,
       scanProfile: this.scanProfile,
       clearedSeedArchives: this.clearedSeedArchives,
+      sellersJsonCache: this.sellersJsonCache,
     };
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(state));
@@ -249,6 +260,9 @@ class FakeBackend {
         sizeBytes: Math.min(PROFILE_MAX_BYTES, this.scanProfile.sizeBytes + PROFILE_GROWTH_BYTES),
         lastUsedAt: now,
       };
+    }
+    if (this.settings.checkSellersJson && !isOnThisMachine(resolved.options.url)) {
+      this.sellersJsonCache = KEPT_SELLERS_JSON;
     }
     const summary = clone(scan.detail.summary);
     this.emit([{ type: "scanUpdated", summary }]);
@@ -675,6 +689,16 @@ class FakeBackend {
       this.networks.clear();
       this.persist();
       return this.archiveStorage();
+    },
+    getSellersJsonCache: async () => {
+      await this.latency();
+      return clone(this.sellersJsonCache);
+    },
+    clearSellersJsonCache: async () => {
+      await this.latency();
+      this.sellersJsonCache = NO_SELLERS_JSON;
+      this.persist();
+      return clone(this.sellersJsonCache);
     },
     subscribeScanEvents: async (handler) => {
       const subscription = Symbol("scan-events");

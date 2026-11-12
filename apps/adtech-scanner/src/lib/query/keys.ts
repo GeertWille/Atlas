@@ -21,6 +21,7 @@ export const queryKeys = {
   scriptSource: (scanId: string, scriptId: string, view: SourceView) =>
     ["scans", "archive", scanId, "source", scriptId, view] as const,
   archiveStorage: ["archive-storage"] as const,
+  sellersJsonCache: ["sellers-json-cache"] as const,
   scanProfile: ["scan-profile"] as const,
   configurations: ["configurations"] as const,
   logSearches: ["log-search"] as const,

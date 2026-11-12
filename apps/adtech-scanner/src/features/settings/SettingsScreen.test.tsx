@@ -27,7 +27,7 @@ beforeEach(async () => {
     theme: "system",
     filterModel: "claude-haiku-5-5",
     chromePath: null,
-    checkSellersJson: false,
+    checkSellersJson: true,
   });
 });
 
@@ -134,28 +134,54 @@ test("the Jev switch decides who triages scripts, and removing the TypeSafe key 
   expect(await api.getSettings()).toMatchObject({ hasTypesafeKey: false, jevEnabled: false });
 });
 
-test("the sellers.json check is off until switched on, and says whom it contacts", async () => {
+test("the sellers.json check is on until switched off, and says whom it contacts and how", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ConnectedSettings />);
   const sellersJson = () => screen.findByRole("switch", { name: "Check sellers.json at ad exchanges" });
 
-  expect(await sellersJson()).not.toBeChecked();
+  expect(await sellersJson()).toBeChecked();
   expect(await sellersJson()).toHaveAccessibleDescription(
-    /Requests sellers\.json from the ad exchanges the scanned site's ads\.txt names .* Off: only the scanned site is contacted\.$/,
+    /^On: a scan asks the ad exchanges that the scanned site's ads\.txt names \(.*at most 12 per scan\) for their sellers\.json.* never through the proxy chosen for a scan\. A page on this Mac, such as the demo site, is never asked about\. Turn it off on a metered or slow connection .*or to contact only the scanned site\.$/,
   );
 
   await user.click(await sellersJson());
-  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(true));
-  expect(await sellersJson()).toBeChecked();
+  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(false));
+  expect(await sellersJson()).not.toBeChecked();
 
   await user.click(await sellersJson());
-  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(false));
+  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(true));
+});
+
+test("the kept sellers.json files are shown with their size and can be cleared", async () => {
+  const user = userEvent.setup();
+  expect(await api.getSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+  // A scan with the check on leaves the files of the site's exchanges behind.
+  const scan = await api.startScan({
+    url: "https://www.sportsdesk.example/football",
+    device: "desktop",
+    observeSeconds: 20,
+    autoScroll: true,
+    acceptConsent: true,
+    aiEnabled: false,
+  });
+  await api.cancelScan(scan.id);
+  await renderWithApp(<ConnectedSettings />);
+  expect(await screen.findByText("from 6 exchanges")).toBeInTheDocument();
+  expect(screen.getByText("7.0 MB")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Clear kept files" }));
+  expect(await screen.findByText("None kept")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Clear kept files" })).toBeDisabled();
+  expect(await api.getSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+  // The scan itself is not touched.
+  expect((await api.listScans({})).items.map((item) => item.id)).toContain(scan.id);
+  await api.deleteAllScans();
 });
 
 test("About names every host the app talks to", async () => {
   await renderWithApp(<ConnectedSettings />);
   expect(await screen.findByText(/Outbound traffic goes only to/)).toHaveTextContent(
-    "the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any.",
+    "the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, unless the sellers.json check is switched off, the ad exchanges that ads.txt names. A scan's traffic to the site goes through the proxy you chose for it, if any; the requests to the exchanges and to the model APIs do not.",
   );
 });
 

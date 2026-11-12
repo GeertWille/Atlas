@@ -41,24 +41,38 @@ fn rules(detail: &ScanDetail) -> Vec<&str> {
         .collect()
 }
 
-async fn turn_on_sellers_json(harness: &Harness) {
+/// The lookup is on unless the user switches it off.
+async fn check_sellers_json(harness: &Harness, on: bool) {
     let patch = SettingsPatch {
-        check_sellers_json: Some(true),
+        check_sellers_json: Some(on),
         ..SettingsPatch::default()
     };
-    assert!(
+    assert_eq!(
         harness
             .settings
             .update(patch)
             .await
             .unwrap()
-            .check_sellers_json
+            .check_sellers_json,
+        on
     );
+}
+
+fn sellers_of_the_site() -> Result<adscan_engine::application::ports::PublicFile, FetchError> {
+    text_file(
+        200,
+        &json!({ "sellers": [
+            { "seller_id": "958", "seller_type": "PUBLISHER", "domain": "pub.example" },
+            { "seller_id": "1001", "seller_type": "PUBLISHER", "domain": "pub.example" }
+        ]})
+        .to_string(),
+    )
 }
 
 #[tokio::test]
 async fn a_scan_reads_the_sites_ads_txt_and_stores_what_it_concluded() {
     let harness = harness_for(healthy());
+    check_sellers_json(&harness, false).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 
@@ -146,6 +160,8 @@ async fn exchanges_are_only_contacted_when_the_setting_is_on_and_only_those_ads_
             ]})
             .to_string()
             .into_bytes(),
+            final_url: "https://appnexus.com/sellers.json".into(),
+            version: Default::default(),
         }),
     );
     harness.files.answer(
@@ -153,11 +169,12 @@ async fn exchanges_are_only_contacted_when_the_setting_is_on_and_only_those_ads_
         text_file(503, ""),
     );
 
+    check_sellers_json(&harness, false).await;
     let off = run_scan(&harness, scan_options(false)).await;
     assert_eq!(harness.files.requested_urls(), [SITE_ADS_TXT_URL]);
     assert!(!off.bidder_diagnostics.unwrap().sellers_json_checked);
 
-    turn_on_sellers_json(&harness).await;
+    check_sellers_json(&harness, true).await;
     harness.files.requests.lock().unwrap().clear();
     let on = run_scan(&harness, scan_options(false)).await;
 
@@ -215,11 +232,172 @@ async fn exchanges_are_only_contacted_when_the_setting_is_on_and_only_those_ads_
     assert_eq!(rules(&on), Vec::<&str>::new());
 }
 
+/// Scanning a site again, or another site that sells through the same
+/// exchanges, asks no exchange a second time within a day.
+#[tokio::test]
+async fn a_second_scan_reads_the_exchanges_files_from_the_copies_the_first_one_kept() {
+    let harness = harness_for(healthy());
+    for exchange in ["appnexus.com", "rubiconproject.com"] {
+        harness.files.answer(
+            &format!("https://{exchange}/sellers.json"),
+            sellers_of_the_site(),
+        );
+    }
+    // Requests of a scan: all of them, and those for a sellers.json.
+    let requests_made = |harness: &Harness| {
+        let asked = std::mem::take(&mut *harness.files.requests.lock().unwrap());
+        let of_exchanges = asked
+            .iter()
+            .filter(|request| request.url.ends_with("/sellers.json"))
+            .count();
+        (asked.len(), of_exchanges)
+    };
+
+    // The lookup is on without anyone switching it on.
+    let first = run_scan(&harness, scan_options(false)).await;
+    assert_eq!(requests_made(&harness), (3, 2));
+    assert_eq!(
+        lookup_lines(&harness, &first).await,
+        [
+            "sellers.json of appnexus.com: 1 of the seller ids found (downloaded)",
+            "sellers.json of rubiconproject.com: 1 of the seller ids found (downloaded)",
+        ]
+    );
+
+    let second = run_scan(&harness, scan_options(false)).await;
+    assert_eq!(
+        requests_made(&harness),
+        (1, 0),
+        "only the site's own ads.txt is requested again"
+    );
+    assert_eq!(
+        lookup_lines(&harness, &second).await,
+        [
+            "sellers.json of appnexus.com: 1 of the seller ids found (kept copy, fetched less than a minute ago)",
+            "sellers.json of rubiconproject.com: 1 of the seller ids found (kept copy, fetched less than a minute ago)",
+        ]
+    );
+    // The verdicts are the same either way.
+    assert!(
+        first
+            .bidder_diagnostics
+            .as_ref()
+            .unwrap()
+            .sellers_json_checked
+    );
+    assert_eq!(first.bidder_diagnostics, second.bidder_diagnostics);
+    assert_eq!(
+        checks_step(&second).summary.as_deref(),
+        Some(
+            "2 bidders checked: 0 problems, 0 notices; ads.txt has 2 records; sellers.json read at 2 exchanges"
+        )
+    );
+    assert_eq!(harness.sellers_json.cache_info().await.entries, 2);
+
+    // Clearing the kept files makes the next scan ask the exchanges again.
+    harness.sellers_json.clear_cache().await.unwrap();
+    run_scan(&harness, scan_options(false)).await;
+    assert_eq!(requests_made(&harness), (3, 2));
+}
+
+/// The cache's own clock is the system's, so the kept copy is aged on disk.
+#[tokio::test]
+async fn an_exchange_that_is_down_is_judged_from_the_kept_copy_and_the_check_says_so() {
+    let harness = harness_for(healthy());
+    for exchange in ["appnexus.com", "rubiconproject.com"] {
+        harness.files.answer(
+            &format!("https://{exchange}/sellers.json"),
+            sellers_of_the_site(),
+        );
+    }
+    run_scan(&harness, scan_options(false)).await;
+
+    // Two days pass, and appnexus stops answering.
+    let cache = harness.data_dir.path().join("cache/sellers-json");
+    let two_days_ago = 1_000.0
+        * (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - 2.0 * 24.0 * 3_600.0);
+    for entry in std::fs::read_dir(&cache).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_str().unwrap().ends_with(".meta.json") {
+            let mut meta: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            meta["fetchedAt"] = json!(two_days_ago);
+            std::fs::write(&path, meta.to_string()).unwrap();
+        }
+    }
+    harness.files.answer(
+        "https://appnexus.com/sellers.json",
+        Err(FetchError::TimedOut),
+    );
+    let fetched_on = adscan_engine::domain::diagnostics::sellers_cache::utc_day(two_days_ago);
+
+    let detail = run_scan(&harness, scan_options(false)).await;
+
+    let diagnostics = detail.bidder_diagnostics.as_ref().unwrap();
+    let sellers_checks = |name: &str| -> Vec<(DiagnosticStatus, String)> {
+        diagnostics
+            .bidders
+            .iter()
+            .find(|bidder| bidder.bidder == name)
+            .unwrap()
+            .checks
+            .iter()
+            .filter(|check| check.area == DiagnosticArea::SellersJson)
+            .map(|check| (check.status, check.summary.clone()))
+            .collect()
+    };
+    assert_eq!(
+        sellers_checks("appnexus"),
+        [(
+            DiagnosticStatus::Pass,
+            format!(
+                "Seller id 958 is listed in the sellers.json of appnexus.com (from a copy fetched {fetched_on}: the exchange could not be reached during this scan)"
+            )
+        )]
+    );
+    // The exchange that answered is read anew and carries no such note.
+    assert_eq!(
+        sellers_checks("rubicon"),
+        [(
+            DiagnosticStatus::Pass,
+            "Seller id 1001 is listed in the sellers.json of rubiconproject.com".to_string()
+        )]
+    );
+    assert_eq!(
+        lookup_lines(&harness, &detail).await,
+        [
+            format!(
+                "sellers.json of appnexus.com: 1 of the seller ids found (the exchange could not be reached: kept copy, fetched {fetched_on})"
+            ),
+            "sellers.json of rubiconproject.com: 1 of the seller ids found (downloaded)"
+                .to_string(),
+        ]
+    );
+}
+
+/// What the audit trail says about each exchange's file, in order of exchange.
+async fn lookup_lines(harness: &Harness, detail: &ScanDetail) -> Vec<String> {
+    let mut lines: Vec<String> = harness
+        .scans
+        .logs(&detail.summary.id, Some(&checks_step(detail).id))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.message)
+        .filter(|message| message.starts_with("sellers.json of "))
+        .collect();
+    lines.sort();
+    lines
+}
+
 #[tokio::test]
 async fn a_site_without_ads_txt_gets_one_finding_and_no_exchange_is_asked() {
     let harness = harness_for(healthy());
     harness.files.answer(SITE_ADS_TXT_URL, text_file(404, ""));
-    turn_on_sellers_json(&harness).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 
@@ -268,8 +446,9 @@ async fn an_ads_txt_that_cannot_be_read_is_reported_as_such_and_proves_nothing()
         assert_eq!(
             checks_step(&detail).summary.as_deref(),
             Some(
-                "2 bidders checked: 0 problems, 0 notices; ads.txt could not be read; sellers.json not checked"
-            )
+                "2 bidders checked: 0 problems, 0 notices; ads.txt could not be read; sellers.json read at 0 exchanges"
+            ),
+            "no ads.txt names an exchange to ask"
         );
     }
 }
@@ -290,6 +469,7 @@ async fn a_subdomain_the_root_file_hands_over_is_read_from_its_own_ads_txt() {
         "https://blog.pub.example/ads.txt",
         text_file(200, "rubiconproject.com, 1001, DIRECT\n"),
     );
+    check_sellers_json(&harness, false).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 
@@ -317,7 +497,6 @@ async fn a_page_on_this_machine_is_asked_at_its_own_origin_and_no_exchange_is_as
         "http://127.0.0.1:4455/ads.txt",
         text_file(200, SITE_ADS_TXT),
     );
-    turn_on_sellers_json(&harness).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 
@@ -342,7 +521,6 @@ async fn a_page_on_this_machine_is_asked_at_its_own_origin_and_no_exchange_is_as
 #[tokio::test]
 async fn a_page_without_bidders_skips_the_checks_and_requests_nothing() {
     let harness = harness_for(never_started_capture(DeviceProfile::Desktop, false));
-    turn_on_sellers_json(&harness).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 
@@ -412,7 +590,6 @@ async fn the_files_themselves_are_never_stored() {
             ),
         );
     }
-    turn_on_sellers_json(&harness).await;
 
     let detail = run_scan(&harness, scan_options(false)).await;
 

@@ -26,6 +26,7 @@ import { AiAnalysisFields } from "./AiAnalysisFields";
 import { ProxySection } from "./ProxySection";
 import { ScanDefaultsFields } from "./ScanDefaultsFields";
 import { ScanProfileField } from "./ScanProfileField";
+import { SellersJsonFields } from "./SellersJsonFields";
 import { StoredDataFields } from "./StoredDataFields";
 
 declare const __APP_VERSION__: string;
@@ -133,7 +134,7 @@ function DeleteAllScansButton() {
 
 export function SettingsScreen({ settings, browser }: { settings: Settings; browser: BrowserInfo | null | undefined }) {
   const updateSettings = useUpdateSettings();
-  const ids = { headless: useId(), sellersJson: useId(), sellersJsonDisclosure: useId() };
+  const ids = { headless: useId() };
 
   const save = (patch: SettingsPatch) =>
     updateSettings.mutate(patch, {
@@ -154,23 +155,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
         title="Bidder checks"
         description="Every scan verifies each bidder's adapter params, its endpoint's answers, the consent it was sent and the scanned site's own ads.txt."
       >
-        <Field
-          label="Check sellers.json at ad exchanges"
-          htmlFor={ids.sellersJson}
-          description={
-            <span id={ids.sellersJsonDisclosure}>
-              Requests sellers.json from the ad exchanges the scanned site's ads.txt names (appnexus.com,
-              rubiconproject.com and the like) to verify its seller ids. Off: only the scanned site is contacted.
-            </span>
-          }
-        >
-          <Switch
-            id={ids.sellersJson}
-            aria-describedby={ids.sellersJsonDisclosure}
-            checked={settings.checkSellersJson}
-            onCheckedChange={(checkSellersJson) => save({ checkSellersJson })}
-          />
-        </Field>
+        <SellersJsonFields settings={settings} save={save} />
       </Section>
 
       <Section
@@ -234,7 +219,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       >
         <Field
           label="What is stored"
-          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan; passwords, tokens and other values with a credential name in addresses, request bodies and JSON responses are replaced before it is written, and so are cookie and credential headers unless “Store full headers” is on. ads.txt and sellers.json files are read in memory and not kept. API keys and proxy passwords are in the Keychain, never in these files."
+          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan; passwords, tokens and other values with a credential name in addresses, request bodies and JSON responses are replaced before it is written, and so are cookie and credential headers unless “Store full headers” is on. A site’s ads.txt is read in memory and not kept; the sellers.json files of ad exchanges are kept apart from the scans (see “Kept sellers.json files” above). API keys and proxy passwords are in the Keychain, never in these files."
         >
           <DeleteAllScansButton />
         </Field>
@@ -243,7 +228,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any. Scan data never leaves this Mac unless you export a report or copy something out of it yourself."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, unless the sellers.json check is switched off, the ad exchanges that ads.txt names. A scan's traffic to the site goes through the proxy you chose for it, if any; the requests to the exchanges and to the model APIs do not. Scan data never leaves this Mac unless you export a report or copy something out of it yourself."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

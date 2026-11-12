@@ -142,6 +142,7 @@ fn files(ads_txt: AdsTxtOutcome) -> SiteFiles {
         ads_txt_url: SITE_ADS_TXT_URL.into(),
         ads_txt,
         sellers: None,
+        sellers_copies: BTreeMap::new(),
     }
 }
 

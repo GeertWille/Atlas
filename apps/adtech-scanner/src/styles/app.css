@@ -298,6 +298,15 @@
     outline-offset: 2px;
   }
 
+  /*
+   * A button focused while the pointer is in use shows no ring (shared/lib/input-modality.ts). The other
+   * shared controls say so with the pointer-input variant; a button's class list is part of
+   * legacy-report.reference.txt and stays as it is.
+   */
+  :root[data-input="pointer"] [data-slot="button"]:focus-visible {
+    outline: none;
+  }
+
   ::selection {
     background: oklch(0.4866 0.2965 279.01 / 0.22);
   }

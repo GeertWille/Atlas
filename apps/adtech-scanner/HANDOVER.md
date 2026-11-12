@@ -27,10 +27,11 @@ Rules that came from you and must keep holding:
 
 - Local only. A SQLite file in the app data dir, no server, no cloud storage. Outbound traffic is the
   scanned site (through Chrome) and that site's ads.txt (one GET from the app itself),
-  api.anthropic.com, api.typesafe.ai only while Jev is on, and, only while "Check sellers.json at ad
-  exchanges" is on, a GET of sellers.json at the ad-system domains that ads.txt names. A scan can send
-  the first three kinds through one proxy the user configured (see "Proxies"); the two model APIs never
-  use it.
+  api.anthropic.com, api.typesafe.ai only while Jev is on, and, unless "Check sellers.json at ad
+  exchanges" is switched off (it is on by default since 2026-11-12, your decision), a GET of
+  sellers.json at the ad-system domains that ads.txt names, at most twelve per scan and at most once a
+  day per exchange (see "sellers.json cache"). A scan can send the first two kinds through one proxy
+  the user configured (see "Proxies"); the sellers.json requests and the two model APIs never use it.
 - Raw scan data is stored locally and only locally (this replaced "no raw payloads stored"): one
   compressed archive per scan with every request, its headers, and the bodies of scripts, documents,
   JSON, text, CSS and POST requests, bid requests and responses included. Never images, video, audio
@@ -39,9 +40,10 @@ Rules that came from you and must keep holding:
   full headers"), and, whatever that setting says, the app's own proxy password, credential
   parameters in URLs, and password and token fields in request bodies and JSON answers. The table
   under "Scan archive" is the exact list. It is deleted with the scan, bounded by a size limit (5 GB
-  by default, oldest scans first), and can be switched off ("Keep network data"). ads.txt and
-  sellers.json are still read in memory and not kept; the audit trail still holds bounded excerpts
-  only, never whole scripts.
+  by default, oldest scans first), and can be switched off ("Keep network data"). ads.txt is still
+  read in memory and not kept; the sellers.json files of ad exchanges are kept, apart from the scans
+  (public files, the same for every site: see "sellers.json cache"); the audit trail still holds
+  bounded excerpts only, never whole scripts.
 - API keys and proxy passwords live in the macOS Keychain, all in one item (service
   `com.webclew.adtech-scanner`, account `vault`; see "Keychain prompts"), never in SQLite, logs or the
   frontend. SQLite only records which of them exist (table `secret_presence`, names without values).
@@ -58,12 +60,9 @@ Rules that came from you and must keep holding:
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 226 unit tests; the integration tests drive real Chromium. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (33 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1035 tests, 5 ignored (2026-11-12, after the archive review). |
-| React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract. Not run on macOS. |
-
-The checkpoint commit that adds this file contains the frontend exactly as the build agent left it
-mid-work. Expect `pnpm typecheck` and `pnpm lint` to fail until the frontend is finished.
+| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: RUST_COUNT tests, 5 ignored (2026-11-12, after the release defect list). |
+| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; VITEST_COUNT Vitest tests and PLAYWRIGHT_COUNT Playwright tests against the fake backend pass (2026-11-12). |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: TAURI_COUNT tests. Not run on macOS. |
 
 ## Run it on a Mac
 
@@ -126,8 +125,8 @@ without destroying the old ones.
 
 ## What is left, in order
 
-1. **Finish the frontend.** Get `pnpm typecheck`, `pnpm lint`, `pnpm test` green; write the Playwright
-   e2e suite against the fake backend (`src/lib/fake-backend`); `e2e/` is empty.
+1. **Finish the frontend.** Done: `pnpm typecheck`, `pnpm lint`, `pnpm test` and the Playwright suite
+   against the fake backend (`src/lib/fake-backend`, specs in `e2e/`) pass.
 2. **Integrate.** Done on Linux (`pnpm test:tauri`). On the Mac, still check by hand: the save and
    open dialogs, external links opening in the browser, dragging and double-click zoom of the title
    bar, and that a scan's Chrome is gone after quitting mid-scan.
@@ -136,7 +135,7 @@ without destroying the old ones.
 4. **Simplify and review** the frontend, then the integrated app. Fix and repeat until clean.
 5. **Visual polish** of every screen in light and dark, at 1024x680 and 1280x820.
 6. **First real API run.** Enter a key in Settings and scan the demo site, then a real publisher page.
-7. **README** with the run instructions above.
+7. **README.** Done: `README.md`. The checklist for the first run on a Mac is `docs/MAC-TESTING.md`.
 
 ## Never verified (no Mac and no API key were available)
 
@@ -173,6 +172,11 @@ without destroying the old ones.
 - The thresholds of the six visit rules (5 s minimum dwell, 2 slots, the 2 s consent delay) and the
   merge of page findings by rule and bidders are starting values that only the demo site has exercised.
 - The detection-vendor table against real pages.
+- The sellers.json cache against real exchanges: whether they send `ETag` or `Last-Modified`, answer
+  304, and how large their files are. And the scan time now that the lookup is on by default.
+- The focus-ring fix on macOS. On WebKitGTK a select showed a ring after a mouse choice and no
+  longer does (`pnpm test:tauri`); dialogs and menus did not show one there to begin with, so their
+  part of the fix was only checked not to break keyboard focus.
 
 ## Known open issues
 
@@ -191,8 +195,13 @@ without destroying the old ones.
   in that analysis step, mapped onto the same slot events, and `hasAdServer` next to `hasGpt`.
 
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
-- A cancelled step shows as Failed with summary "Cancelled"; there is no cancelled step status.
-- `delete_all_scans` can race with a scan started at the same moment.
+- Scans stored before 2026-11-12 keep what was recorded then: the step a cancel interrupted reads
+  Failed with the summary "Cancelled" (new scans store the step status `cancelled`), a CORS preflight
+  can have a duration of a millisecond or two below zero (shown as 0) and can be filed under "other
+  third party" instead of with its request, and a request made in the first tenth of a second after an
+  in-page route change can sit on the page view before it.
+- The network view and the script viewer still show the error page when fetching the scan again
+  fails in the background. Only the report keeps what it had loaded and shows a notice with a retry.
 - A keychain vault that is not valid JSON is never overwritten: every read and every change of a
   secret fails with "the stored secrets are not in the expected format" until the item `vault` is
   removed in Keychain Access. There is no button for that.
@@ -200,8 +209,16 @@ without destroying the old ones.
   keychain; it is never read again while the vault exists, and clearing the key in the app does not
   remove it.
 - Very small scripts can fit entirely inside one stored excerpt.
-- The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
-  Prebid releases.
+- The Prebid-age rule compares with a constant, not with the web: `CURRENT_PREBID_MAJOR` (11, from
+  `npm view prebid.js version` = 11.49.0 on 2026-11-12) and `MAX_PREBID_MAJORS_BEHIND` (3) in
+  `domain/heuristics/setup.rs`. It reports builds more than three majors behind (7.x and older today)
+  and the finding names both versions. Raise the first constant when Prebid 12 is released.
+- Model prices are a table in `domain/pricing.rs`. The frontend's cost estimate reads
+  `src/shared/domain/model-prices.json`, which that file's own test writes from the table: after a
+  price change `cargo test -p adscan-engine` fails once, rewrites the file, and the file is committed.
+- Log search matches an identifier with underscores (`report_finding`) as one term and marks it as
+  one. The index itself still splits words at underscores (tokenizer `unicode61`, unchanged, so no
+  migration): each word of an identifier is also found alone.
 
 ## Scan archive
 
@@ -255,6 +272,8 @@ and `key` alone are not credential names.
 | Fields with a credential name in JSON responses (`access_token`, `refresh_token`, ...) | replaced | **replaced** |
 | All other headers, the rest of every URL (ad-server calls with their targeting, `gdpr_consent`, cookie-sync ids), bid requests and responses, HTML, scripts, CSS, text | stored as captured | stored as captured |
 | Bodies of images, video, audio, fonts, other binary content, WebSocket and EventSource traffic | never stored (size and type only) | never stored |
+| sellers.json of ad exchanges (public files, the same for every site) | kept as received in `<data dir>/cache/sellers-json/`, apart from the scan archive; see "sellers.json cache" | the same |
+| The scanned site's ads.txt | never stored (read in memory, only the checks' results are kept) | never stored |
 | API keys (Anthropic, TypeSafe), proxy passwords, the keychain vault | never stored: the app's own HTTP calls do not go through the scanned browser, and the one place a proxy password can surface in it is the header above | never stored |
 
 Why this line and not another: the archive exists for ad debugging, which needs the URLs, the
@@ -530,6 +549,18 @@ What the backend guarantees about it:
   click opens, and pages that navigate by themselves. Each refusal is a `blocked` entry (`off-site`,
   `form`, `sensitive`, `download`); a refused click ends the link following of that visit. `none` and
   `scroll` send no clicks except the consent banner's and are not guarded; `manual` is the person's.
+- **What the navigation guard does not cover.** The guard checks navigations, nothing else. A link
+  that passes every check above is clicked with a real click, and whatever the page itself attached
+  to that click runs: a handler added with `addEventListener` (on the link or on any ancestor, which
+  is how most analytics and single-page routers listen) is invisible to the link checks, which only
+  see attributes. Such a handler can send requests, open an overlay, change the page or write to
+  storage before or instead of navigating. The scanner does not prevent that and cannot know it
+  happened beyond what the capture records (requests, route changes, console lines). Only the
+  navigation that follows is checked.
+- **Which page view a request is on.** A request belongs to the page view that is showing when it
+  starts (`capture/pages.rs::place_at`), the same rule as for auctions and tracker events. The tracker
+  reports an in-page route change the moment it happens, ahead of its batch, so that what the page
+  requests in the same task as the route change is already placed on the new page view.
 - **Consent dialogs.** With "accept consent" the scanner looks for the dialog in every frame of the tab
   (`capture/consent.rs`, `injected/consent.js`): the page, its same-process iframes of other origins (a
   consent platform on a subdomain of the publisher, as Sourcepoint on bild.de) and out-of-process
@@ -585,8 +616,11 @@ profile: `Settings.defaultProxy`, or `ScanOptions.proxy` per scan.
   handed to the browser outside the capture request (answered to the proxy's challenge over CDP, never
   on the command line) and to the app's own file fetcher.
 - Chrome cannot sign in to a SOCKS5 proxy, so a SOCKS5 profile with a user name is refused.
-- ads.txt and sellers.json of a scan are read through the same proxy as its pages. A page on this
-  machine (the demo site) is always reached directly.
+- The site's ads.txt is read through the same proxy as the scan's pages. The sellers.json of ad
+  exchanges are not: they are requested like the app's other traffic (the system's proxy, if any),
+  whatever proxy, or "no proxy", the scan chose. The file does not depend on where it is fetched from,
+  one copy serves scans with different proxies, and a metered proxy is not billed for megabytes it
+  adds nothing to. A page on this machine (the demo site) is always reached directly.
 - Stored scans keep the profile's id plus its name and host as they were (`options.proxy`,
   `summary.proxy`, `environment.proxy`), so they still read after the profile is renamed or deleted.
 - A profile that a saved scan configuration uses cannot be deleted (the error names the configuration).
@@ -646,14 +680,17 @@ every check passed or could not be made.
    record (an empty file, a soft 404) is "could not be read" and raises nothing. A repeated record
    counts once. A `SUBDOMAIN=` declaration for the scanned host is followed to that host's own file.
    A page served from this machine never gets the "site has no ads.txt" finding.
-4. **sellers.json.** Off by default (Settings, "Check sellers.json at ad exchanges"). When on, the app
-   requests `https://<ad system domain>/sellers.json` for the ad systems of the page's bidders that
+4. **sellers.json.** On by default (Settings, "Check sellers.json at ad exchanges"; the default
+   changed on 2026-11-12, and migration 7 switched it on once for existing installs, because a
+   stored "off" could not be told from the old default). The app
+   reads `https://<ad system domain>/sellers.json` for the ad systems of the page's bidders that
    ads.txt lists, and looks up the account in use, or else the DIRECT records (at most ten per
    exchange): unknown seller id, confidential seller, seller type against DIRECT/RESELLER, seller
    domain against the site, OWNERDOMAIN and MANAGERDOMAIN. Only ad system domains of the adapter
    table are ever asked, never a name that is merely written in ads.txt, each must be a host name
    under a public suffix, and one scan asks at most twelve. It is never done for a page served from
-   this machine, so the demo site cannot send the app to a real exchange.
+   this machine, so the demo site cannot send the app to a real exchange. A file is kept between
+   scans: see "sellers.json cache" below.
 5. **Consent.** The tracker listens to `__tcfapi` and records, per state change, whether GDPR
    applies, whether there is a TC string, and the consented purposes and vendor ids. The tracker
    never reports the string itself; where it travels in a URL or a bid request, it is in the scan's
@@ -670,7 +707,51 @@ redirects by hand (any number within the root domain, one outside it, five in to
 cookies, and stops at 1 MiB and 10 s for ads.txt and 24 MiB and 20 s for sellers.json, counted on
 the decompressed bytes. The one exception is the scanned page's own origin when that
 is on loopback, which is how the demo site's `/ads.txt` is read, over http and never through a proxy.
-Every other request leaves through the scan's proxy choice (see "Proxies").
+The site's ads.txt leaves through the scan's proxy choice, a sellers.json through the system's (see
+"Proxies"). A request can name the version of the file it already has (`If-None-Match`,
+`If-Modified-Since`); the answer is then 304 when the file is unchanged.
+
+### sellers.json cache
+
+An exchange's sellers.json is the same for every site and several megabytes large, so it is kept
+between scans, one copy per exchange for all scans and sites. Built on 2026-11-12 together with the
+new default; tested against test doubles and a mock server only, never against a real exchange.
+
+- **Where.** `<data dir>/cache/sellers-json/`, directory mode 0700, files 0600. Per exchange two
+  files named by the first 32 hex characters of the sha-256 of its ad system domain (never by the
+  domain itself): `<key>.json.zst`, the file as received, zstd level 3, and `<key>.meta.json` with
+  the domain, when it was fetched, the address that answered after redirects, `ETag` and
+  `Last-Modified`, the sizes and the sha-256 of the content, or instead of a file the reason why
+  there was none ("the exchange answered HTTP 404"). An entry exists once its meta file does; both
+  files are written under a temporary name, synced and renamed, so a download that was cut short is
+  never an entry. The start-up sweep removes temporary files and files without meta.
+- **How long.** Constants in `domain/diagnostics/sellers_cache.rs`: a file is used without asking for
+  24 hours; a failed lookup is remembered for 1 hour. After that the exchange is asked with the
+  kept version; on 304 only the date moves. When the exchange cannot be reached (network error,
+  timeout, HTTP 429 or 5xx) a file of at most 7 days is used, the audit trail says so and each
+  check read from it ends with "(from a copy fetched <date>: the exchange could not be reached during
+  this scan)". Nothing older than 7 days is ever used. Any other answer (404, 403) is believed and
+  replaces the kept file.
+- **Sharing.** Two scans that need the same exchange at the same time make one download
+  (`application/sellers_json.rs`, one lookup per exchange at a time); the second reads the kept
+  copy. A cancelled scan keeps nothing and the next one in line downloads the file itself.
+- **Limits.** The 24 MiB cap per file applies to the download and again when a kept file is
+  unpacked. All files together stay under 500 MiB; the entries read longest ago go first.
+- **Trust.** A kept file is parsed by the same parser as a download, per scan, for the seller ids
+  that scan needs. A file whose size or hash differs from its meta, or whose meta names another
+  domain, is deleted and downloaded again. Every download and every revalidation goes through the
+  fetcher above with all its address checks.
+- **Not checked before keeping:** whether a 2xx answer is a sellers.json at all. An exchange that
+  serves a web page with status 200 is asked again only after 24 hours; until then every scan
+  reports "the file is not valid sellers.json" for it. "Clear kept files" is the way out.
+- **In the app.** Settings, "Bidder checks": size and number of exchanges, and "Clear kept files"
+  (commands `get_sellers_json_cache`, `clear_sellers_json_cache`). "Delete all scans" and "Clear
+  stored scan data" leave these files alone: they are not scan data. The audit trail of the Bidder
+  checks step says per exchange whether the file was downloaded, confirmed unchanged, or a kept copy
+  and how old.
+- **Measured (test double, `tests/bidder_checks_pipeline.rs`):** a first scan of a page with two
+  exchanges makes 3 requests (ads.txt and two sellers.json), a second scan 1. No real exchange was
+  timed; note the scan time with the check on (see `docs/MAC-TESTING.md`).
 
 Known limits:
 
@@ -744,16 +825,18 @@ crates/engine    domain/          pure: scan, pricing, telemetry, diagnostics (a
                                   archive (pack format, request document, redaction, kept kinds),
                                   network (classification, exchange matching, OpenRTB), source
                  application/     use cases, ports, pipeline graph and nodes, archive (recording,
-                                  analysis, network view, script sources, storage)
+                                  analysis, network view, script sources, storage), sellers.json
+                                  source (kept copy or download)
                  infrastructure/  sqlite, anthropic and typesafe (reqwest, shared http retry),
-                                  public file fetcher, keychain, oxc beautifier, pack store
+                                  public file fetcher, sellers.json cache, keychain, oxc beautifier,
+                                  pack store
 src-tauri        composition root: state.rs, adapters.rs, commands.rs
 src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake-backend/
 ```
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
 `ScanConfigurationRepository`, `SecretStore`, `SecretPresenceRepository`, `LlmClient`, `JudgeClient`, `CaptureSource`,
-`PublicFileFetcher`, `SourceFormatter`, `PackStore`, `ArchiveRepository`,
+`PublicFileFetcher`, `SellersJsonCache`, `SourceFormatter`, `PackStore`, `ArchiveRepository`,
 `EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
@@ -775,7 +858,7 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `list_scans` | `{ query }` | `ScanList` (`query.configurationId` narrows to one configuration) |
 | `get_scan` | `{ scanId }` | `ScanDetail` |
 | `delete_scan` | `{ scanId }` | `null` |
-| `delete_all_scans` | – | `null` |
+| `delete_all_scans` | – | `null` (stops every running scan first; a scan started meanwhile begins after the deletion and is whole) |
 | `get_logs` | `{ scanId, stepId? }` | `LogEntry[]` |
 | `search_logs` | `{ query, limit? }` | `LogSearchHit[]` |
 | `get_dashboard_stats` | – | `DashboardStats` |
@@ -796,6 +879,8 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `get_script_source` | `{ scanId, scriptId, view, originalLine?, originalColumn? }` | `ScriptSource` |
 | `get_archive_storage` | – | `ArchiveStorage` |
 | `clear_archive` | – | `ArchiveStorage` (network data of all finished scans; reports stay) |
+| `get_sellers_json_cache` | – | `SellersJsonCacheInfo` (`entries`, `storedBytes`) |
+| `clear_sellers_json_cache` | – | `SellersJsonCacheInfo` (the kept sellers.json files; scans are not touched) |
 
 `provider` is `"anthropic"` (the default when omitted) or `"typesafe"`.
 

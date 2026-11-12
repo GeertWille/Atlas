@@ -667,6 +667,17 @@ contract! {
     }
 }
 
+contract! {
+    /// `get_sellers_json_cache` and `clear_sellers_json_cache`: the
+    /// sellers.json files of ad exchanges that are kept between scans.
+    pub struct SellersJsonCacheInfo {
+        /// Exchanges with an answer on record, failed lookups included.
+        pub entries: u32,
+        /// Bytes on disk.
+        pub stored_bytes: f64,
+    }
+}
+
 /// Default of `Settings.archive_limit_bytes`: 5 GiB.
 pub const DEFAULT_ARCHIVE_LIMIT_BYTES: f64 = 5.0 * 1024.0 * 1024.0 * 1024.0;
 

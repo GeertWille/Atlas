@@ -28,7 +28,7 @@ export const settingsFixture: Settings = {
   hasApiKey: true,
   jevEnabled: false,
   hasTypesafeKey: false,
-  checkSellersJson: false,
+  checkSellersJson: true,
   defaultVisitor: "scroll",
   defaultExtraPages: 2,
   persistentProfile: false,

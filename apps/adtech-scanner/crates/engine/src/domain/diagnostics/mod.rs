@@ -6,6 +6,7 @@ pub mod adapters;
 pub mod ads_txt;
 pub mod consent;
 pub mod params;
+pub mod sellers_cache;
 pub mod sellers_json;
 pub mod site;
 
@@ -83,6 +84,10 @@ pub struct SiteFiles {
     pub ads_txt: AdsTxtOutcome,
     /// By ad system domain. `None` when the sellers.json lookup is switched off.
     pub sellers: Option<BTreeMap<String, SellersOutcome>>,
+    /// Ad system domains whose sellers.json was read from a copy kept from
+    /// an earlier scan because the exchange could not be reached, with the
+    /// day that copy was fetched (`2026-11-12`).
+    pub sellers_copies: BTreeMap<String, String>,
 }
 
 /// The seller ids to look up in one ad system's sellers.json.
@@ -858,6 +863,8 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
         declared_domains: &declared_domains,
     };
     let mut checks = Vec::new();
+    // Each of these says which copy it was read from, so they stay apart.
+    let mut from_copies = Vec::new();
     let mut unavailable = BTreeSet::new();
     for record in records_to_verify(bidder, file) {
         match sellers.get(&record.domain) {
@@ -865,7 +872,17 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
                 let seller = found
                     .iter()
                     .find(|seller| seller.seller_id.eq_ignore_ascii_case(&record.account_id));
-                checks.extend(sellers_json::compare(record, seller, &identity));
+                let compared = sellers_json::compare(record, seller, &identity);
+                match files.sellers_copies.get(&record.domain) {
+                    Some(fetched_on) => from_copies.extend(compared.into_iter().map(|mut check| {
+                        check.summary = format!(
+                            "{} (from a copy fetched {fetched_on}: the exchange could not be reached during this scan)",
+                            check.summary
+                        );
+                        check
+                    })),
+                    None => checks.extend(compared),
+                }
             }
             // One note per exchange, however many of its records are listed.
             Some(SellersOutcome::Unavailable(reason)) if unavailable.insert(&record.domain) => {
@@ -883,7 +900,9 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
             Some(SellersOutcome::Unavailable(_)) | None => {}
         }
     }
-    merge_passes(checks)
+    let mut checks = merge_passes(checks);
+    checks.extend(from_copies);
+    checks
 }
 
 /// Several verified seller ids are one piece of good news.

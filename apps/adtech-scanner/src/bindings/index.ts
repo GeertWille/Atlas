@@ -101,6 +101,7 @@ export type { SchainNode } from "./SchainNode";
 export type { ScriptCategory } from "./ScriptCategory";
 export type { ScriptRecord } from "./ScriptRecord";
 export type { ScriptSource } from "./ScriptSource";
+export type { SellersJsonCacheInfo } from "./SellersJsonCacheInfo";
 export type { ServedFrom } from "./ServedFrom";
 export type { ServerBidderError } from "./ServerBidderError";
 export type { ServerBidderTiming } from "./ServerBidderTiming";

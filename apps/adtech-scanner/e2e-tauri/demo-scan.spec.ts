@@ -252,16 +252,20 @@ test("settings are saved by the backend and survive a reload", async () => {
   await browser.$(`${labelled("Theme")}//button[normalize-space(.)="Dark"]`).click();
   await browser.waitUntil(() => browser.execute(() => document.documentElement.classList.contains("dark")));
   const sellersJson = `//button[@role="switch"][@id=//label[normalize-space(.)="Check sellers.json at ad exchanges"]/@for]`;
-  expect(await browser.$(sellersJson).getAttribute("aria-checked")).toBe("false");
+  // On unless switched off; nothing is kept from the demo site, which no exchange is asked about.
+  expect(await browser.$(sellersJson).getAttribute("aria-checked")).toBe("true");
+  await seeText(browser, "None kept", { within: MAIN });
+  expect(await browser.$(button("Clear kept files")).isEnabled()).toBe(false);
   await browser.$(sellersJson).click();
   await expect
     .poll(() => invokeOk<Settings>(browser, "get_settings"), { timeout: 10_000 })
-    .toMatchObject({ budgetUsd: 0.75, defaultDevice: "mobile", theme: "dark", checkSellersJson: true });
+    .toMatchObject({ budgetUsd: 0.75, defaultDevice: "mobile", theme: "dark", checkSellersJson: false });
 
   await reloadApp();
   expect(await browser.execute(() => document.documentElement.classList.contains("dark"))).toBe(true);
   await browser.$(field("Budget per scan")).waitForDisplayed();
   expect(await browser.$(field("Budget per scan")).getValue()).toBe("0.75");
+  expect(await browser.$(sellersJson).getAttribute("aria-checked")).toBe("false");
 
   await browser.$(`${labelled("Theme")}//button[normalize-space(.)="Light"]`).click();
   await browser.waitUntil(() => browser.execute(() => !document.documentElement.classList.contains("dark")));

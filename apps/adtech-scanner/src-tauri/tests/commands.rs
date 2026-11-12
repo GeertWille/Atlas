@@ -27,7 +27,7 @@ use tauri::{Listener, Manager, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
 
 /// The commands of the frontend contract.
-const CONTRACT_COMMANDS: [&str; 33] = [
+const CONTRACT_COMMANDS: [&str; 35] = [
     "get_settings",
     "update_settings",
     "set_api_key",
@@ -61,6 +61,8 @@ const CONTRACT_COMMANDS: [&str; 33] = [
     "get_script_source",
     "get_archive_storage",
     "clear_archive",
+    "get_sellers_json_cache",
+    "clear_sellers_json_cache",
 ];
 
 /// A machine without Chrome: every scan fails at the first pipeline node.
@@ -1494,6 +1496,46 @@ fn storage_commands_report_usage_and_the_settings_switch_storage_off() {
     assert!(!pack.exists());
     let cleared: ArchiveStorage = invoke(&app, "clear_archive", json!({}));
     assert_eq!((cleared.scans, cleared.stored_bytes), (0, 0.0));
+}
+
+#[test]
+fn the_kept_sellers_json_files_are_reported_and_cleared_apart_from_the_scans() {
+    use adscan_engine::application::ports::{CachedSellersJson, FileVersion, SellersJsonCache};
+    use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
+    use adscan_model::SellersJsonCacheInfo;
+    let app = test_app();
+    let empty: SellersJsonCacheInfo = invoke(&app, "get_sellers_json_cache", json!({}));
+    assert_eq!((empty.entries, empty.stored_bytes), (0, 0.0));
+
+    // What a scan of a site that sells through this exchange leaves behind.
+    let cache = LocalSellersJsonCache::new(app._data_dir.path());
+    tauri::async_runtime::block_on(cache.store(
+        "appnexus.com",
+        CachedSellersJson {
+            fetched_at: 1_794_500_000_000.0,
+            final_url: "https://appnexus.com/sellers.json".into(),
+            version: FileVersion::default(),
+            content: Ok(br#"{"sellers":[{"seller_id":"958"}]}"#.to_vec()),
+        },
+    ))
+    .unwrap();
+    let raw = invoke_raw(&app, "get_sellers_json_cache", json!({})).unwrap();
+    assert_eq!(raw["entries"], 1);
+    assert!(raw["storedBytes"].as_f64().unwrap() > 0.0);
+
+    // Deleting every scan is about scans: the exchanges' files stay.
+    let _: () = invoke(&app, "delete_all_scans", json!({}));
+    let kept: SellersJsonCacheInfo = invoke(&app, "get_sellers_json_cache", json!({}));
+    assert_eq!(kept.entries, 1);
+
+    let cleared: SellersJsonCacheInfo = invoke(&app, "clear_sellers_json_cache", json!({}));
+    assert_eq!((cleared.entries, cleared.stored_bytes), (0, 0.0));
+    assert_eq!(
+        std::fs::read_dir(app._data_dir.path().join("cache/sellers-json"))
+            .unwrap()
+            .count(),
+        0
+    );
 }
 
 /// Two apps on one data directory (the binary started twice): the second

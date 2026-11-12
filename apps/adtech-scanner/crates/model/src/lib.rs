@@ -108,8 +108,8 @@ contract! {
         pub username: Option<String>,
     }
 
-    /// The one proxy a scan's browser, ads.txt and sellers.json requests go
-    /// through.
+    /// The one proxy a scan's browser and its request for the site's ads.txt
+    /// go through. The exchanges' sellers.json are not fetched through it.
     #[serde(tag = "kind")]
     pub enum ProxyChoice {
         /// Connect directly, ignoring the system's proxy.

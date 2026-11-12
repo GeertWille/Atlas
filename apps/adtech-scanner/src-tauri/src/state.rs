@@ -14,6 +14,7 @@ use adscan_engine::application::ports::{
     CaptureSource, Clock, EventSink, IdGenerator, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
+use adscan_engine::application::sellers_json::SellersJsonSource;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, DEFAULT_BASE_URL, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
@@ -21,6 +22,7 @@ use adscan_engine::infrastructure::keychain::OsKeychain;
 use adscan_engine::infrastructure::pack_store::LocalPackStore;
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_engine::infrastructure::secrets::{MemorySecretStore, VaultSecretStore};
+use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::{self, TypesafeClient};
@@ -90,6 +92,7 @@ pub struct AppState {
     pub configurations: Arc<ConfigurationService>,
     pub network: NetworkView,
     pub sources: ScriptSources,
+    pub sellers_json: Arc<SellersJsonSource>,
     /// The built-in demo publisher page; it is served for as long as the app runs.
     pub demo_site: DemoSite,
     /// Released when the app ends, by the system if need be.
@@ -147,6 +150,12 @@ impl AppState {
             Arc::clone(&clock),
             Arc::clone(&ids),
         ));
+        let files = Arc::new(HttpPublicFileFetcher);
+        let sellers_json = Arc::new(SellersJsonSource::new(
+            files.clone(),
+            Arc::new(LocalSellersJsonCache::new(&config.data_dir)),
+            Arc::clone(&clock),
+        ));
         let scans = Arc::new(ScanService::new(
             PipelineDeps {
                 scans: Arc::new(store.clone()),
@@ -154,7 +163,8 @@ impl AppState {
                 llm,
                 judge,
                 capture,
-                files: Arc::new(HttpPublicFileFetcher),
+                files,
+                sellers_json: Arc::clone(&sellers_json),
                 formatter: Arc::clone(&formatter),
                 archive: archive.clone(),
                 events,
@@ -173,6 +183,7 @@ impl AppState {
             // After the interrupted scans are closed: what they were still
             // writing, and files that a crash left without rows, are removed.
             archive.sweep().await?;
+            sellers_json.sweep_cache().await;
         }
         let network = NetworkView::new(archive.clone(), Arc::new(store.clone()));
         let sources =
@@ -186,6 +197,7 @@ impl AppState {
             configurations,
             network,
             sources,
+            sellers_json,
             demo_site,
             _instance: instance,
         })

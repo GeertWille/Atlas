@@ -75,6 +75,11 @@ function adsTxtUrl(pageUrl: string): string {
 }
 
 /** Bidder checks as the backend would report them for a simulated site. */
+/** A page served from this machine, such as the demo site: no exchange is asked about it. */
+export function isOnThisMachine(pageUrl: string): boolean {
+  return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(pageUrl).hostname);
+}
+
 export function buildDiagnostics(site: CapturedSite, pageUrl: string, sellersJson: boolean): BidderDiagnostics {
   const tallies = new Map<string, { requests: number; bids: number; adUnits: Set<string> }>();
   for (const auction of site.auctions) {

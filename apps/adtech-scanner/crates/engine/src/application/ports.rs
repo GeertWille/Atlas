@@ -9,7 +9,8 @@ use adscan_model::{
     CaptureActivity, CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit,
     NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView, PipelineStep,
     ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList, ScanListQuery,
-    ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
+    ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, SellersJsonCacheInfo,
+    Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -235,9 +236,26 @@ pub struct PublicFileRequest {
     /// machine. It is the only origin that may be contacted although it is
     /// not public and not https.
     pub loopback_origin: Option<String>,
-    /// The scan's proxy; the request leaves through it like the scan's
-    /// browser does. The loopback origin is always reached directly.
+    /// The proxy the request leaves through: the scan's own for the scanned
+    /// site's files, the system's for what is shared between scans. The
+    /// loopback origin is always reached directly.
     pub proxy: FetchProxy,
+    /// What an earlier answer said about its version. With it the server is
+    /// asked for the file only if it changed, and answers 304 if it did not.
+    pub known_version: Option<FileVersion>,
+}
+
+/// The validators of an HTTP answer, as the server stated them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FileVersion {
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+impl FileVersion {
+    pub fn is_stated(&self) -> bool {
+        self.etag.is_some() || self.last_modified.is_some()
+    }
 }
 
 /// The proxy of a public file request, with the secret it needs.
@@ -261,10 +279,14 @@ impl std::fmt::Debug for FetchProxy {
 /// The final answer after redirects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicFile {
+    /// 304 when the request named a `known_version` and it is still current.
     pub status: u16,
     pub content_type: Option<String>,
     /// In memory only; empty unless `status` is a success.
     pub body: Vec<u8>,
+    /// The address that answered, after redirects.
+    pub final_url: String,
+    pub version: FileVersion,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -291,6 +313,36 @@ pub trait PublicFileFetcher: Send + Sync {
         request: &PublicFileRequest,
         cancel: &CancellationToken,
     ) -> Result<PublicFile, FetchError>;
+}
+
+/// What is on record about one exchange's sellers.json.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CachedSellersJson {
+    /// When the file was downloaded, or last confirmed unchanged; epoch ms.
+    pub fetched_at: f64,
+    pub final_url: String,
+    pub version: FileVersion,
+    /// The file as it was received, or why there was none to read.
+    pub content: Result<Vec<u8>, String>,
+}
+
+/// The sellers.json files of ad exchanges, kept between scans. A file is the
+/// same whatever site is scanned, so one copy per exchange serves them all.
+/// `domain` is the exchange's ad system domain; an implementation must not
+/// trust it to be a safe file name.
+#[async_trait]
+pub trait SellersJsonCache: Send + Sync {
+    /// The entry of `domain`. `None` when there is none, and when what is
+    /// stored is damaged, which also removes it.
+    async fn load(&self, domain: &str) -> Option<CachedSellersJson>;
+    /// Replaces the entry of `domain`, all of it or nothing.
+    async fn store(&self, domain: &str, entry: CachedSellersJson) -> Result<(), String>;
+    /// The exchange confirmed that the stored file is still current.
+    async fn confirm(&self, domain: &str, fetched_at: f64) -> Result<(), String>;
+    async fn info(&self) -> SellersJsonCacheInfo;
+    async fn clear(&self) -> Result<(), String>;
+    /// Removes what an interrupted write left behind.
+    async fn sweep(&self);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

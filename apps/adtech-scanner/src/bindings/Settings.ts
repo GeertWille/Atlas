@@ -50,8 +50,9 @@ jevEnabled: boolean,
 hasTypesafeKey: boolean, 
 /**
  * Look up the publisher's seller ids in the sellers.json of the ad
- * exchanges its ads.txt names. Contacts those third-party hosts, so
- * it is off unless the user turns it on.
+ * exchanges its ads.txt names. Contacts those third-party hosts
+ * (at most twelve per scan, never for a page on this machine); on
+ * unless the user turns it off.
  */
 checkSellersJson: boolean, 
 /**

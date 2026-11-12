@@ -6,6 +6,7 @@ import type {
   DashboardStats,
   ScanList,
   ScanSummary,
+  SellersJsonCacheInfo,
   Settings,
 } from "../src/bindings";
 import {
@@ -115,7 +116,7 @@ test("read commands answer with the contract's shapes", async () => {
     hasApiKey: false,
     jevEnabled: false,
     hasTypesafeKey: false,
-    checkSellersJson: false,
+    checkSellersJson: true,
     defaultVisitor: "scroll",
     defaultExtraPages: 2,
     persistentProfile: false,
@@ -155,6 +156,9 @@ test("read commands answer with the contract's shapes", async () => {
     oldestAt: null,
   });
   expect((await invokeOk<ArchiveStorage>(browser, "clear_archive")).storedBytes).toBe(0);
+  const noKeptFiles: SellersJsonCacheInfo = { entries: 0, storedBytes: 0 };
+  expect(await invokeOk<SellersJsonCacheInfo>(browser, "get_sellers_json_cache")).toEqual(noKeptFiles);
+  expect(await invokeOk<SellersJsonCacheInfo>(browser, "clear_sellers_json_cache")).toEqual(noKeptFiles);
   expect(await invokeOk<null>(browser, "delete_all_scans")).toBeNull();
 });
 

@@ -17,7 +17,7 @@ import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { proxyUseLabel } from "@/shared/domain/proxy";
 import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
-import { buildDiagnostics } from "./diagnostics";
+import { buildDiagnostics, isOnThisMachine } from "./diagnostics";
 import {
   aiInvestigations,
   type EvidenceDraft,
@@ -368,13 +368,15 @@ export function buildScenario({
   );
 
   timeline.start("bidderDiagnostics");
-  const diagnostics = buildDiagnostics({ ...site, auctions: visit.auctions }, options.url, settings.checkSellersJson);
+  // No exchange knows a page that is served from this machine, such as the demo site.
+  const sellersJson = settings.checkSellersJson && !isOnThisMachine(options.url);
+  const diagnostics = buildDiagnostics({ ...site, auctions: visit.auctions }, options.url, sellersJson);
   timeline.log(`Requesting ${diagnostics.adsTxt.url}`, { after: 60 });
   timeline.log(`${diagnostics.adsTxt.url}: ${diagnostics.adsTxt.recordCount} seller records, 0 invalid lines`, {
     after: 260,
   });
-  if (settings.checkSellersJson) {
-    timeline.log("Requesting sellers.json from the exchanges that ads.txt names", { after: 420 });
+  if (sellersJson) {
+    timeline.log("Reading sellers.json of the exchanges that ads.txt names", { after: 420 });
   }
   const flaggedChecks = diagnostics.bidders
     .flatMap((bidder) => bidder.checks)

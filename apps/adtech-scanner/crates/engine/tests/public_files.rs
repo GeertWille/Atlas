@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use adscan_engine::application::ports::{
-    FetchError, FetchProxy, PublicFile, PublicFileFetcher, PublicFileRequest,
+    FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
 use adscan_engine::domain::diagnostics::ads_txt::{self, AdsTxtOutcome};
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
@@ -31,6 +31,7 @@ fn request(server: &MockServer, file: &str) -> PublicFileRequest {
         timeout: Duration::from_secs(5),
         loopback_origin: Some(server.uri()),
         proxy: system_proxy(),
+        known_version: None,
     }
 }
 
@@ -75,6 +76,8 @@ async fn a_file_is_read_with_its_status_and_content_type() {
             status: 200,
             content_type: Some("text/plain; charset=utf-8".into()),
             body: ADS_TXT.as_bytes().to_vec(),
+            final_url: format!("{}/ads.txt", server.uri()),
+            version: FileVersion::default(),
         }
     );
 
@@ -91,6 +94,62 @@ async fn a_file_is_read_with_its_status_and_content_type() {
     assert_eq!(header("cookie"), None);
     assert_eq!(header("authorization"), None);
     assert_eq!(header("referer"), None);
+}
+
+#[tokio::test]
+async fn a_known_version_is_asked_about_and_an_unchanged_file_is_not_sent_again() {
+    use wiremock::matchers::header;
+    let server = MockServer::start().await;
+    // The file as it is now, to whoever does not have it yet.
+    Mock::given(method("GET"))
+        .and(path("/sellers.json"))
+        .and(header("if-none-match", "\"v7\""))
+        .respond_with(ResponseTemplate::new(304).insert_header("etag", "\"v7\""))
+        .mount(&server)
+        .await;
+    serve(
+        &server,
+        "/sellers.json",
+        text("{}")
+            .insert_header("etag", "\"v7\"")
+            .insert_header("last-modified", "Wed, 11 Nov 2026 09:00:00 GMT"),
+    )
+    .await;
+
+    let first = fetch(&request(&server, "/sellers.json")).await.unwrap();
+    let version = FileVersion {
+        etag: Some("\"v7\"".into()),
+        last_modified: Some("Wed, 11 Nov 2026 09:00:00 GMT".into()),
+    };
+    assert_eq!((first.status, &first.version), (200, &version));
+    assert_eq!(first.final_url, format!("{}/sellers.json", server.uri()));
+    let sent = &server.received_requests().await.unwrap()[0];
+    assert!(sent.headers.get("if-none-match").is_none());
+    assert!(sent.headers.get("if-modified-since").is_none());
+
+    // "Not modified" is an answer, not a redirect without a target.
+    let again = PublicFileRequest {
+        known_version: Some(version),
+        ..request(&server, "/sellers.json")
+    };
+    let unchanged = fetch(&again).await.unwrap();
+    assert_eq!((unchanged.status, unchanged.body.len()), (304, 0));
+    let asked = &server.received_requests().await.unwrap()[1];
+    assert_eq!(
+        asked.headers.get("if-modified-since").unwrap(),
+        "Wed, 11 Nov 2026 09:00:00 GMT"
+    );
+
+    // A version the server no longer has gets the file.
+    let outdated = PublicFileRequest {
+        known_version: Some(FileVersion {
+            etag: Some("\"v6\"".into()),
+            last_modified: None,
+        }),
+        ..request(&server, "/sellers.json")
+    };
+    let changed = fetch(&outdated).await.unwrap();
+    assert_eq!((changed.status, changed.body.as_slice()), (200, &b"{}"[..]));
 }
 
 #[tokio::test]
@@ -460,6 +519,7 @@ async fn an_unreachable_server_is_a_network_error_in_plain_words() {
         timeout: Duration::from_secs(5),
         loopback_origin: Some(origin),
         proxy: system_proxy(),
+        known_version: None,
     };
     assert_eq!(
         fetch(&gone).await,
@@ -512,6 +572,7 @@ async fn a_public_file_is_requested_through_the_scans_proxy_with_its_credentials
         timeout: Duration::from_secs(5),
         loopback_origin: None,
         proxy: through_proxy(port, Some("scanner"), Some("s3cret")),
+        known_version: None,
     };
     // The proxy refuses the tunnel; what matters is what it was asked.
     assert!(matches!(fetch(&request).await, Err(FetchError::Network(_))));
@@ -575,6 +636,7 @@ async fn the_address_checks_hold_whatever_the_proxy() {
                 timeout: Duration::from_secs(5),
                 loopback_origin: None,
                 proxy: proxy.clone(),
+                known_version: None,
             };
             assert_eq!(
                 refusal(fetch(&request).await),

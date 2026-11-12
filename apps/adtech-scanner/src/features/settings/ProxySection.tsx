@@ -114,9 +114,9 @@ export function ProxySection({ settings, save }: { settings: Settings; save: (pa
             </Button>
           </div>
           <p className="text-[13px] text-pretty text-muted-foreground">
-            The scanned pages, and the app's own requests for the site's ads.txt and for sellers.json, go through the
-            proxy of the scan. Behind a proxy the app cannot fully verify where a request lands: the proxy looks up
-            addresses itself. Requests to Anthropic and TypeSafe never use it.
+            The scanned pages, and the app's own request for the site's ads.txt, go through the proxy of the scan.
+            Behind a proxy the app cannot fully verify where a request lands: the proxy looks up addresses itself.
+            Requests to Anthropic and TypeSafe, and those for the sellers.json of ad exchanges, never use it.
           </p>
         </div>
       </Field>

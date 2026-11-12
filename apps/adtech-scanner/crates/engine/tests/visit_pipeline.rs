@@ -965,12 +965,22 @@ async fn a_scan_runs_through_its_proxy_and_hands_the_password_over_outside_the_r
         [Some("s3cret-proxy".to_string())]
     );
 
-    // The site's ads.txt is read through the same proxy.
+    // The site's ads.txt is read through the same proxy. The exchanges'
+    // sellers.json are not: the file is the same from anywhere, the copy is
+    // shared by scans with other proxies, and a metered proxy is not billed
+    // for it.
     let fetches = harness.files.requests.lock().unwrap().clone();
-    assert!(!fetches.is_empty());
-    for fetch in &fetches {
+    let (of_exchanges, of_the_site): (Vec<_>, Vec<_>) = fetches
+        .iter()
+        .partition(|fetch| fetch.url.ends_with("/sellers.json"));
+    assert!(!of_the_site.is_empty() && !of_exchanges.is_empty());
+    for fetch in of_the_site {
         assert_eq!(fetch.proxy.route, request.proxy);
         assert_eq!(fetch.proxy.password.as_deref(), Some("s3cret-proxy"));
+    }
+    for fetch in of_exchanges {
+        assert_eq!(fetch.proxy.route, CaptureProxy::System, "{}", fetch.url);
+        assert_eq!(fetch.proxy.password, None);
     }
 
     // The scan records which proxy it used, with a snapshot that outlives the profile.
@@ -1043,12 +1053,18 @@ async fn a_scan_without_a_proxy_profile_has_no_password_and_the_direct_choice_is
         CaptureProxy::None
     );
     assert_eq!(*harness.capture.proxy_passwords.lock().unwrap(), [None]);
+    // The site's ads.txt follows the scan's choice. The exchanges'
+    // sellers.json never do: they leave like the app's other traffic.
     let fetches = harness.files.requests.lock().unwrap().clone();
-    assert!(
-        fetches
-            .iter()
-            .all(|fetch| fetch.proxy.route == CaptureProxy::None)
-    );
+    assert!(fetches.iter().all(|fetch| {
+        let expected = if fetch.url.ends_with("/sellers.json") {
+            CaptureProxy::System
+        } else {
+            CaptureProxy::None
+        };
+        fetch.proxy.route == expected
+    }));
+    assert!(fetches.iter().any(|fetch| fetch.url == SITE_ADS_TXT_URL));
     assert_eq!(detail.summary.proxy.unwrap().kind, ProxyKind::None);
 }
 

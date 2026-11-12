@@ -244,6 +244,19 @@ export function useClearArchive() {
   });
 }
 
+/** Scans add to it without an event to say so: asked again whenever a screen shows it. */
+export function useSellersJsonCache() {
+  return useQuery({ queryKey: queryKeys.sellersJsonCache, queryFn: api.getSellersJsonCache, staleTime: 0 });
+}
+
+export function useClearSellersJsonCache() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.clearSellersJsonCache,
+    onSuccess: (cache) => client.setQueryData(queryKeys.sellersJsonCache, cache),
+  });
+}
+
 export function useLogSearch(query: string) {
   return useQuery({
     queryKey: queryKeys.logSearch(query),

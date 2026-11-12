@@ -52,6 +52,8 @@ pub fn register_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Build
             commands::get_script_source,
             commands::get_archive_storage,
             commands::clear_archive,
+            commands::get_sellers_json_cache,
+            commands::clear_sellers_json_cache,
         ])
 }
 

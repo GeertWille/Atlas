@@ -162,21 +162,20 @@ test("theme: light, dark and system, applied before first paint after a reload",
   await expect(html).not.toHaveClass(/dark/);
 });
 
-test("the sellers.json check is opt-in, survives a reload and shows in the next report", async ({ page }) => {
-  await openApp(page, "/settings");
+test("the sellers.json check is on by default, shows in the next report and can be switched off", async ({ page }) => {
+  await openApp(page, "/settings", { speed: 200 });
   const sellersJson = page.getByRole("switch", { name: "Check sellers.json at ad exchanges" });
-  await expect(sellersJson).not.toBeChecked();
-  await expect(page.getByText(/Off: only the scanned site is contacted\./)).toBeVisible();
+  await expect(sellersJson).toBeChecked();
+  await expect(page.getByText(/never through the proxy chosen for a scan\./)).toBeVisible();
+  await expect(page.getByText(/Turn it off on a metered or slow connection/)).toBeVisible();
   await expect(
-    page.getByText(/when the sellers\.json check is on, the ad exchanges that ads\.txt names\./),
+    page.getByText(/unless the sellers\.json check is switched off, the ad exchanges that ads\.txt names\./),
   ).toBeVisible();
-
-  await sellersJson.focus();
-  await page.keyboard.press("Space");
-  await expect(sellersJson).toBeChecked();
-  await expect(page.getByText("Settings saved")).toBeVisible();
-  await page.reload();
-  await expect(sellersJson).toBeChecked();
+  // The scans in the history left the files of their exchanges behind.
+  await expect(page.getByText("from 6 exchanges")).toBeVisible();
+  await page.getByRole("button", { name: "Clear kept files" }).click();
+  await expect(page.getByText("None kept")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Clear kept files" })).toBeDisabled();
 
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await startScan(page, "sportsdesk.example");
@@ -196,8 +195,29 @@ test("the sellers.json check is opt-in, survives a reload and shows in the next 
   await expect(
     page
       .getByRole("region", { name: "Log entries" })
-      .getByText("Requesting sellers.json from the exchanges that ads.txt names"),
+      .getByText("Reading sellers.json of the exchanges that ads.txt names"),
   ).toBeVisible();
+
+  // The exchanges' files are kept for the next scan, and can be cleared without touching the scan.
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.getByText("from 6 exchanges")).toBeVisible();
+  await page.getByRole("button", { name: "Clear kept files" }).click();
+  await expect(page.getByText("None kept")).toBeVisible();
+
+  // Switched off, it stays off, and the next report says the lookup was not made.
+  await sellersJson.focus();
+  await page.keyboard.press("Space");
+  await expect(sellersJson).not.toBeChecked();
+  await expect(page.getByText("Settings saved")).toBeVisible();
+  await page.reload();
+  await expect(sellersJson).not.toBeChecked();
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await startScan(page, "sportsdesk.example");
+  await expect(reportTab(page, "Auctions")).toBeVisible({ timeout: 20_000 });
+  await reportTab(page, "Auctions").click();
+  await expect(page.getByText("Not looked up for this scan")).toBeVisible();
+  await page.getByRole("link", { name: "Settings", exact: true }).click();
+  await expect(page.getByText("None kept")).toBeVisible();
 });
 
 test("delete all scans from settings", async ({ page }) => {

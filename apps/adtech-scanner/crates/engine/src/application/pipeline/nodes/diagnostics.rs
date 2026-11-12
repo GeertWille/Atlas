@@ -1,6 +1,7 @@
-//! Bidder checks: reads the scanned site's ads.txt and, when the user allows
-//! it, the sellers.json of the exchanges that file names, then verifies each
-//! bidder's setup. The files stay in memory; only the derived results are kept.
+//! Bidder checks: reads the scanned site's ads.txt and, unless the user
+//! switched that off, the sellers.json of the exchanges that file names, then
+//! verifies each bidder's setup. Of ads.txt only the derived results are
+//! kept; a sellers.json is kept between scans (`application/sellers_json`).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,20 +15,17 @@ use tokio_util::sync::CancellationToken;
 use crate::application::AppError;
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::state::{NodeError, NodeResult};
-use crate::application::ports::{FetchError, FetchProxy, PublicFileFetcher, PublicFileRequest};
+use crate::application::ports::{FetchError, FetchProxy, PublicFileRequest};
+use crate::application::sellers_json::{Cancelled, Origin, SellersJsonSource};
 use crate::domain::diagnostics::ads_txt::{self, AdsTxt, AdsTxtOutcome};
+use crate::domain::diagnostics::sellers_cache::utc_day;
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
-use crate::domain::diagnostics::site::{
-    AdsTxtLocation, ads_txt_location, sellers_json_url, subdomain_ads_txt_url,
-};
+use crate::domain::diagnostics::site::{AdsTxtLocation, ads_txt_location, subdomain_ads_txt_url};
 use crate::domain::diagnostics::{self, SellersLookup, SiteFiles};
 
 /// Far above any real ads.txt; the largest in the wild are a few hundred KB.
 const ADS_TXT_MAX_BYTES: usize = 1024 * 1024;
 const ADS_TXT_TIMEOUT: Duration = Duration::from_secs(10);
-/// The sellers.json of a large exchange is a few megabytes.
-const SELLERS_JSON_MAX_BYTES: usize = 24 * 1024 * 1024;
-const SELLERS_JSON_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
     let page_url = run.state.capture()?.final_url.clone();
@@ -51,13 +49,18 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
     } else {
         Some(match &outcome {
             AdsTxtOutcome::Found(file) => read_sellers_json(run, file).await?,
-            AdsTxtOutcome::Missing | AdsTxtOutcome::Unreadable(_) => BTreeMap::new(),
+            AdsTxtOutcome::Missing | AdsTxtOutcome::Unreadable(_) => SellersRead::default(),
         })
+    };
+    let (sellers, sellers_copies) = match sellers {
+        Some(read) => (Some(read.outcomes), read.copies),
+        None => (None, BTreeMap::new()),
     };
     let files = SiteFiles {
         ads_txt_url,
         ads_txt: outcome,
         sellers,
+        sellers_copies,
     };
 
     let mut diagnosed = diagnostics::diagnose(run.state.capture()?, run.state.telemetry()?, &files);
@@ -111,8 +114,9 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
     Ok(summary)
 }
 
-/// The files are read the way the pages were: through the scan's proxy, so
-/// a site that answers differently per country is judged by the same answer.
+/// The site's ads.txt is read the way its pages were: through the scan's
+/// proxy, so a site that answers differently per country is judged by the
+/// same answer.
 fn scan_proxy(run: &StepRun<'_>) -> FetchProxy {
     FetchProxy {
         route: run.job.scan.proxy.capture.clone(),
@@ -155,6 +159,7 @@ async fn fetch_ads_txt(
         timeout: ADS_TXT_TIMEOUT,
         loopback_origin: location.loopback_origin.clone(),
         proxy: scan_proxy(run),
+        known_version: None,
     };
     let outcome = match run.deps.files.fetch(&request, &run.job.cancel).await {
         Ok(file) => ads_txt::read_response(file.status, file.content_type.as_deref(), &file.body),
@@ -174,18 +179,24 @@ async fn fetch_ads_txt(
     Ok(outcome)
 }
 
+/// What the exchanges' sellers.json say, by ad system domain.
+#[derive(Default)]
+struct SellersRead {
+    outcomes: BTreeMap<String, SellersOutcome>,
+    /// The day the copy was fetched, where a kept one stood in for an
+    /// exchange that could not be reached.
+    copies: BTreeMap<String, String>,
+}
+
 /// Reads the sellers.json of every ad system whose seller ids need a lookup,
 /// all at once: each is a different host.
-async fn read_sellers_json(
-    run: &mut StepRun<'_>,
-    file: &AdsTxt,
-) -> Result<BTreeMap<String, SellersOutcome>, NodeError> {
+async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<SellersRead, NodeError> {
     let lookups = diagnostics::sellers_lookups(run.state.capture()?, file);
     if lookups.is_empty() {
-        return Ok(BTreeMap::new());
+        return Ok(SellersRead::default());
     }
     run.info(format!(
-        "Requesting sellers.json from {}",
+        "Reading sellers.json of {}",
         lookups
             .iter()
             .map(|lookup| lookup.ad_system_domain.as_str())
@@ -196,68 +207,84 @@ async fn read_sellers_json(
     let mut pending = JoinSet::new();
     for lookup in lookups {
         pending.spawn(look_up_sellers(
-            Arc::clone(&run.deps.files),
+            Arc::clone(&run.deps.sellers_json),
             lookup,
-            scan_proxy(run),
             run.job.cancel.clone(),
         ));
     }
-    let mut read = BTreeMap::new();
+    let now = run.deps.clock.now_ms();
+    let mut read = SellersRead::default();
     while let Some(joined) = pending.join_next().await {
-        let (domain, outcome) = joined.map_err(|error| {
+        let (domain, looked_up) = joined.map_err(|error| {
             NodeError::Failed(AppError::Internal(format!(
                 "a sellers.json lookup failed: {error}"
             )))
         })?;
-        let outcome = outcome?;
-        let message = match &outcome {
-            SellersOutcome::Read(sellers) => {
-                format!(
-                    "sellers.json of {domain}: {} of the seller ids found",
-                    sellers.len()
-                )
+        let (outcome, origin) = looked_up.map_err(|Cancelled| NodeError::Cancelled)?;
+        let source = match origin {
+            Origin::Downloaded => "downloaded".to_string(),
+            Origin::Confirmed => "kept copy, confirmed unchanged by the exchange".to_string(),
+            Origin::Kept { fetched_at } => {
+                format!("kept copy, fetched {}", age(now - fetched_at))
             }
-            SellersOutcome::Unavailable(reason) => {
+            Origin::KeptWhileUnreachable { fetched_at } => format!(
+                "the exchange could not be reached: kept copy, fetched {}",
+                utc_day(fetched_at)
+            ),
+        };
+        let message = match (&outcome, origin) {
+            (SellersOutcome::Read(sellers), _) => format!(
+                "sellers.json of {domain}: {} of the seller ids found ({source})",
+                sellers.len()
+            ),
+            // A failed lookup is not asked again within the hour.
+            (SellersOutcome::Unavailable(reason), Origin::Kept { fetched_at }) => format!(
+                "sellers.json of {domain} could not be read {}: {reason}",
+                age(now - fetched_at)
+            ),
+            (SellersOutcome::Unavailable(reason), _) => {
                 format!("sellers.json of {domain} could not be read: {reason}")
             }
         };
         run.info(message).await?;
-        read.insert(domain, outcome);
+        if let Origin::KeptWhileUnreachable { fetched_at } = origin {
+            read.copies.insert(domain.clone(), utc_day(fetched_at));
+        }
+        read.outcomes.insert(domain, outcome);
     }
     Ok(read)
 }
 
+/// How long ago, in the unit a person would say it in.
+fn age(ms: f64) -> String {
+    let minutes = (ms / 60_000.0).max(0.0) as u64;
+    match minutes {
+        0 => "less than a minute ago".to_string(),
+        1..60 => format!("{minutes} min ago"),
+        _ => format!("{} h ago", minutes / 60),
+    }
+}
+
 async fn look_up_sellers(
-    files: Arc<dyn PublicFileFetcher>,
+    source: Arc<SellersJsonSource>,
     lookup: SellersLookup,
-    proxy: FetchProxy,
     cancel: CancellationToken,
-) -> (String, Result<SellersOutcome, NodeError>) {
-    let Some(url) = sellers_json_url(&lookup.ad_system_domain) else {
-        let outcome = SellersOutcome::Unavailable("it is not a public domain name".into());
-        return (lookup.ad_system_domain, Ok(outcome));
+) -> (String, Result<(SellersOutcome, Origin), Cancelled>) {
+    let file = match source.read(&lookup.ad_system_domain, &cancel).await {
+        Ok(file) => file,
+        Err(Cancelled) => return (lookup.ad_system_domain, Err(Cancelled)),
     };
-    let request = PublicFileRequest {
-        url,
-        max_bytes: SELLERS_JSON_MAX_BYTES,
-        timeout: SELLERS_JSON_TIMEOUT,
-        loopback_origin: None,
-        proxy,
-    };
-    let outcome = match files.fetch(&request, &cancel).await {
-        Ok(file) if (200..300).contains(&file.status) => {
+    let outcome = match file.content {
+        Ok(json) => {
             let ids = lookup.seller_ids;
-            // Megabytes of JSON: parsed off the async workers.
-            tokio::task::spawn_blocking(move || sellers_json::find_sellers(&file.body, &ids))
+            // Megabytes of JSON, and a kept copy is as little trusted as a
+            // download: parsed off the async workers, by the same parser.
+            tokio::task::spawn_blocking(move || sellers_json::find_sellers(&json, &ids))
                 .await
                 .unwrap_or_else(|error| Err(format!("the file could not be parsed ({error})")))
                 .map_or_else(SellersOutcome::Unavailable, SellersOutcome::Read)
         }
-        Ok(file) => {
-            SellersOutcome::Unavailable(format!("the exchange answered HTTP {}", file.status))
-        }
-        Err(FetchError::Cancelled) => return (lookup.ad_system_domain, Err(NodeError::Cancelled)),
-        Err(error) => SellersOutcome::Unavailable(error.to_string()),
+        Err(reason) => SellersOutcome::Unavailable(reason),
     };
-    (lookup.ad_system_domain, Ok(outcome))
+    (lookup.ad_system_domain, Ok((outcome, file.origin)))
 }

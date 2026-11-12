@@ -21,6 +21,7 @@ use super::ports::{
     CaptureSource, Clock, EventSink, IdGenerator, JudgeClient, LlmClient, LogRepository,
     PublicFileFetcher, RepoResult, ScanRepository, SourceFormatter,
 };
+use super::sellers_json::SellersJsonSource;
 use crate::domain::pricing::Budget;
 
 #[derive(Clone)]
@@ -31,6 +32,7 @@ pub struct PipelineDeps {
     pub judge: Arc<dyn JudgeClient>,
     pub capture: Arc<dyn CaptureSource>,
     pub files: Arc<dyn PublicFileFetcher>,
+    pub sellers_json: Arc<SellersJsonSource>,
     pub formatter: Arc<dyn SourceFormatter>,
     pub archive: Archive,
     pub events: Arc<dyn EventSink>,

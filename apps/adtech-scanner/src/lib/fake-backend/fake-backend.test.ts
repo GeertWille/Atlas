@@ -449,3 +449,27 @@ test("settings and finished scans persist across restarts; running scans do not"
   expect((await restarted.getSettings()).budgetUsd).toBe(1.25);
   await slow.cancelScan(unfinished.id);
 });
+
+test("sellers.json is checked unless switched off, kept between scans, and never for a page on this machine", async () => {
+  const api = createFakeBackend({ profile: "fresh", speed: 5000 });
+  expect((await api.getSettings()).checkSellersJson).toBe(true);
+  expect(await api.getSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+
+  // The demo site is served from this machine: no exchange knows it, and none is asked.
+  const checked = async (scanOptions: ScanOptions) => {
+    const { scanId } = await runToEnd(api, scanOptions);
+    return (await api.getScan(scanId)).bidderDiagnostics?.sellersJsonChecked;
+  };
+  expect(await checked({ ...options, url: await api.getDemoUrl() })).toBe(false);
+  expect(await api.getSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+
+  expect(await checked(options)).toBe(true);
+  const kept = await api.getSellersJsonCache();
+  expect(kept.entries).toBeGreaterThan(0);
+  expect(kept.storedBytes).toBeGreaterThan(0);
+
+  expect(await api.clearSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+  await api.updateSettings({ checkSellersJson: false });
+  expect(await checked(options)).toBe(false);
+  expect(await api.getSellersJsonCache()).toEqual({ entries: 0, storedBytes: 0 });
+});
