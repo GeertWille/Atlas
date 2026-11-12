@@ -567,14 +567,14 @@ impl Assembler {
             return out;
         };
         let room = MAX_HELD_POST_BYTES.saturating_sub(self.held_post_bytes);
-        let sent = text
+        let post = text
             .map(post_data)
-            .filter(|data| data.bytes.len() <= room);
+            .filter(|data| data.bytes.len() <= room)
+            .map_or(Post::Missing, Post::Sent);
         if let Some(flight) = self.flight(&request_id, seq) {
-            flight.post = sent.map_or(Post::Missing, Post::Sent);
-            self.held_post_bytes += self
-                .flight(&request_id, seq)
-                .map_or(0, |flight| flight.held_post_bytes());
+            flight.post = post;
+            let held = flight.held_post_bytes();
+            self.held_post_bytes += held;
         }
         self.settle(&request_id, now_ms, &mut out);
         out
@@ -673,20 +673,32 @@ impl Assembler {
             .as_f64()
             .map_or(source.now_ms, |seconds| seconds * 1000.0);
 
-        let chain = self.chains.entry(request_id.to_string()).or_default();
-        if chain.closed {
+        let redirect = &params["redirectResponse"];
+        let is_loading = self.current(request_id).is_some();
+        if is_loading && redirect.is_null() {
+            // The same request, announced a second time.
             return;
         }
-        let redirect = &params["redirectResponse"];
+        if !is_loading {
+            let is_over = self
+                .chains
+                .get(request_id)
+                .is_some_and(|chain| chain.closed);
+            if is_over || !(source.recording || main_document) {
+                return;
+            }
+            if self.open_flights >= MAX_OPEN_REQUESTS {
+                self.overflowed += 1;
+                return;
+            }
+        }
+        let chain = self.chains.entry(request_id.to_string()).or_default();
         let mut redirect_from = None;
         match chain.current() {
-            Some(previous) if !redirect.is_null() => {
-                previous.response = Some(response_of(
-                    redirect,
-                    previous.epoch_of(&params["timestamp"], source.now_ms),
-                ));
+            Some(previous) => {
                 let at = previous.epoch_of(&params["timestamp"], source.now_ms);
                 let encoded = redirect["encodedDataLength"].as_f64().unwrap_or(0.0) as u64;
+                previous.response = Some(response_of(redirect, at));
                 previous.end(RequestEnd::Redirected, at, encoded, source.now_ms);
                 redirect_from = Some(previous.seq);
                 let hop = previous.hop;
@@ -696,22 +708,12 @@ impl Assembler {
                 self.revisit
                     .push_back((source.now_ms + SETTLE_GRACE_MS, request_id.to_string()));
             }
-            // The same request, announced a second time.
-            Some(_) => return,
-            None => {
-                if !(source.recording || main_document) {
-                    return;
-                }
-                if self.open_flights >= MAX_OPEN_REQUESTS {
-                    self.overflowed += 1;
-                    return;
-                }
-                if main_document {
-                    chain.hold = Some(Hold {
-                        started_recording: source.recording,
-                    });
-                }
+            None if main_document => {
+                chain.hold = Some(Hold {
+                    started_recording: source.recording,
+                });
             }
+            None => {}
         }
 
         let initiator = &params["initiator"];

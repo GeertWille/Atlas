@@ -4,11 +4,55 @@ import { createRng, type Rng } from "./rng";
 export type CodeFlavor = "wrapper" | "application" | "library";
 
 const VERBS = ["get", "set", "build", "resolve", "queue", "flush", "track", "render", "measure", "normalize"] as const;
-const MORE_VERBS = ["schedule", "load", "parse", "merge", "bind", "collect", "apply", "reset", "observe", "emit"] as const;
-const NOUNS = ["Slot", "Unit", "Viewport", "Config", "Targeting", "Bid", "Queue", "Consent", "Timeout", "Refresh"] as const;
-const MORE_NOUNS = ["Sizes", "Placement", "Observer", "Batch", "Payload", "Route", "State", "Layout", "Session", "Cache"] as const;
+const MORE_VERBS = [
+  "schedule",
+  "load",
+  "parse",
+  "merge",
+  "bind",
+  "collect",
+  "apply",
+  "reset",
+  "observe",
+  "emit",
+] as const;
+const NOUNS = [
+  "Slot",
+  "Unit",
+  "Viewport",
+  "Config",
+  "Targeting",
+  "Bid",
+  "Queue",
+  "Consent",
+  "Timeout",
+  "Refresh",
+] as const;
+const MORE_NOUNS = [
+  "Sizes",
+  "Placement",
+  "Observer",
+  "Batch",
+  "Payload",
+  "Route",
+  "State",
+  "Layout",
+  "Session",
+  "Cache",
+] as const;
 const LOCALS = ["node", "entry", "value", "index", "result", "options", "target", "state", "list", "item"] as const;
-const WORDS = ["article", "gallery", "comments", "headline", "sidebar", "footer", "player", "newsletter", "search", "live"] as const;
+const WORDS = [
+  "article",
+  "gallery",
+  "comments",
+  "headline",
+  "sidebar",
+  "footer",
+  "player",
+  "newsletter",
+  "search",
+  "live",
+] as const;
 
 /** One-line calls into the ad stack, so a wrapper has something for the "Ad API calls" list. */
 const AD_STATEMENTS = [
@@ -114,7 +158,12 @@ export type PlantedExcerpt = { line: number; body: string };
  * A file of `lineCount` lines in which every excerpt sits at the line it is cited at. Excerpts that
  * would overlap an earlier one are dropped: two findings citing the same lines share the text.
  */
-export function generateFile(seed: number, lineCount: number, flavor: CodeFlavor, excerpts: PlantedExcerpt[]): string[] {
+export function generateFile(
+  seed: number,
+  lineCount: number,
+  flavor: CodeFlavor,
+  excerpts: PlantedExcerpt[],
+): string[] {
   const rng = createRng(seed);
   const lines: string[] = [];
   for (const excerpt of [...excerpts].sort((a, b) => a.line - b.line)) {
