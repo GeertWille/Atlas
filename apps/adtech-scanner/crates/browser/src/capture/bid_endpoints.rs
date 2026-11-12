@@ -42,11 +42,23 @@ const ENDPOINTS: &[Endpoint] = &[
         ..endpoint("appnexus", "ib.adnxs.com", "/ut/v3/prebid")
     },
     endpoint("appnexus", "ib.adnxs-simple.com", "/ut/v3/prebid"),
-    endpoint("rubicon", "fastlane.rubiconproject.com", "/a/api/fastlane.json"),
-    endpoint("rubicon", "prebid-server.rubiconproject.com", "/openrtb2/auction"),
+    endpoint(
+        "rubicon",
+        "fastlane.rubiconproject.com",
+        "/a/api/fastlane.json",
+    ),
+    endpoint(
+        "rubicon",
+        "prebid-server.rubiconproject.com",
+        "/openrtb2/auction",
+    ),
     endpoint("ix", "htlb.casalemedia.com", "/openrtb/pbjs"),
     endpoint("pubmatic", "hbopenbid.pubmatic.com", "/translator"),
-    endpoint("criteo", "grid-bidder.criteo.com", "/openrtb_2_5/pbjs/auction/request"),
+    endpoint(
+        "criteo",
+        "grid-bidder.criteo.com",
+        "/openrtb_2_5/pbjs/auction/request",
+    ),
     Endpoint {
         unmistakable: true,
         ..endpoint("openx", "rtb.openx.net", "/openrtbb/prebidjs")
@@ -114,7 +126,11 @@ pub(crate) fn no_bid_reason(bidder: &str, body: &str) -> Option<String> {
         .or_else(|| text(&answer["message"]))
         .map(|error| format!("error: {error}"));
     let reason = stated
-        .or_else(|| (bidder == "appnexus").then(|| tag_errors(&answer)).flatten())
+        .or_else(|| {
+            (bidder == "appnexus")
+                .then(|| tag_errors(&answer))
+                .flatten()
+        })
         .or_else(|| answer["nbr"].as_u64().map(openrtb_no_bid_reason))?;
     Some(short(&reason))
 }
@@ -243,7 +259,10 @@ mod tests {
             ("https://ad.360yield.com/950/pb", Some("improvedigital")),
             ("https://adx.adform.net/adx/openrtb", Some("adf")),
             ("https://direct.adsrvr.org/bid/bidder/acme", Some("ttd")),
-            ("https://ADS.YIELDMO.COM/exchange/prebidvideo", Some("yieldmo")),
+            (
+                "https://ADS.YIELDMO.COM/exchange/prebidvideo",
+                Some("yieldmo"),
+            ),
             // Other traffic of the same companies is not a bid request.
             ("https://eus.rubiconproject.com/usync.html", None),
             ("https://ib.adnxs.com/getuid?https://x.test", None),
@@ -259,10 +278,19 @@ mod tests {
 
     #[test]
     fn unmistakable_paths_are_recognised_behind_any_host() {
-        assert_eq!(bidder_of("https://bids.pub.example/ut/v3/prebid"), Some("appnexus"));
-        assert_eq!(bidder_of("http://127.0.0.1:4455/openrtbb/prebidjs"), Some("openx"));
+        assert_eq!(
+            bidder_of("https://bids.pub.example/ut/v3/prebid"),
+            Some("appnexus")
+        );
+        assert_eq!(
+            bidder_of("http://127.0.0.1:4455/openrtbb/prebidjs"),
+            Some("openx")
+        );
         // A path that only starts the same, or that other adapters share, is not enough.
-        assert_eq!(bidder_of("https://bids.pub.example/ut/v3/prebid/extra"), None);
+        assert_eq!(
+            bidder_of("https://bids.pub.example/ut/v3/prebid/extra"),
+            None
+        );
         assert_eq!(bidder_of("https://bids.pub.example/translator"), None);
         assert_eq!(bidder_of("https://bids.pub.example/hb/"), None);
     }
@@ -299,19 +327,43 @@ mod tests {
                 r#"{"version":"3.0.0","tags":[{"uuid":"a","tag_id":1,"nobid":true}]}"#,
                 None,
             ),
-            ("openx", r#"{"id":"1","nbr":7}"#, Some("no-bid reason 7 (blocked publisher or site)")),
-            ("ix", r#"{"id":"1","nbr":2}"#, Some("no-bid reason 2 (invalid request)")),
-            ("ix", r#"{"id":"1","nbr":504}"#, Some("no-bid reason 504 (exchange-specific code)")),
-            ("pubmatic", r#"{"message":"publisher is blocked"}"#, Some("error: publisher is blocked")),
+            (
+                "openx",
+                r#"{"id":"1","nbr":7}"#,
+                Some("no-bid reason 7 (blocked publisher or site)"),
+            ),
+            (
+                "ix",
+                r#"{"id":"1","nbr":2}"#,
+                Some("no-bid reason 2 (invalid request)"),
+            ),
+            (
+                "ix",
+                r#"{"id":"1","nbr":504}"#,
+                Some("no-bid reason 504 (exchange-specific code)"),
+            ),
+            (
+                "pubmatic",
+                r#"{"message":"publisher is blocked"}"#,
+                Some("error: publisher is blocked"),
+            ),
             // Only AppNexus answers per tag.
             ("rubicon", r#"{"tags":[{"error":"x"}]}"#, None),
-            ("rubicon", r#"{"id":"1","seatbid":[{"bid":[{"price":1.2}]}]}"#, None),
+            (
+                "rubicon",
+                r#"{"id":"1","seatbid":[{"bid":[{"price":1.2}]}]}"#,
+                None,
+            ),
             ("rubicon", r#"{"error":""}"#, None),
             ("rubicon", "", None),
             ("rubicon", "<html>Bad gateway</html>", None),
         ];
         for (bidder, body, expected) in cases {
-            assert_eq!(no_bid_reason(bidder, body).as_deref(), expected, "{bidder} {body}");
+            assert_eq!(
+                no_bid_reason(bidder, body).as_deref(),
+                expected,
+                "{bidder} {body}"
+            );
         }
     }
 
@@ -331,8 +383,18 @@ mod tests {
     fn observations_are_dated_from_navigation_start_and_bounded() {
         let request = || bid_request("https://rtb.openx.net/openrtbb/prebidjs").unwrap();
         let mut log = BidResponseLog::default();
-        log.record(request(), Some(1_500.0), Some(200), Some("no-bid reason 7".into()));
-        log.record(request(), Some(1_200.0), None, Some("net::ERR_FAILED".into()));
+        log.record(
+            request(),
+            Some(1_500.0),
+            Some(200),
+            Some("no-bid reason 7".into()),
+        );
+        log.record(
+            request(),
+            Some(1_200.0),
+            None,
+            Some("net::ERR_FAILED".into()),
+        );
         // From the document before a reload, and one that could not be dated.
         log.record(request(), Some(900.0), Some(200), None);
         log.record(request(), None, Some(200), None);

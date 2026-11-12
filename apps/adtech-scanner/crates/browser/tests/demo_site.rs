@@ -294,7 +294,15 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
         .collect();
     assert_eq!(
         requested.keys().copied().collect::<Vec<_>>(),
-        ["appnexus", "criteo", "ix", "openx", "pubmatic", "rubicon"]
+        [
+            "appnexus",
+            "criteo",
+            "ix",
+            "openx",
+            "pubmatic",
+            "rubicon",
+            "triplelift"
+        ]
     );
     assert_eq!(requested["appnexus"], &SCROLL_GATED_UNITS);
 
@@ -559,14 +567,9 @@ async fn desktop_scan_shows_the_planted_bidder_setup_bugs() {
     // -- Planted bug (e): ix is called but never bids -----------------------------
     assert_eq!(
         requested_units("ix"),
-        [
-            "ad-sticky-footer",
-            "ad-leaderboard",
-            "ad-sidebar-2",
-            "ad-inarticle-1"
-        ]
+        ["ad-sticky-footer", "ad-leaderboard", "ad-inarticle-1"]
     );
-    assert_eq!((bids_from("ix"), passes_from("ix")), (0, 4));
+    assert_eq!((bids_from("ix"), passes_from("ix")), (0, 3));
 
     // -- Planted bug (f): triplelift has its inventory code on one ad unit only ---
     let mut inventory_codes: BTreeMap<&str, Option<&str>> = BTreeMap::new();
@@ -588,10 +591,16 @@ async fn desktop_scan_shows_the_planted_bidder_setup_bugs() {
             ("ad-sidebar-1", None),
         ])
     );
+    // As in real Prebid, a bid the adapter rejects is announced, never sent,
+    // and ends as a no-bid.
     assert_eq!(
         requested_units("triplelift"),
-        ["ad-inarticle-2"],
-        "Prebid drops the bids whose params the adapter rejects"
+        ["ad-sidebar-1", "ad-inarticle-1", "ad-inarticle-2"]
+    );
+    assert_eq!(
+        (bids_from("triplelift"), passes_from("triplelift")),
+        (1, 2),
+        "it bids where its params are complete"
     );
     let dropped = events_where(&capture, |kind| {
         matches!(kind, Kind::PrebidLog { level, message }

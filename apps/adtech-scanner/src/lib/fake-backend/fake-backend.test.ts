@@ -259,8 +259,9 @@ describe("scans with Jev System One", () => {
       expect(script.classifiedBy).toBe("ai");
       expect(script.adProbability).toBeGreaterThanOrEqual(0);
       expect(script.adProbability).toBeLessThanOrEqual(1);
-      // Only a probability under the drop threshold removes a script from the ad-related set.
-      expect(script.adRelated).toBe((script.adProbability ?? 0) >= 0.15);
+      // Under the drop threshold a script is out; under the analyse threshold only the publisher's own code stays.
+      const p = script.adProbability ?? 0;
+      expect(script.adRelated).toBe(p >= 0.5 || (p >= 0.15 && script.firstParty));
     }
     const byRule = detail.scripts.filter((script) => script.classifiedBy === "heuristic");
     expect(byRule.every((script) => script.classifierModel === null && script.adProbability === null)).toBe(true);
@@ -270,7 +271,7 @@ describe("scans with Jev System One", () => {
       judged.map((script) => script.id),
     );
     expect(new Set(decisions.map((entry) => (entry.data as { decision: { route: string } }).decision.route))).toEqual(
-      new Set(["jev-yes", "jev-unsure", "jev-no"]),
+      new Set(["jev-yes", "jev-unsure", "jev-generic", "jev-no"]),
     );
     for (const entry of decisions) {
       expect((entry.data as { excerpt: string }).excerpt.length).toBeLessThanOrEqual(300);

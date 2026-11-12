@@ -37,6 +37,7 @@ struct Screening {
     candidate: Candidate,
     url: String,
     first_party: bool,
+    sets_up_consent: bool,
     total_parts: usize,
     parts: Vec<Part>,
     /// A part already gave the script its best possible verdict.
@@ -134,6 +135,7 @@ pub(super) async fn classify(
                     &screening.scores(),
                     screening.total_parts,
                     screening.first_party,
+                    screening.sets_up_consent,
                 )
             })
             .flatten();
@@ -193,6 +195,7 @@ fn plan(run: &StepRun<'_>, candidates: Vec<Candidate>) -> Result<TriageWork, Nod
         work.screenings.push(Screening {
             url: record.url.clone(),
             first_party: record.first_party,
+            sets_up_consent: run.state.scripts[candidate.script_index].sets_up_consent,
             total_parts: texts.len(),
             parts,
             settled: false,
@@ -222,6 +225,7 @@ async fn log_decision(
     let outcome = match decision.route {
         Route::Analyse => "ad-related, Phase 2 candidate",
         Route::Unsure => "kept for analysis, ranked last",
+        Route::Consent => "site's consent setup, kept for analysis",
         Route::Generic => "not ad-related, generic library",
         Route::Drop => "not ad-related",
     };

@@ -2,7 +2,7 @@ import { XIcon } from "lucide-react";
 import type { ScriptRecord } from "@/bindings";
 import { CopyButton } from "@/shared/components/copy-button";
 import { modelLabel } from "@/shared/domain/model-pricing";
-import { FINDING_SOURCE_LABEL, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
+import { FINDING_SOURCE_LABEL, scriptCategoryLabel } from "@/shared/domain/vocabulary";
 import { EMPTY, formatBytes, formatOffset, formatPercent } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Hint } from "@/shared/ui/tooltip";
@@ -32,7 +32,7 @@ export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClo
         </Hint>
       </div>
       <dl className="grid grid-cols-3 gap-x-4 gap-y-3 xl:grid-cols-6">
-        <Fact label="Category" value={SCRIPT_CATEGORY_META[script.category].label} />
+        <Fact label="Category" value={scriptCategoryLabel(script.category, script.adRelated)} />
         <Fact label="Vendor" value={script.vendor ?? EMPTY} />
         <Fact label="Size" value={formatBytes(script.sizeBytes)} />
         <Fact label="Loaded at" value={formatOffset(script.loadedAtMs)} />

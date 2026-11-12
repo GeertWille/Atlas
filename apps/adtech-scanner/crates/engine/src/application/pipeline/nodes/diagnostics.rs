@@ -11,6 +11,7 @@ use serde_json::json;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
+use crate::application::AppError;
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::application::ports::{FetchError, PublicFileFetcher, PublicFileRequest};
@@ -183,7 +184,7 @@ async fn read_sellers_json(
     let mut read = BTreeMap::new();
     while let Some(joined) = pending.join_next().await {
         let (domain, outcome) = joined.map_err(|error| {
-            NodeError::Failed(crate::application::AppError::Internal(format!(
+            NodeError::Failed(AppError::Internal(format!(
                 "a sellers.json lookup failed: {error}"
             )))
         })?;

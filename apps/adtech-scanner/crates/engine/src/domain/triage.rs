@@ -36,6 +36,9 @@ pub enum Route {
     /// Neither confirmed nor ruled out, and the publisher's own code: kept
     /// for analysis, ranked last.
     Unsure,
+    /// The site's own consent configuration: kept for analysis, because
+    /// consent decides whether bidders may bid and when an auction starts.
+    Consent,
     /// Neither confirmed nor ruled out, and generic library code: dropped.
     Generic,
     Drop,
@@ -47,6 +50,7 @@ impl Route {
         match self {
             Self::Analyse => "jev-yes",
             Self::Unsure => "jev-unsure",
+            Self::Consent => "jev-consent",
             Self::Generic => "jev-generic",
             Self::Drop => "jev-no",
         }
@@ -134,11 +138,13 @@ pub struct TriageDecision {
 }
 
 /// Routes a script from the scores of its screened parts. `None` when no part
-/// was scored.
+/// was scored. `sets_up_consent` is the knowledge base's finding that the
+/// script configures a consent platform.
 pub fn decide(
     scores: &[PartScore],
     total_parts: usize,
     first_party: bool,
+    sets_up_consent: bool,
 ) -> Option<TriageDecision> {
     let best = scores
         .iter()
@@ -177,6 +183,22 @@ pub fn decide(
             reason: format!(
                 "Jev: ad orchestration {p:.2} in its best-scoring part, publisher-specific {publisher_specific:.2}; rule {} (>= {ANALYSE_THRESHOLD:.2})",
                 Route::Analyse.rule()
+            ),
+        }
+    } else if p >= DROP_THRESHOLD
+        && sets_up_consent
+        && publisher_specific >= PUBLISHER_SPECIFIC_THRESHOLD
+    {
+        TriageDecision {
+            route: Route::Consent,
+            ad_related: true,
+            category: ScriptCategory::Cmp,
+            ad_probability: p,
+            publisher_specific,
+            confidence: publisher_specific,
+            reason: format!(
+                "Jev: publisher-specific {publisher_specific:.2}, ad orchestration {p:.2} at most over {screened} screened parts of {total_parts}, and it configures a consent platform; rule {} (site-specific consent setup), kept for analysis",
+                Route::Consent.rule()
             ),
         }
     } else if p >= DROP_THRESHOLD && publisher_specific >= PUBLISHER_SPECIFIC_THRESHOLD {
@@ -235,27 +257,27 @@ mod tests {
 
     #[test]
     fn routing_follows_the_thresholds_at_their_boundaries() {
-        let route = |p: f64| decide(&[score(p, 0.9)], 1, true).unwrap().route;
+        let route = |p: f64| decide(&[score(p, 0.9)], 1, true, false).unwrap().route;
         assert_eq!(route(0.50), Route::Analyse);
         assert_eq!(route(0.4999), Route::Unsure);
         assert_eq!(route(0.15), Route::Unsure);
         assert_eq!(route(0.1499), Route::Drop);
         assert_eq!(route(0.0), Route::Drop);
         assert_eq!(route(1.0), Route::Analyse);
-        let generic = |p: f64, own: f64| decide(&[score(p, own)], 1, true).unwrap().route;
+        let generic = |p: f64, own: f64| decide(&[score(p, own)], 1, true, false).unwrap().route;
         assert_eq!(generic(0.4999, 0.4999), Route::Generic);
         assert_eq!(generic(0.15, 0.0), Route::Generic);
         assert_eq!(generic(0.15, 0.50), Route::Unsure);
         assert_eq!(generic(0.50, 0.0), Route::Analyse);
         assert_eq!(generic(0.1499, 0.0), Route::Drop);
-        assert_eq!(decide(&[], 3, true), None);
+        assert_eq!(decide(&[], 3, true, false), None);
     }
 
     #[test]
     fn the_script_score_is_the_highest_part_not_the_average() {
         let mut scores = vec![score(0.02, 0.0); 99];
         scores.push(score(0.91, 0.2));
-        let decision = decide(&scores, 131, true).unwrap();
+        let decision = decide(&scores, 131, true, false).unwrap();
         assert_eq!(decision.route, Route::Analyse);
         assert_eq!(decision.ad_probability, 0.91);
         assert_eq!(decision.confidence, 0.91);
@@ -264,19 +286,19 @@ mod tests {
 
     #[test]
     fn publisher_specific_ad_code_is_a_wrapper_and_other_ad_code_stays_unknown() {
-        let wrapper = decide(&[score(0.9, 0.5)], 1, true).unwrap();
+        let wrapper = decide(&[score(0.9, 0.5)], 1, true, false).unwrap();
         assert_eq!(wrapper.category, ScriptCategory::Wrapper);
-        let generic = decide(&[score(0.9, 0.49)], 1, true).unwrap();
+        let generic = decide(&[score(0.9, 0.49)], 1, true, false).unwrap();
         assert_eq!(generic.category, ScriptCategory::Unknown);
         // A site-specific part that is not ad code does not make a wrapper.
-        let elsewhere = decide(&[score(0.9, 0.1), score(0.4, 0.95)], 2, true).unwrap();
+        let elsewhere = decide(&[score(0.9, 0.1), score(0.4, 0.95)], 2, true, false).unwrap();
         assert_eq!(elsewhere.category, ScriptCategory::Unknown);
         assert_eq!(elsewhere.publisher_specific, 0.1);
     }
 
     #[test]
     fn the_unsure_band_is_kept_with_low_confidence() {
-        let unsure = decide(&[score(0.3, 0.9)], 4, false).unwrap();
+        let unsure = decide(&[score(0.3, 0.9)], 4, false, false).unwrap();
         assert!(unsure.ad_related);
         assert_eq!(unsure.category, ScriptCategory::Unknown);
         assert_eq!(unsure.confidence, 0.3);
@@ -287,9 +309,8 @@ mod tests {
     /// as its highest ad-orchestration and publisher-specific probability.
     #[test]
     fn the_scripts_of_the_first_real_page_are_routed_as_a_person_would() {
-        let route = |ad: f64, own: f64| decide(&[score(ad, own)], 1, false).unwrap().route;
+        let route = |ad: f64, own: f64| decide(&[score(ad, own)], 1, false, false).unwrap().route;
         assert_eq!(route(0.98, 0.98), Route::Analyse, "inline wrapper");
-        assert_eq!(route(0.25, 0.95), Route::Unsure, "consent platform config");
         assert_eq!(
             route(0.24, 0.97),
             Route::Unsure,
@@ -301,14 +322,37 @@ mod tests {
         assert_eq!(route(0.12, 0.85), Route::Drop, "tag manager loader");
         assert_eq!(route(0.14, 0.24), Route::Drop, "analytics library");
         // Slot-mapping code: one part scored 0.20, the other 0.62 / 0.48.
-        let mapping = decide(&[score(0.20, 0.30), score(0.62, 0.48)], 2, true).unwrap();
+        let mapping = decide(&[score(0.20, 0.30), score(0.62, 0.48)], 2, true, false).unwrap();
         assert_eq!(mapping.route, Route::Analyse);
         assert_eq!(mapping.category, ScriptCategory::Unknown);
     }
 
     #[test]
+    fn a_sites_consent_configuration_is_kept_as_consent_code_not_as_a_doubtful_leftover() {
+        // The inline Didomi configuration of the first real page.
+        let config = decide(&[score(0.25, 0.95)], 1, true, true).unwrap();
+        assert_eq!(config.route, Route::Consent);
+        assert!(config.ad_related);
+        assert_eq!(config.category, ScriptCategory::Cmp);
+        assert_eq!(config.confidence, 0.95);
+        assert_eq!(
+            config.reason,
+            "Jev: publisher-specific 0.95, ad orchestration 0.25 at most over 1 screened parts of 1, and it configures a consent platform; rule jev-consent (site-specific consent setup), kept for analysis"
+        );
+        // A vendor's own consent client is generic code and still goes.
+        let client = decide(&[score(0.25, 0.29)], 1, false, true).unwrap();
+        assert_eq!(client.route, Route::Generic);
+        // An application bundle that merely names a consent global stays out.
+        let bundle = decide(&[score(0.10, 0.95)], 1, true, true).unwrap();
+        assert_eq!(bundle.route, Route::Drop);
+        // Ad code that also sets up consent is ad code first.
+        let wrapper = decide(&[score(0.9, 0.9)], 1, true, true).unwrap();
+        assert_eq!(wrapper.category, ScriptCategory::Wrapper);
+    }
+
+    #[test]
     fn an_unsure_script_that_is_generic_library_code_is_dropped_and_says_why() {
-        let pixel = decide(&[score(0.05, 0.9), score(0.21, 0.15)], 92, false).unwrap();
+        let pixel = decide(&[score(0.05, 0.9), score(0.21, 0.15)], 92, false, false).unwrap();
         assert!(!pixel.ad_related);
         assert_eq!(pixel.category, ScriptCategory::Library);
         assert_eq!(pixel.ad_probability, 0.21);
@@ -320,17 +364,17 @@ mod tests {
             "Jev: ad orchestration 0.21 at most over 2 screened parts of 92, publisher-specific 0.15; rule jev-generic (0.15 to 0.50 and a generic library, publisher-specific < 0.50)"
         );
         // Any part in the band that is the publisher's own keeps it.
-        let kept = decide(&[score(0.21, 0.15), score(0.16, 0.7)], 2, false).unwrap();
+        let kept = decide(&[score(0.21, 0.15), score(0.16, 0.7)], 2, false, false).unwrap();
         assert_eq!(kept.route, Route::Unsure);
     }
 
     #[test]
     fn a_dropped_script_is_application_or_library_code_by_origin() {
-        let own = decide(&[score(0.05, 0.9)], 1, true).unwrap();
+        let own = decide(&[score(0.05, 0.9)], 1, true, false).unwrap();
         assert!(!own.ad_related);
         assert_eq!(own.category, ScriptCategory::Application);
         assert!((own.confidence - 0.95).abs() < 1e-12);
-        let third_party = decide(&[score(0.05, 0.0)], 1, false).unwrap();
+        let third_party = decide(&[score(0.05, 0.0)], 1, false, false).unwrap();
         assert_eq!(third_party.category, ScriptCategory::Library);
         assert_eq!(
             third_party.reason,

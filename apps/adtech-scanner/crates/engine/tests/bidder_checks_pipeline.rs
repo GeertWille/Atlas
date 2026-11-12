@@ -46,7 +46,14 @@ async fn turn_on_sellers_json(harness: &Harness) {
         check_sellers_json: Some(true),
         ..SettingsPatch::default()
     };
-    assert!(harness.settings.update(patch).await.unwrap().check_sellers_json);
+    assert!(
+        harness
+            .settings
+            .update(patch)
+            .await
+            .unwrap()
+            .check_sellers_json
+    );
 }
 
 #[tokio::test]
@@ -60,9 +67,15 @@ async fn a_scan_reads_the_sites_ads_txt_and_stores_what_it_concluded() {
     assert_eq!(step.status, StepStatus::Completed);
     assert_eq!(
         step.summary.as_deref(),
-        Some("2 bidders checked: 0 problems, 0 notices; ads.txt has 2 records; sellers.json not checked")
+        Some(
+            "2 bidders checked: 0 problems, 0 notices; ads.txt has 2 records; sellers.json not checked"
+        )
     );
-    assert_eq!(rules(&detail), Vec::<&str>::new(), "a healthy page stays silent");
+    assert_eq!(
+        rules(&detail),
+        Vec::<&str>::new(),
+        "a healthy page stays silent"
+    );
 
     // One request, to the scanned site's own root domain, and nothing else.
     let requests = harness.files.requests.lock().unwrap().clone();
@@ -195,7 +208,9 @@ async fn exchanges_are_only_contacted_when_the_setting_is_on_and_only_those_ads_
     );
     assert_eq!(
         checks_step(&on).summary.as_deref(),
-        Some("2 bidders checked: 0 problems, 0 notices; ads.txt has 2 records; sellers.json read at 2 exchanges")
+        Some(
+            "2 bidders checked: 0 problems, 0 notices; ads.txt has 2 records; sellers.json read at 2 exchanges"
+        )
     );
     assert_eq!(rules(&on), Vec::<&str>::new());
 }
@@ -244,12 +259,17 @@ async fn an_ads_txt_that_cannot_be_read_is_reported_as_such_and_proves_nothing()
         assert_eq!(rules(&detail), Vec::<&str>::new(), "{reason}");
         let diagnostics = detail.bidder_diagnostics.as_ref().unwrap();
         assert_eq!(
-            (diagnostics.ads_txt.status, diagnostics.ads_txt.detail.as_deref()),
+            (
+                diagnostics.ads_txt.status,
+                diagnostics.ads_txt.detail.as_deref()
+            ),
             (AdsTxtStatus::Unreadable, Some(reason))
         );
         assert_eq!(
             checks_step(&detail).summary.as_deref(),
-            Some("2 bidders checked: 0 problems, 0 notices; ads.txt could not be read; sellers.json not checked")
+            Some(
+                "2 bidders checked: 0 problems, 0 notices; ads.txt could not be read; sellers.json not checked"
+            )
         );
     }
 }
@@ -261,7 +281,10 @@ async fn a_subdomain_the_root_file_hands_over_is_read_from_its_own_ads_txt() {
     let harness = harness_for(capture);
     harness.files.answer(
         SITE_ADS_TXT_URL,
-        text_file(200, "subdomain=blog.pub.example\nappnexus.com, 958, DIRECT\n"),
+        text_file(
+            200,
+            "subdomain=blog.pub.example\nappnexus.com, 958, DIRECT\n",
+        ),
     );
     harness.files.answer(
         "https://blog.pub.example/ads.txt",
@@ -327,7 +350,10 @@ async fn a_page_without_bidders_skips_the_checks_and_requests_nothing() {
     let step = checks_step(&detail);
     assert_eq!(
         (step.status, step.summary.as_deref()),
-        (StepStatus::Skipped, Some("The page has no Prebid bidders to check"))
+        (
+            StepStatus::Skipped,
+            Some("The page has no Prebid bidders to check")
+        )
     );
     assert_eq!(detail.bidder_diagnostics, None);
     assert_eq!(harness.files.requested_urls(), Vec::<String>::new());
@@ -391,7 +417,12 @@ async fn the_files_themselves_are_never_stored() {
     let detail = run_scan(&harness, scan_options(false)).await;
 
     assert_eq!(
-        detail.bidder_diagnostics.as_ref().unwrap().ads_txt.record_count,
+        detail
+            .bidder_diagnostics
+            .as_ref()
+            .unwrap()
+            .ads_txt
+            .record_count,
         3
     );
     let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();

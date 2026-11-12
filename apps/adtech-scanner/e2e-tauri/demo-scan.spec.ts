@@ -65,12 +65,12 @@ test("a demo-site scan streams through the pipeline and becomes the report", asy
   await browser.$(button("Scan the demo site")).click();
 
   await browser.$(PIPELINE).waitForDisplayed();
-  expect(await browser.$$(`${PIPELINE}/li`).length).toBe(8);
+  expect(await browser.$$(`${PIPELINE}/li`).length).toBe(9);
   scanId = (await hashRoute(browser)).replace("/scans/", "");
   expect(scanId).toMatch(/^[0-9a-f-]{36}$/);
 
   // Everything below reaches the screen only through `scan-event`.
-  await seeText(browser, /Step 2 of 8: Capture page/, { within: MAIN, timeout: 15_000 });
+  await seeText(browser, /Step 2 of 9: Capture page/, { within: MAIN, timeout: 15_000 });
   await seeText(browser, "RUNNING", { within: SIDEBAR });
   await seeText(browser, "Prebid.js v10.14.0 detected", { within: ACTIVITY, timeout: 15_000 });
   await seeText(browser, "Page scrolled for the first time", { within: ACTIVITY, timeout: 30_000 });
@@ -94,11 +94,31 @@ test("a demo-site scan streams through the pipeline and becomes the report", asy
     "completed",
     "completed",
     "completed",
+    "completed",
     "skipped",
     "skipped",
     "skipped",
     "completed",
   ]);
+  // The bidder checks read the demo site's own ads.txt over loopback, and nothing else.
+  const checked = atFinalEvent?.bidderDiagnostics;
+  expect(checked?.adsTxt).toMatchObject({
+    url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/ads\.txt$/),
+    status: "found",
+    recordCount: 6,
+    invalidLineCount: 0,
+    ownerDomain: "meridian-media.example",
+  });
+  expect(checked?.sellersJsonChecked).toBe(false);
+  const problemsOf = (bidder: string) =>
+    checked?.bidders
+      .find((diagnosis) => diagnosis.bidder === bidder)
+      ?.checks.filter((check) => check.status === "problem")
+      .map((check) => check.code);
+  expect(problemsOf("ix")).toEqual(["ads-txt-not-listed"]);
+  expect(problemsOf("openx")).toEqual(["response-reason"]);
+  expect(problemsOf("triplelift")).toEqual(["params-missing"]);
+  expect(problemsOf("appnexus")).toEqual([]);
   expect(atFinalEvent).toEqual(await invokeOk<ScanDetail>(browser, "get_scan", { scanId }));
   expect(atFinalEvent?.overview).toBeTruthy();
   expect(atFinalEvent?.summary.healthScore).toBeLessThan(100);
@@ -114,6 +134,8 @@ test("every report tab shows what the scan captured, including the planted bugs"
     "Auction timeout of 250 ms",
     "have no matching GPT slot",
     "loaded more than once",
+    "2 bidder(s) never returned a bid",
+    "1 bidder(s) have adapter params the adapter rejects",
   ]) {
     expect(findings).toContain(planted);
   }
@@ -132,7 +154,25 @@ test("every report tab shows what the scan captured, including the planted bugs"
   expect(auctions).toMatch(/Auction 1[\s\S]*ad-sticky-footer[\s\S]*Auction 2[\s\S]*ad-leaderboard/);
   expect(auctions).toContain("timeout 250 ms");
   expect(auctions).toMatch(/pubmatic\s+5\s+0\s+0\s+5/);
-  expect(await browser.$$(`${labelled("Bids for ad-leaderboard")}/li`).length).toBe(5);
+  expect(await browser.$$(`${labelled("Bids for ad-leaderboard")}/li`).length).toBe(6);
+
+  // Bidder checks name the cause of each planted bidder bug, and nothing for the healthy bidders.
+  const checks = await textOf(browser, labelled("Bidders that need attention"));
+  expect(checks).toMatch(
+    /ix\s+0 of 3 requests answered with a bid[\s\S]*ads\.txt: ads\.txt has no entry for indexexchange\.com/,
+  );
+  expect(checks).toMatch(
+    /openx\s+0 of 3 requests answered with a bid[\s\S]*Endpoint: The bidder's endpoint explained why it did not bid on its 1 bid request\s+no-bid reason 7 \(blocked publisher or site\)/,
+  );
+  expect(checks).toMatch(
+    /triplelift[\s\S]*Params: `inventoryCode` missing on 2 of 3 ad units\s+ad-sidebar-1, ad-inarticle-1/,
+  );
+  expect(checks).not.toContain("appnexus");
+  const facts = await seeText(browser, "Bidder checks", { within: MAIN });
+  expect(facts).toMatch(/ads\.txt\s+http:\/\/127\.0\.0\.1:\d+\/ads\.txt: 6 seller records/);
+  expect(facts).toContain("Not looked up for this scan");
+  expect(facts).toContain("No TCF consent API on this page");
+  expect(facts).toMatch(/Nothing found for appnexus, criteo, pubmatic, rubicon\./);
 
   await browser.$(reportTab("Ad slots")).click();
   const slots = await seeText(browser, "ad-sticky-footer", { within: MAIN });
@@ -148,10 +188,11 @@ test("every report tab shows what the scan captured, including the planted bugs"
   expect(details).toContain("Wrapper");
 
   await browser.$(reportTab("Audit trail")).click();
-  const steps = await seeText(browser, "18 rules evaluated, 7 findings", { within: labelled("Pipeline steps") });
+  const steps = await seeText(browser, "27 rules evaluated, 9 findings", { within: labelled("Pipeline steps") });
+  expect(steps).toContain("7 bidders checked: 3 problems, 0 notices; ads.txt has 6 records; sellers.json not checked");
   expect(steps).toContain("AI analysis is turned off for this scan");
   await browser.$(`${labelled("Pipeline steps")}//button[contains(., "Deterministic checks")]`).click();
-  await seeText(browser, /7 of 37 entries[\s\S]*\[High\] Bidding waits for the first scroll on desktop/, {
+  await seeText(browser, /9 of 42 entries[\s\S]*\[High\] Bidding waits for the first scroll on desktop/, {
     within: MAIN,
   });
 });
@@ -169,7 +210,7 @@ test("history lists the scan", async () => {
   const { browser } = app;
   await browser.$('//nav//a[normalize-space(.)="History"]').click();
   const table = await seeText(browser, "Showing 1 of 1 scan", { within: MAIN });
-  expect(table).toMatch(/50\s+127\.0\.0\.1\s+Desktop\s+High: 2\s+Medium: 3\s+Low: 2/);
+  expect(table).toMatch(/28\s+127\.0\.0\.1\s+Desktop\s+High: 3\s+Medium: 4\s+Low: 2/);
 
   await browser.$(labelled("Search scans")).setValue("nothing-like-this");
   await seeText(browser, "No scans match", { within: MAIN });
@@ -209,9 +250,12 @@ test("settings are saved by the backend and survive a reload", async () => {
   await browser.$(`${labelled("Default device")}//button[normalize-space(.)="Mobile"]`).click();
   await browser.$(`${labelled("Theme")}//button[normalize-space(.)="Dark"]`).click();
   await browser.waitUntil(() => browser.execute(() => document.documentElement.classList.contains("dark")));
+  const sellersJson = `//button[@role="switch"][@id=//label[normalize-space(.)="Check sellers.json at ad exchanges"]/@for]`;
+  expect(await browser.$(sellersJson).getAttribute("aria-checked")).toBe("false");
+  await browser.$(sellersJson).click();
   await expect
     .poll(() => invokeOk<Settings>(browser, "get_settings"), { timeout: 10_000 })
-    .toMatchObject({ budgetUsd: 0.75, defaultDevice: "mobile", theme: "dark" });
+    .toMatchObject({ budgetUsd: 0.75, defaultDevice: "mobile", theme: "dark", checkSellersJson: true });
 
   await reloadApp();
   expect(await browser.execute(() => document.documentElement.classList.contains("dark"))).toBe(true);

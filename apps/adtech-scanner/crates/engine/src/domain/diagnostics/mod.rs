@@ -30,6 +30,7 @@ pub mod codes {
     pub const PARAMS_WRONG_TYPE: &str = "params-wrong-type";
     pub const PARAMS_TEST_ID: &str = "params-test-id";
     pub const PARAMS_SHARED_ID: &str = "params-shared-id";
+    pub const PARAMS_REJECTED: &str = "params-rejected";
     pub const PARAMS_UNKNOWN_ADAPTER: &str = "params-unknown-adapter";
     pub const PARAMS_NOT_CAPTURED: &str = "params-not-captured";
 
@@ -62,7 +63,7 @@ pub mod codes {
 }
 
 /// Longest excerpt stored with a check or a report.
-pub const MAX_EXCERPT_CHARS: usize = 300;
+const MAX_EXCERPT_CHARS: usize = 300;
 const MAX_REPORTED_INVALID_LINES: usize = 10;
 /// Seller ids looked up per ad system when the bid request does not say
 /// which account is in use.
@@ -307,10 +308,10 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
         .map(|bidder| {
             let mut checks = Vec::new();
             checks.extend(response_checks(capture, &bidder));
-            checks.extend(param_checks(&bidder, config_has));
+            checks.extend(param_checks(capture, &bidder, config_has));
             checks.extend(timeline.bidder_checks(
                 &bidder.requests,
-                bidder.adapter.map(|adapter| (adapter.gvl_id, adapter.code)),
+                bidder.adapter.map(|adapter| (adapter.gvl_id, bidder.name)),
             ));
             checks.extend(ads_txt_checks(&bidder, &files.ads_txt));
             checks.extend(sellers_checks(&bidder, files, &site));
@@ -401,28 +402,78 @@ fn ads_txt_report(files: &SiteFiles) -> AdsTxtReport {
     report
 }
 
-fn param_checks(bidder: &BidderFacts, config_has: impl Fn(&str) -> bool) -> Vec<DiagnosticCheck> {
+fn param_checks(
+    capture: &Capture,
+    bidder: &BidderFacts,
+    config_has: impl Fn(&str) -> bool,
+) -> Vec<DiagnosticCheck> {
     let not_checked = |code: &str, summary: &str| {
-        vec![check(
+        check(
             DiagnosticArea::Params,
             DiagnosticStatus::NotChecked,
             code,
             summary,
-        )]
+        )
     };
-    let Some(adapter) = bidder.adapter else {
-        return not_checked(
+    let mut checks = match bidder.adapter {
+        None => vec![not_checked(
             codes::PARAMS_UNKNOWN_ADAPTER,
             "The scanner has no built-in knowledge of this adapter's params",
-        );
-    };
-    if bidder.configs.is_empty() {
-        return not_checked(
+        )],
+        Some(_) if bidder.configs.is_empty() => vec![not_checked(
             codes::PARAMS_NOT_CAPTURED,
             "Prebid did not expose this bidder's params",
+        )],
+        Some(adapter) => check_params(adapter, &bidder.configs, config_has),
+    };
+    // Prebid says so itself when an adapter turns a bid down. That covers the
+    // adapters and the rules (video params, for one) the table does not know.
+    let already_explained = checks
+        .iter()
+        .any(|check| check.status == DiagnosticStatus::Problem);
+    let rejections = prebid_rejections(capture, bidder);
+    if let (false, Some(first)) = (already_explained, rejections.first()) {
+        checks.retain(|check| check.status != DiagnosticStatus::Pass);
+        let mut rejected = check(
+            DiagnosticArea::Params,
+            DiagnosticStatus::Problem,
+            codes::PARAMS_REJECTED,
+            format!(
+                "Prebid reported {} whose params the adapter itself rejected",
+                match rejections.len() {
+                    1 => "1 bid".to_string(),
+                    count => format!("{count} bids"),
+                }
+            ),
         );
+        rejected.excerpt = Some(excerpt(first));
+        checks.insert(0, rejected);
     }
-    check_params(adapter, &bidder.configs, config_has)
+    checks
+}
+
+/// Prebid's "Invalid bid sent to bidder" warnings for this bidder.
+fn prebid_rejections<'a>(capture: &'a Capture, bidder: &BidderFacts) -> Vec<&'a str> {
+    let names = [
+        Some(bidder.name),
+        bidder.adapter.map(|adapter| adapter.code),
+    ];
+    capture
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            Ev::PrebidLog { message, .. } => Some(message.as_str()),
+            _ => None,
+        })
+        .filter(|message| {
+            names.iter().flatten().any(|name| {
+                message
+                    .strip_prefix("Invalid bid sent to bidder ")
+                    .and_then(|rest| rest.strip_prefix(name))
+                    .is_some_and(|rest| rest.starts_with(':'))
+            })
+        })
+        .collect()
 }
 
 /// What the bidder's endpoint and Prebid's own error events said.
@@ -723,21 +774,20 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
                     .find(|seller| seller.seller_id.eq_ignore_ascii_case(&record.account_id));
                 checks.extend(sellers_json::compare(record, seller, &identity));
             }
-            Some(SellersOutcome::Unavailable(reason)) => {
-                if unavailable.insert(&record.domain) {
-                    checks.push(check(
-                        DiagnosticArea::SellersJson,
-                        DiagnosticStatus::NotChecked,
-                        codes::SELLERS_UNAVAILABLE,
-                        format!(
-                            "The sellers.json of {} could not be read: {}",
-                            brief(&record.domain),
-                            brief(reason)
-                        ),
-                    ));
-                }
+            // One note per exchange, however many of its records are listed.
+            Some(SellersOutcome::Unavailable(reason)) if unavailable.insert(&record.domain) => {
+                checks.push(check(
+                    DiagnosticArea::SellersJson,
+                    DiagnosticStatus::NotChecked,
+                    codes::SELLERS_UNAVAILABLE,
+                    format!(
+                        "The sellers.json of {} could not be read: {}",
+                        brief(&record.domain),
+                        excerpt(reason)
+                    ),
+                ));
             }
-            None => {}
+            Some(SellersOutcome::Unavailable(_)) | None => {}
         }
     }
     merge_passes(checks)

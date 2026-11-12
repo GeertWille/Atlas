@@ -133,6 +133,14 @@ export const SCRIPT_CATEGORY_META: Record<ScriptCategory, Meta> = {
   unknown: { label: "Unknown", tone: "outline" },
 };
 
+/**
+ * The category as shown for one script. A classifier can tell that a script is ad code without being
+ * able to name its kind; "Unknown" next to an ad-related script would read like a failed classification.
+ */
+export function scriptCategoryLabel(category: ScriptCategory, adRelated: boolean): string {
+  return category === "unknown" && adRelated ? "Other ad code" : SCRIPT_CATEGORY_META[category].label;
+}
+
 export const LOG_KINDS: readonly LogKind[] = [
   "message",
   "llmRequest",

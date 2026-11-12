@@ -107,6 +107,7 @@ test("read commands answer with the contract's shapes", async () => {
     hasApiKey: false,
     jevEnabled: false,
     hasTypesafeKey: false,
+    checkSellersJson: false,
   });
 
   const detected = await invokeOk<BrowserInfo | null>(browser, "detect_browser");

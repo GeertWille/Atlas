@@ -46,12 +46,13 @@
     ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0 },
     pubmatic: { latency: [330, 620], cpm: [1.8, 4.6], bidRate: 1 },
     criteo: { latency: [1500, 2100], cpm: [0.6, 2.2], bidRate: 1 },
-    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 0.8 },
+    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 1 },
     openx: { endpoint: '/openrtbb/prebidjs' },
   };
 
   // What each adapter's isBidRequestValid insists on. As in the real library,
-  // a bid that fails it is dropped with a warning before any request is made.
+  // a bid that fails it is announced in bidRequested like any other, never
+  // sent to the bidder, and reported as a no-bid with a warning.
   var REQUIRED_PARAMS = {
     appnexus: ['placementId'],
     rubicon: ['accountId', 'siteId', 'zoneId'],
@@ -279,10 +280,6 @@
     var byBidder = {};
     auction.adUnits.forEach(function (unit) {
       (unit.bids || []).forEach(function (bid) {
-        if (!isBidRequestValid(bid)) {
-          logWarn('Invalid bid sent to bidder ' + bid.bidder + ': ' + JSON.stringify(bid));
-          return;
-        }
         var request = (byBidder[bid.bidder] = byBidder[bid.bidder] || {
           bidderCode: bid.bidder,
           auctionId: auction.auctionId,
@@ -393,20 +390,39 @@
     logMessage('CALLING BIDDER', bidderRequest);
     emit('bidRequested', bidderRequest);
     var profile = BIDDERS[bidderRequest.bidderCode] || UNKNOWN_BIDDER;
+    var validBids = bidderRequest.bids.filter(function (bid) {
+      if (isBidRequestValid(bid)) return true;
+      logWarn('Invalid bid sent to bidder ' + bid.bidder + ': ' + JSON.stringify(bid));
+      return false;
+    });
+    var noBids = function () {
+      return bidderRequest.bids.map(function () {
+        return { bids: false };
+      });
+    };
+    if (!validBids.length) {
+      // Nothing to ask the bidder: the adapter is done at once.
+      setTimeout(function () {
+        settle(auction, bidderRequest, noBids(), startedAt);
+      }, 0);
+      return;
+    }
     if (profile.endpoint) {
-      askEndpoint(profile.endpoint, bidderRequest).then(function (failure) {
+      askEndpoint(profile.endpoint, bidderRequest, validBids).then(function (failure) {
         if (failure) emit('bidderError', { error: failure, bidderRequest: bidderRequest });
         // The demo exchange never bids; a failed request leaves its bids unanswered.
-        var outcomes = failure ? [] : bidderRequest.bids.map(function () {
-          return { bids: false };
-        });
-        settle(auction, bidderRequest, outcomes, startedAt);
+        settle(auction, bidderRequest, failure ? [] : noBids(), startedAt);
       });
       return;
     }
-    var outcomes = bidderRequest.bids.map(simulate);
+    var outcomes = bidderRequest.bids.map(function (bid) {
+      return validBids.indexOf(bid) >= 0 ? simulate(bid) : { bids: false };
+    });
+    var firstAnswer = outcomes.filter(function (outcome) {
+      return 'latencyDraw' in outcome;
+    })[0];
     // One HTTP round trip per bidder: every bid of the request arrives together.
-    var latency = Math.round(between(profile.latency, outcomes[0].latencyDraw));
+    var latency = Math.round(between(profile.latency, firstAnswer.latencyDraw));
     setTimeout(function () {
       settle(auction, bidderRequest, outcomes, startedAt);
     }, latency);
@@ -414,10 +430,10 @@
 
   // Posts an OpenRTB request and resolves with the failure, or null when the
   // endpoint answered.
-  function askEndpoint(endpoint, bidderRequest) {
+  function askEndpoint(endpoint, bidderRequest, bids) {
     var request = {
       id: bidderRequest.bidderRequestId,
-      imp: bidderRequest.bids.map(function (bid) {
+      imp: bids.map(function (bid) {
         return { id: bid.bidId, tagid: bid.params.unit, banner: { format: bid.sizes } };
       }),
       site: { page: root.location.href },

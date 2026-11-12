@@ -24,7 +24,7 @@ import {
   summarizeToolInput,
 } from "@/shared/domain/log-entry";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
-import { LOG_KIND_LABEL, LOG_LEVEL_LABEL, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
+import { LOG_KIND_LABEL, LOG_LEVEL_LABEL, scriptCategoryLabel } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatClock } from "@/shared/lib/format";
 import { Badge } from "@/shared/ui/badge";
@@ -114,7 +114,7 @@ const probability = (value: number) => value.toFixed(2);
 
 /** What the classifier answered about one script, against the thresholds, and where that sent the script. */
 function ClassificationSummary({ details }: { details: ClassificationDetails }) {
-  const { answers, thresholds, category, rule } = details;
+  const { answers, thresholds, category, rule, adRelated } = details;
   if (answers.length === 0 && thresholds.length === 0 && !category && !rule) return null;
   return (
     <div className="flex flex-col gap-2.5 rounded-md border bg-card px-3 py-2.5 text-xs">
@@ -154,7 +154,7 @@ function ClassificationSummary({ details }: { details: ClassificationDetails }) 
         </dl>
       ) : null}
       <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground empty:hidden">
-        {category ? <Badge tone="outline">{SCRIPT_CATEGORY_META[category].label}</Badge> : null}
+        {category ? <Badge tone="outline">{scriptCategoryLabel(category, adRelated === true)}</Badge> : null}
         {rule ? (
           <span>
             Rule <span className="font-mono font-medium text-foreground">{rule}</span>

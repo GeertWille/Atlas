@@ -3,7 +3,7 @@ import { ArrowDownIcon, CpuIcon, GaugeIcon, MegaphoneIcon, SparklesIcon } from "
 import { useEffect, useRef } from "react";
 import type { ScriptRecord } from "@/bindings";
 import { isJevModel } from "@/shared/domain/model-pricing";
-import { SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
+import { SCRIPT_CATEGORY_META, scriptCategoryLabel } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatBytes, formatOffset, formatPercent } from "@/shared/lib/format";
 import { fileNameOf } from "@/shared/lib/url";
@@ -93,7 +93,7 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
         </span>
       </span>
       <span role="cell">
-        <Badge tone={category.tone}>{category.label}</Badge>
+        <Badge tone={category.tone}>{scriptCategoryLabel(script.category, script.adRelated)}</Badge>
       </span>
       <span role="cell" className="hidden truncate text-muted-foreground xl:block">
         {script.vendor ?? EMPTY}

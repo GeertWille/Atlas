@@ -428,7 +428,11 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
             not_text
         );
         assert_eq!(
-            read_response(200, Some("text/plain"), b"appnexus.com, 1, DIRECT\n\x00\x01"),
+            read_response(
+                200,
+                Some("text/plain"),
+                b"appnexus.com, 1, DIRECT\n\x00\x01"
+            ),
             not_text
         );
     }

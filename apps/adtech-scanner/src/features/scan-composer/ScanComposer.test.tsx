@@ -90,7 +90,7 @@ test("with only a TypeSafe key the scan is script triage only, priced as such, a
   await renderWithApp(<ScanComposer settings={jevOnly} />);
 
   expect(screen.getByText(/Estimated/)).toHaveTextContent(
-    "Estimated $0.006 for Jev script triage. Add an Anthropic key to analyse wrapper logic.",
+    "Estimated $0.001 for Jev script triage. Add an Anthropic key to analyse wrapper logic.",
   );
   expect(screen.getByRole("link", { name: "Add an Anthropic key" })).toHaveAttribute("href", "/settings");
   await user.click(screen.getByRole("button", { name: "Options" }));

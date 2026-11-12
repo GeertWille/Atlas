@@ -59,7 +59,7 @@ fn ad_units_of(hits: &[Hit]) -> Vec<String> {
 
 /// One evidence entry per outcome: the excerpt when there is one, the
 /// summary otherwise.
-fn add_evidence(finding: &mut FindingDraft, hits: &[Hit]) {
+pub(super) fn add_evidence(finding: &mut FindingDraft, hits: &[Hit]) {
     for (bidder, check) in hits {
         let label = format!("{bidder}: {}", check.summary);
         finding.evidence.push(match &check.excerpt {
@@ -87,9 +87,12 @@ fn bullet_list(hits: &[Hit]) -> String {
 pub(super) fn advice(code: &str) -> Option<&'static str> {
     Some(match code {
         codes::PARAMS_MISSING => {
-            "add the missing param to that bidder's entry in every ad unit (Prebid drops a bid whose params fail the adapter's own check before any request is made)"
+            "add the missing param to that bidder's entry in every ad unit (Prebid sends nothing to a bidder whose params fail the adapter's own check and records a no-bid)"
         }
         codes::PARAMS_WRONG_TYPE => "pass the param in the type the adapter expects",
+        codes::PARAMS_REJECTED => {
+            "compare the quoted params with the adapter's documentation; its own check turned them down"
+        }
         codes::PARAMS_TEST_ID => {
             "replace the test id from the adapter documentation with the ids the partner issued for this site"
         }
@@ -149,8 +152,8 @@ fn advice_for(hits: &[Hit]) -> String {
     format!("{}.", capitalized(&advice_lines.join("; ")))
 }
 
-/// Bids Prebid drops before the request because the adapter rejects their
-/// params.
+/// Bids Prebid never sends because the adapter rejects their params, for
+/// bidders that do bid where their params are right.
 pub struct BidderParamsInvalid;
 
 impl Rule for BidderParamsInvalid {
@@ -162,9 +165,14 @@ impl Rule for BidderParamsInvalid {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let invalid = hits(
+        let invalid = hits_of_bidding_bidders(
+            ctx,
             diagnostics,
-            &[codes::PARAMS_MISSING, codes::PARAMS_WRONG_TYPE],
+            &[
+                codes::PARAMS_MISSING,
+                codes::PARAMS_WRONG_TYPE,
+                codes::PARAMS_REJECTED,
+            ],
         );
         if invalid.is_empty() {
             return Vec::new();
@@ -181,7 +189,8 @@ impl Rule for BidderParamsInvalid {
         );
         finding.description = format!(
             "The params of these bids fail the check the adapter itself runs (`isBidRequestValid`, Prebid.js 11). \
-             Prebid then drops the bid before any request is made, so the bidder is silently absent from those ad units:\n\n{}",
+             Prebid then sends nothing to the bidder for that ad unit and records a no-bid, so the bidder is \
+             silently absent from those ad units:\n\n{}",
             bullet_list(&invalid)
         );
         finding.recommendation = advice_for(&invalid);

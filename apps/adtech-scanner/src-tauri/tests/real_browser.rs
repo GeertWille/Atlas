@@ -293,7 +293,9 @@ async fn demo_site_scan_runs_the_whole_pipeline_with_a_real_browser() {
         never_bid.evidence
     );
     assert!(
-        !never_bid.recommendation.contains("compare with their own reporting"),
+        !never_bid
+            .recommendation
+            .contains("compare with their own reporting"),
         "the generic advice is only the fallback: {}",
         never_bid.recommendation
     );

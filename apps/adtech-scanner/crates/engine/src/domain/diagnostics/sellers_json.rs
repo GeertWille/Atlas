@@ -103,7 +103,7 @@ impl<'de> Visitor<'de> for SellersSeed<'_> {
                 found.push(Seller {
                     seller_id,
                     seller_type: entry.seller_type.as_deref().and_then(seller_type),
-                    is_confidential: entry.is_confidential.is_some_and(Flag::is_set),
+                    is_confidential: entry.is_confidential.is_some_and(Flag::into_bool),
                     domain: entry
                         .domain
                         .map(|domain| domain.trim().to_ascii_lowercase())
@@ -149,7 +149,7 @@ enum Flag {
 }
 
 impl Flag {
-    fn is_set(self) -> bool {
+    fn into_bool(self) -> bool {
         match self {
             Self::Bool(flag) => flag,
             Self::Number(number) => number != 0.0,
@@ -378,7 +378,14 @@ mod tests {
     #[test]
     fn records_are_compared_with_the_exchanges_entry() {
         use DiagnosticStatus::{Notice, Pass, Problem};
-        let cases: [(&str, &str, &[&str], &[(DiagnosticStatus, &str)]); 8] = [
+        /// ads.txt line, seller id looked up, declared owner domains, expected checks.
+        type Case = (
+            &'static str,
+            &'static str,
+            &'static [&'static str],
+            &'static [(DiagnosticStatus, &'static str)],
+        );
+        let cases: [Case; 8] = [
             (
                 "exchange.example, 404, DIRECT",
                 "404",

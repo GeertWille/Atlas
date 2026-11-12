@@ -507,6 +507,8 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
             "ad_orchestration" if code.contains("maybeAds") => 0.3,
             "publisher_specific" if code.contains("maybeAds") => 0.9,
             "ad_orchestration" if code.contains("carousel") => 0.05,
+            "ad_orchestration" if code.contains("didomiConfig") => 0.25,
+            "publisher_specific" if code.contains("didomiConfig") => 0.95,
             "ad_orchestration" if code.contains("trackPixel") => 0.2,
             "publisher_specific" if code.contains("trackPixel") => 0.1,
             _ => page_scoring(code, question),
@@ -525,6 +527,10 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
         (
             "https://cdn.pixel.example/events.js",
             "trackPixel({adunit:location.pathname})",
+        ),
+        (
+            "https://pub.example/js/consent-config.js",
+            r#"window.didomiConfig={app:{apiKey:"0000"},notice:{position:"popup"}};"#,
         ),
     ]);
     let harness = jev_harness(page, Some(&claude), &jev).await;
@@ -574,6 +580,22 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
         generic.classification_reason
     );
 
+    // The site's consent configuration reaches the analysis as consent code.
+    let consent = script_record(&detail, "s9");
+    assert_eq!(
+        (consent.category, consent.ad_related, consent.analyzed),
+        (ScriptCategory::Cmp, true, true)
+    );
+    assert_eq!(consent.ad_probability, Some(0.25));
+    assert_eq!(consent.classification_confidence, Some(0.95));
+    assert!(
+        consent
+            .classification_reason
+            .as_ref()
+            .unwrap()
+            .contains("rule jev-consent")
+    );
+
     // A strong knowledge-base signature is never put to Jev's vote.
     let triaged: Vec<String> = triage_requests(&judged_requests(&jev).await)
         .iter()
@@ -584,7 +606,7 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
                 .to_string()
         })
         .collect();
-    assert_eq!(triaged.len(), 4);
+    assert_eq!(triaged.len(), 5);
     assert!(
         !triaged.iter().any(|url| url.ends_with("/ads.js")),
         "{triaged:?}"
@@ -604,7 +626,7 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
         .take_while(|line| !line.is_empty())
         .map(|line| line.split(" | ").next().unwrap())
         .collect();
-    assert_eq!(index, ["s3", "s5", "s6", "s1"]);
+    assert_eq!(index, ["s3", "s5", "s9", "s6", "s1"]);
 
     let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
     let routes: Vec<&str> = classifications(&logs)
@@ -615,7 +637,16 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
                 .unwrap()
         })
         .collect();
-    assert_eq!(routes, ["jev-yes", "jev-unsure", "jev-no", "jev-generic"]);
+    assert_eq!(
+        routes,
+        [
+            "jev-yes",
+            "jev-unsure",
+            "jev-no",
+            "jev-generic",
+            "jev-consent"
+        ]
+    );
 }
 
 #[tokio::test]

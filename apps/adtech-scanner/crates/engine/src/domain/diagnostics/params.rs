@@ -1,6 +1,7 @@
 //! Validates the adapter params of the page's ad units against what the
-//! adapter itself requires. Prebid drops a bid with invalid params before any
-//! request is made, so such a bidder is silently absent from the auction.
+//! adapter itself requires. Prebid sends nothing to the bidder for a bid with
+//! invalid params and reports it as a no-bid, so the bidder looks as if it had
+//! declined.
 
 use std::collections::{BTreeMap, BTreeSet};
 

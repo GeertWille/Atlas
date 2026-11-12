@@ -36,7 +36,7 @@
         id: 'ad-sidebar-2',
         unit: 'rail-2',
         sizes: { desktop: [[300, 250]], mobile: [[300, 250]] },
-        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo'],
+        bidders: ['appnexus', 'rubicon', 'pubmatic', 'criteo'],
       },
       {
         id: 'ad-inarticle-1',

@@ -42,12 +42,13 @@ every run is identical:
 | ix | 130-215 ms | - | never bids, see (e) |
 | pubmatic | 330-620 ms | 1.80-4.60 | highest CPMs, slower than the misconfigured timeout |
 | criteo | 1500-2100 ms | 0.60-2.20 | slower than any sensible timeout |
-| triplelift | 110-190 ms | 0.40-1.50 | bids on most requests it is allowed to make |
+| triplelift | 110-190 ms | 0.40-1.50 | bids on every request that reaches it |
 | openx | one real HTTP round trip to `/openrtbb/prebidjs` | - | the exchange never bids and says why |
 
 Like the real library, the stand-in checks each bid's params the way the
-adapter's `isBidRequestValid` does and drops a bid that fails, with an
-"Invalid bid sent to bidder" warning, before any request is made.
+adapter's `isBidRequestValid` does. A bid that fails is still listed in
+`bidRequested`, is never sent to the bidder, and ends as `noBid` with an
+"Invalid bid sent to bidder" warning.
 
 The GPT stand-in has demand only for header-bidding line items: a slot whose ad
 request carries `hb_adid` is filled with that bid's creative (which triggers
@@ -85,14 +86,14 @@ it loads `/tag/js/gpt.js?v=adstack-4.2.1` although the page already includes
 `/tag/js/gpt.js`: two scripts with identical bodies, plus a console warning.
 
 **(e) Bidder missing from ads.txt.** `ix` is called for `ad-leaderboard`,
-`ad-sidebar-2`, `ad-inarticle-1` and `ad-sticky-footer`, but `/ads.txt` has no
+`ad-inarticle-1` and `ad-sticky-footer`, but `/ads.txt` has no
 `indexexchange.com` line. It answers every request with `noBid`.
 
 **(f) Required param missing.** `BIDDER_PARAMS.triplelift` reads
 `slot.inventoryCode`, which only the `ad-inarticle-2` slot defines. On
-`ad-sidebar-1` and `ad-inarticle-1` the bid has no `inventoryCode`; Prebid drops
-both bids with a warning, and `triplelift` is only ever requested for
-`ad-inarticle-2`.
+`ad-sidebar-1` and `ad-inarticle-1` the bid has no `inventoryCode`: Prebid
+warns "Invalid bid sent to bidder triplelift", sends nothing and reports
+`noBid` for both. On `ad-inarticle-2` the bidder is asked and bids.
 
 **(g) Exchange blocks the publisher.** The one `openx` bid request, sent in
 the gated auction for `ad-leaderboard`, `ad-sidebar-1` and `ad-inarticle-1`,

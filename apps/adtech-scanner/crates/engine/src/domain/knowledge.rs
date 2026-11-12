@@ -215,6 +215,31 @@ const WEAK_IDENTIFIERS: &[&str] = &[
     "adSlot",
     "__tcfapi",
     "cpm",
+    // Consent decides whether bidders may bid and when an auction may start,
+    // so a site's consent setup is a triage candidate like its ad code.
+    "didomiConfig",
+    "didomiOnReady",
+    "OptanonWrapper",
+    "Cookiebot",
+    "_sp_.config",
+    "_sp_queue",
+    "UC_UI",
+    "googlefc",
+];
+
+/// The globals through which a site configures or hooks into its consent
+/// platform: Didomi, OneTrust, Cookiebot, Sourcepoint, Usercentrics and
+/// Google Funding Choices. All are also weak identifiers. The platforms' own
+/// libraries are recognised by host; this marks the site's side of them.
+const CONSENT_SETUP_GLOBALS: &[&str] = &[
+    "didomiConfig",
+    "didomiOnReady",
+    "OptanonWrapper",
+    "Cookiebot",
+    "_sp_.config",
+    "_sp_queue",
+    "UC_UI",
+    "googlefc",
 ];
 
 /// Three letters that turn up by accident in any large minified bundle: good
@@ -330,6 +355,11 @@ pub fn logic_anchors(text: &str) -> Vec<&'static str> {
     let mut anchors = ad_identifiers(text);
     anchors.extend(present(text, PAGE_STATE_APIS));
     anchors
+}
+
+/// Whether `body` configures or hooks into a consent platform.
+pub fn sets_up_consent(body: &str) -> bool {
+    !present(body, CONSENT_SETUP_GLOBALS).is_empty()
 }
 
 pub fn has_call_site(text: &str) -> bool {
@@ -601,6 +631,35 @@ mod tests {
             2
         );
         assert!(has_call_site("a.requestBids({})") && !has_call_site("requestBids"));
+    }
+
+    #[test]
+    fn a_sites_consent_configuration_is_a_triage_candidate() {
+        let didomi = r#"window.didomiConfig={app:{apiKey:"0000"},notice:{position:"popup"},integrations:{vendors:{google:{enable:true}}}};window.didomiOnReady=window.didomiOnReady||[];"#;
+        let verdict = classify(&ScriptFacts {
+            url: "inline:2",
+            hostname: "pub.example",
+            first_party: true,
+            inline: true,
+            body: didomi,
+        });
+        assert!(
+            matches!(&verdict, Verdict::Ambiguous { hints } if hints.as_slice() == ["didomiConfig", "didomiOnReady"]),
+            "{verdict:?}"
+        );
+        assert!(sets_up_consent(didomi));
+        assert_eq!(ad_identifiers(didomi), ["didomiConfig", "didomiOnReady"]);
+        assert!(sets_up_consent("function OptanonWrapper(){startAuction()}"));
+        assert!(sets_up_consent(
+            "window._sp_queue=[];window._sp_={config:{}}"
+        ));
+        // Checking consent is not configuring it.
+        assert!(!sets_up_consent("__tcfapi('addEventListener',2,cb)"));
+        assert!(
+            CONSENT_SETUP_GLOBALS
+                .iter()
+                .all(|global| WEAK_IDENTIFIERS.contains(global))
+        );
     }
 
     #[test]

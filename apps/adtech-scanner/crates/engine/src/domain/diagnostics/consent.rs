@@ -384,11 +384,13 @@ mod tests {
         ];
         let timeline = ConsentTimeline::from_events(&events);
         use DiagnosticStatus::{NotChecked, Pass, Problem};
-        let cases: [(
-            &[RequestSignals],
-            Option<(u32, &str)>,
-            &[(DiagnosticStatus, &str, &str)],
-        ); 7] = [
+        /// Bid requests, the bidder's vendor, expected checks.
+        type Case<'a> = (
+            &'a [RequestSignals],
+            Option<(u32, &'static str)>,
+            &'a [(DiagnosticStatus, &'static str, &'static str)],
+        );
+        let cases: [Case; 7] = [
             (
                 &[request(6_000.0, Some(true), Some(true))],
                 XANDR,

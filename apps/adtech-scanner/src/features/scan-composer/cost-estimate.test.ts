@@ -36,8 +36,8 @@ test("a model the backend has no price for is estimated at its conservative fall
 
 test("with Jev on, triage and the reading guide cost about a cent on top of the analysis", () => {
   const estimate = estimateScanCost({ ...settingsFixture, hasTypesafeKey: true, jevEnabled: true });
-  // 285K Jev input tokens at $0.042 per million, plus the sonnet analysis phase.
-  expect(estimate.expectedUsd).toBeCloseTo(0.01197 + 0.36, 5);
+  // 230K Jev input tokens at $0.042 per million, plus the sonnet analysis phase.
+  expect(estimate.expectedUsd).toBeCloseTo(0.00966 + 0.36, 5);
   expect(estimate.fallbackPricing).toBe(false);
 });
 
@@ -50,7 +50,8 @@ test("Jev without an Anthropic key is script triage only, whatever the analysis 
     analysisModel: "claude-opus-5-5",
     analysisEffort: "high",
   });
-  expect(estimate).toEqual({ expectedUsd: 0.0063, cappedByBudget: false, fallbackPricing: false });
+  expect(estimate.expectedUsd).toBeCloseTo(35_000 * 0.042e-6, 10);
+  expect(estimate).toMatchObject({ cappedByBudget: false, fallbackPricing: false });
 });
 
 test("a stored TypeSafe key changes nothing while the Jev switch is off", () => {

@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    AdSlot, AdsTxtStatus, BidStatus, BidderDiagnostics, DiagnosticCheck, DiagnosticStatus,
-    FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
+    AdSlot, AdsTxtStatus, BidStatus, BidderDiagnostics, DiagnosticArea, DiagnosticCheck,
+    DiagnosticStatus, FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
 };
 
 use super::{
@@ -509,10 +509,17 @@ impl Rule for BiddersNeverBid {
             .map(|(bidder, _)| (*bidder, likely_causes(ctx.diagnostics, bidder)))
             .collect();
         let explained = causes.iter().filter(|(_, found)| !found.is_empty()).count();
-        let has_problem = causes
-            .iter()
-            .flat_map(|(_, found)| found)
-            .any(|check| check.status == DiagnosticStatus::Problem);
+        let found = || causes.iter().flat_map(|(_, found)| found);
+        let has_problem = found().any(|check| check.status == DiagnosticStatus::Problem);
+        // What the adapter rejects and what the endpoint itself says are
+        // observed, not inferred.
+        let has_observed_cause = found().any(|check| {
+            check.status == DiagnosticStatus::Problem
+                && matches!(
+                    check.area,
+                    DiagnosticArea::Params | DiagnosticArea::Response
+                )
+        });
 
         let mut finding = heuristic(
             if has_problem {
@@ -521,7 +528,13 @@ impl Rule for BiddersNeverBid {
                 Severity::Low
             },
             FindingCategory::Configuration,
-            if has_problem { 0.7 } else { 0.4 },
+            if has_observed_cause {
+                0.85
+            } else if has_problem {
+                0.7
+            } else {
+                0.4
+            },
             format!("{} bidder(s) never returned a bid", names.len()),
         );
         finding.description = format!(
@@ -544,33 +557,26 @@ impl Rule for BiddersNeverBid {
                 unexplained.push(bidder);
                 continue;
             };
-            finding.description.push_str(&format!(
-                "\n\n- `{bidder}`: {}{}",
-                most_likely.summary,
-                if others.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " Also: {}.",
-                        others
-                            .iter()
-                            .map(|check| check.summary.as_str())
-                            .collect::<Vec<_>>()
-                            .join("; ")
-                    )
-                },
-            ));
+            finding
+                .description
+                .push_str(&format!("\n\n- `{bidder}`: {}.", most_likely.summary));
+            if !others.is_empty() {
+                finding.description.push_str(&format!(
+                    " Also: {}.",
+                    others
+                        .iter()
+                        .map(|check| check.summary.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
             for check in found {
                 if let Some(line) =
                     bidders::advice(&check.code).filter(|line| !advice.contains(line))
                 {
                     advice.push(line);
                 }
-                let label = format!("{bidder}: {}", check.summary);
-                finding.evidence.push(match &check.excerpt {
-                    Some(excerpt) => log_line(label, excerpt.clone()),
-                    None => metric(label, format!("Bidder check `{}`", check.code)),
-                });
+                bidders::add_evidence(&mut finding, &[(*bidder, *check)]);
             }
         }
         if !unexplained.is_empty() {

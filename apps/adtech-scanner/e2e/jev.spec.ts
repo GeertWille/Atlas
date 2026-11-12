@@ -145,7 +145,7 @@ test("with only a TypeSafe key the composer offers script triage and the scan sk
   await expect(page).toHaveTitle("Home · Ad-Tech Scanner");
   await expect(page.getByRole("button", { name: /Continue/ })).toHaveCount(0);
 
-  await expect(page.getByText(/Estimated \$0\.006 for Jev script triage\./)).toBeVisible();
+  await expect(page.getByText(/Estimated \$0\.001 for Jev script triage\./)).toBeVisible();
   await page.getByRole("button", { name: "Options" }).click();
   const triageSwitch = page.getByRole("switch", { name: "AI script triage" });
   await expect(triageSwitch).toBeChecked();

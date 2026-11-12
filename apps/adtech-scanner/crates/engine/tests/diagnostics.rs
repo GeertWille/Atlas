@@ -26,9 +26,8 @@ struct Bidder {
     name: &'static str,
     /// One entry per ad unit of [`UNITS`]; `None` leaves the bidder off it.
     params: [Option<Value>; 4],
-    /// Whether Prebid makes the request at all.
-    requested: bool,
-    bids: bool,
+    /// Per ad unit: a bid, or else a no-bid.
+    bids_on: [bool; 4],
     gdpr_applies: Option<bool>,
     has_consent_string: Option<bool>,
     schain: Vec<SchainNode>,
@@ -38,8 +37,7 @@ fn bidder(name: &'static str, params: Value) -> Bidder {
     Bidder {
         name,
         params: std::array::from_fn(|_| Some(params.clone())),
-        requested: true,
-        bids: true,
+        bids_on: [true; 4],
         gdpr_applies: None,
         has_consent_string: None,
         schain: vec![],
@@ -48,7 +46,7 @@ fn bidder(name: &'static str, params: Value) -> Bidder {
 
 fn silent(name: &'static str, params: Value) -> Bidder {
     Bidder {
-        bids: false,
+        bids_on: [false; 4],
         ..bidder(name, params)
     }
 }
@@ -89,13 +87,14 @@ fn page(bidders: &[Bidder], extra: Vec<TrackerEvent>) -> Capture {
             },
         ),
     ];
-    for bidder in bidders.iter().filter(|bidder| bidder.requested) {
-        let codes: Vec<&str> = UNITS
+    for bidder in bidders {
+        let units: Vec<(usize, &str)> = UNITS
             .iter()
             .enumerate()
             .filter(|(index, _)| bidder.params[*index].is_some())
-            .map(|(_, code)| *code)
+            .map(|(index, code)| (index, *code))
             .collect();
+        let codes: Vec<&str> = units.iter().map(|(_, code)| *code).collect();
         events.push(ev(
             1_010.0,
             Ev::BidRequested {
@@ -107,8 +106,8 @@ fn page(bidders: &[Bidder], extra: Vec<TrackerEvent>) -> Capture {
                 schain: bidder.schain.clone(),
             },
         ));
-        for code in codes {
-            events.push(if bidder.bids {
+        for (index, code) in units {
+            events.push(if bidder.bids_on[index] {
                 bid_response(1_200.0, "a1", bidder.name, code, 1.0)
             } else {
                 ev(
@@ -309,8 +308,8 @@ fn a_silent_bidder_gets_its_most_likely_cause_and_the_rest_keeps_the_generic_adv
         never_bid.description,
         "`appnexus`, `my-alias`, `seedtag` answered every bid request in this scan without a bid. One page view is a small \
          sample, so read the causes below as leads to confirm, not as a verdict.\n\n\
-         - `appnexus`: All 4 ad units use the same `placementId` (21804213) although their sizes differ\n\n\
-         - `seedtag`: ads.txt has no entry for seedtag.com\n\n\
+         - `appnexus`: All 4 ad units use the same `placementId` (21804213) although their sizes differ.\n\n\
+         - `seedtag`: ads.txt has no entry for seedtag.com.\n\n\
          - `my-alias`: the checks the scanner can run on its own (adapter params, the endpoint's answers, ads.txt, consent) \
          found nothing wrong. A bidder that never bids usually has wrong placement parameters, an unapproved domain \
          (ads.txt / sellers.json) or missing consent."
@@ -506,7 +505,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
     assert!(
         never_bid
             .description
-            .contains("- `appnexus`: The request to ib.adnxs.com failed on 1 of 3 bid requests Also: The bidder's endpoint answered HTTP 400"),
+            .contains("- `appnexus`: The request to ib.adnxs.com failed on 1 of 3 bid requests. Also: The bidder's endpoint answered HTTP 400"),
         "{}",
         never_bid.description
     );
@@ -515,47 +514,173 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
 }
 
 #[test]
-fn rejected_params_are_their_own_finding_because_the_bidder_is_never_asked() {
+fn rejected_params_are_reported_as_prebid_shows_them_requests_that_end_without_a_bid() {
+    // Prebid announces a bid whose params the adapter rejects, sends nothing
+    // for it and reports a no-bid.
     let mut triplelift = bidder("triplelift", json!({}));
     triplelift.params[0] = Some(json!({ "inventoryCode": "site_top" }));
     triplelift.params[3] = None;
-    let mut pubmatic = bidder("pubmatic", json!({ "publisherId": 160262 }));
-    pubmatic.requested = false;
+    triplelift.bids_on = [true, false, false, false];
+    let pubmatic = silent("pubmatic", json!({ "publisherId": 160262 }));
     let capture = page(&[triplelift, pubmatic], vec![]);
     let diagnosed = diagnose(
         &capture,
         &found("triplelift.com, 11582, DIRECT\npubmatic.com, 160262, DIRECT"),
     );
+    assert_eq!(
+        check_of(&diagnosed, "triplelift", "params-missing").ad_units,
+        ["rail", "article"]
+    );
 
+    // A bidder that bids where its params are right gets a finding of its own.
     let rejected = finding(&capture, &diagnosed, "bidder-params-invalid");
     assert_eq!(
         rejected.title,
-        "2 bidder(s) have adapter params the adapter rejects"
+        "1 bidder(s) have adapter params the adapter rejects"
     );
     assert_eq!(rejected.severity, Severity::High);
-    assert_eq!(rejected.affected_bidders, ["pubmatic", "triplelift"]);
-    assert_eq!(
-        rejected.affected_slots,
-        ["article", "footer", "rail", "top"]
-    );
+    assert_eq!(rejected.affected_bidders, ["triplelift"]);
+    assert_eq!(rejected.affected_slots, ["article", "rail"]);
     assert!(
-        rejected.description.ends_with(
-            "- `pubmatic`: `publisherId` must be a string, found the number 160262 on all 4 ad units\n\
-             - `triplelift`: `inventoryCode` missing on 2 of 3 ad units"
-        ),
+        rejected
+            .description
+            .ends_with("- `triplelift`: `inventoryCode` missing on 2 of 3 ad units"),
         "{}",
         rejected.description
     );
     assert_eq!(
         rejected.recommendation,
-        "Pass the param in the type the adapter expects; add the missing param to that bidder's entry in every ad unit \
-         (Prebid drops a bid whose params fail the adapter's own check before any request is made)."
+        "Add the missing param to that bidder's entry in every ad unit (Prebid sends nothing to a bidder whose params \
+         fail the adapter's own check and records a no-bid)."
+    );
+
+    // A bidder whose params are wrong everywhere never bids: the rejected
+    // params are the observed cause of that, reported once.
+    let never_bid = finding(&capture, &diagnosed, "bidders-never-bid");
+    assert_eq!(never_bid.affected_bidders, ["pubmatic"]);
+    assert_eq!(
+        (never_bid.severity, never_bid.confidence),
+        (Severity::Medium, 0.85)
+    );
+    assert!(
+        never_bid.description.ends_with(
+            "- `pubmatic`: `publisherId` must be a string, found the number 160262 on all 4 ad units."
+        ),
+        "{}",
+        never_bid.description
     );
     assert_eq!(
-        check_of(&diagnosed, "triplelift", "params-missing").ad_units,
-        ["rail", "article"]
+        never_bid.recommendation,
+        "1. Pass the param in the type the adapter expects."
     );
-    assert_eq!(fired(&capture, &diagnosed), ["bidder-params-invalid"]);
+    assert_eq!(
+        fired(&capture, &diagnosed),
+        ["bidders-never-bid", "bidder-params-invalid"]
+    );
+}
+
+#[test]
+fn prebids_own_rejection_is_used_where_the_table_knows_no_better() {
+    let warning = |message: &str| {
+        ev(
+            1_015.0,
+            Ev::PrebidLog {
+                level: "warning".into(),
+                message: message.into(),
+            },
+        )
+    };
+    let mut rubicon = bidder(
+        "rubicon",
+        json!({ "accountId": 1001, "siteId": 2, "zoneId": 3 }),
+    );
+    rubicon.bids_on = [true, true, true, false];
+    let mut triplelift = bidder("triplelift", json!({}));
+    triplelift.bids_on = [false; 4];
+    let capture = page(
+        &[
+            // An adapter the table does not know.
+            silent("acmeBidder", json!({ "zone": 7 })),
+            // Params the table accepts, turned down for a reason it does not model.
+            rubicon,
+            // Params the table itself finds wrong: the warning adds nothing.
+            triplelift,
+            bidder("pubmatic", json!({ "publisherId": "160262" })),
+        ],
+        vec![
+            warning(
+                r#"Invalid bid sent to bidder acmeBidder: {"bidder":"acmeBidder","params":{"zone":7}}"#,
+            ),
+            warning(
+                r#"Invalid bid sent to bidder acmeBidder: {"bidder":"acmeBidder","params":{"zone":7},"adUnitCode":"rail"}"#,
+            ),
+            warning(
+                r#"Invalid bid sent to bidder rubicon: {"bidder":"rubicon","mediaTypes":{"video":{}}}"#,
+            ),
+            warning(
+                r#"Invalid bid sent to bidder triplelift: {"bidder":"triplelift","params":{}}"#,
+            ),
+            // Another bidder whose code merely starts the same.
+            warning(r#"Invalid bid sent to bidder pubmaticServer: {"bidder":"pubmaticServer"}"#),
+            warning("Late response from pubmatic ignored"),
+        ],
+    );
+    let diagnosed = diagnose(
+        &capture,
+        &found(
+            "rubiconproject.com, 1001, DIRECT\npubmatic.com, 160262, DIRECT\ntriplelift.com, 1, DIRECT",
+        ),
+    );
+
+    let params = |name: &str| -> Vec<(DiagnosticStatus, String)> {
+        checks(&diagnosed, name)
+            .into_iter()
+            .filter(|(area, _, _)| *area == DiagnosticArea::Params)
+            .map(|(_, status, code)| (status, code))
+            .collect()
+    };
+    use DiagnosticStatus::{NotChecked, Pass, Problem};
+    assert_eq!(
+        params("acmeBidder"),
+        [
+            (Problem, "params-rejected".to_string()),
+            (NotChecked, "params-unknown-adapter".to_string()),
+        ]
+    );
+    let rejected = check_of(&diagnosed, "acmeBidder", "params-rejected");
+    assert_eq!(
+        (rejected.summary.as_str(), rejected.excerpt.as_deref()),
+        (
+            "Prebid reported 2 bids whose params the adapter itself rejected",
+            Some(
+                r#"Invalid bid sent to bidder acmeBidder: {"bidder":"acmeBidder","params":{"zone":7}}"#
+            )
+        )
+    );
+    assert_eq!(
+        params("rubicon"),
+        [(Problem, "params-rejected".to_string())]
+    );
+    assert_eq!(
+        params("triplelift"),
+        [(Problem, "params-missing".to_string())]
+    );
+    assert_eq!(params("pubmatic"), [(Pass, "params-ok".to_string())]);
+
+    // The unknown adapter never bids, and now there is a cause to name.
+    let never_bid = finding(&capture, &diagnosed, "bidders-never-bid");
+    assert_eq!(never_bid.affected_bidders, ["acmeBidder", "triplelift"]);
+    assert!(
+        never_bid.description.contains(
+            "- `acmeBidder`: Prebid reported 2 bids whose params the adapter itself rejected."
+        ),
+        "{}",
+        never_bid.description
+    );
+    assert_eq!(
+        finding(&capture, &diagnosed, "bidder-params-invalid").affected_bidders,
+        ["rubicon"]
+    );
 }
 
 #[test]

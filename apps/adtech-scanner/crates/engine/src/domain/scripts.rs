@@ -25,6 +25,8 @@ pub struct DescribedScript {
     pub ambiguous_hints: Option<Vec<String>>,
     /// How many kinds of ad stack calls the body makes.
     pub ad_api_calls: usize,
+    /// Whether the body configures or hooks into a consent platform.
+    pub sets_up_consent: bool,
 }
 
 /// One record per captured script, in capture order, with ids `s1`, `s2`, ...
@@ -100,6 +102,7 @@ fn describe_one(
         record,
         ambiguous_hints,
         ad_api_calls: knowledge::ad_api_calls(&script.body),
+        sets_up_consent: knowledge::sets_up_consent(&script.body),
     }
 }
 
@@ -116,7 +119,12 @@ pub fn select_for_analysis(
         .iter()
         .enumerate()
         .filter(|(_, script)| {
-            script.record.ad_related && ANALYZABLE.contains(&script.record.category)
+            let record = &script.record;
+            // A consent script that is no known vendor's library is the
+            // site's own consent setup, which decides when bidding may start.
+            let own_consent_setup =
+                record.category == ScriptCategory::Cmp && record.vendor.is_none();
+            record.ad_related && (ANALYZABLE.contains(&record.category) || own_consent_setup)
         })
         .map(|(index, _)| index)
         .collect();
@@ -154,6 +162,7 @@ fn analysis_rank(script: &DescribedScript) -> (u8, bool, std::cmp::Reverse<usize
     let tier = match record.category {
         ScriptCategory::Wrapper => 0,
         ScriptCategory::Prebid => 3,
+        ScriptCategory::Cmp => 1,
         _ if unsure => 2,
         _ => 1,
     };
@@ -357,6 +366,21 @@ mod tests {
             vec![4, 1, 5, 3, 2, 0],
             "first-party wrapper with most ad calls, inline snippet, third-party wrapper, likely, unsure, Prebid"
         );
+    }
+
+    #[test]
+    fn the_sites_own_consent_setup_is_analysed_and_a_vendors_consent_library_is_not() {
+        let mut described = describe(&capture_with(vec![
+            script("inline:1", true, "window.didomiConfig={app:{apiKey:'0'}}"),
+            script("https://sdk.privacy-center.org/loader.js", false, "lib()"),
+        ]));
+        assert!(described[0].sets_up_consent && !described[1].sets_up_consent);
+        // As script triage leaves the inline configuration.
+        described[0].record.category = ScriptCategory::Cmp;
+        described[0].record.ad_related = true;
+        described[0].record.ad_probability = Some(0.25);
+        assert_eq!(described[1].record.category, ScriptCategory::Cmp);
+        assert_eq!(select_for_analysis(&described, 10, 1e6), vec![0]);
     }
 
     #[test]
