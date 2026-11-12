@@ -1,9 +1,13 @@
+import { TablePropertiesIcon } from "lucide-react";
 import type { Auction } from "@/bindings";
 import { Panel } from "@/shared/components/panel";
+import { verdictSentence } from "@/shared/domain/exchange-verdict";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatCpm, formatDuration, formatOffset, pluralize } from "@/shared/lib/format";
+import { Button } from "@/shared/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { useReportLinks } from "../report-links";
 import { BID_STATUS_STYLE } from "./bid-status-style";
 import { layoutAuction, type WaterfallBar, type WaterfallGroup } from "./waterfall-layout";
 
@@ -11,7 +15,7 @@ import { layoutAuction, type WaterfallBar, type WaterfallGroup } from "./waterfa
 const GRID = "grid grid-cols-[168px_minmax(0,1fr)_76px]";
 const PLOT_INSET = "left-[168px] right-[76px]";
 
-function BidTooltip({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
+function BidTooltip({ bar, auction, opensExchange }: { bar: WaterfallBar; auction: Auction; opensExchange: boolean }) {
   const { bid } = bar;
   const rows: [string, string][] = [
     ["Status", BID_STATUS_META[bid.status].label],
@@ -38,6 +42,12 @@ function BidTooltip({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
         ))}
       </dl>
       <p className="text-muted-foreground">{BID_STATUS_META[bid.status].description}</p>
+      {bid.exchange ? (
+        <p className="border-t pt-1.5">
+          <span className="text-muted-foreground">On the network: </span>
+          {verdictSentence({ ...bid.exchange })}.{opensExchange ? " Click to open the exchange." : ""}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -47,13 +57,21 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
   const style = BID_STATUS_STYLE[bid.status];
   const Icon = style.icon;
   const meta = BID_STATUS_META[bid.status];
+  const links = useReportLinks();
+  const requestId = bid.exchange?.requestId ?? null;
+  const openRequest = links?.openRequest;
+  const open = requestId && openRequest ? () => openRequest(requestId) : undefined;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <li
           // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact values on focus
           tabIndex={0}
-          aria-label={`${bid.bidder}: ${meta.label}${bid.cpm === null ? "" : `, ${formatCpm(bid.cpm, bid.currency)}`}${bid.responseTimeMs === null ? "" : `, ${formatDuration(bid.responseTimeMs)}`}`}
+          aria-label={`${bid.bidder}: ${meta.label}${bid.cpm === null ? "" : `, ${formatCpm(bid.cpm, bid.currency)}`}${bid.responseTimeMs === null ? "" : `, ${formatDuration(bid.responseTimeMs)}`}${open ? ". Opens its exchange" : ""}`}
+          onClick={open}
+          onKeyDown={(event) => {
+            if (open && event.key === "Enter") open();
+          }}
           className={cn(
             GRID,
             "h-7 items-center rounded-md outline-offset-[-2px] hover:bg-accent/70",
@@ -87,7 +105,7 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
         </li>
       </TooltipTrigger>
       <TooltipContent side="top" align="center">
-        <BidTooltip bar={bar} auction={auction} />
+        <BidTooltip bar={bar} auction={auction} opensExchange={open !== undefined} />
       </TooltipContent>
     </Tooltip>
   );
@@ -119,6 +137,7 @@ export function AuctionWaterfall({ auction, index }: { auction: Auction; index: 
   const layout = layoutAuction(auction);
   const bidCount = auction.adUnits.reduce((sum, unit) => sum + unit.bids.length, 0);
   const hitTimeout = auction.timeoutMs !== null && (auction.durationMs ?? 0) >= auction.timeoutMs;
+  const openExchanges = useReportLinks()?.openExchanges;
 
   return (
     <Panel aria-label={`Auction ${index + 1}`} className="overflow-hidden">
@@ -132,6 +151,12 @@ export function AuctionWaterfall({ auction, index }: { auction: Auction; index: 
           {hitTimeout ? " (hit timeout)" : ""} · {pluralize(auction.adUnits.length, "ad unit")} ·{" "}
           {pluralize(bidCount, "bid request")}
         </p>
+        {openExchanges ? (
+          <Button variant="outline" size="sm" className="ml-auto" onClick={() => openExchanges(auction.id)}>
+            <TablePropertiesIcon />
+            Inspect exchanges
+          </Button>
+        ) : null}
       </header>
 
       <div className="relative px-1 pt-7 pb-2">

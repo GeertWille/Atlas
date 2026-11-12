@@ -3,11 +3,14 @@ import { ChevronRightIcon, FileQuestionIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
 import { ActivityFeed, LiveScanView } from "@/features/live-scan";
+import { NetworkDigest } from "@/features/network/NetworkDigest";
 import {
   isMultiPage,
   PageSwitcher,
   pageShowingScript,
   ReportHeader,
+  type ReportLinks,
+  ReportLinksProvider,
   ReportOverview,
   ScanOutcomeNotice,
   scopeReport,
@@ -61,67 +64,93 @@ function Report({ detail }: { detail: ScanDetail }) {
     auctions: scope.auctions.length,
     slots: scope.slots.length,
     scripts: scope.scripts.length,
+    // Only a scan with a request list has a number to show.
+    network: detail.network?.requestCount || undefined,
+  };
+  const scanId = detail.summary.id;
+  // A scan without a request list has nothing for its records to link to on the network side.
+  const hasRequests = (detail.network?.requestCount ?? 0) > 0;
+  const links: ReportLinks = {
+    openSource: ({ scriptId, line, to, finding }) =>
+      navigate({ to: "/scans/$scanId/source/$scriptId", params: { scanId, scriptId }, search: { line, to, finding } }),
+    openRequest: hasRequests
+      ? (requestId, part) =>
+          navigate({ to: "/scans/$scanId/network", params: { scanId }, search: { req: requestId, dt: part, page } })
+      : undefined,
+    openExchanges: hasRequests
+      ? (auction) =>
+          navigate({ to: "/scans/$scanId/network", params: { scanId }, search: { view: "bids", auction, page } })
+      : undefined,
   };
 
   return (
-    <PageContent className="animate-enter">
-      <ReportHeader detail={detail} />
-      {completed ? <ReportOverview detail={detail} /> : <ScanOutcomeNotice summary={detail.summary} />}
-      {completed ? (
-        <PageSwitcher
-          pages={detail.pages}
-          selected={scope.selected}
-          onSelect={(next) => navigate({ search: { tab, page: next ?? undefined }, replace: true })}
-        />
-      ) : null}
-      <Tabs
-        value={tab}
-        onValueChange={(next) => navigate({ search: { tab: next as ReportTab, page }, replace: true })}
-        className="flex flex-col gap-4"
-      >
-        <TabsList>
-          {tabs.map((value) => (
-            <TabsTrigger key={value} value={value}>
-              {TAB_LABEL[value]}
-              {counts[value] !== undefined ? <TabCount value={counts[value]} /> : null}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-        <TabsContent value="findings">
-          <FindingsTab
-            findings={scope.findings}
+    <ReportLinksProvider value={links}>
+      <PageContent className="animate-enter">
+        <ReportHeader detail={detail} />
+        {completed ? <ReportOverview detail={detail} /> : <ScanOutcomeNotice summary={detail.summary} />}
+        {completed ? (
+          <PageSwitcher
             pages={detail.pages}
-            focusedFindingId={search.finding}
-            onOpenScript={(script) =>
-              navigate({ search: { tab: "scripts", script, page: pageShowingScript(scope, script) } })
-            }
+            selected={scope.selected}
+            onSelect={(next) => navigate({ search: { tab, page: next ?? undefined }, replace: true })}
           />
-        </TabsContent>
-        <TabsContent value="auctions">
-          <AuctionsTab auctions={scope.auctions} diagnostics={detail.bidderDiagnostics} pages={scope.groups} />
-        </TabsContent>
-        <TabsContent value="slots">
-          <SlotsTab slots={scope.slots} metrics={scope.markers} pages={scope.groups} />
-        </TabsContent>
-        <TabsContent value="scripts">
-          <ScriptsTab scripts={scope.scripts} focusedScriptUrl={search.script} showPages={isMultiPage(detail)} />
-        </TabsContent>
-        <TabsContent value="audit">
-          {logs.isError ? (
-            <QueryError title="Could not load the audit trail" error={logs.error} onRetry={() => void logs.refetch()} />
-          ) : (
-            <AuditTrail
-              // A new deep link starts from an unfiltered trail, so its entry is never hidden.
-              key={search.log}
-              steps={detail.steps}
-              logs={logs.data}
-              focusedLogId={search.log}
-              onOpenFinding={(finding) => navigate({ search: { tab: "findings", finding } })}
+        ) : null}
+        <Tabs
+          value={tab}
+          onValueChange={(next) => navigate({ search: { tab: next as ReportTab, page }, replace: true })}
+          className="flex flex-col gap-4"
+        >
+          <TabsList>
+            {tabs.map((value) => (
+              <TabsTrigger key={value} value={value}>
+                {TAB_LABEL[value]}
+                {counts[value] !== undefined ? <TabCount value={counts[value]} /> : null}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          <TabsContent value="findings">
+            <FindingsTab
+              findings={scope.findings}
+              pages={detail.pages}
+              focusedFindingId={search.finding}
+              onOpenScript={(script) =>
+                navigate({ search: { tab: "scripts", script, page: pageShowingScript(scope, script) } })
+              }
             />
-          )}
-        </TabsContent>
-      </Tabs>
-    </PageContent>
+          </TabsContent>
+          <TabsContent value="auctions">
+            <AuctionsTab auctions={scope.auctions} diagnostics={detail.bidderDiagnostics} pages={scope.groups} />
+          </TabsContent>
+          <TabsContent value="slots">
+            <SlotsTab slots={scope.slots} metrics={scope.markers} pages={scope.groups} />
+          </TabsContent>
+          <TabsContent value="scripts">
+            <ScriptsTab scripts={scope.scripts} focusedScriptUrl={search.script} showPages={isMultiPage(detail)} />
+          </TabsContent>
+          <TabsContent value="network">
+            <NetworkDigest detail={detail} page={page} />
+          </TabsContent>
+          <TabsContent value="audit">
+            {logs.isError ? (
+              <QueryError
+                title="Could not load the audit trail"
+                error={logs.error}
+                onRetry={() => void logs.refetch()}
+              />
+            ) : (
+              <AuditTrail
+                // A new deep link starts from an unfiltered trail, so its entry is never hidden.
+                key={search.log}
+                steps={detail.steps}
+                logs={logs.data}
+                focusedLogId={search.log}
+                onOpenFinding={(finding) => navigate({ search: { tab: "findings", finding } })}
+              />
+            )}
+          </TabsContent>
+        </Tabs>
+      </PageContent>
+    </ReportLinksProvider>
   );
 }
 

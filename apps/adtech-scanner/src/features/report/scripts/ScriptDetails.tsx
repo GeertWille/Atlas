@@ -1,4 +1,4 @@
-import { XIcon } from "lucide-react";
+import { FileCode2Icon, NetworkIcon, XIcon } from "lucide-react";
 import type { ScriptRecord } from "@/bindings";
 import { CopyButton } from "@/shared/components/copy-button";
 import { modelLabel } from "@/shared/domain/model-pricing";
@@ -6,6 +6,7 @@ import { FINDING_SOURCE_LABEL, scriptCategoryLabel } from "@/shared/domain/vocab
 import { EMPTY, formatBytes, formatOffset, formatPercent } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Hint } from "@/shared/ui/tooltip";
+import { useReportLinks } from "../report-links";
 
 function Fact({ label, value }: { label: string; value: string }) {
   return (
@@ -17,6 +18,9 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClose: () => void }) {
+  const links = useReportLinks();
+  const { requestId } = script;
+  const openRequest = links?.openRequest;
   return (
     <section aria-label="Script details" className="flex animate-enter flex-col gap-3 border-t bg-muted/30 px-4 py-3.5">
       <div className="flex items-start gap-2">
@@ -24,6 +28,18 @@ export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClo
           {script.url}
           <span className="ml-2 text-subtle-foreground">sha-256 {script.hash}</span>
         </p>
+        {links ? (
+          <Button variant="outline" size="sm" onClick={() => links.openSource({ scriptId: script.id })}>
+            <FileCode2Icon />
+            View source
+          </Button>
+        ) : null}
+        {requestId && openRequest ? (
+          <Button variant="outline" size="sm" onClick={() => openRequest(requestId)}>
+            <NetworkIcon />
+            View request
+          </Button>
+        ) : null}
         <CopyButton text={script.url} label="Copy URL" />
         <Hint label="Close details">
           <Button variant="ghost" size="icon-sm" aria-label="Close details" onClick={onClose}>

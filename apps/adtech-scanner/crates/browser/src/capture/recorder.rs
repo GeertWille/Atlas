@@ -16,6 +16,7 @@ use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesUnordered;
 use futures_util::{FutureExt, StreamExt};
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::cdp::{Cdp, CdpError, CdpEvent};
@@ -151,6 +152,9 @@ pub(crate) struct Recorder {
     /// Wall-clock start of the latest main-frame document request, epoch ms.
     document_requested_at: Option<f64>,
     fetches: FuturesUnordered<BoxFuture<'static, Fetched>>,
+    /// Triggered when the target of a session is gone, by session: what was
+    /// asked of it will not be answered.
+    targets_gone: HashMap<String, CancellationToken>,
     third_party_hosts: BTreeSet<String>,
     milestones: Milestones,
     on_activity: ActivitySink,
@@ -187,6 +191,7 @@ impl Recorder {
             document_statuses: HashMap::new(),
             document_requested_at: None,
             fetches: FuturesUnordered::new(),
+            targets_gone: HashMap::new(),
             third_party_hosts: BTreeSet::new(),
             milestones: Milestones::default(),
             on_activity,
@@ -512,16 +517,48 @@ impl Recorder {
         }
     }
 
+    /// The target of a session is gone: a closed tab, a removed frame, a
+    /// worker that ended.
+    pub(crate) fn target_gone(&mut self, session_id: &str) {
+        if let Some(gone) = self.targets_gone.remove(session_id) {
+            gone.cancel();
+        }
+    }
+
+    /// Asks the session that has a request for one of its bodies. Chrome
+    /// does not always answer a session whose target went away meanwhile;
+    /// then the answer is that it is gone.
+    fn ask_for_body(
+        &mut self,
+        cdp: &Cdp,
+        session: &str,
+        method: &'static str,
+        request_id: &str,
+    ) -> impl Future<Output = Result<Value, CdpError>> + Send + 'static + use<> {
+        let gone = self
+            .targets_gone
+            .entry(session.to_string())
+            .or_default()
+            .clone();
+        let response = cdp.send(Some(session), method, json!({ "requestId": request_id }));
+        async move {
+            tokio::select! {
+                biased;
+                response = response => response,
+                _ = gone.cancelled() => Err(CdpError::Rejected {
+                    method,
+                    message: "the frame or worker that loaded it is gone".into(),
+                }),
+            }
+        }
+    }
+
     fn ask_for_request_body(&mut self, seq: u32, session: &str, request_id: &str, cdp: &Cdp) {
         if self.sink.is_none() {
             let settled = self.requests.post_data_settled(seq, None, epoch_ms_now());
             return self.hand_over(settled);
         }
-        let response = cdp.send(
-            Some(session),
-            "Network.getRequestPostData",
-            json!({ "requestId": request_id }),
-        );
+        let response = self.ask_for_body(cdp, session, "Network.getRequestPostData", request_id);
         self.fetches.push(
             response
                 .map(move |response| Fetched::RequestBody { seq, response })
@@ -597,10 +634,11 @@ impl Recorder {
             }
             wanted => wanted,
         };
-        let response = cdp.send(
-            Some(&finished.session),
+        let response = self.ask_for_body(
+            cdp,
+            &finished.session,
             "Network.getResponseBody",
-            json!({ "requestId": finished.request_id }),
+            &finished.request_id,
         );
         let seq = finished.seq;
         self.fetches.push(

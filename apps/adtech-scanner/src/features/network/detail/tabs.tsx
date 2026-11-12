@@ -52,12 +52,24 @@ function AdContextFacts({
   row: NetworkRow;
 }) {
   const scanId = scan.summary.id;
-  const { ad } = row;
   const context = detail?.adContext;
-  if (!ad && row.category !== "adServer" && row.category !== "bid") return null;
-  const auctionNumber = ad ? scan.auctions.findIndex((auction) => auction.id === ad.auctionId) + 1 : 0;
   const isBid = row.category === "bid";
-  const findings = scan.findings.filter((finding) => context?.findingIds.includes(finding.id));
+  if (!isBid && row.category !== "adServer") return null;
+  // An ad-server call is tied to its slot by the slot's own record of the request, and through the slot to its auction.
+  const slot = isBid
+    ? undefined
+    : scan.slots.find((candidate) => candidate.requests.some((request) => request.requestId === row.id));
+  const auctionId =
+    row.ad?.auctionId ??
+    scan.auctions.find(
+      (auction) => slot && auction.page === slot.page && auction.adUnits.some((unit) => unit.code === slot.elementId),
+    )?.id;
+  const auctionNumber = scan.auctions.findIndex((auction) => auction.id === auctionId) + 1;
+  const findings = scan.findings.filter(
+    (finding) =>
+      context?.findingIds.includes(finding.id) ||
+      (slot !== undefined && finding.affectedSlots.includes(slot.elementId)),
+  );
   const checks = (scan.bidderDiagnostics?.bidders ?? [])
     .flatMap((bidder) => bidder.checks.map((check) => ({ bidder: bidder.bidder, check })))
     .filter(
@@ -65,11 +77,25 @@ function AdContextFacts({
         context?.checkCodes.includes(check.code) &&
         (check.requestIds.includes(row.id) || check.requestIds.length === 0),
     );
+  const { ad } = row;
+  // A preflight is filed with the bid call it clears the way for, and has no outcome of its own.
+  if (isBid && row.kind === "preflight") {
+    return (
+      <>
+        <Heading>Ad context</Heading>
+        <dl>
+          <Fact label="Role">
+            The browser's permission check (CORS preflight) before a bid request to this endpoint.
+          </Fact>
+        </dl>
+      </>
+    );
+  }
   return (
     <>
       <Heading>Ad context</Heading>
       <dl>
-        {ad ? (
+        {auctionNumber > 0 ? (
           <Fact label="Auction">
             <Link
               to="/scans/$scanId"
@@ -77,16 +103,16 @@ function AdContextFacts({
               search={{ tab: "auctions", page: row.page }}
               className={linkClass}
             >
-              Auction {auctionNumber > 0 ? auctionNumber : ad.auctionId}
+              Auction {auctionNumber}
             </Link>
             <span className="text-muted-foreground">
               {" "}
               ·{" "}
-              {isBid
-                ? ad.exact
+              {!ad
+                ? "the auction this slot's ad unit was in"
+                : ad.exact
                   ? "matched by an id in the request"
-                  : "matched by bidder and timing"
-                : "the auction of this slot's bids"}
+                  : "matched by bidder and timing"}
             </span>
           </Fact>
         ) : (
@@ -94,14 +120,14 @@ function AdContextFacts({
             <span className="text-muted-foreground">
               {isBid
                 ? "Not tied to a Prebid auction: this call was made outside Prebid"
-                : "No auction ran for this slot"}
+                : "No Prebid auction is known for this ad request"}
             </span>
           </Fact>
         )}
         {isBid ? (
           <Fact label="Bidder">{row.bidder ?? (ad?.viaServer ? "Prebid Server, for several bidders" : EMPTY)}</Fact>
         ) : null}
-        {context?.slotElementId ? (
+        {slot ? (
           <Fact label="Slot">
             <Link
               to="/scans/$scanId"
@@ -109,7 +135,7 @@ function AdContextFacts({
               search={{ tab: "slots", page: row.page }}
               className={cn(linkClass, "font-mono")}
             >
-              {context.slotElementId}
+              {slot.elementId}
             </Link>
           </Fact>
         ) : ad ? (
@@ -502,7 +528,11 @@ export function TimingTab({ detail }: { detail: NetworkRequestDetail }) {
   const present = phases.filter((phase): phase is [string, number, string] => phase[1] !== null);
   const total = present.reduce((sum, [, ms]) => sum + ms, 0) || 1;
   let offset = 0;
-  const close = adContext?.auctionEndedAtMs ?? null;
+  // The deadline the answer was held to: the auction's start plus its timeout.
+  const close =
+    adContext?.auctionStartedAtMs != null && adContext.timeoutMs !== null
+      ? adContext.auctionStartedAtMs + adContext.timeoutMs
+      : (adContext?.auctionEndedAtMs ?? null);
   const end = timing.finishedAtMs;
   return (
     <div className="pb-3">
@@ -541,7 +571,7 @@ export function TimingTab({ detail }: { detail: NetworkRequestDetail }) {
         ) : null}
         {close !== null && row.category === "bid" && row.ad ? (
           <Fact label="Its auction">
-            closed at {formatDuration(close)}.{" "}
+            closes at {formatDuration(close)}.{" "}
             {verdictSentence({
               verdict: row.ad.verdict,
               lateByMs: row.ad.lateByMs,

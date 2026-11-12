@@ -140,7 +140,8 @@ impl Drop for DemoSite {
 }
 
 /// Serve the bundled demo publisher page (with planted ad-stack bugs) on a random
-/// loopback port. Works fully offline.
+/// loopback port, with its stand-in ad-tech partners on two more. Works fully
+/// offline.
 pub async fn start_demo_site() -> std::io::Result<DemoSite> {
     demo::start().await
 }

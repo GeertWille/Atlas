@@ -65,14 +65,25 @@ function flavorOf(script: ScriptRecord): CodeFlavor {
   return script.category === "application" ? "application" : "library";
 }
 
+/**
+ * What an inline analytics snippet can look like: markup inside a string, and a right-to-left override
+ * that makes a comment read differently from what runs. The viewer has to show both as plain text.
+ */
+const UNTRUSTED_LINES = [
+  "var fallbackPixel = '<img src=x onerror=\"document.title=\\'owned\\'\">';",
+  "var accessLevel = 'user\u202E \u2066// admins only\u2069 \u2066';",
+].join("\n");
+
 function build(detail: ScanDetail, script: ScriptRecord): BuiltSource {
-  const excerpts = detail.findings.flatMap((finding) =>
+  const planted = script.url.endsWith("#script-7") ? [{ line: 3, body: UNTRUSTED_LINES }] : [];
+  const cited = detail.findings.flatMap((finding) =>
     finding.evidence.flatMap((evidence) =>
       evidence.kind === "code" && evidence.scriptId === script.id && evidence.line !== null
         ? [{ line: evidence.line, body: evidence.body }]
         : [],
     ),
   );
+  const excerpts = [...planted, ...cited];
   const lineCount = isLargeFile(script)
     ? LARGE_FILE_LINES
     : Math.min(MAX_GENERATED_LINES, Math.max(12, Math.round(script.sizeBytes / BYTES_PER_LINE)));

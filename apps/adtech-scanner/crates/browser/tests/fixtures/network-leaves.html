@@ -2,8 +2,9 @@
 <title>A page that leaves its site</title>
 <script>
   fetch('/status/200?before-leaving').then(function (answer) { return answer.text(); }).then(function () {
+    // Late enough for the scanner to have settled on the page it opened.
     setTimeout(function () {
       location.href = 'http://localhost:' + location.port + '/network-elsewhere.html';
-    }, 300);
+    }, 1500);
   });
 </script>

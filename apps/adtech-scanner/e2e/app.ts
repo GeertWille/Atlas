@@ -8,15 +8,17 @@ type FakeOptions = {
   speed?: number;
   /** `fail`: Jev System One stops answering part-way through script triage. */
   jev?: "ok" | "fail";
+  /** Every scan's request list is padded to this many rows. */
+  rows?: number;
 };
 
 /** Opens the app at a hash route with the fake backend configured through its query parameters. */
 export async function openApp(
   page: Page,
   route = "/",
-  { profile = "seeded", speed = 40, jev = "ok" }: FakeOptions = {},
+  { profile = "seeded", speed = 40, jev = "ok", rows = 0 }: FakeOptions = {},
 ) {
-  await page.goto(`/?fakeProfile=${profile}&fakeSpeed=${speed}&fakeJev=${jev}#${route}`);
+  await page.goto(`/?fakeProfile=${profile}&fakeSpeed=${speed}&fakeJev=${jev}&fakeRows=${rows}#${route}`);
   // The shell (and with it the global shortcuts) is mounted once the sidebar renders.
   await expect(page.getByRole("button", { name: /New scan/ })).toBeVisible();
 }

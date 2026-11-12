@@ -189,10 +189,36 @@ export function SourceViewer({
   );
   const togglePanel = () => (compact ? setDrawerOpen(!drawerOpen) : setPanelPinned(!panelPinned));
 
-  /** Goes to a place in the file; the selection that follows writes it to the URL. */
+  /** The span this screen last put in the URL: seeing it come back is an echo, not a request to move. */
+  const written = useRef<LineSpan | null>(null);
+  /** The line a jump left the caret on. A caret that is still there is not a selection the user made. */
+  const settled = useRef<number | null>(null);
+  const positioned = useRef<EditorView | null>(null);
+  const urlTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const placeKey = `${scanId}|${script.id}|${viewKind}`;
+
+  // The delayed write must change the URL as it is then, not as it was when the caret moved.
+  const latestSearch = useRef(search);
+  useEffect(() => {
+    latestSearch.current = search;
+  }, [search]);
+
+  const writeSpan = (span: LineSpan) => {
+    clearTimeout(urlTimer.current);
+    urlTimer.current = setTimeout(() => {
+      const current = latestSearch.current;
+      if (sameSpan(span, searchToSpan(current, lineCount))) return;
+      written.current = span;
+      onSearchChange({ ...current, ...spanToSearch(span), finding: undefined, oline: undefined, ocol: undefined });
+    }, URL_WRITE_DELAY_MS);
+  };
+
+  /** Goes to a place in the file and names it in the URL, so a reload comes back to it. */
   const goTo = (line: number, endLine = line, lens?: string) => {
     if (!view) return;
+    settled.current = line;
     jumpToLine(view, line, endLine);
+    writeSpan({ from: line, to: endLine });
     if (lens) actions.showLens(lens);
   };
 
@@ -219,11 +245,6 @@ export function SourceViewer({
   const wantedTo = wanted?.to;
   const linkedLens = linkedMark ? lensKey(linkedMark) : undefined;
 
-  /** The span this screen last put in the URL: seeing it come back is an echo, not a request to move. */
-  const written = useRef<LineSpan | null>(null);
-  const positioned = useRef<EditorView | null>(null);
-  const placeKey = `${scanId}|${script.id}|${viewKind}`;
-
   useEffect(() => {
     if (!view) return;
     const fresh = positioned.current !== view;
@@ -238,6 +259,7 @@ export function SourceViewer({
     const span = { from: wantedFrom, to: wantedTo };
     if (sameSpan(span, written.current)) return;
     written.current = span;
+    settled.current = span.from;
     jumpToLine(view, span.from, span.to);
     if (linkedLens) actions.showLens(linkedLens);
   }, [view, wantedFrom, wantedTo, linkedLens, placeKey, actions]);
@@ -264,7 +286,6 @@ export function SourceViewer({
     };
   }, [view, placeKey]);
 
-  const urlTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(urlTimer.current), []);
 
   const onUpdate = (update: ViewUpdate) => {
@@ -283,12 +304,9 @@ export function SourceViewer({
       selectedLines: main.empty ? 0 : span.to - span.from + 1,
     });
     rememberPlace(placeKey, update.view);
-    clearTimeout(urlTimer.current);
-    urlTimer.current = setTimeout(() => {
-      if (sameSpan(span, searchSpan)) return;
-      written.current = span;
-      onSearchChange({ ...search, ...spanToSearch(span), finding: undefined, oline: undefined, ocol: undefined });
-    }, URL_WRITE_DELAY_MS);
+    if (main.empty && headLine.number === settled.current) return;
+    settled.current = null;
+    writeSpan(span);
   };
 
   useEffect(() => {

@@ -4,10 +4,13 @@
  * for wrappers and monitoring tools to behave as they do against the real
  * library. Each bidder has a latency and CPM range, and every outcome is
  * derived from a seeded hash, so runs are repeatable. Like a real adapter,
- * each bidder posts an OpenRTB request to its exchange and reads the bids
- * from the answer. The exchanges are stand-ins on the demo server that
- * answer what the request's `ext.standin` tells them to, after the latency
- * it names: the simulation stays here, the round trip is real.
+ * each bidder posts an OpenRTB request to its exchange. The exchanges are
+ * stand-ins on the demo server that answer what the request's `ext.standin`
+ * tells them to, after the latency it names, so the request and its answer
+ * are on the network as a real bidder's would be. What the page does with a
+ * bid, and when, stays with the seeded simulation and its timers: how long a
+ * round trip takes on a busy machine must not decide which bidder is late.
+ * One bidder's exchange decides for itself and is waited for.
  */
 (function (root) {
   'use strict';
@@ -47,19 +50,22 @@
   var IDENTITY_ORIGIN = '%IDENTITY_ORIGIN%';
 
   // latency in ms, cpm in USD, bidRate = share of requests answered with a
-  // bid, endpoint = where the bidder's exchange is asked. The appnexus
+  // bid, endpoint = where the bidder's exchange is asked. The latencies of
+  // the bidders that answer in time leave the round trip to the exchange
+  // more than 100 ms of the 250 ms the wrapper gives an auction. The appnexus
   // exchange is at another origin and takes JSON, so the browser sends a
   // CORS preflight first; the others get a plain-text POST, as most real
   // adapters send to avoid exactly that. The openx exchange ignores what it
-  // is told and always answers with a no-bid reason.
+  // is told and always answers with a no-bid reason (`decides`): that
+  // answer is what the page goes by.
   var BIDDERS = {
-    appnexus: { latency: [70, 150], cpm: [0.35, 1.9], bidRate: 0.95, endpoint: PARTNER_ORIGIN + '/ut/v3/prebid', json: true },
-    rubicon: { latency: [105, 195], cpm: [0.45, 2.4], bidRate: 0.9, endpoint: '/a/api/fastlane.json' },
-    ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0, endpoint: '/openrtb/pbjs' },
+    appnexus: { latency: [40, 100], cpm: [0.35, 1.9], bidRate: 0.95, endpoint: PARTNER_ORIGIN + '/ut/v3/prebid', json: true },
+    rubicon: { latency: [60, 120], cpm: [0.45, 2.4], bidRate: 0.9, endpoint: '/a/api/fastlane.json' },
+    ix: { latency: [70, 130], cpm: [0.3, 1.6], bidRate: 0, endpoint: '/openrtb/pbjs' },
     pubmatic: { latency: [330, 620], cpm: [1.8, 4.6], bidRate: 1, endpoint: '/translator' },
     criteo: { latency: [1500, 2100], cpm: [0.6, 2.2], bidRate: 1, endpoint: '/openrtb_2_5/pbjs/auction/request' },
-    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 1, endpoint: '/header/auction' },
-    openx: { latency: [0, 0], cpm: [0, 0], bidRate: 0, endpoint: '/openrtbb/prebidjs' },
+    triplelift: { latency: [60, 110], cpm: [0.4, 1.5], bidRate: 1, endpoint: '/header/auction' },
+    openx: { latency: [0, 0], cpm: [0, 0], bidRate: 0, endpoint: '/openrtbb/prebidjs', decides: true },
   };
 
   // What each adapter's isBidRequestValid insists on. As in the real library,
@@ -422,15 +428,28 @@
     var decided = validBids.map(simulate);
     // One HTTP round trip per bidder: every bid of the request arrives together.
     var latency = Math.round(between(profile.latency, decided[0].latencyDraw));
-    askExchange(profile, auction, bidderRequest, validBids, decided, latency).then(function (answer) {
-      if (answer.failure) {
-        emit('bidderError', { error: answer.failure, bidderRequest: bidderRequest });
-        // A failed request leaves its bids unanswered.
-        settle(auction, bidderRequest, [], startedAt);
-        return;
-      }
-      settle(auction, bidderRequest, outcomesOf(answer.response, bidderRequest.bids), startedAt);
+    var asked = askExchange(profile, auction, bidderRequest, validBids, decided, latency);
+    if (profile.decides) {
+      asked.then(function (answer) {
+        if (answer.failure) {
+          emit('bidderError', { error: answer.failure, bidderRequest: bidderRequest });
+          // A failed request leaves its bids unanswered.
+          settle(auction, bidderRequest, [], startedAt);
+          return;
+        }
+        settle(auction, bidderRequest, outcomesOf(answer.response, bidderRequest.bids), startedAt);
+      });
+      return;
+    }
+    // The exchange answers what was decided here, at about this time; the
+    // page does not wait to be told.
+    var outcomes = bidderRequest.bids.map(function (bid) {
+      var index = validBids.indexOf(bid);
+      return index >= 0 ? decided[index] : { bids: false };
     });
+    setTimeout(function () {
+      settle(auction, bidderRequest, outcomes, startedAt);
+    }, latency);
   }
 
   // Posts the OpenRTB request for the valid bids to the bidder's exchange and

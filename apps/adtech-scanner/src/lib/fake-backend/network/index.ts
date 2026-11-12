@@ -402,15 +402,13 @@ function redirectChain(network: FakeNetwork, draft: RequestDraft) {
   return chain.length > 1 ? chain.map((hop) => ({ requestId: hop.id, url: hop.url, status: hop.status })) : [];
 }
 
+/** Bid requests only: an ad-server call is tied to its slot by the slot's own request id. */
 function adContext(detail: ScanDetail, draft: RequestDraft): AdContext | null {
-  if (!draft.ad) return null;
+  if (!draft.ad || !draft.exchange) return null;
   const auction = detail.auctions.find((candidate) => candidate.id === draft.ad?.auctionId);
-  const bidders = draft.exchange ? [...new Set(draft.exchange.units.map((unit) => unit.bid.bidder))] : [];
-  const slot = draft.slotElementId;
-  const findings = detail.findings.filter(
-    (finding) =>
-      finding.affectedBidders.some((bidder) => bidders.includes(bidder)) ||
-      (slot !== null && finding.affectedSlots.includes(slot)),
+  const bidders = [...new Set(draft.exchange.units.map((unit) => unit.bid.bidder))];
+  const findings = detail.findings.filter((finding) =>
+    finding.affectedBidders.some((bidder) => bidders.includes(bidder)),
   );
   const checks = (detail.bidderDiagnostics?.bidders ?? [])
     .filter((diagnosis) => bidders.includes(diagnosis.bidder))
@@ -419,7 +417,7 @@ function adContext(detail: ScanDetail, draft: RequestDraft): AdContext | null {
   return {
     link: draft.ad,
     bidder: draft.bidder,
-    units: (draft.exchange?.units ?? []).map((unit) => ({
+    units: draft.exchange.units.map((unit) => ({
       adUnit: unit.code,
       status: unit.bid.status,
       cpm: unit.bid.cpm,
@@ -428,7 +426,7 @@ function adContext(detail: ScanDetail, draft: RequestDraft): AdContext | null {
     auctionStartedAtMs: auction?.startedAtMs ?? null,
     auctionEndedAtMs: auction?.endedAtMs ?? null,
     timeoutMs: auction?.timeoutMs ?? null,
-    slotElementId: slot,
+    slotElementId: null,
     findingIds: findings.map((finding) => finding.id),
     checkCodes: [...new Set(checks.map((check) => check.code))],
   };
@@ -547,10 +545,6 @@ function responseCheck(drafts: RequestDraft[]): DiagnosticCheck | null {
  * script, bidder check and piece of evidence the id of its request.
  */
 export function recordNetwork(detail: ScanDetail, mode: ArchiveMode): void {
-  if (!mode.keep) {
-    detail.network = { ...EMPTY_ARCHIVE, availability: "disabled", headersRedacted: mode.redactHeaders };
-    return;
-  }
   const plan: NetworkPlan = planNetwork(detail, mode.padTo);
   const { links, drafts } = plan;
   for (const auction of detail.auctions) {
@@ -559,9 +553,14 @@ export function recordNetwork(detail: ScanDetail, mode: ArchiveMode): void {
         const link = links.bids.get(bid);
         if (!link) continue;
         const { draft, ...facts } = link;
-        bid.exchange = { ...facts, requestId: draft?.id ?? null };
+        // Bid calls are read while they pass even when nothing is stored: the verdict is known, the request is not kept.
+        bid.exchange = { ...facts, requestId: mode.keep ? (draft?.id ?? null) : null };
       }
     }
+  }
+  if (!mode.keep) {
+    detail.network = { ...EMPTY_ARCHIVE, availability: "disabled", headersRedacted: mode.redactHeaders };
+    return;
   }
   for (const slot of detail.slots) {
     for (const request of slot.requests) request.requestId = links.slotRequests.get(request)?.id ?? null;

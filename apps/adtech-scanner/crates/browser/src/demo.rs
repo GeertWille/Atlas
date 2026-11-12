@@ -248,7 +248,11 @@ pub(crate) async fn start() -> std::io::Result<DemoSite> {
             tokio::select! {
                 _ = stopped.cancelled() => break,
                 // Accepted and dropped: the caller gets an empty reply.
-                accepted = hangs_up.accept() => drop(accepted),
+                accepted = hangs_up.accept() => {
+                    if accepted.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -321,14 +325,7 @@ fn file(site: &Site, path: &str, method: &Method) -> Response {
     if method != Method::GET && method != Method::HEAD {
         return StatusCode::METHOD_NOT_ALLOWED.into_response();
     }
-    (
-        [
-            (header::CONTENT_TYPE, HeaderValue::from_static(content_type)),
-            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
-        ],
-        body,
-    )
-        .into_response()
+    typed(content_type, body)
 }
 
 fn typed(content_type: &'static str, body: impl Into<Bytes>) -> Response {
@@ -501,7 +498,7 @@ mod tests {
         String::from_utf8(body.to_vec()).unwrap()
     }
 
-    fn header_of<'a>(response: &'a Response, name: header::HeaderName) -> &'a str {
+    fn header_of(response: &Response, name: header::HeaderName) -> &str {
         response
             .headers()
             .get(name)

@@ -151,7 +151,12 @@ export function SidePanel({
         </Section>
 
         <Section title="Ad API calls" count={source.adCalls.length}>
-          {source.adCalls.length === 0 ? (
+          {!formatted && source.lineCount <= 1 && source.adCalls.length > 0 ? (
+            <Note>
+              This file calls {[...new Set(source.adCalls.map((call) => call.name))].join(", ")}. The original is one
+              line: switch to Formatted to go to each call.
+            </Note>
+          ) : source.adCalls.length === 0 ? (
             <Note>No call into Prebid, Google Publisher Tag, Amazon or the consent API was found in this file.</Note>
           ) : (
             <ul className="pb-1.5">

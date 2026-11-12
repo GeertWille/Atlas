@@ -57,7 +57,7 @@ Rules that came from you and must keep holding:
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
 | Tauri shell (33 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 3 real-browser pipeline tests on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, and every command's contract. Not run on macOS. |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract. Not run on macOS. |
 
 The checkpoint commit that adds this file contains the frontend exactly as the build agent left it
 mid-work. Expect `pnpm typecheck` and `pnpm lint` to fail until the frontend is finished.

@@ -65,10 +65,19 @@ impl ChildTargets {
         self.by_session.remove(session_id);
     }
 
-    /// A tab closed: what was below it is gone with it.
-    pub(crate) fn tab_closed(&mut self, tab_session: &str) {
-        self.by_session
-            .retain(|_, child| child.tab_session.as_deref() != Some(tab_session));
+    /// A tab closed: what was below it is gone with it. Returns the
+    /// sessions of those targets.
+    pub(crate) fn tab_closed(&mut self, tab_session: &str) -> Vec<String> {
+        let gone: Vec<String> = self
+            .by_session
+            .iter()
+            .filter(|(_, child)| child.tab_session.as_deref() == Some(tab_session))
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        for session_id in &gone {
+            self.by_session.remove(session_id);
+        }
+        gone
     }
 
     pub(crate) fn get(&self, session_id: &str) -> Option<&ChildTarget> {
@@ -140,7 +149,9 @@ mod tests {
         targets.attached(Some("tab"), true, &attached("iframe", "frame"));
         targets.attached(Some("frame"), false, &attached("worker", "worker"));
         targets.attached(Some("other-tab"), true, &attached("iframe", "other"));
-        targets.tab_closed("tab");
+        let mut gone = targets.tab_closed("tab");
+        gone.sort();
+        assert_eq!(gone, ["frame", "worker"]);
         assert!(targets.get("frame").is_none() && targets.get("worker").is_none());
         assert!(targets.get("other").is_some());
 

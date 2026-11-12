@@ -44,13 +44,10 @@ class FindingGutterMarker extends GutterMarker {
     const { severity, located, marks } = this.mark;
     const label = SEVERITY_META[severity].label;
     const titles = marks.map((mark) => mark.title).join("; ");
+    // CodeMirror hides its gutters from assistive technology: the same findings are in the side
+    // panel and one F8 away, so the marker is a pointer target with a tooltip and nothing more.
     const element = document.createElement("span");
     element.className = `cm-findingMarker cm-severity-${severity}${located ? "" : " cm-findingMarker-unlocated"}`;
-    element.setAttribute("role", "img");
-    element.setAttribute(
-      "aria-label",
-      `${label} finding: ${titles}${located ? "" : " (excerpt not found again; stored lines shown)"}`,
-    );
     element.title = `${label}: ${titles}${located ? "" : "\nThe excerpt was not found again; the stored lines are shown."}`;
     element.append(svgIcon(SEVERITY_SHAPE[severity], ICON_CLASS));
     return element;
@@ -158,7 +155,13 @@ const findingTheme = EditorView.theme({
   ".cm-findingMarker:hover": { backgroundColor: "var(--accent)" },
   // An excerpt that could not be found again keeps its stored lines; the dashed ring says it is approximate.
   ".cm-findingMarker-unlocated": { outline: "1px dashed currentColor", outlineOffset: "-2px" },
+  // The scroller is a size container, so the lens can be as wide as what is visible, not as the longest line.
+  ".cm-scroller": { containerType: "inline-size" },
   ".cm-findingLens": {
+    position: "sticky",
+    left: "6px",
+    width: "fit-content",
+    maxWidth: "calc(100cqw - 104px)",
     display: "flex",
     alignItems: "center",
     gap: "10px",

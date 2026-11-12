@@ -131,18 +131,22 @@
     initRelativeTimes();
   }
 
-  // The archive index behind the search box: large, and fetched once the
-  // page has loaded.
+  // The archive index behind the search box: large, so it is fetched when
+  // the page has loaded and had a moment to itself.
+  var SEARCH_INDEX_DELAY_MS = 1500;
+
   function initSearchIndex() {
     win.addEventListener('load', function () {
-      fetch('/api/archive-index.json')
-        .then(function (response) {
-          return response.json();
-        })
-        .then(function (index) {
-          site.archive = index.articles;
-        })
-        .catch(function () {});
+      win.setTimeout(function () {
+        fetch('/api/archive-index.json')
+          .then(function (response) {
+            return response.json();
+          })
+          .then(function (index) {
+            site.archive = index.articles;
+          })
+          .catch(function () {});
+      }, SEARCH_INDEX_DELAY_MS);
     });
   }
 

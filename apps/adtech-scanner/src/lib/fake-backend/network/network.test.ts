@@ -127,7 +127,11 @@ describe("the simulated network record", () => {
     expect(requestId).toBeTruthy();
     const request = await api.getNetworkRequest(DESKTOP, requestId ?? "");
     expect(request.row.noHbTargeting).toBe(true);
-    expect(request.adContext?.slotElementId).toBe("div-gpt-top-leaderboard");
+    // An ad-server call carries no auction link of its own: its slot names it.
+    expect(request.row.ad).toBeNull();
+    expect(request.adContext).toBeNull();
+    const slot = detail.slots.find((candidate) => candidate.elementId === "div-gpt-top-leaderboard");
+    expect(slot?.requests[0]?.requestId).toBe(requestId);
   });
 
   it("carries the cases a network view has to show", async () => {
@@ -300,7 +304,11 @@ describe("the simulated network record", () => {
       await expect(api.getNetworkRequest(scanId, "r1")).rejects.toMatchObject({ code: "notFound" });
     }
     expect((await api.getScan(LEGACY)).network).toBeNull();
-    expect(bidsOf(await api.getScan(DISABLED)).every(({ bid }) => bid.exchange === null)).toBe(true);
+    // Bid calls are read as they pass even when nothing is kept: the verdict is there, the request is not.
+    const unkept = bidsOf(await api.getScan(DISABLED));
+    expect(unkept.every(({ bid }) => bid.exchange !== null && bid.exchange.requestId === null)).toBe(true);
+    expect(unkept.some(({ bid }) => bid.exchange?.verdict === "inTime")).toBe(true);
+    expect(bidsOf(await api.getScan(LEGACY)).every(({ bid }) => bid.exchange === null)).toBe(true);
   });
 
   it("keeps the list of an evicted scan, without query strings, headers or bodies", async () => {

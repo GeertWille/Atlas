@@ -10,7 +10,8 @@ import { type ColumnDef, type ColumnKey, gridTemplate, type SortState } from "./
 import type { GridGroup, GridItem } from "./grouping";
 import { barBackground, describeBar, layoutBar } from "./waterfall-bar";
 
-export const ROW_HEIGHT = 28;
+/** Row heights of the two densities. */
+export const ROW_HEIGHT = { compact: 28, comfortable: 36 } as const;
 const HEADER_HEIGHT = 28;
 const OVERSCAN = 8;
 
@@ -46,7 +47,8 @@ function GroupRow({ group, active, onToggle }: { group: GridGroup; active: boole
       onClick={onToggle}
       className={cn(
         "flex h-full items-center gap-2 border-b bg-muted/60 px-2 text-xs",
-        active && "outline outline-2 -outline-offset-2 outline-ring",
+        active &&
+          "group-focus-visible/grid:outline group-focus-visible/grid:outline-2 group-focus-visible/grid:-outline-offset-2 group-focus-visible/grid:outline-ring",
       )}
     >
       <span role="gridcell" className="flex min-w-0 items-center gap-2">
@@ -110,7 +112,8 @@ const DataRow = memo(function DataRow({
         "grid h-full items-center gap-x-3 border-b border-border/60 px-2 text-xs hover:bg-accent/60",
         failed && "text-red-fg",
         selected && "bg-primary-soft hover:bg-primary-soft",
-        active && "outline outline-2 -outline-offset-2 outline-ring",
+        active &&
+          "group-focus-visible/grid:outline group-focus-visible/grid:outline-2 group-focus-visible/grid:-outline-offset-2 group-focus-visible/grid:outline-ring",
       )}
     >
       {columns.map((column) => (
@@ -158,10 +161,13 @@ function HeaderCell({
   column,
   sort,
   onSort,
+  range,
 }: {
   column: ColumnDef;
   sort: SortState;
   onSort: (key: ColumnKey) => void;
+  /** The stretch of time the waterfall column covers, said in its heading. */
+  range: string;
 }) {
   const active = sort.key === column.key;
   const sortable = column.key !== "waterfall";
@@ -188,7 +194,9 @@ function HeaderCell({
           {active ? <Arrow aria-hidden="true" className="size-3 shrink-0" /> : null}
         </button>
       ) : (
-        <span className="truncate">{column.label}</span>
+        <span className="truncate">
+          {column.label} <span className="font-normal tabular-nums">{range}</span>
+        </span>
       )}
     </span>
   );
@@ -207,6 +215,7 @@ export function RequestGrid({
   onToggleGroup,
   onCopyUrl,
   scale,
+  rowHeight,
 }: {
   label: string;
   items: GridItem[];
@@ -222,6 +231,7 @@ export function RequestGrid({
   onToggleGroup: (groupKey: string, collapsed?: boolean) => void;
   onCopyUrl: (url: string) => void;
   scale: WaterfallScale;
+  rowHeight: number;
 }) {
   // TanStack Virtual mutates its instance between renders; the React Compiler must not memoise around it.
   "use no memo";
@@ -234,7 +244,7 @@ export function RequestGrid({
   const virtualizer = useVirtualizer({
     count: items.length,
     getScrollElement: () => scroller.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => rowHeight,
     overscan: OVERSCAN,
     scrollPaddingStart: HEADER_HEIGHT,
     // The active row stays mounted wherever the list is scrolled, so `aria-activedescendant` always resolves.
@@ -278,7 +288,7 @@ export function RequestGrid({
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
     const item = items[activeIndex];
-    const page = Math.max(1, Math.floor((scroller.current?.clientHeight ?? 0) / ROW_HEIGHT) - 2);
+    const page = Math.max(1, Math.floor((scroller.current?.clientHeight ?? 0) / rowHeight) - 2);
     if (
       hasModifier(event) &&
       event.key.toLowerCase() === "c" &&
@@ -330,7 +340,7 @@ export function RequestGrid({
   };
 
   const virtualItems = virtualizer.getVirtualItems();
-  const firstVisible = Math.floor((virtualizer.scrollOffset ?? 0) / ROW_HEIGHT);
+  const firstVisible = Math.floor((virtualizer.scrollOffset ?? 0) / rowHeight);
   // The heading of the group the top row belongs to stays in sight while its rows scroll.
   const pinnedIndex = items.findLastIndex((item, index) => index < firstVisible && item.kind === "group");
   const pinned = pinnedIndex >= 0 ? items[pinnedIndex] : undefined;
@@ -348,7 +358,7 @@ export function RequestGrid({
       aria-activedescendant={activeIndex >= 0 && activeKey ? rowDomId(activeKey) : undefined}
       tabIndex={0}
       onKeyDown={onKeyDown}
-      className="relative h-full overflow-auto outline-none focus-visible:[&_[aria-selected]]:outline-offset-[-2px]"
+      className="group/grid relative h-full overflow-auto outline-none"
     >
       <div
         ref={header}
@@ -358,12 +368,18 @@ export function RequestGrid({
         className="sticky top-0 z-20 grid min-w-max items-center gap-x-3 border-b bg-background px-2 text-[11px] font-medium text-muted-foreground"
       >
         {columns.map((column) => (
-          <HeaderCell key={column.key} column={column} sort={sort} onSort={onSort} />
+          <HeaderCell
+            key={column.key}
+            column={column}
+            sort={sort}
+            onSort={onSort}
+            range={`${formatDuration(scale.startMs)} to ${formatDuration(scale.endMs)}`}
+          />
         ))}
       </div>
       {pinned?.kind === "group" ? (
         <div aria-hidden="true" className="sticky z-10 h-0" style={{ top: HEADER_HEIGHT }}>
-          <div style={{ height: ROW_HEIGHT }}>
+          <div style={{ height: rowHeight }}>
             <GroupRow group={pinned.group} active={false} onToggle={() => onToggleGroup(pinned.group.key)} />
           </div>
         </div>
@@ -396,7 +412,7 @@ export function RequestGrid({
               key={key}
               id={rowDomId(key)}
               className="absolute inset-x-0 top-0"
-              style={{ height: ROW_HEIGHT, transform: `translateY(${virtual.start}px)` }}
+              style={{ height: rowHeight, transform: `translateY(${virtual.start}px)` }}
             >
               {item.kind === "group" ? (
                 <GroupRow

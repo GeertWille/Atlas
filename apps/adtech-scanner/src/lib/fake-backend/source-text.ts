@@ -139,15 +139,9 @@ export function fillerLines(rng: Rng, count: number, flavor: CodeFlavor): string
   const lines: string[] = [];
   while (lines.length < count) {
     const remaining = count - lines.length;
-    // A block needs its own lines and, unless it ends the stretch, a blank line and more code after it.
-    const fitting = BLOCK_SIZES.filter((size) => size === remaining || size + 2 <= remaining);
-    const size = fitting.length > 0 ? rng.pick(fitting) : 0;
-    if (size === 0) {
-      lines.push("");
-      continue;
-    }
-    lines.push(...block(rng, size, flavor));
-    if (lines.length < count) lines.push("");
+    lines.push(...block(rng, rng.pick(BLOCK_SIZES.filter((size) => size <= remaining)), flavor));
+    // A blank line between blocks, unless that would leave the stretch ending on one.
+    if (count - lines.length >= 2) lines.push("");
   }
   return lines;
 }

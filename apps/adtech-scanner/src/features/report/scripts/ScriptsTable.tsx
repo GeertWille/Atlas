@@ -62,11 +62,13 @@ function ScriptRow({
   selected,
   showPages,
   onSelect,
+  onOpen,
 }: {
   script: ScriptRecord;
   selected: boolean;
   showPages: boolean;
   onSelect: () => void;
+  onOpen: (() => void) | undefined;
 }) {
   const category = SCRIPT_CATEGORY_META[script.category];
   return (
@@ -75,6 +77,7 @@ function ScriptRow({
       tabIndex={0}
       aria-selected={selected}
       onClick={onSelect}
+      onDoubleClick={onOpen}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
@@ -133,6 +136,7 @@ export function ScriptsTable({
   onSortChange,
   selectedId,
   onSelect,
+  onOpen,
   showPages = false,
 }: {
   scripts: ScriptRecord[];
@@ -142,6 +146,8 @@ export function ScriptsTable({
   onSortChange: (sort: ScriptSort) => void;
   selectedId: string | null;
   onSelect: (script: ScriptRecord) => void;
+  /** A double click opens the script's source. Absent where there is no viewer to open. */
+  onOpen?: (script: ScriptRecord) => void;
 }) {
   // TanStack Virtual mutates its instance between renders; the React Compiler must not memoise around it.
   "use no memo";
@@ -197,6 +203,7 @@ export function ScriptsTable({
                   selected={script.id === selectedId}
                   showPages={showPages}
                   onSelect={() => onSelect(script)}
+                  onOpen={onOpen ? () => onOpen(script) : undefined}
                 />
               </div>
             );

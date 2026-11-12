@@ -1,4 +1,11 @@
-import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type {
   ApiProvider,
   BodySide,
@@ -170,6 +177,17 @@ export function useNetworkRequest(scanId: string, requestId: string | undefined)
     queryFn: () => api.getNetworkRequest(scanId, requestId ?? ""),
     enabled: requestId !== undefined,
     ...ARCHIVE_QUERY,
+  });
+}
+
+/** Several requests at once: the Prebid Server exchanges of an auction, whose answers say how each bidder did. */
+export function useNetworkRequests(scanId: string, requestIds: string[]) {
+  return useQueries({
+    queries: requestIds.map((requestId) => ({
+      queryKey: queryKeys.networkRequest(scanId, requestId),
+      queryFn: () => api.getNetworkRequest(scanId, requestId),
+      ...ARCHIVE_QUERY,
+    })),
   });
 }
 

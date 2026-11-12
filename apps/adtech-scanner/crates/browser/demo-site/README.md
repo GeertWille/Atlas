@@ -33,7 +33,7 @@ therefore lists `localhost` as the one host outside the site.
 | `/static/js/app.9b3e7f.js`, `/static/js/vendors-ui.4c1d2a.chunk.js`, `/static/js/analytics.js` | Application bundle, UI library chunk and first-party analytics: not ad related |
 | `/static/js/analytics-worker.js` | A dedicated worker of the analytics script. It fetches `/collect/sampling.json` and hands the rules to the page |
 | `/static/img/harbour-dusk.png`, `/static/fonts/meridian-initial.ttf` | One image (498 bytes, in the footer) and one font (728 bytes, the "M" of the masthead): the two requests of a page view that are recorded without a body |
-| `/api/archive-index.json` | The search index the application fetches after `load`: one JSON document of about 1.3 MB |
+| `/api/archive-index.json` | The search index the application fetches 1.5 s after `load`: one JSON document of about 1.3 MB |
 | `/collect` | Sink for the analytics beacons (204) |
 | `/collect/sampling.json` | The sampling rules the analytics worker asks for |
 | `/__demo/hits` | How often each path was requested since the site started, on any of the origins, as JSON (`{"/": 1, ...}`); its own requests are not counted. For tests |
@@ -97,12 +97,12 @@ every run is identical:
 
 | Bidder | Exchange latency | CPM | Behaviour |
 |---|---|---|---|
-| appnexus | 70-150 ms | 0.35-1.90 | bids on almost everything. Asked at the partner origin with a JSON body, so its first request of a page view follows a CORS preflight |
-| rubicon | 105-195 ms | 0.45-2.40 | bids on most requests |
-| ix | 130-215 ms | - | never bids, see (e) |
+| appnexus | 40-100 ms | 0.35-1.90 | bids on almost everything. Asked at the partner origin with a JSON body, so its first request of a page view follows a CORS preflight |
+| rubicon | 60-120 ms | 0.45-2.40 | bids on most requests |
+| ix | 70-130 ms | - | never bids, see (e) |
 | pubmatic | 330-620 ms | 1.80-4.60 | highest CPMs; its answer arrives after the misconfigured timeout |
 | criteo | 1500-2100 ms | 0.60-2.20 | its answer arrives long after any sensible timeout |
-| triplelift | 110-190 ms | 0.40-1.50 | bids on every request that reaches it |
+| triplelift | 60-110 ms | 0.40-1.50 | bids on every request that reaches it |
 | openx | none | - | the exchange never bids and says why |
 
 Every bidder request with at least one valid bid is one real HTTP round trip:
@@ -113,14 +113,16 @@ bid per impression that was bid on, `"seatbid": []` when the bidder passes,
 `"nbr": 7` from `openx`. The exchanges are mirrors. The seeded simulation in
 `prebid.js` decides what the bidder answers and how long it takes, sends that
 along as `ext.standin` (`latencyMs`, `bids`), and the exchange waits that long
-and answers with it. What Prebid reports is read from the answer. A bidder's
-latency as Prebid measures it is the exchange latency plus the round trip, a
-few milliseconds on this machine.
-
-Like the real library, the stand-in checks each bid's params the way the
-adapter's `isBidRequestValid` does. A bid that fails is still listed in
-`bidRequested`, is never sent to the bidder, and ends as `noBid` with an
-"Invalid bid sent to bidder" warning.
+and answers with it. The page does not wait for that answer: it acts on the
+simulation's own result when the same latency has passed on its own clock, as
+it did before the exchanges existed. A round trip on a busy machine, or while
+the page is busy with a scroll, can take 100 ms longer than on an idle one,
+and which bidder is late must not depend on that. So Prebid's events are as
+repeatable as ever, and the network shows each answer a few milliseconds
+after the page acted on it. `openx` is the exception: its exchange decides,
+and the page waits for the answer. The four bidders that answer in time have
+more than 100 ms of headroom below the wrapper's 250 ms, so that their answers
+are in time on the network too.
 
 The GPT stand-in has demand only for header-bidding line items: a slot whose ad
 request carries `hb_adid` is filled with that bid's creative (which triggers
@@ -252,8 +254,8 @@ and what a scan with network recording must show for it:
 | `GET <identity>/identity/envelope` | when `prebid.js` runs | A failed request: the provider hangs up (`net::ERR_EMPTY_RESPONSE` or a like error), no status, no body. Chrome logs it to the console |
 | `/static/js/analytics-worker.js`, then `/collect/sampling.json` | at load | The worker's script is a request of the page; the JSON is requested by the worker, in a target of its own |
 | `POST /collect` | at load and on scroll milestones | Beacons (resource type "ping") with their JSON body, answered 204 |
-| `/api/archive-index.json` | after `load` | One large JSON body, about 1.3 MB |
-| `OPTIONS <partner>/ut/v3/prebid` | before the first `appnexus` bid request | A CORS preflight, linked to that bid request. Chrome remembers the answer for a few seconds, so later `appnexus` requests of the page view have none |
+| `/api/archive-index.json` | 1.5 s after `load` | One large JSON body, about 1.3 MB |
+| `OPTIONS <partner>/ut/v3/prebid` | before the first `appnexus` bid request | A CORS preflight, linked to that bid request. Chrome remembers the answer for a few seconds, so an `appnexus` request that follows soon has none |
 | `pubmatic` and `criteo` bid requests | in every auction that asks them | Answers that arrive after their auction closed (250 ms, bug (c)): 330-620 ms and 1.5-2.1 s after the request |
 | `/usersync/start` → `<partner>/usersync/match` → `/usersync/done.gif` | 3 s (`userSync.syncDelay`) after the first auction of the document ended | A redirect chain of three hops: 302, 302 with `Set-Cookie: uid=...`, 200 |
 | `<partner>/usersync/frame.html`, its `/usersync/ids.json` and `/usersync/done.gif?from=frame...` | with the sync | A cross-site frame in a process of its own: the document is requested by the page, the JSON and the pixel by the frame |

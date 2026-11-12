@@ -4,6 +4,7 @@ import {
   type App,
   button,
   field,
+  goTo,
   hashRoute,
   invokeOk,
   labelled,
@@ -48,8 +49,10 @@ test("with a key the composer offers AI analysis and the scan runs both model ph
   const { browser } = app;
   await watchCspViolations(browser);
   // A browser and a key are both there, so there is nothing to set up.
-  const composer = await seeText(browser, "hard cap $0.50 per scan", { within: labelled("New scan"), timeout: 15_000 });
-  expect(composer).toContain("claude-sonnet-5-5");
+  await seeText(browser, /AI on, about \$0\.\d\d/, { within: labelled("New scan"), timeout: 15_000 });
+  await browser.$(`${labelled("New scan")}//button[starts-with(normalize-space(.), "Options")]`).click();
+  const options = await seeText(browser, "hard cap $0.50 per scan", { timeout: 15_000 });
+  expect(options).toContain("claude-sonnet-5-5");
 
   const demoUrl = await invokeOk<string>(browser, "get_demo_url");
   await browser.$(labelled("Page URL")).setValue(demoUrl);
@@ -80,9 +83,24 @@ test("the AI finding carries verified code evidence that links to its script", a
   expect(finding).toContain("~25% revenue at risk");
   expect(finding).toContain("Inverted media query");
 
-  await browser.$(`${card}//button[contains(., "hb-wrapper.min.js:")]`).click();
+  // The evidence opens the script's source at the cited line, from the scan's archive.
+  await browser.$(`${card}//*[self::a or self::button][contains(., "hb-wrapper.min.js:")]`).click();
+  await browser.waitUntil(async () => (await hashRoute(browser)).startsWith(`/scans/${scanId}/source/s`));
+  const code = '//*[@data-testid="code"]';
+  await seeText(browser, "min-width", {
+    within: `${code}//*[contains(@class, "cm-line") and contains(@class, "cm-findingLine-critical")]`,
+    timeout: 20_000,
+  });
+  expect(await browser.$(`${code}//*[contains(@class, "cm-findingMarker")]`).getAttribute("title")).toContain(
+    AI_FINDING_TITLE,
+  );
+
+  // The Scripts tab still lists it as analysed.
+  const wrapper = (await invokeOk<ScanDetail>(browser, "get_scan", { scanId })).scripts.find((script) =>
+    script.url.includes("hb-wrapper.min.js"),
+  );
+  await goTo(browser, `/scans/${scanId}?tab=scripts&script=${encodeURIComponent(wrapper?.url ?? "")}`);
   await browser.$(`${reportTab("Scripts")}[@aria-selected="true"]`).waitForDisplayed();
-  expect(await hashRoute(browser)).toContain("tab=scripts&script=");
   const details = await seeText(browser, "hb-wrapper.min.js", { within: labelled("Script details") });
   expect(details).toMatch(/Phase 2/);
   expect(await textOf(browser, labelled("Script volume by stage"))).toMatch(/Analysed in Phase 2\s+[1-9]/);

@@ -121,7 +121,7 @@ pub(crate) struct Finished {
     pub finished_epoch_ms: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 enum Post {
     None,
     Sent(CapturedPostData),
@@ -129,7 +129,7 @@ enum Post {
     Missing,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 enum Body {
     /// Not finished, or ended without anything to read.
     None,
@@ -145,7 +145,7 @@ enum Preflight {
     Of(u32),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 struct Response {
     status: Option<u16>,
     mime_type: Option<String>,
@@ -158,7 +158,7 @@ struct Response {
     timing: Option<(f64, ResourceTiming)>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 struct End {
     how: RequestEnd,
     at_epoch_ms: f64,
@@ -168,7 +168,7 @@ struct End {
 }
 
 /// One request, or one hop of a redirected one, as far as it is known.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 struct Flight {
     seq: u32,
     /// Position in its chain of redirects.
@@ -464,8 +464,12 @@ pub(crate) struct Assembler {
     posts_asked: HashMap<u32, String>,
     /// Preflight request ids by the id of the request they announce.
     preflights_awaiting: HashMap<String, Vec<String>>,
-    /// Request ids to look at again, with the epoch ms from which.
+    /// Requests that ended and wait for something, with the epoch ms from
+    /// which they no longer do. In that order.
     revisit: VecDeque<(f64, String)>,
+    /// Request ids only `ExtraInfo` has named, with the epoch ms from which
+    /// they are forgotten unless the request was announced. In that order.
+    unannounced: VecDeque<(f64, String)>,
     ended: HashSet<String>,
     ended_order: VecDeque<String>,
     /// Requests left out because too many were open.
@@ -677,7 +681,7 @@ impl Assembler {
     /// first that is heard of the request.
     fn chain_for_extras(&mut self, request_id: &str, now_ms: f64) -> &mut Chain {
         if !self.chains.contains_key(request_id) {
-            self.revisit
+            self.unannounced
                 .push_back((now_ms + ORPHAN_PATIENCE_MS, request_id.to_string()));
         }
         self.chains.entry(request_id.to_string()).or_default()
@@ -1126,14 +1130,15 @@ impl Assembler {
     /// Looks again at the requests whose wait is over.
     fn revisit_due(&mut self, now_ms: f64, out: &mut Vec<Output>) {
         while let Some((_, request_id)) = self.revisit.pop_front_if(|(due, _)| *due <= now_ms) {
+            self.settle(&request_id, now_ms, out);
+        }
+        while let Some((_, request_id)) = self.unannounced.pop_front_if(|(due, _)| *due <= now_ms) {
             let never_announced = self
                 .chains
                 .get(&request_id)
                 .is_some_and(|chain| chain.hops_seen == 0);
             if never_announced {
                 self.chains.remove(&request_id);
-            } else {
-                self.settle(&request_id, now_ms, out);
             }
         }
     }

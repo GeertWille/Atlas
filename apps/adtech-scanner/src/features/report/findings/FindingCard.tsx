@@ -110,6 +110,7 @@ export function FindingCard({
                   // biome-ignore lint/suspicious/noArrayIndexKey: evidence of a stored finding never reorders, and labels can repeat
                   key={index}
                   evidence={evidence}
+                  findingId={finding.id}
                   onOpenScript={onOpenScript}
                 />
               ))}

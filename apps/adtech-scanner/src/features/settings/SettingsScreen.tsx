@@ -26,6 +26,7 @@ import { AiAnalysisFields } from "./AiAnalysisFields";
 import { ProxySection } from "./ProxySection";
 import { ScanDefaultsFields } from "./ScanDefaultsFields";
 import { ScanProfileField } from "./ScanProfileField";
+import { StoredDataFields } from "./StoredDataFields";
 
 declare const __APP_VERSION__: string;
 
@@ -107,8 +108,8 @@ function DeleteAllScansButton() {
         <AlertDialogHeader>
           <AlertDialogTitle>Delete all scans?</AlertDialogTitle>
           <AlertDialogDescription>
-            Every report, finding and audit trail is removed from this computer. Settings and your API keys are kept.
-            This cannot be undone.
+            Every report, finding and audit trail is removed from this computer, together with the stored scan data.
+            Settings and your API keys are kept. This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -221,12 +222,19 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       </Section>
 
       <Section
+        title="Stored scan data"
+        description="What a scan loaded is kept on this Mac so that you can read its scripts and its requests afterwards."
+      >
+        <StoredDataFields settings={settings} save={save} />
+      </Section>
+
+      <Section
         title="Data"
         description="Everything is stored locally. Nothing is uploaded except the model requests you enable."
       >
         <Field
           label="What is stored"
-          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. Script bodies, raw network payloads, ads.txt and sellers.json files are held in memory during a scan and then discarded."
+          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan. ads.txt and sellers.json files are read in memory and not kept. API keys and proxy passwords are in the Keychain, never in these files."
         >
           <DeleteAllScansButton />
         </Field>
@@ -235,7 +243,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any. Scan data never leaves this Mac unless you export a report or copy something out of it yourself."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

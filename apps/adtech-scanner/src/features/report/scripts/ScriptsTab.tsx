@@ -8,6 +8,7 @@ import { SCRIPT_CATEGORIES, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabul
 import { countOf } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
+import { useReportLinks } from "../report-links";
 import { ScriptDetails } from "./ScriptDetails";
 import { ScriptFunnel } from "./ScriptFunnel";
 import { ScriptsTable } from "./ScriptsTable";
@@ -27,6 +28,7 @@ export function ScriptsTab({
   const [filters, setFilters] = useState<ScriptFilters>(NO_SCRIPT_FILTERS);
   const [sort, setSort] = useState<ScriptSort>("loadOrder");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const links = useReportLinks();
 
   useEffect(() => {
     const target = focusedScriptUrl ? scripts.find((script) => script.url === focusedScriptUrl) : undefined;
@@ -95,6 +97,7 @@ export function ScriptsTab({
             showPages={showPages}
             selectedId={selectedId}
             onSelect={(script) => setSelectedId(script.id === selectedId ? null : script.id)}
+            onOpen={links ? (script) => links.openSource({ scriptId: script.id }) : undefined}
           />
         )}
         {selected ? <ScriptDetails script={selected} onClose={() => setSelectedId(null)} /> : null}

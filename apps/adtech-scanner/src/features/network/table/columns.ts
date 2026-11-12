@@ -52,7 +52,7 @@ export const COLUMNS: readonly ColumnDef[] = [
   { key: "vendor", label: "Vendor", track: "124px", align: "left", byDefault: true },
   { key: "outcome", label: "Ad outcome", track: "108px", align: "left", byDefault: true, beside: true },
   { key: "type", label: "Type", track: "56px", align: "left", byDefault: true, fromWidth: 900 },
-  { key: "initiator", label: "Initiator", track: "128px", align: "left", byDefault: true, fromWidth: 1000 },
+  { key: "initiator", label: "Initiator", track: "128px", align: "left", byDefault: true, fromWidth: 1200 },
   { key: "method", label: "Method", track: "64px", align: "left", byDefault: false },
   { key: "host", label: "Host", track: "168px", align: "left", byDefault: false },
   { key: "page", label: "Page", track: "48px", align: "right", byDefault: false },

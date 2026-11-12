@@ -38,14 +38,17 @@ const TAB_BODY_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 /// they are complete, and there can be dozens of such targets.
 const CHILD_BODY_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Parameters of `Network.enable`. Request bodies up to the size that is
-/// kept come with the request itself.
-fn network_recording(body_buffer_bytes: u64) -> Value {
-    json!({
+/// Parameters of `Network.enable`. When the visit's requests are kept,
+/// request bodies up to the size that is kept come with the request itself.
+fn network_recording(body_buffer_bytes: u64, keeps_requests: bool) -> Value {
+    let mut recording = json!({
         "maxTotalBufferSize": body_buffer_bytes,
         "maxResourceBufferSize": 32 * 1024 * 1024,
-        "maxPostDataSize": MAX_POST_DATA_BYTES,
-    })
+    });
+    if keeps_requests {
+        recording["maxPostDataSize"] = json!(MAX_POST_DATA_BYTES);
+    }
+    recording
 }
 
 /// Parameters of `Target.setAutoAttach` for a session: what starts below it
@@ -72,12 +75,16 @@ impl TabSetup {
         &self,
         interception: &Interception,
         site: Option<&Site>,
+        keeps_requests: bool,
     ) -> Vec<(&'static str, Value)> {
         let mut commands = vec![
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
             ("Log.enable", json!({})),
-            ("Network.enable", network_recording(TAB_BODY_BUFFER_BYTES)),
+            (
+                "Network.enable",
+                network_recording(TAB_BODY_BUFFER_BYTES, keeps_requests),
+            ),
             ("Debugger.enable", json!({})),
             // An attached debugger must not stop pages that contain `debugger;`.
             ("Debugger.setSkipAllPauses", json!({ "skip": true })),
@@ -194,7 +201,9 @@ impl Page {
             download_began: false,
             crashed: false,
         };
-        let commands = page.setup.commands(&page.interception, None);
+        let commands =
+            page.setup
+                .commands(&page.interception, None, page.recorder.keeps_requests());
         let mut installed = Value::Null;
         for (method, params) in commands {
             installed = page.call(method, params).await?;
@@ -312,9 +321,9 @@ impl Page {
     fn on_child_event(&mut self, session_id: &str, event: &CdpEvent) {
         match event.method.as_str() {
             "Target.attachedToTarget" => self.adopt_child_target(Some(session_id), &event.params),
-            "Target.detachedFromTarget" => self
-                .children
-                .detached(event.params["sessionId"].as_str().unwrap_or_default()),
+            "Target.detachedFromTarget" => {
+                self.forget_child_target(event.params["sessionId"].as_str().unwrap_or_default())
+            }
             method if method.starts_with("Network.") => {
                 let Some(child) = self.children.get(session_id) else {
                     return;
@@ -343,7 +352,7 @@ impl Page {
             "Target.attachedToTarget" => self.adopt_child_target(None, &event.params),
             "Target.detachedFromTarget" => {
                 let session_id = event.params["sessionId"].as_str().unwrap_or_default();
-                self.children.detached(session_id);
+                self.forget_child_target(session_id);
                 self.on_tab_closed(session_id);
             }
             "Browser.downloadWillBegin" => self.download_began = true,
@@ -412,7 +421,7 @@ impl Page {
             "Target.attachedToTarget" => self.adopt_child_target(Some(session_id), &event.params),
             "Target.detachedFromTarget" => {
                 let child = event.params["sessionId"].as_str().unwrap_or_default();
-                self.children.detached(child);
+                self.forget_child_target(child);
                 if let Some(tab) = self.tabs.by_session(session_id) {
                     tab.frame_sessions.retain(|session| session != child);
                 }
@@ -523,6 +532,12 @@ impl Page {
         }
     }
 
+    /// The browser detached a session: its target is gone.
+    fn forget_child_target(&mut self, session_id: &str) {
+        self.children.detached(session_id);
+        self.recorder.target_gone(session_id);
+    }
+
     /// Cross-site iframes and workers start paused, so that the emulated
     /// identity and the recording of their requests are in place before
     /// their first request. `parent_session` is the session that reported
@@ -550,7 +565,7 @@ impl Page {
                 self.cdp.notify(
                     Some(child),
                     "Network.enable",
-                    network_recording(CHILD_BODY_BUFFER_BYTES),
+                    network_recording(CHILD_BODY_BUFFER_BYTES, true),
                 );
             }
             self.cdp.notify(
@@ -588,9 +603,11 @@ impl Page {
             NewTab::Watch => {
                 // Queued, not awaited: a held tab answers nothing until it is
                 // let go, which is the last command.
-                let commands = self
-                    .setup
-                    .commands(&self.interception, self.recorder.site());
+                let commands = self.setup.commands(
+                    &self.interception,
+                    self.recorder.site(),
+                    self.recorder.keeps_requests(),
+                );
                 for (method, params) in commands {
                     self.cdp.notify(Some(session_id), method, params);
                 }
@@ -653,7 +670,9 @@ impl Page {
     }
 
     fn on_tab_closed(&mut self, session_id: &str) {
-        self.children.tab_closed(session_id);
+        for child in self.children.tab_closed(session_id) {
+            self.recorder.target_gone(&child);
+        }
         if let Some(successor) = self.tabs.closed(session_id) {
             self.recorder
                 .switch_tab(successor.main_frame_id.clone(), &successor.url);

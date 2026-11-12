@@ -42,7 +42,16 @@ export function indexRow(row: NetworkRow): IndexedRow {
   };
 }
 
-type AuctionWindow = { id: string; page: number; startMs: number; endMs: number; timeoutMs: number | null };
+type AuctionWindow = {
+  id: string;
+  page: number;
+  startMs: number;
+  /** When it actually ended: at the last answer, or at the timeout. */
+  endMs: number;
+  /** The deadline bids were held to: its start plus its timeout. An auction without a timeout closes when it ends. */
+  closeMs: number;
+  timeoutMs: number | null;
+};
 
 /** What a filter needs to know about the scan beyond the rows: its auctions and which requests carried a winner. */
 export type MatchContext = {
@@ -58,11 +67,13 @@ export function buildMatchContext(detail: Pick<ScanDetail, "auctions">): MatchCo
   const firstAuctionStart = new Map<number, number>();
   const wonRequestIds = new Set<string>();
   detail.auctions.forEach((auction, index) => {
+    const endMs = auction.endedAtMs ?? auction.startedAtMs + (auction.timeoutMs ?? 0);
     const window: AuctionWindow = {
       id: auction.id,
       page: auction.page,
       startMs: auction.startedAtMs,
-      endMs: auction.endedAtMs ?? auction.startedAtMs + (auction.timeoutMs ?? 0),
+      endMs,
+      closeMs: auction.timeoutMs === null ? endMs : auction.startedAtMs + auction.timeoutMs,
       timeoutMs: auction.timeoutMs,
     };
     auctions.set(auction.id.toLowerCase(), window);

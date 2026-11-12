@@ -19,7 +19,7 @@ const keys = (input: Parameters<typeof visibleColumns>[0]) => visibleColumns(inp
 
 describe("visibleColumns", () => {
   it("shows the full default set when the list is wide", () => {
-    expect(keys({ choices: {}, listWidth: 1040, detailBeside: false })).toEqual([
+    expect(keys({ choices: {}, listWidth: 1240, detailBeside: false })).toEqual([
       "status",
       "name",
       "vendor",
@@ -30,6 +30,8 @@ describe("visibleColumns", () => {
       "time",
       "waterfall",
     ]);
+    // The default window leaves the room to the waterfall instead.
+    expect(keys({ choices: {}, listWidth: 1040, detailBeside: false })).not.toContain("initiator");
   });
 
   it("drops Type, Size and Initiator in the small window", () => {

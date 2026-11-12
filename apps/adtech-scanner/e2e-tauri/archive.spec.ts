@@ -151,6 +151,62 @@ test("under the 250 ms timeout a bid is late or never answered, and triplelift's
   expect(triplelift.some((bid) => bid.exchange?.requestId)).toBe(true);
 });
 
+test("the network view opens the openx exchange with no-bid reason 7 decoded to words", async () => {
+  const { browser } = app;
+  const openx = rows.find((row) => row.bidder === "openx" && row.kind !== "preflight");
+  await goTo(browser, `/scans/${scan.summary.id}/network?req=${openx?.id}&dt=response`);
+  const decoded = await seeText(browser, "No bid, reason 7", {
+    within: '//*[@aria-label="Decoded bid response"]',
+    timeout: 30_000,
+  });
+  expect(decoded).toContain("Blocked Publisher or Site");
+  // The list behind the panel holds every request of the scan.
+  expect(await textOf(browser, '//*[@data-testid="request-count"]')).toContain(String(rows.length));
+  const details = await textOf(browser, '//*[@aria-label="Request details"]');
+  expect(details).toContain("/openrtbb/prebidjs");
+});
+
+test("the bid inspector shows a late or unanswered bid under the 250 ms timeout and not sent for triplelift", async () => {
+  const { browser } = app;
+  // The auction in which a bidder missed the deadline.
+  const missedBid = bidsOf(scan).find((bid) =>
+    ["lateOnNetwork", "neverAnswered"].includes(bid.exchange?.verdict ?? ""),
+  );
+  const auction = scan.auctions.find((candidate) => candidate.id === missedBid?.auction);
+  expect(auction?.timeoutMs).toBe(250);
+  await goTo(browser, `/scans/${scan.summary.id}/network?view=bids&auction=${auction?.id}`);
+  const matrix = '//*[starts-with(@aria-label, "Bid exchanges of auction")]';
+  await browser.$(matrix).waitForDisplayed({ timeout: 30_000 });
+  await seeText(browser, "250 ms", { within: MAIN });
+
+  const cells = await browser.execute((path: string) => {
+    const found = document.evaluate(
+      `${path}//button[contains(@aria-label, "Open the exchange") or contains(@aria-label, " for ")]`,
+      document,
+      null,
+      XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
+      null,
+    );
+    return Array.from({ length: found.snapshotLength }, (_, index) =>
+      (found.snapshotItem(index) as HTMLElement).getAttribute("aria-label"),
+    );
+  }, matrix);
+  const text = (await textOf(browser, matrix)) ?? "";
+  // What the backend worked out is what the cells say.
+  const missed = bidsOf(scan).filter(
+    (bid) => bid.auction === auction?.id && ["lateOnNetwork", "neverAnswered"].includes(bid.exchange?.verdict ?? ""),
+  );
+  expect(missed.length).toBeGreaterThan(0);
+  for (const bid of missed) {
+    const cell = cells.find((label) => label?.startsWith(`${bid.bidder} for ${bid.unit}:`));
+    expect(cell, `${bid.bidder} for ${bid.unit} in ${JSON.stringify(cells)}`).toMatch(/late|no answer/);
+  }
+  expect(text).toContain("not sent");
+  expect(text).toMatch(/triplelift[\s\S]*not sent/);
+  expect(text).toMatch(/openx[\s\S]*no-bid 7/);
+  expect(await cspViolations(browser)).toEqual([]);
+});
+
 test("the script viewer opens the wrapper from the archive with the planted min-width line marked", async () => {
   const { browser } = app;
   const finding = scan.findings.find((candidate) => candidate.title === AI_FINDING_TITLE);
@@ -174,8 +230,9 @@ test("the script viewer opens the wrapper from the archive with the planted min-
   await browser.$(CODE).waitForDisplayed({ timeout: 20_000 });
   const marked = `${CODE}//*[contains(@class, "cm-line") and contains(@class, "cm-findingLine-critical")]`;
   await seeText(browser, "min-width", { within: marked, timeout: 20_000 });
+  // The gutter marker names the finding in its tooltip.
   const marker = `${CODE}//*[contains(@class, "cm-findingMarker")]`;
-  expect(await browser.$(marker).getAttribute("aria-label")).toContain(AI_FINDING_TITLE);
+  expect(await browser.$(marker).getAttribute("title")).toContain(AI_FINDING_TITLE);
   // The text is the page's script, shown as text: nothing of it ran or was fetched.
   expect(await cspViolations(browser)).toEqual([]);
 });
@@ -206,6 +263,13 @@ test("with keep network data off the next scan says so everywhere", async () => 
   expect(verdicts.length).toBeGreaterThan(0);
   expect(verdicts.every((bid) => bid.exchange?.requestId === null)).toBe(true);
   expect((await invokeOk<ArchiveStorage>(browser, "get_archive_storage")).scans).toBe(1);
+
+  // The report's Network tab and the workbench both say that recording was off.
+  await goTo(browser, `/scans/${unstored.summary.id}?tab=network`);
+  await seeText(browser, "Network recording was off for this scan", { within: MAIN, timeout: 20_000 });
+  await goTo(browser, `/scans/${unstored.summary.id}/network`);
+  const off = await seeText(browser, "Network recording was off for this scan", { within: MAIN, timeout: 20_000 });
+  expect(off).toContain("Keep network data");
 
   // The viewer says why there is no source instead of showing an empty editor.
   await goTo(browser, `/scans/${unstored.summary.id}/source/${wrapper?.id}`);

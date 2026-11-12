@@ -13,6 +13,9 @@ export function clampPaneSize(size: number, limits: { min: number; max: number; 
  * Two panes with a draggable divider. The `end` pane has a size in pixels and the `start` pane takes
  * the rest; the caller owns the size, so it can persist it. The divider is a focusable separator:
  * arrow keys resize, Home and End go to the limits.
+ *
+ * `end` may be absent, and `start` may be hidden to give `end` the whole area. The `start` pane stays
+ * mounted in the same place through all of it, so what is inside keeps its focus and its scroll position.
  */
 export function SplitPane({
   orientation,
@@ -24,6 +27,7 @@ export function SplitPane({
   label,
   start,
   end,
+  startHidden = false,
   className,
 }: {
   /** `horizontal` puts the panes side by side; `vertical` stacks them. */
@@ -38,7 +42,10 @@ export function SplitPane({
   /** Accessible name of the divider, e.g. "Resize request details". */
   label: string;
   start: ReactNode;
-  end: ReactNode;
+  /** `null` while there is nothing to show beside `start`. */
+  end: ReactNode | null;
+  /** Gives `end` the whole area. */
+  startHidden?: boolean;
   className?: string;
 }) {
   const container = useRef<HTMLDivElement>(null);
@@ -77,44 +84,50 @@ export function SplitPane({
 
   return (
     <div ref={container} className={cn("flex min-h-0 min-w-0", horizontal ? "flex-row" : "flex-col", className)}>
-      <div className="min-h-0 min-w-0 flex-1">{start}</div>
-      {/* biome-ignore lint/a11y/useSemanticElements: an <hr> cannot be focused or dragged */}
-      <div
-        role="separator"
-        tabIndex={0}
-        aria-label={label}
-        aria-orientation={horizontal ? "vertical" : "horizontal"}
-        aria-valuenow={size}
-        aria-valuemin={min}
-        aria-valuemax={max}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onKeyDown={onKeyDown}
-        className={cn(
-          "group/divider relative z-10 shrink-0 touch-none bg-border outline-none",
-          horizontal ? "w-px cursor-col-resize" : "h-px cursor-row-resize",
-        )}
-      >
-        {/* A wider invisible hit area, and the line that lights up on hover, focus and drag. */}
-        <span
-          className={cn(
-            "absolute bg-transparent transition-colors group-hover/divider:bg-primary/50 group-focus-visible/divider:bg-primary group-active/divider:bg-primary",
-            horizontal ? "inset-y-0 -left-[3px] w-[7px]" : "inset-x-0 -top-[3px] h-[7px]",
-            "bg-clip-content",
-            horizontal ? "px-[2px]" : "py-[2px]",
-          )}
-        />
-      </div>
-      <div
-        className="min-h-0 min-w-0 shrink-0"
-        style={
-          horizontal
-            ? { width: size, minWidth: min, maxWidth: `calc(100% - ${minOther}px)` }
-            : { height: size, minHeight: min, maxHeight: `calc(100% - ${minOther}px)` }
-        }
-      >
-        {end}
-      </div>
+      <div className={cn("min-h-0 min-w-0 flex-1", startHidden && end !== null && "hidden")}>{start}</div>
+      {end === null ? null : startHidden ? (
+        <div className="min-h-0 min-w-0 flex-1">{end}</div>
+      ) : (
+        <>
+          {/* biome-ignore lint/a11y/useSemanticElements: an <hr> cannot be focused or dragged */}
+          <div
+            role="separator"
+            tabIndex={0}
+            aria-label={label}
+            aria-orientation={horizontal ? "vertical" : "horizontal"}
+            aria-valuenow={size}
+            aria-valuemin={min}
+            aria-valuemax={max}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onKeyDown={onKeyDown}
+            className={cn(
+              "group/divider relative z-10 shrink-0 touch-none bg-border outline-none",
+              horizontal ? "w-px cursor-col-resize" : "h-px cursor-row-resize",
+            )}
+          >
+            {/* A wider invisible hit area, and the line that lights up on hover, focus and drag. */}
+            <span
+              className={cn(
+                "absolute bg-transparent transition-colors group-hover/divider:bg-primary/50 group-focus-visible/divider:bg-primary group-active/divider:bg-primary",
+                horizontal ? "inset-y-0 -left-[3px] w-[7px]" : "inset-x-0 -top-[3px] h-[7px]",
+                "bg-clip-content",
+                horizontal ? "px-[2px]" : "py-[2px]",
+              )}
+            />
+          </div>
+          <div
+            className="min-h-0 min-w-0 shrink-0"
+            style={
+              horizontal
+                ? { width: size, minWidth: min, maxWidth: `calc(100% - ${minOther}px)` }
+                : { height: size, minHeight: min, maxHeight: `calc(100% - ${minOther}px)` }
+            }
+          >
+            {end}
+          </div>
+        </>
+      )}
     </div>
   );
 }

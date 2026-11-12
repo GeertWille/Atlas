@@ -17,6 +17,7 @@ import { Empty } from "@/shared/ui/empty";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { PageSectionHeader } from "../pages/PageSectionHeader";
 import { type PageMarkers, pageMarkers } from "../pages/page-scope";
+import { useReportLinks } from "../report-links";
 import {
   layoutSlotTimeline,
   SLOT_PHASE_LABEL,
@@ -112,6 +113,8 @@ function SlotTooltip({ row }: { row: SlotRow }) {
 }
 
 function SlotLabel({ slot, flags }: Pick<SlotRow, "slot" | "flags">) {
+  const openRequest = useReportLinks()?.openRequest;
+  const adRequests = slot.requests.flatMap((request) => request.requestId ?? []);
   const outcome = SLOT_OUTCOME_META[slot.outcome];
   const OutcomeIcon = OUTCOME_ICON[slot.outcome];
   return (
@@ -132,6 +135,18 @@ function SlotLabel({ slot, flags }: Pick<SlotRow, "slot" | "flags">) {
             {flag.label}
           </Badge>
         ))}
+        {openRequest
+          ? adRequests.map((requestId, index) => (
+              <button
+                key={requestId}
+                type="button"
+                onClick={() => openRequest(requestId)}
+                className="rounded-sm text-xs text-primary-text underline-offset-4 hover:underline"
+              >
+                {index === 0 ? "Ad request" : `Refresh ${index}`}
+              </button>
+            ))
+          : null}
       </div>
     </div>
   );

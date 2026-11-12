@@ -816,30 +816,30 @@ fn the_frame_and_the_session_decide_where_a_request_was_made() {
 fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
     let mut assembler = Assembler::default();
     let now = epoch(1_040.0);
-    let mut events = vec![
-        (
-            "refused",
-            failed("1.1", 1_040.1, "net::ERR_CONNECTION_REFUSED"),
-        ),
-        ("blocked", {
-            let mut event = failed("1.2", 1_040.1, "net::ERR_BLOCKED_BY_CLIENT");
-            event["blockedReason"] = json!("inspector");
-            event
-        }),
-        ("cors", {
-            let mut event = failed("1.3", 1_040.1, "net::ERR_FAILED");
-            event["corsErrorStatus"] =
-                json!({ "corsError": "MissingAllowOriginHeader", "failedParameter": "" });
-            event
-        }),
-        ("aborted", {
-            let mut event = failed("1.4", 1_040.1, "net::ERR_ABORTED");
-            event["canceled"] = json!(true);
-            event
-        }),
+    let blocked = {
+        let mut event = failed("1.2", 1_040.1, "net::ERR_BLOCKED_BY_CLIENT");
+        event["blockedReason"] = json!("inspector");
+        event
+    };
+    let refused_by_cors = {
+        let mut event = failed("1.3", 1_040.1, "net::ERR_FAILED");
+        event["corsErrorStatus"] =
+            json!({ "corsError": "MissingAllowOriginHeader", "failedParameter": "" });
+        event
+    };
+    let aborted = {
+        let mut event = failed("1.4", 1_040.1, "net::ERR_ABORTED");
+        event["canceled"] = json!(true);
+        event
+    };
+    let failures = [
+        failed("1.1", 1_040.1, "net::ERR_CONNECTION_REFUSED"),
+        blocked,
+        refused_by_cors,
+        aborted,
     ];
-    for (index, (_, failure)) in events.iter_mut().enumerate() {
-        let id = failure["requestId"].as_str().unwrap().to_string();
+    for (index, failure) in failures.iter().enumerate() {
+        let id = failure["requestId"].as_str().unwrap();
         let url = if index == 0 {
             "https://rtb.openx.net/openrtbb/prebidjs".to_string()
         } else {
@@ -848,7 +848,7 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
         assembler.observe(
             &tab(now),
             "Network.requestWillBeSent",
-            &request(&id, &url, 1_040.0),
+            &request(id, &url, 1_040.0),
         );
         assembler.observe(&tab(now), "Network.loadingFailed", failure);
     }

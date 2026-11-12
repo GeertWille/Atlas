@@ -13,25 +13,47 @@ export const CATEGORIES: readonly NetworkCategory[] = [
   "otherThirdParty",
 ];
 
-export const CATEGORY_META: Record<NetworkCategory, { label: string; token: string; description: string }> = {
-  bid: { label: "Bid requests", token: "bid", description: "Calls to bidders' and Prebid Server's auction endpoints" },
-  adServer: { label: "Ad server", token: "adserver", description: "The ad server's ad calls" },
+/** `short` is the chip's wording, where nine of them share one row. */
+export const CATEGORY_META: Record<
+  NetworkCategory,
+  { label: string; short: string; token: string; description: string }
+> = {
+  bid: {
+    label: "Bid requests",
+    short: "Bids",
+    token: "bid",
+    description: "Calls to bidders' and Prebid Server's auction endpoints",
+  },
+  adServer: { label: "Ad server", short: "Ad server", token: "adserver", description: "The ad server's ad calls" },
   wrapper: {
     label: "Wrapper and Prebid",
+    short: "Wrapper",
     token: "wrapper",
     description: "Prebid, the publisher's wrapper and the ad libraries themselves",
   },
-  consent: { label: "Consent", token: "consent", description: "The consent platform" },
-  identity: { label: "Identity and sync", token: "identity", description: "User id modules and cookie syncs" },
+  consent: { label: "Consent", short: "Consent", token: "consent", description: "The consent platform" },
+  identity: {
+    label: "Identity and sync",
+    short: "Identity",
+    token: "identity",
+    description: "User id modules and cookie syncs",
+  },
   measurement: {
     label: "Measurement",
+    short: "Measurement",
     token: "measurement",
     description: "Analytics, viewability, verification, beacons",
   },
-  creative: { label: "Creative", token: "creative", description: "What an ad loads once it renders" },
-  site: { label: "First-party", token: "site", description: "The scanned site itself" },
+  creative: {
+    label: "Creative",
+    short: "Creative",
+    token: "creative",
+    description: "What an ad loads once it renders",
+  },
+  site: { label: "First-party", short: "First-party", token: "site", description: "The scanned site itself" },
   otherThirdParty: {
     label: "Other",
+    short: "Other",
     token: "other",
     description: "Third parties with no ad-tech role known to the app",
   },

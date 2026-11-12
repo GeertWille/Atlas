@@ -94,8 +94,6 @@ export type RequestDraft = {
   authorization: boolean;
   exchange: ExchangeSpec | null;
   decoded: DecodedExchange | null;
-  /** For an ad-server call: the slot it asked an ad for. */
-  slotElementId: string | null;
 };
 
 type DraftInput = Pick<RequestDraft, "page" | "at" | "duration" | "url" | "kind" | "category" | "size"> &
@@ -228,7 +226,6 @@ class Planner {
       authorization: false,
       exchange: null,
       decoded: null,
-      slotElementId: null,
       ...input,
       at: Math.max(0, Math.round(input.at)),
       duration: input.duration === null ? null : Math.max(1, Math.round(input.duration)),
@@ -544,7 +541,12 @@ class Planner {
     const wrapper = this.frame("hb-wrapper", "requestBids", "requestBids");
     const stack = [...prebid, ...wrapper];
     for (const auction of this.detail.auctions.filter((candidate) => candidate.page === page.index)) {
-      const end = auction.endedAtMs ?? auction.startedAtMs + (auction.timeoutMs ?? 1500);
+      // "The auction closed" is its start plus its timeout: an auction whose bidders all answered ends
+      // early, and nobody was late for it.
+      const end =
+        auction.timeoutMs === null
+          ? (auction.endedAtMs ?? auction.startedAtMs)
+          : auction.startedAtMs + auction.timeoutMs;
       const units: ExchangeUnit[] = auction.adUnits.flatMap((unit) =>
         unit.bids.map((bid) => ({ code: unit.code, sizes: unit.sizes, bid })),
       );
@@ -709,9 +711,6 @@ class Planner {
     ];
     const slots = this.detail.slots.filter((slot) => slot.page === page.index);
     for (const slot of slots) {
-      const auction = this.detail.auctions.find(
-        (candidate) => candidate.page === page.index && candidate.adUnits.some((unit) => unit.code === slot.elementId),
-      );
       for (const [index, request] of slot.requests.entries()) {
         const refresh = index > 0;
         const duration =
@@ -733,19 +732,6 @@ class Planner {
           stack: gpt,
           cookies: true,
           noHbTargeting: !request.hadPrebidTargeting,
-          slotElementId: slot.elementId,
-          ad: auction
-            ? {
-                auctionId: auction.id,
-                adUnits: [slot.elementId],
-                viaServer: false,
-                exact: false,
-                verdict: "inTime",
-                lateByMs: null,
-                cpm: null,
-                nbr: null,
-              }
-            : null,
           response:
             duration === null
               ? { state: "pending", mime: null }

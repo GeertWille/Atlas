@@ -1999,3 +1999,47 @@ async fn a_scan_from_before_the_archive_reads_as_not_recorded() {
         (SourceAvailability::NotRecorded, None, 0)
     );
 }
+
+#[tokio::test]
+async fn exports_carry_the_links_and_never_a_body_or_a_header() {
+    let harness = recorded_harness();
+    let detail = recorded_scan(&harness).await;
+    for format in [
+        adscan_model::ExportFormat::Json,
+        adscan_model::ExportFormat::Markdown,
+    ] {
+        let document = harness
+            .scans
+            .export(&detail.summary.id, format)
+            .await
+            .unwrap();
+        for stored_only_in_the_archive in [
+            DOCUMENT_HTML,
+            "bid-openx-top-1",
+            "CPconsentstring",
+            "session=abc123",
+            "sid=[20 bytes]",
+            "function isMobile(){return window.innerWidth>768}",
+        ] {
+            assert!(
+                !document.contains(stored_only_in_the_archive),
+                "{format:?} export contains {stored_only_in_the_archive}"
+            );
+        }
+    }
+    let json = harness
+        .scans
+        .export(&detail.summary.id, adscan_model::ExportFormat::Json)
+        .await
+        .unwrap();
+    let exported: ScanDetail = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        bid(&exported, "top", "rubicon")
+            .exchange
+            .as_ref()
+            .unwrap()
+            .verdict,
+        ExchangeVerdict::LateOnNetwork
+    );
+    assert_eq!(exported.network.unwrap().request_count, 12);
+}

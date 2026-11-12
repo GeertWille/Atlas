@@ -2,6 +2,7 @@ import { CircleAlertIcon, InfoIcon, type LucideIcon } from "lucide-react";
 import type { BidderDiagnostics, DiagnosticArea, DiagnosticCheck } from "@/bindings";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { cn } from "@/shared/lib/cn";
+import { useReportLinks } from "../report-links";
 import {
   describeAdsTxt,
   describeBids,
@@ -37,6 +38,8 @@ function Fact({ term, children }: { term: string; children: string }) {
 function CheckLine({ check }: { check: DiagnosticCheck }) {
   const style = FLAG_STYLE[check.status === "problem" ? "problem" : "notice"];
   const Icon = style.icon;
+  const openRequest = useReportLinks()?.openRequest;
+  const [requestId] = check.requestIds;
   return (
     <li className="flex gap-2">
       <Icon role="img" aria-label={style.label} className={cn("mt-0.5 size-3.5 shrink-0", style.tone)} />
@@ -50,6 +53,17 @@ function CheckLine({ check }: { check: DiagnosticCheck }) {
         ) : null}
         {check.adUnits.length > 0 ? (
           <p className="selectable font-mono text-xs text-muted-foreground">{check.adUnits.join(", ")}</p>
+        ) : null}
+        {requestId && openRequest ? (
+          <button
+            type="button"
+            onClick={() => openRequest(requestId, "response")}
+            className="w-fit rounded-sm text-xs text-primary-text underline-offset-4 hover:underline"
+          >
+            {check.requestIds.length === 1
+              ? "View the response"
+              : `View the response (first of ${check.requestIds.length})`}
+          </button>
         ) : null}
       </div>
     </li>
