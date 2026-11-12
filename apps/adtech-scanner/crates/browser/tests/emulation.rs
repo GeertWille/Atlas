@@ -1,8 +1,9 @@
-//! What a page can observe about the emulated device.
+//! What a page can observe about the device and the browser of a scan: the
+//! device is emulated as asked, and the browser reports itself as it is.
 
 mod support;
 
-use adscan_model::{Capture, DeviceProfile, VisitorBehavior};
+use adscan_model::{Capture, CaptureEnvironment, DeviceProfile, VisitorBehavior};
 use serde_json::Value;
 
 async fn probe(device: DeviceProfile) -> (Capture, Value) {
@@ -48,7 +49,10 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
         user_agent.contains("Android") && user_agent.contains(" Mobile Safari/"),
         "{user_agent}"
     );
-    assert!(!user_agent.contains("Headless"), "{user_agent}");
+    assert!(
+        !user_agent.contains("Headless"),
+        "the emulated phone has a phone's user agent: {user_agent}"
+    );
     assert_eq!(seen["platform"], "Linux armv81");
 
     // The client hints tell the same story as the user agent string.
@@ -80,7 +84,21 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
     assert_eq!(seen["orientation"], "portrait-primary");
     assert_eq!(seen["portrait"], true);
     assert_eq!(seen["hasFocus"], true);
-    assert_eq!(seen["webdriver"], false);
+    assert_eq!(
+        seen["webdriver"], true,
+        "a visit the scanner drives is flagged as automated"
+    );
+    assert_eq!(
+        capture.environment,
+        CaptureEnvironment {
+            headless: true,
+            persistent_profile: false,
+            webdriver: Some(true),
+            user_agent_overridden: true,
+            viewport_overridden: true,
+            request_hosts: Vec::new(),
+        }
+    );
 
     assert_eq!(capture.device, DeviceProfile::Mobile);
     assert!(capture.viewport.mobile);
@@ -103,25 +121,20 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
 }
 
 #[tokio::test]
-async fn desktop_scan_is_an_ordinary_desktop_chrome() {
+async fn desktop_scan_is_a_desktop_and_the_browser_it_really_is() {
     let (capture, seen) = probe(DeviceProfile::Desktop).await;
 
     assert_eq!(seen["userAgent"], capture.user_agent.as_str());
     let user_agent = seen["userAgent"].as_str().unwrap();
     assert!(
-        user_agent.contains("Chrome/") && !user_agent.contains("Headless"),
-        "{user_agent}"
+        user_agent.contains("HeadlessChrome/"),
+        "a headless browser says that it is one: {user_agent}"
     );
     assert!(!user_agent.contains("Mobile"));
     assert_eq!(seen["hintsMobile"], false);
     assert_eq!(
         brand_version(&seen["hintsBrands"], "Chromium"),
         Some(chrome_major(user_agent))
-    );
-    assert!(
-        !seen["hintsBrands"].to_string().contains("Headless"),
-        "{}",
-        seen["hintsBrands"]
     );
     let full_version = brand_version(&seen["hintsFullVersions"], "Chromium").unwrap();
     assert!(
@@ -144,7 +157,21 @@ async fn desktop_scan_is_an_ordinary_desktop_chrome() {
     assert_eq!(seen["anyHover"], true);
     assert_eq!(seen["orientation"], "landscape-primary");
     assert_eq!(seen["hasFocus"], true);
-    assert_eq!(seen["webdriver"], false);
+    assert_eq!(
+        seen["webdriver"], true,
+        "a visit the scanner drives is flagged as automated"
+    );
+    assert_eq!(
+        capture.environment,
+        CaptureEnvironment {
+            headless: true,
+            persistent_profile: false,
+            webdriver: Some(true),
+            user_agent_overridden: false,
+            viewport_overridden: true,
+            request_hosts: Vec::new(),
+        }
+    );
 
     assert_eq!(capture.device, DeviceProfile::Desktop);
     assert!(!capture.viewport.mobile);

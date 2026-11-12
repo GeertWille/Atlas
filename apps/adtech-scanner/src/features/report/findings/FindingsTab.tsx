@@ -1,6 +1,6 @@
 import { FilterXIcon, ShieldCheckIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Finding, FindingSource } from "@/bindings";
+import type { Finding, FindingSource, PageView } from "@/bindings";
 import { FilterMenu } from "@/shared/components/filter-menu";
 import { SEVERITY_ICON } from "@/shared/components/status";
 import { FINDING_CATEGORIES, FINDING_CATEGORY_LABEL, SEVERITIES, SEVERITY_META } from "@/shared/domain/vocabulary";
@@ -20,10 +20,13 @@ import {
 
 export function FindingsTab({
   findings,
+  pages = [],
   focusedFindingId,
   onOpenScript,
 }: {
   findings: Finding[];
+  /** The page views of the scan, so each finding of a multi-page visit can say where it was seen. */
+  pages?: PageView[];
   /** Deep link target: expanded and scrolled into view. */
   focusedFindingId?: string;
   onOpenScript: (scriptUrl: string) => void;
@@ -118,6 +121,7 @@ export function FindingsTab({
           <FindingCard
             key={finding.id}
             finding={finding}
+            pages={pages}
             expanded={expandedIds.has(finding.id)}
             onToggle={() => toggle(finding.id)}
             onOpenScript={onOpenScript}

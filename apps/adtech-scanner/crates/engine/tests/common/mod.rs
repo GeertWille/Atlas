@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureError, CaptureSource, EventSink, FetchError, ProgressFn, PublicFile, PublicFileFetcher,
-    PublicFileRequest, SourceFormatter,
+    CaptureError, CaptureSession, CaptureSource, EventSink, FetchError, PublicFile,
+    PublicFileFetcher, PublicFileRequest, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
@@ -20,8 +21,9 @@ use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::TypesafeClient;
 use adscan_model::{
-    BrowserInfo, Capture, CaptureRequest, CapturedScript, DeviceProfile, ScanDetail, ScanEvent,
-    ScanOptions, ScanStatus, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, Viewport,
+    BrowserInfo, Capture, CaptureActivity, CaptureRequest, CapturedPage, CapturedScript,
+    DeviceProfile, PageReach, ScanDetail, ScanEvent, ScanOptions, ScanProfileInfo, ScanStatus,
+    TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -39,7 +41,7 @@ pub fn strings(items: &[&str]) -> Vec<String> {
 
 pub fn script(url: &str, body: &str) -> CapturedScript {
     CapturedScript {
-        pages: Vec::new(),
+        pages: vec![0],
         url: url.into(),
         inline: false,
         body: body.into(),
@@ -285,10 +287,14 @@ pub fn capture_with(
 ) -> Capture {
     events.sort_by(|a, b| a.t.total_cmp(&b.t));
     let mobile = device == DeviceProfile::Mobile;
+    let entry_page = CapturedPage {
+        title: Some("Publisher".into()),
+        ended_at_ms: 12_000.0,
+        load_ms: Some(950.0),
+        max_scroll_depth,
+        ..CapturedPage::entry("https://pub.example/")
+    };
     Capture {
-        environment: adscan_model::CaptureEnvironment::default(),
-        pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
-        final_url: "https://pub.example/".into(),
         page_title: Some("Publisher".into()),
         device,
         viewport: Viewport {
@@ -306,12 +312,45 @@ pub fn capture_with(
         navigation_start: 1_760_000_000_000.0,
         page_load_ms: Some(950.0),
         scripts: page_scripts(),
-        events,
-        console: vec![],
         max_scroll_depth,
-        consent_accepted: false,
-        bid_responses: vec![],
+        pages: vec![entry_page],
+        ..Capture::single_page("https://pub.example/", events)
     }
+}
+
+/// A page view of a multi-page visit, from `started_at_ms` to `ended_at_ms`
+/// into the scan.
+pub fn page_view(
+    url: &str,
+    reached_by: PageReach,
+    started_at_ms: f64,
+    ended_at_ms: f64,
+) -> CapturedPage {
+    CapturedPage {
+        title: Some("Publisher".into()),
+        started_at_ms,
+        ended_at_ms,
+        reached_by,
+        load_ms: (reached_by != PageReach::RouteChange).then_some(950.0),
+        max_scroll_depth: 1.0,
+        ..CapturedPage::entry(url)
+    }
+}
+
+/// A desktop visit of several page views. The events of each page view
+/// carry times since that page view started.
+pub fn visit(pages: Vec<(CapturedPage, Vec<TrackerEvent>)>) -> Capture {
+    let mut capture = capture_with(DeviceProfile::Desktop, Vec::new(), 1.0);
+    capture.pages.clear();
+    for (index, (page, mut events)) in (0u32..).zip(pages) {
+        events.sort_by(|a, b| a.t.total_cmp(&b.t));
+        for event in &mut events {
+            event.page = index;
+        }
+        capture.events.extend(events);
+        capture.pages.push(page);
+    }
+    capture
 }
 
 /// Auction on load, everything fills, the user scrolls later.
@@ -350,12 +389,23 @@ pub enum CaptureBehavior {
     Fail(CaptureError),
     /// Blocks like a long page observation until the scan is cancelled.
     BlockUntilCancelled,
+    /// A manual visit: records until the user finishes it, then returns the
+    /// capture. Cancelling discards it.
+    RecordUntilFinished(Box<Capture>),
     NoBrowser,
 }
 
 pub struct FakeCaptureSource {
     behavior: CaptureBehavior,
     pub requests: Mutex<Vec<CaptureRequest>>,
+    /// The proxy password each capture was handed.
+    pub proxy_passwords: Mutex<Vec<Option<String>>>,
+    /// Reported, in order, after the first progress line of every capture.
+    pub activities: Mutex<Vec<CaptureActivity>>,
+    /// Whether a browser holds the scan profile, as the browser crate's own
+    /// lock would say.
+    pub profile_in_use: Mutex<bool>,
+    pub profile_clears: Mutex<u32>,
 }
 
 impl FakeCaptureSource {
@@ -363,6 +413,10 @@ impl FakeCaptureSource {
         Self {
             behavior,
             requests: Mutex::new(Vec::new()),
+            proxy_passwords: Mutex::new(Vec::new()),
+            activities: Mutex::new(Vec::new()),
+            profile_in_use: Mutex::new(false),
+            profile_clears: Mutex::new(0),
         }
     }
 }
@@ -380,20 +434,48 @@ impl CaptureSource for FakeCaptureSource {
     async fn capture(
         &self,
         request: CaptureRequest,
-        cancel: CancellationToken,
-        on_progress: ProgressFn,
+        session: CaptureSession,
     ) -> Result<Capture, CaptureError> {
         self.requests.lock().unwrap().push(request);
-        on_progress("Page loaded in 0.9s".into());
+        self.proxy_passwords
+            .lock()
+            .unwrap()
+            .push(session.proxy_password.clone());
+        (session.on_activity)(CaptureActivity::progress("Page loaded in 0.9s"));
+        for activity in self.activities.lock().unwrap().iter().cloned() {
+            (session.on_activity)(activity);
+        }
         match &self.behavior {
             CaptureBehavior::Return(capture) => Ok((**capture).clone()),
             CaptureBehavior::Fail(error) => Err(error.clone()),
             CaptureBehavior::BlockUntilCancelled => {
-                cancel.cancelled().await;
+                session.cancel.cancelled().await;
                 Err(CaptureError::Cancelled)
             }
+            CaptureBehavior::RecordUntilFinished(capture) => tokio::select! {
+                () = session.finish.cancelled() => Ok((**capture).clone()),
+                () = session.cancel.cancelled() => Err(CaptureError::Cancelled),
+            },
             CaptureBehavior::NoBrowser => Err(CaptureError::BrowserNotFound),
         }
+    }
+
+    async fn scan_profile_info(&self) -> ScanProfileInfo {
+        let cleared = *self.profile_clears.lock().unwrap() > 0;
+        ScanProfileInfo {
+            exists: !cleared,
+            size_bytes: if cleared { 0.0 } else { 4096.0 },
+            last_used_at: None,
+            in_use: *self.profile_in_use.lock().unwrap(),
+        }
+    }
+
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError> {
+        if *self.profile_in_use.lock().unwrap() {
+            return Err(CaptureError::ProfileBusy);
+        }
+        *self.profile_clears.lock().unwrap() += 1;
+        Ok(())
     }
 }
 
@@ -493,6 +575,8 @@ impl EventSink for RecordingSink {
 pub struct Harness {
     pub scans: ScanService,
     pub settings: Arc<SettingsService>,
+    pub configurations: ConfigurationService,
+    pub secrets: Arc<MemorySecretStore>,
     pub store: SqliteStore,
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
@@ -567,10 +651,18 @@ fn build_harness(
     ));
     let settings = Arc::new(SettingsService::new(
         Arc::new(store.clone()),
-        secrets,
+        secrets.clone(),
         llm.clone(),
         judge.clone(),
+        Arc::new(store.clone()),
+        Arc::new(UuidGenerator),
     ));
+    let configurations = ConfigurationService::new(
+        Arc::new(store.clone()),
+        settings.clone(),
+        Arc::new(SystemClock),
+        Arc::new(UuidGenerator),
+    );
     let events = Arc::new(RecordingSink::default());
     let capture = Arc::new(FakeCaptureSource::new(behavior));
     let files = Arc::new(FakePublicFiles::default());
@@ -587,8 +679,10 @@ fn build_harness(
         ids: Arc::new(UuidGenerator),
     };
     Harness {
-        scans: ScanService::new(deps, settings.clone()),
+        scans: ScanService::new(deps, settings.clone(), Arc::new(store.clone())),
         settings,
+        configurations,
+        secrets,
         store,
         events,
         capture,
@@ -598,19 +692,10 @@ fn build_harness(
 
 pub fn scan_options(ai_enabled: bool) -> ScanOptions {
     ScanOptions {
-        visitor: None,
-        extra_pages: None,
-        seed: None,
-        headless: None,
-        persistent_profile: None,
-        proxy: None,
-        budget_usd: None,
         url: "pub.example".into(),
-        device: DeviceProfile::Desktop,
-        observe_seconds: 10,
-        auto_scroll: true,
         accept_consent: true,
         ai_enabled,
+        ..ScanOptions::for_url("")
     }
 }
 

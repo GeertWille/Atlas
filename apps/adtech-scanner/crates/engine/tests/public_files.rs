@@ -5,15 +5,24 @@
 use std::time::{Duration, Instant};
 
 use adscan_engine::application::ports::{
-    FetchError, PublicFile, PublicFileFetcher, PublicFileRequest,
+    FetchError, FetchProxy, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
 use adscan_engine::domain::diagnostics::ads_txt::{self, AdsTxtOutcome};
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
+use adscan_model::{CaptureProxy, ProxyScheme};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const ADS_TXT: &str = "appnexus.com, 958, DIRECT\nrubiconproject.com, 1001, RESELLER\n";
+
+fn system_proxy() -> FetchProxy {
+    FetchProxy {
+        route: CaptureProxy::System,
+        password: None,
+    }
+}
 
 fn request(server: &MockServer, file: &str) -> PublicFileRequest {
     PublicFileRequest {
@@ -21,6 +30,7 @@ fn request(server: &MockServer, file: &str) -> PublicFileRequest {
         max_bytes: 64 * 1024,
         timeout: Duration::from_secs(5),
         loopback_origin: Some(server.uri()),
+        proxy: system_proxy(),
     }
 }
 
@@ -449,9 +459,135 @@ async fn an_unreachable_server_is_a_network_error_in_plain_words() {
         max_bytes: 1_024,
         timeout: Duration::from_secs(5),
         loopback_origin: Some(origin),
+        proxy: system_proxy(),
     };
     assert_eq!(
         fetch(&gone).await,
         Err(FetchError::Network("could not connect".into()))
     );
+}
+
+/// A proxy that records the first request it is sent and refuses it.
+async fn recording_proxy() -> (u16, tokio::task::JoinHandle<String>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let received = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut buffer).await.unwrap();
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let _ = socket
+            .write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n")
+            .await;
+        String::from_utf8_lossy(&request).into_owned()
+    });
+    (port, received)
+}
+
+fn through_proxy(port: u16, username: Option<&str>, password: Option<&str>) -> FetchProxy {
+    FetchProxy {
+        route: CaptureProxy::Custom {
+            scheme: ProxyScheme::Http,
+            host: "127.0.0.1".into(),
+            port,
+            username: username.map(str::to_string),
+        },
+        password: password.map(str::to_string),
+    }
+}
+
+#[tokio::test]
+async fn a_public_file_is_requested_through_the_scans_proxy_with_its_credentials() {
+    let (port, received) = recording_proxy().await;
+    // A public address, so nothing depends on this machine's resolver.
+    let request = PublicFileRequest {
+        url: "https://93.184.216.34/ads.txt".into(),
+        max_bytes: 1_024,
+        timeout: Duration::from_secs(5),
+        loopback_origin: None,
+        proxy: through_proxy(port, Some("scanner"), Some("s3cret")),
+    };
+    // The proxy refuses the tunnel; what matters is what it was asked.
+    assert!(matches!(fetch(&request).await, Err(FetchError::Network(_))));
+    let asked = received.await.unwrap();
+    assert!(
+        asked.starts_with("CONNECT 93.184.216.34:443 "),
+        "the proxy was asked: {asked}"
+    );
+    // base64("scanner:s3cret")
+    assert!(
+        asked
+            .to_ascii_lowercase()
+            .contains("proxy-authorization: basic c2nhbm5lcjpzm2nyzxq="),
+        "the proxy was asked: {asked}"
+    );
+}
+
+#[tokio::test]
+async fn the_scanned_origin_on_this_machine_is_never_read_through_the_proxy() {
+    let server = MockServer::start().await;
+    serve(&server, "/ads.txt", text(ADS_TXT)).await;
+    // Nothing listens at the proxy: a request sent there could not succeed.
+    let unused = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_port = unused.local_addr().unwrap().port();
+    drop(unused);
+
+    let request = PublicFileRequest {
+        proxy: through_proxy(proxy_port, None, None),
+        ..request(&server, "/ads.txt")
+    };
+    assert_eq!(fetch(&request).await.unwrap().body, ADS_TXT.as_bytes());
+}
+
+#[tokio::test]
+async fn the_address_checks_hold_whatever_the_proxy() {
+    let (port, _received) = recording_proxy().await;
+    for proxy in [
+        through_proxy(port, None, None),
+        FetchProxy {
+            route: CaptureProxy::None,
+            password: None,
+        },
+    ] {
+        for (url, reason) in [
+            (
+                "http://example.com/ads.txt",
+                "only https addresses are read",
+            ),
+            (
+                "https://10.0.0.8/ads.txt",
+                "it points to this machine or a private network",
+            ),
+            (
+                "https://user:secret@example.com/ads.txt",
+                "it carries credentials",
+            ),
+        ] {
+            let request = PublicFileRequest {
+                url: url.into(),
+                max_bytes: 1_024,
+                timeout: Duration::from_secs(5),
+                loopback_origin: None,
+                proxy: proxy.clone(),
+            };
+            assert_eq!(
+                refusal(fetch(&request).await),
+                format!("the address was not contacted: {reason}"),
+                "{url}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_proxy_password_never_shows_in_debug_output() {
+    let printed = format!("{:?}", through_proxy(8080, Some("scanner"), Some("s3cret")));
+    assert!(!printed.contains("s3cret"), "{printed}");
+    assert!(printed.contains("has_password: true"), "{printed}");
 }

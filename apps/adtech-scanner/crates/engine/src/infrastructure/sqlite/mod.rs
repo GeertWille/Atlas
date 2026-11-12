@@ -121,6 +121,7 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE scans ADD COLUMN environment TEXT;
     ALTER TABLE scans ADD COLUMN configuration_id TEXT;
     ALTER TABLE scans ADD COLUMN configuration_name TEXT;
+    ALTER TABLE scans ADD COLUMN proxy TEXT;
     CREATE INDEX scans_by_configuration ON scans (configuration_id, started_at DESC);
 
     CREATE TABLE scan_configurations (
@@ -357,5 +358,115 @@ mod tests {
                 ..adscan_model::Settings::default()
             }
         );
+    }
+
+    /// A database as version 3 of the app left it: one finished scan with an
+    /// auction, a slot, a script and a finding, and saved settings.
+    fn version_3_database() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..3] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO scans (id, url, hostname, device, status, started_at, finished_at, options, metrics)
+                VALUES ('old-scan', 'https://pub.example/', 'pub.example', 'desktop', 'completed', 1000, 2000,
+                    '{"url":"https://pub.example/","device":"desktop","observeSeconds":20,"autoScroll":true,"acceptConsent":true,"aiEnabled":false}',
+                    '{"pageLoadMs":950,"auctionCount":1,"adUnitCount":1,"bidderCount":1,"bidRequestCount":1,"bidResponseCount":1,"bidTimeoutCount":0,"noBidCount":0,"timeoutRate":0,"slotCount":1,"emptySlotCount":0,"fillRate":1,"avgWinningCpm":null,"totalWinningCpm":0,"timeToFirstAuctionMs":360,"timeToFirstAdMs":900,"scriptCount":1,"adScriptCount":1,"totalScriptBytes":10,"prebidTimeoutMs":1500,"hasPrebid":true,"hasGpt":true,"hasAmazonTam":false}');
+                INSERT INTO auctions (scan_id, position, data) VALUES ('old-scan', 0,
+                    '{"id":"a1","startedAtMs":360,"endedAtMs":700,"durationMs":340,"timeoutMs":1500,"adUnits":[]}');
+                INSERT INTO slots (scan_id, position, data) VALUES ('old-scan', 0,
+                    '{"elementId":"top","adUnitPath":"/123/top","sizes":["728x90"],"outcome":"filled","renderedSize":"728x90","definedAtMs":200,"requestedAtMs":710,"responseAtMs":880,"renderedAtMs":900,"viewableAtMs":null,"inInitialViewport":true,"hadPrebidTargeting":true,"requestedBeforeAuctionEnd":false,"advertiserId":null,"lineItemId":null}');
+                INSERT INTO scripts (scan_id, position, data) VALUES ('old-scan', 0,
+                    '{"id":"s1","url":"https://pub.example/ads.js","hostname":"pub.example","inline":false,"sizeBytes":10,"hash":"abc","category":"wrapper","adRelated":true,"classificationReason":null,"classificationConfidence":null,"classifiedBy":"heuristic","classifierModel":null,"adProbability":null,"analyzed":false,"vendor":null,"loadedAtMs":100,"firstParty":true}');
+                INSERT INTO findings (id, scan_id, position, data) VALUES ('f1', 'old-scan', 0,
+                    '{"id":"f1","scanId":"old-scan","severity":"high","category":"lazyLoad","source":"heuristic","title":"t","description":"d","recommendation":"r","confidence":0.7,"impact":"i","estimatedRevenueImpactPct":null,"evidence":[],"affectedSlots":["top"],"affectedBidders":[]}');
+                INSERT INTO settings (id, data) VALUES (1,
+                    '{"filterModel":"claude-haiku-5-5","analysisModel":"claude-sonnet-5-5","analysisEffort":"high","budgetUsd":0.25,"chromePath":"/opt/chrome","headless":false,"defaultDevice":"mobile","defaultObserveSeconds":30,"theme":"dark","hasApiKey":false,"jevEnabled":false,"hasTypesafeKey":false,"checkSellersJson":true}');
+                "#,
+            )
+            .unwrap();
+        connection
+    }
+
+    #[tokio::test]
+    async fn a_schema_version_three_database_opens_with_its_scans_and_settings_intact() {
+        use adscan_model::{ProxyChoice, ScanListQuery, ScanStatus, VisitorBehavior};
+
+        use crate::application::ports::{
+            ScanConfigurationRepository, ScanRepository, SettingsRepository,
+        };
+        use crate::domain::scan::ValidatedScan;
+
+        let store = SqliteStore::prepare(version_3_database()).unwrap();
+        let version: u32 = store
+            .call(|connection| {
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))
+            })
+            .await
+            .unwrap();
+        assert_eq!(version as usize, MIGRATIONS.len());
+
+        // The old scan loads: one implicit page view, nothing recorded about
+        // the environment, the proxy or a configuration.
+        let detail = ScanRepository::detail(&store, "old-scan")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.summary.status, ScanStatus::Completed);
+        assert_eq!(detail.summary.configuration, None);
+        assert_eq!(detail.summary.proxy, None);
+        assert!(detail.pages.is_empty());
+        assert_eq!(detail.environment, None);
+        assert_eq!(detail.metrics.auction_count, 1);
+        assert_eq!(
+            (detail.auctions[0].page, detail.auctions[0].started_at_ms),
+            (0, 360.0)
+        );
+        assert_eq!(detail.slots[0].page, 0);
+        assert!(detail.slots[0].requests.is_empty());
+        assert!(detail.scripts[0].pages.is_empty());
+        assert!(detail.findings[0].pages.is_empty());
+
+        // Its options predate visitors: repeated, they are a scroll visit.
+        assert_eq!(detail.options.visitor, None);
+        let settings = SettingsRepository::load(&store).await.unwrap().unwrap();
+        let repeated = ValidatedScan::new(detail.options.clone(), &settings, 9).unwrap();
+        assert_eq!(repeated.visitor, VisitorBehavior::Scroll);
+
+        // The settings keep what the user chose and gain the new defaults.
+        assert_eq!(settings.budget_usd, 0.25);
+        assert_eq!(settings.chrome_path.as_deref(), Some("/opt/chrome"));
+        assert!(settings.check_sellers_json && !settings.headless);
+        assert_eq!(settings.default_visitor, VisitorBehavior::Scroll);
+        assert_eq!(settings.default_extra_pages, 2);
+        assert!(!settings.persistent_profile);
+        assert!(settings.proxies.is_empty());
+        assert_eq!(settings.default_proxy, ProxyChoice::System);
+
+        // The new table is there and empty, and the old scan is in no
+        // configuration's history.
+        assert!(
+            ScanConfigurationRepository::list(&store)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let of_configuration = ScanRepository::list(
+            &store,
+            &ScanListQuery {
+                search: None,
+                status: None,
+                device: None,
+                limit: None,
+                offset: None,
+                configuration_id: Some("any".into()),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(of_configuration.total, 0);
     }
 }

@@ -272,7 +272,7 @@ fn share_of_requests(part: usize, whole: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use adscan_model::{AuctionAdUnit, CapturedPage, PageReach, TrackerEvent};
+    use adscan_model::{AuctionAdUnit, TrackerEvent};
 
     use super::*;
 
@@ -526,7 +526,8 @@ mod tests {
     #[test]
     fn without_a_cmp_or_outside_gdpr_there_is_no_consent_to_check() {
         let not_applicable = |events: &[TrackerEvent]| {
-            let timeline = ConsentTimeline::from_events(events);
+            let capture = visit(events);
+            let timeline = ConsentTimeline::from_capture(&capture);
             let checks = timeline.bidder_checks(&[request(500.0, None, None)], XANDR);
             assert_eq!(checks.len(), 1);
             assert_eq!(checks[0].status, DiagnosticStatus::NotChecked);

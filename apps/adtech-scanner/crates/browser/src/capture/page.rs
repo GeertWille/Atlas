@@ -43,7 +43,11 @@ impl TabSetup {
     /// The commands that turn on recording and emulation and install the
     /// tracker, so that the tab's next document is observed from its first
     /// byte. The tracker script is last.
-    fn commands(&self, interception: &Interception, site: Option<&Site>) -> Vec<(&'static str, Value)> {
+    fn commands(
+        &self,
+        interception: &Interception,
+        site: Option<&Site>,
+    ) -> Vec<(&'static str, Value)> {
         let mut commands = vec![
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
@@ -175,7 +179,8 @@ impl Page {
         page.tracker_script_id = installed["identifier"].as_str().map(str::to_string);
         // The tab may have been created after the browser was told to hold
         // new ones.
-        page.call("Runtime.runIfWaitingForDebugger", json!({})).await?;
+        page.call("Runtime.runIfWaitingForDebugger", json!({}))
+            .await?;
         Ok(page)
     }
 
@@ -294,7 +299,9 @@ impl Page {
                     .recorded()
                     .is_some_and(|tab| request["frameId"] == tab.main_frame_id.as_str());
                 let on_site = self.recorder.is_on_site(url);
-                let verdict = self.interception.on_request_paused(url, main_frame, on_site);
+                let verdict = self
+                    .interception
+                    .on_request_paused(url, main_frame, on_site);
                 self.answer_paused(session_id, request, verdict);
             }
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
@@ -313,8 +320,8 @@ impl Page {
             "Fetch.requestPaused" => self.on_first_document_of_new_tab(session_id, &event.params),
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
                 let url = self.note_tab_address(session_id, &event.params);
-                let person_went_there = self.setup.visitor == VisitorBehavior::Manual
-                    && self.recorder.is_on_site(&url);
+                let person_went_there =
+                    self.setup.visitor == VisitorBehavior::Manual && self.recorder.is_on_site(&url);
                 if person_went_there {
                     self.record_tab(session_id);
                     self.recorder.observe(event, &self.cdp, session_id);
@@ -348,7 +355,9 @@ impl Page {
                     json!({ "requestId": event.params["requestId"], "authChallengeResponse": answer }),
                 );
             }
-            "Fetch.requestPaused" => self.answer_paused(session_id, &event.params, Paused::Continue),
+            "Fetch.requestPaused" => {
+                self.answer_paused(session_id, &event.params, Paused::Continue)
+            }
             "Page.downloadWillBegin" => self.download_began = true,
             _ => return false,
         }
@@ -455,7 +464,9 @@ impl Page {
             NewTab::Watch => {
                 // Queued, not awaited: a held tab answers nothing until it is
                 // let go, which is the last command.
-                let commands = self.setup.commands(&self.interception, self.recorder.site());
+                let commands = self
+                    .setup
+                    .commands(&self.interception, self.recorder.site());
                 for (method, params) in commands {
                     self.cdp.notify(Some(session_id), method, params);
                 }
@@ -509,7 +520,8 @@ impl Page {
 
     fn record_tab(&mut self, session_id: &str) {
         if let Some(tab) = self.tabs.record(session_id) {
-            self.recorder.switch_tab(tab.main_frame_id.clone(), &tab.url);
+            self.recorder
+                .switch_tab(tab.main_frame_id.clone(), &tab.url);
         }
     }
 
@@ -523,11 +535,6 @@ impl Page {
     fn close_tab(&self, target_id: &str) {
         self.cdp
             .notify(None, "Target.closeTarget", json!({ "targetId": target_id }));
-    }
-
-    /// Whether a person closed every tab of the browser.
-    pub(crate) fn all_tabs_closed(&self) -> bool {
-        self.tabs.is_empty()
     }
 
     pub(crate) fn report_blocked(&self, reason: &str, message: &str, url: Option<&str>) {

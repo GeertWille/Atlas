@@ -155,7 +155,7 @@ test("the sellers.json check is off until switched on, and says whom it contacts
 test("About names every host the app talks to", async () => {
   await renderWithApp(<ConnectedSettings />);
   expect(await screen.findByText(/Outbound traffic goes only to/)).toHaveTextContent(
-    "the page being scanned and its site's ads.txt, api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names.",
+    "the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any.",
   );
 });
 

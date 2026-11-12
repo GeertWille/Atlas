@@ -1,10 +1,11 @@
 import { Link } from "@tanstack/react-router";
-import { ExternalLinkIcon, MoreHorizontalIcon, RotateCwIcon, Trash2Icon } from "lucide-react";
+import { BookmarkIcon, ExternalLinkIcon, GlobeIcon, MoreHorizontalIcon, RotateCwIcon, Trash2Icon } from "lucide-react";
 import type { ScanSummary } from "@/bindings";
 import { HealthRing } from "@/shared/components/health-ring";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, ScanStatusBadge, SeverityCountPills } from "@/shared/components/status";
 import { EMPTY, formatDateTime, formatDuration, formatRelativeTime, formatUsd } from "@/shared/lib/format";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import {
   DropdownMenu,
@@ -122,7 +123,31 @@ export function HistoryTable({
             <td className={`${CELL} max-w-0`}>
               <Link to="/scans/$scanId" params={{ scanId: scan.id }} className="flex flex-col rounded-sm py-1">
                 <ScanIdentity scan={scan} />
-                <DeviceLabel device={scan.device} className="text-xs text-subtle-foreground" />
+                <span className="flex min-w-0 items-center gap-2">
+                  <DeviceLabel device={scan.device} className="text-xs text-subtle-foreground" />
+                  {scan.proxy?.kind === "profile" ? (
+                    <span
+                      className="inline-flex max-w-28 shrink-0 items-center gap-1 text-xs text-subtle-foreground"
+                      title={scan.proxy.host ? `Scanned through the proxy ${scan.proxy.host}` : undefined}
+                    >
+                      <GlobeIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                      <span className="truncate">
+                        <span className="sr-only">Proxy </span>
+                        {scan.proxy.name ?? "Proxy"}
+                      </span>
+                    </span>
+                  ) : null}
+                  {scan.configuration ? (
+                    <Badge
+                      tone="outline"
+                      className="h-4 min-w-0 shrink px-1.5 text-[11px]"
+                      title={`Started from the configuration “${scan.configuration.name}”`}
+                    >
+                      <BookmarkIcon />
+                      <span className="truncate">{scan.configuration.name}</span>
+                    </Badge>
+                  ) : null}
+                </span>
               </Link>
             </td>
             <td className={CELL}>

@@ -1,6 +1,7 @@
 import type {
   LogEntry,
   PipelineStep,
+  ProxyUse,
   ScanConfigurationRef,
   ScanDetail,
   ScanEvent,
@@ -42,6 +43,7 @@ export function createRunningScan(
   id: string,
   options: ScanOptions,
   startedAt: number,
+  proxy: ProxyUse,
   configuration: ScanConfigurationRef | null = null,
 ): StoredScan {
   const steps: PipelineStep[] = PIPELINE_NODES.map((node) => ({
@@ -74,6 +76,7 @@ export function createRunningScan(
     aiUsed: false,
     error: null,
     configuration,
+    proxy,
   };
   return {
     detail: {

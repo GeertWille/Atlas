@@ -370,6 +370,7 @@ mod tests {
         let overview = template_overview(
             "pub.example",
             DeviceProfile::Mobile,
+            1,
             &metrics,
             &findings,
             67,
@@ -377,7 +378,9 @@ mod tests {
         assert!(overview.contains("pub.example (mobile)"));
         assert!(overview.contains("67/100"));
         assert!(overview.contains("Most important: Ai LogicBug."));
-        let clean = template_overview("pub.example", DeviceProfile::Desktop, &metrics, &[], 100);
+        assert!(!overview.contains("page views"));
+        let clean = template_overview("pub.example", DeviceProfile::Desktop, 3, &metrics, &[], 100);
         assert!(clean.contains("No revenue leaks"));
+        assert!(clean.contains("The visit covered 3 page views"));
     }
 }

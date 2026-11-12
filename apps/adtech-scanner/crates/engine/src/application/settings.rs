@@ -10,7 +10,7 @@ use tokio::sync::Mutex;
 use super::AppError;
 use super::llm::LlmError;
 use super::ports::{
-    IdGenerator, JudgeClient, LlmClient, ScanConfigurationRepository, SecretStore,
+    IdGenerator, JudgeClient, LlmClient, ScanConfigurationRepository, SecretError, SecretStore,
     SettingsRepository,
 };
 use crate::domain::DomainError;
@@ -195,7 +195,12 @@ impl SettingsService {
                 if users.len() == 1 { "it" } else { "them" },
             )));
         }
-        self.secrets.clear_proxy_password(id).await?;
+        match self.secrets.clear_proxy_password(id).await {
+            // Without a keychain there is no stored password to leave behind,
+            // and the profile must not become impossible to delete.
+            Ok(()) | Err(SecretError::Unavailable(_)) => {}
+            Err(error) => return Err(error.into()),
+        }
         settings.proxies.remove(position);
         if proxy::profile_id(&settings.default_proxy) == Some(id) {
             settings.default_proxy = ProxyChoice::System;

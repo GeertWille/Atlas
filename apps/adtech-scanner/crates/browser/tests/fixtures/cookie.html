@@ -1,0 +1,9 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Cookie probe</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+console.log('COOKIE before=' + document.cookie);
+document.cookie = 'returning=yes; max-age=86400; path=/';
+localStorage.setItem('returning', 'yes');
+</script>
+</body></html>

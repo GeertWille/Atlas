@@ -165,13 +165,18 @@ fn size_of(directory: &Path) -> u64 {
         .sum()
 }
 
-/// Deletes the persistent profile at `path`, unless a scan is using it.
-pub(crate) fn clear(path: &Path) -> Result<(), PersistentProfileError> {
-    if !path.exists() {
-        return Ok(());
+/// Deletes the persistent profiles at `paths`, unless a scan is using one of
+/// them: then none is deleted.
+pub(crate) fn clear(paths: &[PathBuf]) -> Result<(), PersistentProfileError> {
+    let owned = paths
+        .iter()
+        .filter(|path| path.exists())
+        .map(|path| Ok((path, lock(path)?)))
+        .collect::<Result<Vec<_>, PersistentProfileError>>()?;
+    for (path, _owner) in &owned {
+        std::fs::remove_dir_all(path)?;
     }
-    let _owner = lock(path)?;
-    Ok(std::fs::remove_dir_all(path)?)
+    Ok(())
 }
 
 /// Removes the profiles in `root` that no live process owns and returns how
@@ -399,19 +404,25 @@ mod tests {
     }
 
     #[test]
-    fn clearing_removes_a_persistent_profile_unless_it_is_in_use() {
+    fn clearing_removes_persistent_profiles_unless_one_of_them_is_in_use() {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("profile");
-        assert!(clear(&path).is_ok(), "nothing to clear is not an error");
+        let both = [root.path().join("desktop"), root.path().join("mobile")];
+        assert!(clear(&both).is_ok(), "nothing to clear is not an error");
 
-        let profile = PersistentProfile::open(&path).unwrap();
-        std::fs::write(path.join("Cookies"), "data").unwrap();
-        assert!(matches!(clear(&path), Err(PersistentProfileError::Busy)));
-        assert!(path.join("Cookies").exists());
+        let desktop = PersistentProfile::open(&both[0]).unwrap();
+        drop(PersistentProfile::open(&both[1]).unwrap());
+        for profile in &both {
+            std::fs::write(profile.join("Cookies"), "data").unwrap();
+        }
+        assert!(matches!(clear(&both), Err(PersistentProfileError::Busy)));
+        assert!(
+            both.iter().all(|profile| profile.join("Cookies").exists()),
+            "neither is touched while one is in use"
+        );
 
-        drop(profile);
-        clear(&path).unwrap();
-        assert!(!path.exists());
+        drop(desktop);
+        clear(&both).unwrap();
+        assert!(both.iter().all(|profile| !profile.exists()));
     }
 
     #[test]

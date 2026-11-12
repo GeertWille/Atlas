@@ -9,11 +9,11 @@ use adscan_engine::domain::diagnostics::ads_txt::{self, AdsTxtOutcome};
 use adscan_engine::domain::diagnostics::sellers_json::{Seller, SellerType, SellersOutcome};
 use adscan_engine::domain::diagnostics::{self, SellersLookup, SiteFiles};
 use adscan_engine::domain::finding::FindingDraft;
-use adscan_engine::domain::heuristics::{self, RuleContext};
+use adscan_engine::domain::heuristics::{self, RuleInput};
 use adscan_engine::domain::telemetry;
 use adscan_model::{
     AdsTxtStatus, BidderDiagnostics, Capture, DeviceProfile, DiagnosticArea, DiagnosticStatus,
-    ObservedBidResponse, SchainNode, Severity, TrackedAdUnit, TrackedBid, TrackerEvent,
+    ObservedBidResponse, PageReach, SchainNode, Severity, TrackedAdUnit, TrackedBid, TrackerEvent,
     TrackerEventKind as Ev,
 };
 use common::*;
@@ -178,11 +178,12 @@ fn check_of<'a>(
 
 fn findings(capture: &Capture, diagnosed: &BidderDiagnostics) -> Vec<(&'static str, FindingDraft)> {
     let telemetry = telemetry::derive(capture);
-    heuristics::evaluate(&RuleContext {
+    heuristics::evaluate(&RuleInput {
         capture,
         telemetry: &telemetry,
         diagnostics: Some(diagnosed),
         scripts: &[],
+        environment: None,
     })
     .into_iter()
     .map(|hit| (hit.rule, hit.finding))
@@ -370,11 +371,12 @@ fn without_any_cause_the_never_bid_finding_stays_a_low_generic_lead() {
 
     // A scan stored without bidder checks says that the checks did not run.
     let telemetry = telemetry::derive(&capture);
-    let unchecked = heuristics::evaluate(&RuleContext {
+    let unchecked = heuristics::evaluate(&RuleInput {
         capture: &capture,
         telemetry: &telemetry,
         diagnostics: None,
         scripts: &[],
+        environment: None,
     });
     assert_eq!(unchecked.len(), 1);
     assert!(
@@ -1347,4 +1349,123 @@ fn a_bidder_code_the_publisher_made_up_with_alias_bidder_raises_nothing() {
         assert!(flagged.is_empty(), "{}: {flagged:#?}", diagnosis.bidder);
     }
     assert_eq!(fired(&capture, &diagnosed), Vec::<&str>::new());
+}
+
+/// The same page visited twice in one visit: the second page view starts
+/// 12.4 s into the scan and reports nothing new about consent.
+fn visited_twice(first: &Capture) -> Capture {
+    let mut capture = first.clone();
+    capture.pages = vec![
+        page_view("https://pub.example/", PageReach::Entry, 0.0, 12_000.0),
+        page_view(
+            "https://pub.example/sport/final",
+            PageReach::LinkClick,
+            12_400.0,
+            20_400.0,
+        ),
+    ];
+    let again: Vec<TrackerEvent> = first
+        .events
+        .iter()
+        .filter(|event| !matches!(event.kind, Ev::TcfState { .. }))
+        .cloned()
+        .map(|mut event| {
+            event.page = 1;
+            match &mut event.kind {
+                Ev::AuctionInit { auction_id, .. }
+                | Ev::BidRequested { auction_id, .. }
+                | Ev::BidResponse { auction_id, .. }
+                | Ev::NoBid { auction_id, .. }
+                | Ev::AuctionEnd { auction_id } => *auction_id = "a2".into(),
+                _ => {}
+            }
+            event
+        })
+        .collect();
+    capture.events.extend(again);
+    capture
+}
+
+#[test]
+fn a_consent_choice_made_on_one_page_view_holds_on_the_next() {
+    let rubicon = json!({ "accountId": 1001, "siteId": 2, "zoneId": 3 });
+    let ads_txt = found(HEALTHY_ADS_TXT);
+
+    // The choice comes 5 s into the first page view: its auction (at 1 s) was
+    // early. The second page view's auction also starts 1 s into its page,
+    // which is 13.4 s into the visit and long after the choice.
+    let late_choice = visited_twice(&page(
+        &[consenting("rubicon", rubicon.clone(), false)],
+        vec![
+            tcf(300.0, "cmpuishown", &[]),
+            tcf(5_000.0, "useractioncomplete", &[52]),
+        ],
+    ));
+    let diagnosed = diagnose(&late_choice, &ads_txt);
+    assert_eq!(
+        (
+            diagnosed.consent.resolved_at_ms,
+            diagnosed.consent.auctions_before_consent,
+            diagnosed.consent.auction_count,
+        ),
+        (Some(5_000.0), 1, 2)
+    );
+    // Each check names the page views it was seen on.
+    assert_eq!(
+        check_of(&diagnosed, "rubicon", "consent-no-string").pages,
+        [0, 1]
+    );
+    let pending = check_of(&diagnosed, "rubicon", "consent-pending");
+    assert_eq!(pending.pages, [0]);
+    assert_eq!(
+        pending.summary,
+        "1 of 2 bid requests went out before the user's consent choice was known"
+    );
+    assert_eq!(
+        diagnosed.bidders[0].requests, 8,
+        "requests of both page views"
+    );
+
+    // A single page view has nothing page-specific to say.
+    let single = page(
+        &[consenting("rubicon", rubicon, false)],
+        vec![tcf(300.0, "tcloaded", &[52])],
+    );
+    let diagnosed = diagnose(&single, &ads_txt);
+    assert!(
+        check_of(&diagnosed, "rubicon", "consent-no-string")
+            .pages
+            .is_empty()
+    );
+}
+
+#[test]
+fn endpoint_answers_name_the_page_views_they_failed_on() {
+    let appnexus = json!({ "placementId": 5 });
+    let mut capture = visited_twice(&page(&[bidder("appnexus", appnexus)], vec![]));
+    capture.bid_responses = vec![
+        ObservedBidResponse {
+            page: 0,
+            t: 1_100.0,
+            bidder: "appnexus".into(),
+            host: "ib.adnxs.com".into(),
+            status: Some(200),
+            reason: None,
+        },
+        ObservedBidResponse {
+            page: 1,
+            t: 1_100.0,
+            bidder: "appnexus".into(),
+            host: "ib.adnxs.com".into(),
+            status: Some(503),
+            reason: None,
+        },
+    ];
+    let diagnosed = diagnose(&capture, &found(HEALTHY_ADS_TXT));
+    let failed = check_of(&diagnosed, "appnexus", "response-http-error");
+    assert_eq!(failed.pages, [1]);
+    assert_eq!(
+        failed.summary,
+        "The bidder's endpoint answered HTTP 503 on 1 of 2 bid requests"
+    );
 }

@@ -61,7 +61,9 @@ pub(crate) fn network_failure(
         "ERR_TUNNEL_CONNECTION_FAILED" | "ERR_SOCKS_CONNECTION_HOST_UNREACHABLE" => {
             format!("{the_proxy} could not or would not connect to {host}")
         }
-        "ERR_PROXY_AUTH_UNSUPPORTED" | "ERR_PROXY_AUTH_REQUESTED" | "ERR_INVALID_AUTH_CREDENTIALS" => {
+        "ERR_PROXY_AUTH_UNSUPPORTED"
+        | "ERR_PROXY_AUTH_REQUESTED"
+        | "ERR_INVALID_AUTH_CREDENTIALS" => {
             format!("{the_proxy} asked for a login the scan could not give")
         }
         "ERR_PROXY_CERTIFICATE_INVALID" => {
@@ -209,7 +211,10 @@ mod tests {
         let cases = [
             ("net::ERR_PROXY_CONNECTION_FAILED", "could not be reached"),
             ("net::ERR_SOCKS_CONNECTION_FAILED", "could not be reached"),
-            ("net::ERR_TUNNEL_CONNECTION_FAILED", "connect to news.example"),
+            (
+                "net::ERR_TUNNEL_CONNECTION_FAILED",
+                "connect to news.example",
+            ),
             ("net::ERR_PROXY_CERTIFICATE_INVALID", "certificate"),
             ("net::ERR_INVALID_AUTH_CREDENTIALS", "login"),
         ];
@@ -229,7 +234,12 @@ mod tests {
         }
         .to_string();
         assert!(login.contains("proxy.corp.example") && login.contains("password"));
-        assert!(http_failure(407, "a.test").unwrap().to_string().contains("proxy"));
+        assert!(
+            http_failure(407, "a.test")
+                .unwrap()
+                .to_string()
+                .contains("proxy")
+        );
     }
 
     #[test]

@@ -1,10 +1,13 @@
 import {
+  BookmarkIcon,
   CalendarIcon,
   ChevronDownIcon,
   CoinsIcon,
   DownloadIcon,
   FileJsonIcon,
   FileTextIcon,
+  MoreHorizontalIcon,
+  RepeatIcon,
   RotateCwIcon,
   SparklesIcon,
   TimerIcon,
@@ -16,6 +19,7 @@ import { HealthRing } from "@/shared/components/health-ring";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceIcon, DeviceLabel, ScanStatusBadge, SeverityCountPills } from "@/shared/components/status";
 import { healthBand } from "@/shared/domain/health";
+import { repeatVisitOptions, rescanOptions } from "@/shared/domain/scan-options";
 import { DEVICE_LABEL, otherDevice } from "@/shared/domain/vocabulary";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { formatDateTime, formatDuration, formatUsd } from "@/shared/lib/format";
@@ -70,8 +74,11 @@ function ExportMenu({ detail }: { detail: ScanDetail }) {
 }
 
 export function ReportHeader({ detail }: { detail: ScanDetail }) {
-  const { summary, options } = detail;
-  const { launch, isPending } = useLaunchScan();
+  const { summary } = detail;
+  const { configuration } = summary;
+  const options = rescanOptions(detail.options);
+  const repeatVisit = repeatVisitOptions(detail);
+  const { launch, launchConfiguration, isPending } = useLaunchScan();
   const other = otherDevice(summary.device);
   const completed = summary.status === "completed";
   // With only a TypeSafe key the model classified scripts but nothing analysed their logic.
@@ -107,6 +114,12 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
           </p>
           <div className="flex items-center gap-2">
             <SeverityCountPills counts={summary.findingCounts} />
+            {configuration ? (
+              <Badge tone="outline" title={`Started from the configuration “${configuration.name}”`}>
+                <BookmarkIcon />
+                <span className="max-w-48 truncate">{configuration.name}</span>
+              </Badge>
+            ) : null}
             {completed ? (
               <Badge tone={summary.aiUsed ? "violet" : "outline"}>
                 {summary.aiUsed ? <SparklesIcon /> : null}
@@ -117,8 +130,18 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Hint label="Scan this page again with the same options">
-          <Button variant="outline" disabled={isPending} onClick={() => launch(options)}>
+        <Hint
+          label={
+            configuration
+              ? `Run the configuration “${configuration.name}” again`
+              : "Scan this page again with the same options"
+          }
+        >
+          <Button
+            variant="outline"
+            disabled={isPending}
+            onClick={() => (configuration ? launchConfiguration(configuration.id) : launch(options))}
+          >
             <RotateCwIcon />
             Re-scan
           </Button>
@@ -135,6 +158,31 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
           </Button>
         </Hint>
         {completed ? <ExportMenu detail={detail} /> : null}
+        {repeatVisit ? (
+          <DropdownMenu>
+            <Hint label="More">
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon-sm" className="size-8" aria-label="More scan actions">
+                  <MoreHorizontalIcon />
+                </Button>
+              </DropdownMenuTrigger>
+            </Hint>
+            <DropdownMenuContent align="end" className="max-w-72">
+              <DropdownMenuGroup>
+                <DropdownMenuItem disabled={isPending} onSelect={() => launch(repeatVisit)} className="items-start">
+                  <RepeatIcon className="mt-0.5" />
+                  <span className="flex flex-col gap-0.5">
+                    Repeat this visit
+                    <span className="text-xs text-pretty text-muted-foreground">
+                      The same gestures and link choices again (seed {repeatVisit.seed}), to see whether a result
+                      repeats.
+                    </span>
+                  </span>
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : null}
       </div>
     </header>
   );

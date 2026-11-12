@@ -1,0 +1,16 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>A page a person browses</title><link rel="icon" href="data:,"></head>
+<body style="margin:0;height:3000px">
+<script>
+console.log('WEBDRIVER ' + navigator.webdriver + ' ua=' + navigator.userAgent);
+console.log('VIEWPORT ' + innerWidth + 'x' + innerHeight);
+['pointermove', 'wheel', 'mousedown', 'touchstart', 'keydown', 'scroll'].forEach(function (type) {
+  addEventListener(type, function () { console.log('INPUT ' + type); }, { once: true, capture: true });
+});
+// A person moving on to another page of the site, and then leaving it.
+var step = Number(new URLSearchParams(location.search).get('step') || 0);
+var elsewhere = new URLSearchParams(location.search).get('elsewhere');
+if (step === 0) setTimeout(function () { location.href = '/manual.html?step=1&elsewhere=' + encodeURIComponent(elsewhere); }, 1500);
+if (step === 1 && elsewhere) setTimeout(function () { location.href = elsewhere; }, 1500);
+</script>
+</body></html>

@@ -10,7 +10,7 @@ mod support;
 
 use std::time::{Duration, Instant};
 
-use adscan_browser::{BrowserError, CaptureHooks, capture};
+use adscan_browser::{BrowserError, capture};
 use adscan_model::{DeviceProfile, VisitorBehavior};
 use tokio_util::sync::CancellationToken;
 
@@ -87,11 +87,7 @@ async fn dropping_the_capture_future_still_cleans_up() {
     let site = adscan_browser::start_demo_site().await.unwrap();
     let mut request = support::request(&site.url, DeviceProfile::Desktop);
     request.observe_seconds = 60;
-    let hooks = CaptureHooks {
-        cancel: CancellationToken::new(),
-        on_progress: std::sync::Arc::new(|_| {}),
-    };
-    let abandoned = tokio::spawn(capture(request, hooks));
+    let abandoned = tokio::spawn(capture(request, support::Reported::new().hooks));
 
     let browser = Browser::launched_by(std::process::id()).await;
     tokio::time::sleep(Duration::from_secs(1)).await;

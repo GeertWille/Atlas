@@ -11,15 +11,15 @@ use std::sync::{Arc, Mutex};
 
 use adscan_browser::{BrowserError, CaptureHooks, capture};
 use adscan_model::{
-    Capture, CaptureProxy, CaptureRequest, DeviceProfile, TrackerEvent, TrackerEventKind,
-    VisitorBehavior,
+    ActivityKind, Capture, CaptureActivity, CaptureProxy, CaptureRequest, DeviceProfile,
+    TrackerEvent, TrackerEventKind, VisitorBehavior,
 };
 use axum::Router;
-use axum::extract::Path;
-use axum::http::{StatusCode, header};
+use axum::extract::State;
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use tokio::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 
 /// The Chromium this machine provides for tests, used when `ADSCAN_CHROME_PATH`
@@ -53,23 +53,68 @@ pub fn request(url: &str, device: DeviceProfile) -> CaptureRequest {
 /// Everything a capture reported, whether it succeeded or not.
 pub struct Outcome {
     pub result: Result<Capture, BrowserError>,
+    /// The message of every activity, in order.
     pub progress: Vec<String>,
+    pub activities: Vec<CaptureActivity>,
+}
+
+impl Outcome {
+    pub fn activities_of(&self, kind: ActivityKind) -> Vec<&CaptureActivity> {
+        self.activities
+            .iter()
+            .filter(|activity| activity.kind == kind)
+            .collect()
+    }
+}
+
+/// Hooks that collect what the capture reports, and where they collect it.
+pub struct Reported {
+    pub hooks: CaptureHooks,
+    activities: Arc<Mutex<Vec<CaptureActivity>>>,
+}
+
+impl Reported {
+    pub fn new() -> Self {
+        let activities = Arc::new(Mutex::new(Vec::new()));
+        let sink = activities.clone();
+        Self {
+            hooks: CaptureHooks {
+                cancel: CancellationToken::new(),
+                finish: CancellationToken::new(),
+                on_activity: Arc::new(move |activity| sink.lock().unwrap().push(activity)),
+                scan_profile_dir: None,
+                proxy_password: None,
+            },
+            activities,
+        }
+    }
+
+    pub fn so_far(&self) -> Vec<CaptureActivity> {
+        self.activities.lock().unwrap().clone()
+    }
+
+    pub async fn run(self, request: CaptureRequest) -> Outcome {
+        let result = capture(request, self.hooks.clone()).await;
+        let activities = self.so_far();
+        Outcome {
+            result,
+            progress: activities
+                .iter()
+                .map(|activity| activity.message.clone())
+                .collect(),
+            activities,
+        }
+    }
 }
 
 pub async fn run(request: CaptureRequest) -> Outcome {
-    run_cancellable(request, CancellationToken::new()).await
+    Reported::new().run(request).await
 }
 
 pub async fn run_cancellable(request: CaptureRequest, cancel: CancellationToken) -> Outcome {
-    let lines = Arc::new(Mutex::new(Vec::new()));
-    let sink = lines.clone();
-    let hooks = CaptureHooks {
-        cancel,
-        on_progress: Arc::new(move |line| sink.lock().unwrap().push(line)),
-    };
-    let result = capture(request, hooks).await;
-    let progress = lines.lock().unwrap().clone();
-    Outcome { result, progress }
+    let mut reported = Reported::new();
+    reported.hooks.cancel = cancel;
+    reported.run(request).await
 }
 
 /// Runs a capture that must succeed and must not have dropped tracker events.
@@ -107,8 +152,10 @@ pub fn first_time(capture: &Capture, matches: impl Fn(&TrackerEventKind) -> bool
 }
 
 /// A local server for the pages in `tests/fixtures`, stopped when dropped.
+/// It remembers what was asked of it.
 pub struct Fixtures {
     pub port: u16,
+    requested: Arc<Mutex<Vec<String>>>,
     shutdown: CancellationToken,
 }
 
@@ -118,21 +165,29 @@ impl Fixtures {
         let port = listener.local_addr().unwrap().port();
         let shutdown = CancellationToken::new();
         let stopped = shutdown.clone().cancelled_owned();
+        let requested = Arc::new(Mutex::new(Vec::new()));
         let routes = Router::new()
-            .route("/status/{code}", get(status))
-            .route("/never", get(never))
-            .route("/download", get(download))
-            .route("/{file}", get(fixture));
+            .fallback(respond)
+            .with_state(requested.clone());
         tokio::spawn(async move {
             let _ = axum::serve(listener, routes)
                 .with_graceful_shutdown(stopped)
                 .await;
         });
-        Self { port, shutdown }
+        Self {
+            port,
+            requested,
+            shutdown,
+        }
     }
 
     pub fn url(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}/{path}", self.port)
+    }
+
+    /// Path and query of every request so far, in order.
+    pub fn requested(&self) -> Vec<String> {
+        self.requested.lock().unwrap().clone()
     }
 }
 
@@ -142,11 +197,40 @@ impl Drop for Fixtures {
     }
 }
 
-async fn fixture(Path(file): Path<String>) -> Response {
+async fn respond(State(requested): State<Arc<Mutex<Vec<String>>>>, uri: Uri) -> Response {
+    let asked = uri
+        .path_and_query()
+        .map_or(uri.path(), |asked| asked.as_str());
+    requested.lock().unwrap().push(asked.to_string());
+    let path = uri.path().trim_start_matches('/');
+    if let Some(code) = path.strip_prefix("status/") {
+        return status(code.parse().unwrap());
+    }
+    match path {
+        // Sends the browser on to the address given as the query.
+        "redirect" => (
+            StatusCode::FOUND,
+            [(header::LOCATION, uri.query().unwrap_or_default())],
+        )
+            .into_response(),
+        // Never answers, so a page that needs it never fires `load`.
+        "never" => std::future::pending().await,
+        "download" => download(),
+        _ => fixture(path).await,
+    }
+}
+
+async fn fixture(file: &str) -> Response {
+    // Fixture pages link to each other with and without the extension.
+    let name = if file.contains('.') {
+        file.to_string()
+    } else {
+        format!("{file}.html")
+    };
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
-        .join(&file);
-    let content_type = if file.ends_with(".js") {
+        .join(&name);
+    let content_type = if name.ends_with(".js") {
         "text/javascript"
     } else {
         "text/html; charset=utf-8"
@@ -157,7 +241,7 @@ async fn fixture(Path(file): Path<String>) -> Response {
     }
 }
 
-async fn status(Path(code): Path<u16>) -> Response {
+fn status(code: u16) -> Response {
     let status = StatusCode::from_u16(code).unwrap();
     (
         status,
@@ -168,7 +252,7 @@ async fn status(Path(code): Path<u16>) -> Response {
 }
 
 /// A response the browser saves to disk instead of showing.
-async fn download() -> Response {
+fn download() -> Response {
     (
         [
             (header::CONTENT_TYPE, "application/octet-stream"),
@@ -182,7 +266,40 @@ async fn download() -> Response {
         .into_response()
 }
 
-/// A resource that never answers, so a page that needs it never fires `load`.
-async fn never() -> Response {
-    std::future::pending().await
+/// The body of a plain GET, for asking the test servers what they saw.
+pub async fn http_get(url: &str) -> String {
+    let address = url.strip_prefix("http://").expect("a local http address");
+    let (authority, path) = address.split_once('/').unwrap_or((address, ""));
+    let mut connection = TcpStream::connect(authority).await.unwrap();
+    let request = format!("GET /{path} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n");
+    connection.write_all(request.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    connection.read_to_string(&mut response).await.unwrap();
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body.to_string())
+        .unwrap_or_default()
+}
+
+/// Whether a test that shows a browser window can run in this process. On
+/// Linux a window needs a display: without one the test runs itself again
+/// under `xvfb-run` and this returns `false` when that run has passed.
+///
+/// ```ignore
+/// if !support::has_a_display("name_of_this_test") { return; }
+/// ```
+pub fn has_a_display(test: &str) -> bool {
+    if !cfg!(target_os = "linux") || std::env::var_os("DISPLAY").is_some() {
+        return true;
+    }
+    let run_again = std::process::Command::new("xvfb-run")
+        .arg("--auto-servernum")
+        .arg(std::env::current_exe().unwrap())
+        .args([test, "--exact", "--nocapture", "--test-threads=1"])
+        .status();
+    match run_again {
+        Ok(outcome) => assert!(outcome.success(), "{test} failed under xvfb-run"),
+        Err(error) => eprintln!("{test} was skipped: no display and no xvfb-run ({error})"),
+    }
+    false
 }

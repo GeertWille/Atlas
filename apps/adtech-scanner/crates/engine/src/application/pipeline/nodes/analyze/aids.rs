@@ -94,8 +94,8 @@ fn inlined_ranges(toolbox: &Toolbox, guide: &[GuideEntry]) -> Vec<(usize, LineRa
 mod tests {
     use super::*;
     use crate::application::pipeline::nodes::analyze::toolbox::ScriptSource;
-    use crate::domain::telemetry::Telemetry;
-    use adscan_model::{Capture, DeviceProfile, ScanMetrics, ScriptCategory, Viewport};
+    use crate::domain::telemetry;
+    use adscan_model::{Capture, ScriptCategory};
 
     fn source(id: &str, lines: usize, vendor_library: bool) -> ScriptSource {
         ScriptSource {
@@ -115,34 +115,8 @@ mod tests {
     }
 
     fn toolbox(scripts: Vec<ScriptSource>) -> Toolbox {
-        let capture = Capture {
-            environment: adscan_model::CaptureEnvironment::default(),
-            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
-            final_url: "https://pub.example/".into(),
-            page_title: None,
-            device: DeviceProfile::Desktop,
-            viewport: Viewport {
-                width: 1440,
-                height: 900,
-                device_scale_factor: 1.0,
-                mobile: false,
-            },
-            user_agent: "test".into(),
-            navigation_start: 0.0,
-            page_load_ms: None,
-            scripts: vec![],
-            events: vec![],
-            console: vec![],
-            max_scroll_depth: 0.0,
-            consent_accepted: false,
-            bid_responses: vec![],
-        };
-        let telemetry = Telemetry {
-            auctions: vec![],
-            slots: vec![],
-            metrics: ScanMetrics::default(),
-        };
-        Toolbox::new(scripts, &capture, &telemetry)
+        let capture = Capture::single_page("https://pub.example/", Vec::new());
+        Toolbox::new(scripts, &capture, &telemetry::derive(&capture), None)
     }
 
     fn entry(source: usize, start: usize, end: usize) -> GuideEntry {

@@ -258,7 +258,9 @@ impl Recorder {
                     kind: ActivityKind::Blocked,
                     message: format!("Left the scanned site ({host}): not recorded"),
                     page: self.pages.current(),
-                    data: Some(json!({ "reason": "off-site", "url": loggable(&url), "host": host })),
+                    data: Some(
+                        json!({ "reason": "off-site", "url": loggable(&url), "host": host }),
+                    ),
                 });
             }
             Change::OverCap | Change::None => {}
@@ -380,7 +382,11 @@ impl Recorder {
         let is_own = self.site.as_ref().is_some_and(|site| {
             // The site is known by its web address; a socket to it is the site's too.
             let mut as_web = url.clone();
-            let scheme = if matches!(url.scheme(), "https" | "wss") { "https" } else { "http" };
+            let scheme = if matches!(url.scheme(), "https" | "wss") {
+                "https"
+            } else {
+                "http"
+            };
             as_web.set_scheme(scheme).is_ok() && site.contains(&as_web)
         });
         if let Some(host) = url.host_str().filter(|_| is_web && !is_own) {

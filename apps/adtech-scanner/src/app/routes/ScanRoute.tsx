@@ -3,7 +3,15 @@ import { ChevronRightIcon, FileQuestionIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
 import { ActivityFeed, LiveScanView } from "@/features/live-scan";
-import { ReportHeader, ReportOverview, ScanOutcomeNotice } from "@/features/report";
+import {
+  EnvironmentNotice,
+  isMultiPage,
+  PageSwitcher,
+  ReportHeader,
+  ReportOverview,
+  ScanOutcomeNotice,
+  scopeReport,
+} from "@/features/report";
 import { AuctionsTab } from "@/features/report/auctions";
 import { FindingsTab } from "@/features/report/findings";
 import { ScriptsTab } from "@/features/report/scripts";
@@ -27,6 +35,8 @@ const TAB_LABEL: Record<ReportTab, string> = {
   audit: "Audit trail",
 };
 
+const NOTICE_TABS: readonly ReportTab[] = ["findings", "auctions", "slots"];
+
 function TabCount({ value }: { value: number }) {
   return (
     <span className="rounded-full bg-muted px-1.5 text-[11px] leading-4 font-medium text-muted-foreground tabular-nums">
@@ -44,20 +54,30 @@ function Report({ detail }: { detail: ScanDetail }) {
   const tabs: readonly ReportTab[] = completed ? REPORT_TABS : ["findings", "audit"];
   const requested = search.tab ?? (completed ? "findings" : "audit");
   const tab = tabs.includes(requested) ? requested : "audit";
+  const scope = scopeReport(detail, search.page);
+  // The page selection travels with every link inside the report.
+  const page = scope.selected?.index;
   const counts: Partial<Record<ReportTab, number>> = {
-    findings: detail.findings.length,
-    auctions: detail.auctions.length,
-    slots: detail.slots.length,
-    scripts: detail.scripts.length,
+    findings: scope.findings.length,
+    auctions: scope.auctions.length,
+    slots: scope.slots.length,
+    scripts: scope.scripts.length,
   };
 
   return (
     <PageContent className="animate-enter">
       <ReportHeader detail={detail} />
       {completed ? <ReportOverview detail={detail} /> : <ScanOutcomeNotice summary={detail.summary} />}
+      {completed ? (
+        <PageSwitcher
+          pages={detail.pages}
+          selected={scope.selected}
+          onSelect={(next) => navigate({ search: { tab, page: next ?? undefined }, replace: true })}
+        />
+      ) : null}
       <Tabs
         value={tab}
-        onValueChange={(next) => navigate({ search: { tab: next as ReportTab }, replace: true })}
+        onValueChange={(next) => navigate({ search: { tab: next as ReportTab, page }, replace: true })}
         className="flex flex-col gap-4"
       >
         <TabsList>
@@ -68,21 +88,24 @@ function Report({ detail }: { detail: ScanDetail }) {
             </TabsTrigger>
           ))}
         </TabsList>
+        {/* What the bids and fill below are worth: shown with them, not with scripts or the audit trail. */}
+        {completed && NOTICE_TABS.includes(tab) ? <EnvironmentNotice detail={detail} /> : null}
         <TabsContent value="findings">
           <FindingsTab
-            findings={detail.findings}
+            findings={scope.findings}
+            pages={detail.pages}
             focusedFindingId={search.finding}
-            onOpenScript={(script) => navigate({ search: { tab: "scripts", script } })}
+            onOpenScript={(script) => navigate({ search: { tab: "scripts", script, page } })}
           />
         </TabsContent>
         <TabsContent value="auctions">
-          <AuctionsTab auctions={detail.auctions} diagnostics={detail.bidderDiagnostics} />
+          <AuctionsTab auctions={scope.auctions} diagnostics={detail.bidderDiagnostics} pages={scope.groups} />
         </TabsContent>
         <TabsContent value="slots">
-          <SlotsTab slots={detail.slots} metrics={detail.metrics} />
+          <SlotsTab slots={scope.slots} metrics={scope.markers} pages={scope.groups} />
         </TabsContent>
         <TabsContent value="scripts">
-          <ScriptsTab scripts={detail.scripts} focusedScriptUrl={search.script} />
+          <ScriptsTab scripts={scope.scripts} focusedScriptUrl={search.script} showPages={isMultiPage(detail)} />
         </TabsContent>
         <TabsContent value="audit">
           {logs.isError ? (
@@ -109,7 +132,9 @@ function LiveScan({ detail }: { detail: ScanDetail }) {
   return (
     <LiveScanView
       detail={detail}
-      budgetUsd={settings.data?.budgetUsd}
+      logs={logs.data}
+      // A scan can carry its own cap; without one it runs under the settings'.
+      budgetUsd={detail.options.budgetUsd ?? settings.data?.budgetUsd}
       activity={
         logs.isError ? (
           <QueryError title="Could not load the activity" error={logs.error} onRetry={() => void logs.refetch()} />

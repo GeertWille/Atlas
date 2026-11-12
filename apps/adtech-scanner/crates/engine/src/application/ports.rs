@@ -214,15 +214,6 @@ pub struct FetchProxy {
     pub password: Option<String>,
 }
 
-impl FetchProxy {
-    pub fn system() -> Self {
-        Self {
-            route: CaptureProxy::System,
-            password: None,
-        }
-    }
-}
-
 /// Never prints the password.
 impl std::fmt::Debug for FetchProxy {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

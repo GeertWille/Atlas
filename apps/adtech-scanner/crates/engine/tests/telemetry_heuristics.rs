@@ -4,7 +4,7 @@
 mod common;
 
 use adscan_engine::domain::finding::FindingDraft;
-use adscan_engine::domain::heuristics::{self, RuleContext};
+use adscan_engine::domain::heuristics::{self, RuleInput};
 use adscan_engine::domain::scripts;
 use adscan_engine::domain::telemetry::{self, Telemetry};
 use adscan_model::{
@@ -19,11 +19,12 @@ fn evaluate(capture: &Capture) -> Vec<(&'static str, FindingDraft)> {
         .into_iter()
         .map(|script| script.record)
         .collect();
-    heuristics::evaluate(&RuleContext {
+    heuristics::evaluate(&RuleInput {
         capture,
         telemetry: &telemetry,
         diagnostics: None,
         scripts: &records,
+        environment: None,
     })
     .into_iter()
     .map(|hit| (hit.rule, hit.finding))
@@ -71,7 +72,7 @@ fn only(capture: &Capture, rule: &str) -> FindingDraft {
 }
 
 fn derived(capture: &Capture) -> Telemetry {
-    telemetry::derive(capture)
+    telemetry::derive(capture).total
 }
 
 /// The healthy page with its events edited.
@@ -331,6 +332,7 @@ fn lazy_slots_below_the_fold_are_not_flagged_when_the_page_was_not_scrolled() {
         });
     });
     capture.max_scroll_depth = 0.0;
+    capture.pages[0].max_scroll_depth = 0.0;
     assert_eq!(fired(&capture), Vec::<&str>::new());
 }
 
@@ -566,7 +568,7 @@ fn scroll_gate_behind_an_earlier_auction_for_another_slot_is_still_found() {
     let capture = capture_with(DeviceProfile::Desktop, events, 1.0);
 
     assert_eq!(
-        telemetry::derive(&capture).metrics.time_to_first_auction_ms,
+        derived(&capture).metrics.time_to_first_auction_ms,
         Some(400.0)
     );
     let finding = only(&capture, "auction-gated-on-interaction");

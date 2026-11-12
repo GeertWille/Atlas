@@ -131,7 +131,7 @@ function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
     severity: "info",
     category: "configuration",
     source: "heuristic",
-    title: "Bidders may be filtering this scan as automated traffic",
+    title: "This scan was identifiable as automated traffic",
     description: `${signals.join(", ")}. Ad partners that measure invalid traffic can bid less, or not at all, for a visit they recognise as automated.`,
     recommendation:
       "Repeat the scan as “I'll browse myself” or with the browser shown before concluding that a bidder is broken.",

@@ -320,7 +320,8 @@ export function ScanComposer({
   const { launch, launchConfiguration, isPending } = useLaunchScan();
   const saveConfiguration = useSaveScanConfiguration();
   const ids = { error: useId(), observe: useId(), pages: useId(), visitor: useId() };
-  const saved = configuration ? formFromOptions(configuration.options, settings) : null;
+  // What the loaded configuration holds, as a form: the composer's edits are measured against it.
+  const [saved, setSaved] = useState(() => (configuration ? formFromOptions(configuration.options, settings) : null));
   const [form, setForm] = useState<ScanForm>(() => saved ?? newScanForm(settings));
   const [errors, setErrors] = useState<ScanFormErrors>({});
   const [optionsOpen, setOptionsOpen] = useState(configuration !== undefined);
@@ -378,7 +379,9 @@ export function ScanComposer({
       {
         onSuccess: (updated) => {
           // The saved URL is the normalised one; show it, so the form matches what is stored.
-          setForm(formFromOptions(updated.options, settings));
+          const stored = formFromOptions(updated.options, settings);
+          setSaved(stored);
+          setForm(stored);
           toast.success(`Updated “${updated.name}”`);
         },
         onError: (reason) => notifyError("Could not update the configuration", reason),
@@ -570,7 +573,7 @@ export function ScanComposer({
                 {(form.profile === "settings" ? settings.persistentProfile : form.profile === "kept")
                   ? "Kept between scans: cookies and consent persist, like a returning visitor's."
                   : "A fresh profile for this scan: no cookies, like a first-time visitor."}{" "}
-                {form.profile === "settings" ? <SettingsLink>Change in Settings</SettingsLink> : null}
+                {form.profile === "settings" ? <SettingsLink>Change the default</SettingsLink> : null}
               </p>
             </div>
 

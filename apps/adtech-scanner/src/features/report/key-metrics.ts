@@ -11,8 +11,12 @@ import {
 
 export type KeyMetric = { label: string; value: string; hint: string };
 
-/** The eight headline numbers of a report, each with one line of context. */
-export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[]): KeyMetric[] {
+/**
+ * The eight headline numbers of a report, each with one line of context. The counts cover every page
+ * view of the visit; with more than one (`multiPage`) the three timings say that they are the entry page's.
+ */
+export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[], multiPage = false): KeyMetric[] {
+  const sinceStart = multiPage ? "on the entry page" : "after navigation start";
   const requestedSlots = slots.filter((slot) => slot.requestedAtMs !== null).length;
   const neverRequested = slots.length - requestedSlots;
   // The backend reports the mean and the sum of the winning CPMs; their ratio is the number of winners.
@@ -47,18 +51,18 @@ export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[]): KeyMetri
       value: formatDuration(metrics.timeToFirstAuctionMs),
       hint:
         metrics.prebidTimeoutMs === null
-          ? "after navigation start"
-          : `timeout ${formatDuration(metrics.prebidTimeoutMs)}`,
+          ? sinceStart
+          : `${multiPage ? "entry page, " : ""}timeout ${formatDuration(metrics.prebidTimeoutMs)}`,
     },
     {
       label: "First ad rendered",
       value: formatDuration(metrics.timeToFirstAdMs),
-      hint: "after navigation start",
+      hint: sinceStart,
     },
     {
       label: "Page load",
       value: formatDuration(metrics.pageLoadMs),
-      hint: "load event",
+      hint: multiPage ? "entry page load event" : "load event",
     },
     {
       label: "Scripts",

@@ -154,6 +154,7 @@ impl ScanService {
                 id: configuration.id,
                 name: configuration.name,
             }),
+            proxy: Some(scan.proxy.usage()),
         };
         self.deps.scans.create(&summary, &scan.options).await?;
         if let Some(configuration) = &summary.configuration {

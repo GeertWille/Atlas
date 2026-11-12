@@ -52,9 +52,7 @@ impl Tabs {
     /// The tab being recorded. `None` once it was closed and no other tab
     /// took its place.
     pub(crate) fn recorded(&self) -> Option<&Tab> {
-        self.open
-            .iter()
-            .find(|tab| tab.session_id == self.recorded)
+        self.open.iter().find(|tab| tab.session_id == self.recorded)
     }
 
     pub(crate) fn is_recorded(&self, session_id: &str) -> bool {
@@ -93,10 +91,6 @@ impl Tabs {
         let successor = self.open.last()?;
         self.recorded = successor.session_id.clone();
         Some(successor)
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.open.is_empty()
     }
 }
 
@@ -149,14 +143,17 @@ mod tests {
         tabs.add(tab("third"));
         tabs.record("second");
 
-        assert!(tabs.closed("first").is_none(), "another tab closing changes nothing");
+        assert!(
+            tabs.closed("first").is_none(),
+            "another tab closing changes nothing"
+        );
         assert_eq!(recorded(&tabs), Some("second"));
 
         assert_eq!(tabs.closed("second").unwrap().session_id, "third");
         assert_eq!(recorded(&tabs), Some("third"));
 
         assert!(tabs.closed("third").is_none());
-        assert!(tabs.is_empty());
+        assert!(!tabs.contains("third"));
         assert_eq!(recorded(&tabs), None);
         assert!(!tabs.is_recorded("third"));
     }

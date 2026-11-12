@@ -673,7 +673,7 @@ fn cap_output(content: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adscan_model::{DeviceProfile, ScanMetrics, Viewport};
+    use crate::domain::telemetry;
     use serde_json::json;
 
     fn toolbox() -> Toolbox {
@@ -688,32 +688,11 @@ mod tests {
             "}",
         ];
         let capture = Capture {
-            environment: adscan_model::CaptureEnvironment::default(),
-            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
-            final_url: "https://pub.example/".into(),
-            page_title: None,
-            device: DeviceProfile::Desktop,
-            viewport: Viewport {
-                width: 1440,
-                height: 900,
-                device_scale_factor: 1.0,
-                mobile: false,
-            },
-            user_agent: "test".into(),
-            navigation_start: 0.0,
             page_load_ms: Some(900.0),
-            scripts: vec![],
-            events: vec![],
-            console: vec![],
-            max_scroll_depth: 0.0,
-            consent_accepted: false,
-            bid_responses: vec![],
+            user_agent: "test".into(),
+            ..Capture::single_page("https://pub.example/", Vec::new())
         };
-        let telemetry = Telemetry {
-            auctions: vec![],
-            slots: vec![],
-            metrics: ScanMetrics::default(),
-        };
+        let telemetry = telemetry::derive(&capture);
         Toolbox::new(
             vec![ScriptSource {
                 id: "s1".into(),
@@ -725,6 +704,7 @@ mod tests {
             }],
             &capture,
             &telemetry,
+            None,
         )
     }
 
@@ -740,7 +720,8 @@ mod tests {
             "estimated_revenue_impact_pct": null,
             "evidence": [{ "script_id": "s1", "line": line, "excerpt": excerpt, "explanation": "inverted comparison" }],
             "affected_slots": ["top"],
-            "affected_bidders": []
+            "affected_bidders": [],
+            "pages": []
         })
     }
 

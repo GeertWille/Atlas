@@ -53,6 +53,7 @@ export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
     aiUsed: true,
     error: null,
     configuration: null,
+    proxy: null,
     ...overrides,
   };
 }

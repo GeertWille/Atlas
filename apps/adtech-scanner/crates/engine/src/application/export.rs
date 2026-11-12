@@ -9,6 +9,7 @@ use adscan_model::{
 
 use super::AppError;
 use super::pipeline::node_label;
+use crate::domain::diagnostics::capitalized;
 
 const MAX_TRAIL_ENTRIES: usize = 60;
 const MAX_TRAIL_ENTRY_CHARS: usize = 400;
@@ -315,43 +316,45 @@ fn auctions_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(out, "No Prebid auctions were observed.");
         return;
     }
-    for (heading, auctions) in by_page(&detail.pages, &detail.auctions, |auction| auction.page) {
-        if let Some(heading) = heading {
+    for group in by_page(&detail.pages, &detail.auctions, |auction| auction.page) {
+        if let Some(heading) = &group.heading {
             let _ = writeln!(out, "\n### {heading}\n");
         }
-        auctions_table(out, &auctions);
+        auctions_table(out, &group.items);
     }
 }
 
-/// One group for a visit of a single page view, without a heading; else one
-/// group per page view that has any of the items.
+/// Items of one page view, each with its position in the scan.
+struct PageGroup<'a, T> {
+    /// `None` for a visit of a single page view, which needs no heading.
+    heading: Option<String>,
+    items: Vec<(usize, &'a T)>,
+}
+
+/// One group for a visit of a single page view; else one group per page
+/// view that has any of the items.
 fn by_page<'a, T>(
     pages: &[PageView],
     items: &'a [T],
     page_of: impl Fn(&T) -> u32,
-) -> Vec<(Option<String>, Vec<(usize, &'a T)>)> {
+) -> Vec<PageGroup<'a, T>> {
     let numbered = || items.iter().enumerate();
     if pages.len() < 2 {
-        return vec![(None, numbered().collect())];
+        return vec![PageGroup {
+            heading: None,
+            items: numbered().collect(),
+        }];
     }
     (0u32..)
         .zip(pages)
-        .map(|(page, _)| {
-            let on_page: Vec<_> = numbered()
+        .map(|(page, _)| PageGroup {
+            heading: Some(capitalized(&page_name(pages, page))),
+            items: numbered()
                 .filter(|(_, item)| page_of(item) == page)
-                .collect();
-            (Some(capitalized(&page_name(pages, page))), on_page)
+                .collect(),
         })
-        .filter(|(_, on_page)| !on_page.is_empty())
+        .filter(|group| !group.items.is_empty())
         .collect()
-}
-
-fn capitalized(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
 }
 
 /// `auctions` carry their position in the scan, which numbers them.
@@ -389,11 +392,11 @@ fn slots_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(out, "No GPT slots were observed.");
         return;
     }
-    for (heading, slots) in by_page(&detail.pages, &detail.slots, |slot| slot.page) {
-        if let Some(heading) = heading {
+    for group in by_page(&detail.pages, &detail.slots, |slot| slot.page) {
+        if let Some(heading) = &group.heading {
             let _ = writeln!(out, "\n### {heading}\n");
         }
-        slots_table(out, &slots);
+        slots_table(out, &group.items);
     }
 }
 

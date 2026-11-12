@@ -188,9 +188,9 @@ test("focus is visible and follows a sensible order from the top of the page", a
     expect.stringMatching(/^New scan/),
     expect.stringMatching(/^Search/),
     "Home",
+    "Configurations",
     "History",
     "Log search",
-    expect.stringMatching(/sportsdesk/),
     expect.stringMatching(/sportsdesk/),
   ]);
 });

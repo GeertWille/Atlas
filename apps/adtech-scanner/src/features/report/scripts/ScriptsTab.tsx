@@ -16,8 +16,11 @@ import { filterScripts, NO_SCRIPT_FILTERS, type ScriptFilters, type ScriptSort, 
 export function ScriptsTab({
   scripts,
   focusedScriptUrl,
+  showPages = false,
 }: {
   scripts: ScriptRecord[];
+  /** The scan visited several pages: list the ones that loaded each script. */
+  showPages?: boolean;
   /** Deep link from a finding's evidence: select that script. */
   focusedScriptUrl?: string;
 }) {
@@ -89,6 +92,7 @@ export function ScriptsTab({
             scripts={visible}
             sort={sort}
             onSortChange={setSort}
+            showPages={showPages}
             selectedId={selectedId}
             onSelect={(script) => setSelectedId(script.id === selectedId ? null : script.id)}
           />

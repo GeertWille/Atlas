@@ -1,12 +1,19 @@
 import { ExternalLinkIcon, FolderOpenIcon, MonitorIcon, MoonIcon, SmartphoneIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useId } from "react";
 import { toast } from "sonner";
-import type { BrowserInfo, Settings, SettingsPatch } from "@/bindings";
+import type { BrowserInfo, Settings, SettingsPatch, VisitorBehavior } from "@/bindings";
 import { useDeleteAllScans, useUpdateSettings } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
 import { aiAvailability } from "@/shared/domain/ai-availability";
 import { modelLabel, PRICED_MODELS } from "@/shared/domain/model-pricing";
-import { BUDGET_USD, OBSERVE_SECONDS } from "@/shared/domain/scan-options";
+import {
+  BUDGET_USD,
+  OBSERVE_SECONDS,
+  VISIT_PAGES,
+  VISITOR_BEHAVIORS,
+  VISITOR_META,
+} from "@/shared/domain/scan-options";
+import { pluralize } from "@/shared/lib/format";
 import { notifyError } from "@/shared/lib/notify-error";
 import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
 import {
@@ -23,11 +30,15 @@ import {
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Field, FieldGroup } from "@/shared/ui/field";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
 import { Skeleton } from "@/shared/ui/skeleton";
+import { Stepper } from "@/shared/ui/stepper";
 import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { ApiKeyField } from "./ApiKeyField";
 import { CommitInput } from "./CommitInput";
+import { ProxySection } from "./ProxySection";
+import { ScanProfileField } from "./ScanProfileField";
 import { parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
 
 const MODEL_SUGGESTIONS_ID = "model-suggestions";
@@ -190,6 +201,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
     budget: useId(),
     headless: useId(),
     observe: useId(),
+    pages: useId(),
     jev: useId(),
     jevDisclosure: useId(),
     sellersJson: useId(),
@@ -354,10 +366,18 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
         <Field
           label="Run headless"
           htmlFor={ids.headless}
-          description="Hide the browser window during scans. Turn off to watch the page being captured."
+          description="Hide the browser window while a scan observes or scrolls. Browse visits and manual sessions show it unless a scan says otherwise. Headless Chrome is easier for ad partners to recognise as automated."
         >
           <Switch id={ids.headless} checked={settings.headless} onCheckedChange={(headless) => save({ headless })} />
         </Field>
+        <ScanProfileField settings={settings} save={save} />
+      </Section>
+
+      <Section
+        title="Proxies"
+        description="Scan a site as it is served somewhere else: save a proxy per country and choose it per scan."
+      >
+        <ProxySection settings={settings} save={save} />
       </Section>
 
       <Section title="Scan defaults" description="Starting values for the new-scan composer.">
@@ -378,9 +398,48 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
           </ToggleGroup>
         </Field>
         <Field
+          label="Visitor"
+          description={`${VISITOR_META[settings.defaultVisitor].description} Scripted visits are automated and say so to the page.`}
+        >
+          <Select
+            value={settings.defaultVisitor}
+            onValueChange={(defaultVisitor) => save({ defaultVisitor: defaultVisitor as VisitorBehavior })}
+          >
+            <SelectTrigger aria-label="Default visitor" className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              <SelectGroup>
+                {VISITOR_BEHAVIORS.map((visitor) => (
+                  <SelectItem key={visitor} value={visitor}>
+                    {VISITOR_META[visitor].label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field
+          label="Pages to visit"
+          htmlFor={ids.pages}
+          description="For “Browse like a visitor”: the entry page plus the pages reached by following links on the same site."
+        >
+          <Stepper
+            id={ids.pages}
+            value={settings.defaultExtraPages + 1}
+            min={VISIT_PAGES.min}
+            max={VISIT_PAGES.max}
+            onValueChange={(pages) => save({ defaultExtraPages: pages - 1 })}
+            decreaseLabel="Fewer pages"
+            increaseLabel="More pages"
+          >
+            {pluralize(settings.defaultExtraPages + 1, "page")}
+          </Stepper>
+        </Field>
+        <Field
           label="Observe after load"
           htmlFor={ids.observe}
-          description={`Seconds to keep watching the page, ${OBSERVE_SECONDS.min} to ${OBSERVE_SECONDS.max}.`}
+          description={`Seconds to keep watching each page, ${OBSERVE_SECONDS.min} to ${OBSERVE_SECONDS.max}.`}
         >
           <CommitInput
             trailing="s"
@@ -428,7 +487,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the page being scanned and its site's ads.txt, api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names. A scan's traffic to the site and to those exchanges goes through the proxy you chose for it, if any."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

@@ -2,7 +2,7 @@ import { HistoryIcon, SearchXIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { DeviceProfile, ScanStatus, ScanSummary, Settings } from "@/bindings";
-import { useDeleteAllScans, useDeleteScan, useScanHistory } from "@/lib/query/hooks";
+import { useDeleteAllScans, useDeleteScan, useScanConfigurations, useScanHistory } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
 import { QueryError } from "@/shared/components/query-error";
 import { SearchInput } from "@/shared/components/search-input";
@@ -37,6 +37,8 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<ScanStatus | "all">("all");
   const [device, setDevice] = useState<DeviceProfile | "all">("all");
+  const [configurationId, setConfigurationId] = useState("all");
+  const configurations = useScanConfigurations().data ?? [];
   const [sort, setSort] = useState<HistorySort>("newest");
   const [confirmation, setConfirmation] = useState<Confirmation>(null);
   const debouncedSearch = useDebouncedValue(search.trim(), 200);
@@ -45,15 +47,16 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
     search: debouncedSearch || undefined,
     status: status === "all" ? undefined : status,
     device: device === "all" ? undefined : device,
+    configurationId: configurationId === "all" ? undefined : configurationId,
   });
   const deleteScan = useDeleteScan();
   const deleteAll = useDeleteAllScans();
-  const { launch } = useLaunchScan();
+  const { launch, launchConfiguration } = useLaunchScan();
 
   const loaded = history.data?.pages.flatMap((page) => page.items) ?? [];
   const total = history.data?.pages[0]?.total ?? 0;
   const scans = sortScans(loaded, sort);
-  const filtering = debouncedSearch !== "" || status !== "all" || device !== "all";
+  const filtering = debouncedSearch !== "" || status !== "all" || device !== "all" || configurationId !== "all";
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = history;
 
   const sentinel = useRef<HTMLDivElement>(null);
@@ -87,17 +90,18 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
     setSearch("");
     setStatus("all");
     setDevice("all");
+    setConfigurationId("all");
   };
 
   return (
     <>
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <SearchInput
           aria-label="Search scans"
           placeholder="Search by URL"
           value={search}
           onValueChange={setSearch}
-          className="w-72"
+          className="w-56 xl:w-72"
         />
         <Select value={status} onValueChange={(value) => setStatus(value as ScanStatus | "all")}>
           <SelectTrigger aria-label="Status" className="w-36">
@@ -119,6 +123,23 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
           <ToggleGroupItem value="desktop">Desktop</ToggleGroupItem>
           <ToggleGroupItem value="mobile">Mobile</ToggleGroupItem>
         </ToggleGroup>
+        {configurations.length > 0 ? (
+          <Select value={configurationId} onValueChange={setConfigurationId}>
+            <SelectTrigger aria-label="Configuration" className="w-44 min-w-0 shrink [&>span]:truncate">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="all">All configurations</SelectItem>
+                {configurations.map((configuration) => (
+                  <SelectItem key={configuration.id} value={configuration.id}>
+                    {configuration.name}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+        ) : null}
         <div className="ml-auto">
           <Select value={sort} onValueChange={(value) => setSort(value as HistorySort)}>
             <SelectTrigger aria-label="Sort" className="w-48">
@@ -148,7 +169,11 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
           />
         ) : scans.length === 0 ? (
           filtering ? (
-            <Empty icon={SearchXIcon} title="No scans match" description="Try a different search, status or device.">
+            <Empty
+              icon={SearchXIcon}
+              title="No scans match"
+              description="Try a different search, status, device or configuration."
+            >
               <Button variant="outline" size="sm" onClick={clearFilters}>
                 Clear filters
               </Button>
@@ -163,7 +188,12 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
         ) : (
           <HistoryTable
             scans={scans}
-            onRescan={(scan) => launch(defaultScanOptions(settings, scan.url, scan.device))}
+            // A scan that came from a configuration is repeated as a run of that configuration.
+            onRescan={(scan) =>
+              scan.configuration
+                ? launchConfiguration(scan.configuration.id)
+                : launch(defaultScanOptions(settings, scan.url, scan.device))
+            }
             onDelete={(scan) => setConfirmation({ kind: "one", scan })}
           />
         )}

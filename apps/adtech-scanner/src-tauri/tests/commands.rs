@@ -6,11 +6,12 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use adscan_engine::application::ports::{CaptureError, CaptureSource, ProgressFn};
+use adscan_engine::application::ports::{CaptureError, CaptureSession, CaptureSource};
 use adscan_model::{
     ApiKeyStatus, BrowserInfo, Capture, CaptureRequest, CommandError, DashboardStats, ErrorCode,
-    LogEntry, LogSearchHit, SCAN_EVENT, ScanDetail, ScanEvent, ScanList, ScanStatus, ScanSummary,
-    Settings,
+    LogEntry, LogSearchHit, PipelineNode, ProxyChoice, SCAN_EVENT, ScanConfiguration, ScanDetail,
+    ScanEvent, ScanList, ScanProfileInfo, ScanStatus, ScanSummary, Settings, StepStatus,
+    VisitorBehavior,
 };
 use adtech_scanner_lib::state::{AppConfig, AppState};
 use adtech_scanner_lib::{TauriEventSink, register_commands};
@@ -24,10 +25,9 @@ use tauri::test::{
 use tauri::webview::InvokeRequest;
 use tauri::{Listener, Manager, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
-use tokio_util::sync::CancellationToken;
 
-/// The commands of the contract table in the build brief.
-const CONTRACT_COMMANDS: [&str; 16] = [
+/// The commands of the frontend contract.
+const CONTRACT_COMMANDS: [&str; 26] = [
     "get_settings",
     "update_settings",
     "set_api_key",
@@ -44,6 +44,16 @@ const CONTRACT_COMMANDS: [&str; 16] = [
     "search_logs",
     "get_dashboard_stats",
     "export_scan",
+    "finish_capture",
+    "get_scan_profile",
+    "clear_scan_profile",
+    "save_proxy_profile",
+    "delete_proxy_profile",
+    "set_proxy_password",
+    "clear_proxy_password",
+    "list_scan_configurations",
+    "save_scan_configuration",
+    "delete_scan_configuration",
 ];
 
 /// A machine without Chrome: every scan fails at the first pipeline node.
@@ -58,10 +68,77 @@ impl CaptureSource for NoBrowser {
     async fn capture(
         &self,
         _request: CaptureRequest,
-        _cancel: CancellationToken,
-        _on_progress: ProgressFn,
+        _session: CaptureSession,
     ) -> Result<Capture, CaptureError> {
         Err(CaptureError::BrowserNotFound)
+    }
+
+    async fn scan_profile_info(&self) -> ScanProfileInfo {
+        no_scan_profile()
+    }
+
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError> {
+        Ok(())
+    }
+}
+
+fn no_scan_profile() -> ScanProfileInfo {
+    ScanProfileInfo {
+        exists: false,
+        size_bytes: 0.0,
+        last_used_at: None,
+        in_use: false,
+    }
+}
+
+/// A browser a person drives: every capture records until it is finished,
+/// and its scan profile exists until it is cleared.
+#[derive(Default)]
+struct ManualBrowser {
+    requests: Mutex<Vec<CaptureRequest>>,
+    profile_cleared: Mutex<bool>,
+    /// A browser of another process holds the profile.
+    profile_held: Mutex<bool>,
+}
+
+#[async_trait]
+impl CaptureSource for ManualBrowser {
+    async fn locate_browser(&self, _explicit: Option<String>) -> Option<BrowserInfo> {
+        Some(BrowserInfo {
+            path: "/usr/bin/chromium".into(),
+            version: "Chromium 153.0.0.0".into(),
+            name: "Chromium".into(),
+        })
+    }
+
+    async fn capture(
+        &self,
+        request: CaptureRequest,
+        session: CaptureSession,
+    ) -> Result<Capture, CaptureError> {
+        let url = request.url.clone();
+        self.requests.lock().unwrap().push(request);
+        tokio::select! {
+            () = session.finish.cancelled() => Ok(Capture::single_page(url, Vec::new())),
+            () = session.cancel.cancelled() => Err(CaptureError::Cancelled),
+        }
+    }
+
+    async fn scan_profile_info(&self) -> ScanProfileInfo {
+        ScanProfileInfo {
+            exists: !*self.profile_cleared.lock().unwrap(),
+            size_bytes: 2048.0,
+            last_used_at: Some(1_760_000_000_000.0),
+            in_use: *self.profile_held.lock().unwrap(),
+        }
+    }
+
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError> {
+        if *self.profile_held.lock().unwrap() {
+            return Err(CaptureError::ProfileBusy);
+        }
+        *self.profile_cleared.lock().unwrap() = true;
+        Ok(())
     }
 }
 
@@ -76,6 +153,18 @@ fn test_app() -> TestApp {
 }
 
 fn test_app_with_typesafe_key(typesafe_key: Option<&str>) -> TestApp {
+    build_test_app(Arc::new(NoBrowser), typesafe_key, None)
+}
+
+fn test_app_with_browser(browser: Arc<dyn CaptureSource>) -> TestApp {
+    build_test_app(browser, None, None)
+}
+
+fn build_test_app(
+    browser: Arc<dyn CaptureSource>,
+    typesafe_key: Option<&str>,
+    proxy_password: Option<&str>,
+) -> TestApp {
     let data_dir = tempfile::tempdir().unwrap();
     let app = register_commands(mock_builder())
         .build(mock_context(noop_assets()))
@@ -96,8 +185,9 @@ fn test_app_with_typesafe_key(typesafe_key: Option<&str>) -> TestApp {
             typesafe_base_url: "http://127.0.0.1:1".into(),
             api_key_override: Some("sk-ant-test".into()),
             typesafe_api_key_override: typesafe_key.map(str::to_string),
+            proxy_password_override: proxy_password.map(str::to_string),
         },
-        Arc::new(NoBrowser),
+        browser,
         Arc::new(TauriEventSink {
             app: app.handle().clone(),
         }),
@@ -551,4 +641,443 @@ fn export_only_writes_where_the_user_picked_and_only_export_files() {
         json!({ "scanId": started.id, "format": "json", "path": picked.to_str().unwrap() }),
     );
     assert_eq!(std::fs::read_to_string(&picked).unwrap(), document);
+}
+
+// -- visitors, the scan profile, proxies and saved configurations -----------------
+
+fn belgium() -> Value {
+    json!({ "profile": {
+        "name": "Belgium", "scheme": "http", "host": "be.proxy.example", "port": 3128, "username": "scanner"
+    } })
+}
+
+fn manual_options(url: &str) -> Value {
+    json!({ "options": {
+        "url": url, "device": "desktop", "observeSeconds": 10,
+        "autoScroll": false, "acceptConsent": true, "aiEnabled": false,
+        "visitor": "manual", "extraPages": 3, "seed": 42, "headless": true,
+        "persistentProfile": false, "proxy": { "kind": "none" }, "budgetUsd": 0.1
+    } })
+}
+
+fn wait_for_capture(browser: &ManualBrowser, count: usize) {
+    for _ in 0..500 {
+        if browser.requests.lock().unwrap().len() >= count {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("capture {count} did not start");
+}
+
+#[test]
+fn a_manual_visit_is_started_with_the_new_options_and_ended_by_finish_capture() {
+    let browser = Arc::new(ManualBrowser::default());
+    let app = test_app_with_browser(browser.clone());
+
+    let started: ScanSummary = invoke(&app, "start_scan", manual_options("example.com"));
+    assert_eq!(started.status, ScanStatus::Running);
+    assert_eq!(started.configuration, None);
+    wait_for_capture(&browser, 1);
+    {
+        let request = &browser.requests.lock().unwrap()[0];
+        assert_eq!(request.visitor, VisitorBehavior::Manual);
+        assert_eq!((request.extra_pages, request.seed), (0, 42));
+        assert!(!request.headless && !request.accept_consent);
+    }
+    let running: ScanDetail = invoke(&app, "get_scan", json!({ "scanId": started.id }));
+    assert_eq!(running.summary.status, ScanStatus::Running);
+
+    assert_eq!(
+        invoke::<Value>(&app, "finish_capture", json!({ "scanId": started.id })),
+        Value::Null
+    );
+    let detail = wait_for_end(&app, &started.id);
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert_eq!(detail.pages.len(), 1);
+    assert_eq!(detail.options.visitor, Some(VisitorBehavior::Manual));
+    assert_eq!(detail.options.headless, Some(false));
+    assert_eq!(detail.options.budget_usd, Some(0.1));
+    assert_eq!(detail.options.proxy, Some(ProxyChoice::None));
+    assert_eq!(
+        detail
+            .environment
+            .as_ref()
+            .map(|environment| environment.visitor),
+        Some(VisitorBehavior::Manual)
+    );
+    let capture = detail
+        .steps
+        .iter()
+        .find(|step| step.node == PipelineNode::Capture)
+        .unwrap();
+    assert_eq!(capture.status, StepStatus::Completed);
+
+    // Finishing again changes nothing; an unknown scan is an error.
+    assert_eq!(
+        invoke::<Value>(&app, "finish_capture", json!({ "scanId": started.id })),
+        Value::Null
+    );
+    let unknown = invoke_error(&app, "finish_capture", json!({ "scanId": "nope" }));
+    assert_eq!(unknown.code, ErrorCode::NotFound);
+
+    // The serialised scan uses the contract's names.
+    let raw = invoke_raw(&app, "get_scan", json!({ "scanId": started.id })).unwrap();
+    assert_eq!(raw["pages"][0]["reachedBy"], "entry");
+    assert_eq!(raw["environment"]["proxy"]["kind"], "none");
+    assert_eq!(raw["summary"]["proxy"]["kind"], "none");
+    assert_eq!(raw["summary"]["configuration"], Value::Null);
+    assert_eq!(raw["options"]["visitor"], "manual");
+}
+
+#[test]
+fn invalid_visit_options_are_refused_before_a_scan_exists() {
+    let app = test_app();
+    let mut too_many = manual_options("example.com");
+    too_many["options"]["visitor"] = json!("browse");
+    too_many["options"]["extraPages"] = json!(6);
+    let error = invoke_error(&app, "start_scan", too_many);
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            ErrorCode::InvalidInput,
+            "A browse visit can follow links to at most 5 further pages"
+        )
+    );
+    let mut unknown_proxy = manual_options("example.com");
+    unknown_proxy["options"]["proxy"] = json!({ "kind": "profile", "id": "gone" });
+    let error = invoke_error(&app, "start_scan", unknown_proxy);
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            ErrorCode::InvalidInput,
+            "The chosen proxy no longer exists. Pick another proxy."
+        )
+    );
+    let neither = invoke_error(&app, "start_scan", json!({}));
+    assert_eq!(neither.code, ErrorCode::InvalidInput);
+    let mut both = manual_options("example.com");
+    both["configurationId"] = json!("c1");
+    assert_eq!(
+        invoke_error(&app, "start_scan", both).message,
+        "Start a scan with either options or a saved configuration, not both."
+    );
+    assert_eq!(
+        invoke::<ScanList>(&app, "list_scans", json!({ "query": {} })).total,
+        0
+    );
+}
+
+#[test]
+fn scan_profile_commands_report_and_clear_the_shared_profile() {
+    let browser = Arc::new(ManualBrowser::default());
+    let app = test_app_with_browser(browser.clone());
+
+    let info: ScanProfileInfo = invoke(&app, "get_scan_profile", json!({}));
+    assert!(info.exists && !info.in_use);
+    assert_eq!(info.size_bytes, 2048.0);
+    let raw = invoke_raw(&app, "get_scan_profile", json!({})).unwrap();
+    assert_eq!(
+        raw,
+        json!({ "exists": true, "sizeBytes": 2048.0, "lastUsedAt": 1_760_000_000_000.0, "inUse": false })
+    );
+
+    // A browser that holds the profile keeps it.
+    *browser.profile_held.lock().unwrap() = true;
+    let busy = invoke_error(&app, "clear_scan_profile", json!({}));
+    assert_eq!(busy.code, ErrorCode::ProfileBusy);
+    assert_eq!(serde_json::to_value(&busy).unwrap()["code"], "profileBusy");
+    *browser.profile_held.lock().unwrap() = false;
+
+    // So does a running scan of this app that uses it.
+    let mut options = manual_options("example.com");
+    options["options"]["persistentProfile"] = json!(true);
+    let started: ScanSummary = invoke(&app, "start_scan", options);
+    wait_for_capture(&browser, 1);
+    assert!(browser.requests.lock().unwrap()[0].persistent_profile);
+    assert_eq!(
+        invoke_error(&app, "clear_scan_profile", json!({})).code,
+        ErrorCode::ProfileBusy
+    );
+    invoke::<Value>(&app, "finish_capture", json!({ "scanId": started.id }));
+    wait_for_end(&app, &started.id);
+
+    let cleared: ScanProfileInfo = invoke(&app, "clear_scan_profile", json!({}));
+    assert!(!cleared.exists);
+    assert!(!invoke::<ScanProfileInfo>(&app, "get_scan_profile", json!({})).exists);
+}
+
+#[test]
+fn visitor_settings_are_patched_through_update_settings() {
+    let app = test_app();
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert_eq!(settings.default_visitor, VisitorBehavior::Scroll);
+    assert_eq!(settings.default_proxy, ProxyChoice::System);
+    let raw = invoke_raw(&app, "get_settings", json!({})).unwrap();
+    assert_eq!(raw["defaultVisitor"], "scroll");
+    assert_eq!(raw["defaultExtraPages"], 2);
+    assert_eq!(raw["persistentProfile"], false);
+    assert_eq!(raw["proxies"], json!([]));
+    assert_eq!(raw["defaultProxy"], json!({ "kind": "system" }));
+
+    let updated: Settings = invoke(
+        &app,
+        "update_settings",
+        json!({ "patch": {
+            "defaultVisitor": "browse", "defaultExtraPages": 0, "persistentProfile": true,
+            "defaultProxy": { "kind": "none" }
+        } }),
+    );
+    assert_eq!(updated.default_visitor, VisitorBehavior::Browse);
+    assert_eq!(updated.default_extra_pages, 0);
+    assert!(updated.persistent_profile);
+    assert_eq!(updated.default_proxy, ProxyChoice::None);
+
+    let error = invoke_error(
+        &app,
+        "update_settings",
+        json!({ "patch": { "defaultExtraPages": 9 } }),
+    );
+    assert_eq!(error.code, ErrorCode::InvalidInput);
+}
+
+#[test]
+fn proxy_commands_manage_profiles_and_their_passwords() {
+    let app = test_app();
+    let saved: Settings = invoke(&app, "save_proxy_profile", belgium());
+    assert_eq!(saved.proxies.len(), 1);
+    let id = saved.proxies[0].id.clone();
+    assert!(!saved.proxies[0].has_password);
+    let raw = invoke_raw(&app, "get_settings", json!({})).unwrap();
+    assert_eq!(
+        raw["proxies"][0],
+        json!({
+            "id": id, "name": "Belgium", "scheme": "http", "host": "be.proxy.example",
+            "port": 3128, "username": "scanner", "hasPassword": false
+        })
+    );
+
+    // Update by id.
+    let mut update = belgium();
+    update["profile"]["id"] = json!(id);
+    update["profile"]["port"] = json!(8080);
+    let updated: Settings = invoke(&app, "save_proxy_profile", update);
+    assert_eq!((updated.proxies.len(), updated.proxies[0].port), (1, 8080));
+
+    // What cannot work is refused in plain words.
+    for (change, expected) in [
+        (
+            json!({ "host": "http://be.proxy.example" }),
+            "host name or IP address only",
+        ),
+        (json!({ "port": 0 }), "between 1 and 65535"),
+        (json!({ "scheme": "socks5" }), "SOCKS5"),
+        (json!({ "name": "belgium" }), "already exists"),
+        (json!({ "name": " " }), "Give the proxy a name"),
+    ] {
+        let mut draft = belgium();
+        draft["profile"]["name"] = json!("Another proxy");
+        for (key, value) in change.as_object().unwrap() {
+            draft["profile"][key] = value.clone();
+        }
+        let error = invoke_error(&app, "save_proxy_profile", draft);
+        assert_eq!(error.code, ErrorCode::InvalidInput, "{change}");
+        assert!(
+            error.message.contains(expected),
+            "{change}: {}",
+            error.message
+        );
+    }
+
+    // The password is stored apart and only its presence is reported.
+    let with_password: Settings = invoke(
+        &app,
+        "set_proxy_password",
+        json!({ "id": id, "password": "s3cret-proxy" }),
+    );
+    assert!(with_password.proxies[0].has_password);
+    let everything = invoke_raw(&app, "get_settings", json!({}))
+        .unwrap()
+        .to_string();
+    assert!(!everything.contains("s3cret-proxy"));
+    assert_eq!(
+        invoke_error(
+            &app,
+            "set_proxy_password",
+            json!({ "id": id, "password": "" })
+        )
+        .code,
+        ErrorCode::InvalidInput
+    );
+    assert_eq!(
+        invoke_error(
+            &app,
+            "set_proxy_password",
+            json!({ "id": "gone", "password": "x" })
+        )
+        .code,
+        ErrorCode::NotFound
+    );
+    let without: Settings = invoke(&app, "clear_proxy_password", json!({ "id": id }));
+    assert!(!without.proxies[0].has_password);
+
+    // As the default it is named in the settings; deleted, the default is the system's again.
+    let as_default: Settings = invoke(
+        &app,
+        "update_settings",
+        json!({ "patch": { "defaultProxy": { "kind": "profile", "id": id } } }),
+    );
+    assert_eq!(
+        as_default.default_proxy,
+        ProxyChoice::Profile {
+            id: id.clone(),
+            name: Some("Belgium".into()),
+            host: Some("be.proxy.example".into()),
+        }
+    );
+    let deleted: Settings = invoke(&app, "delete_proxy_profile", json!({ "id": id }));
+    assert!(deleted.proxies.is_empty());
+    assert_eq!(deleted.default_proxy, ProxyChoice::System);
+    assert_eq!(
+        invoke_error(&app, "delete_proxy_profile", json!({ "id": id })).code,
+        ErrorCode::NotFound
+    );
+}
+
+#[test]
+fn the_proxy_password_override_answers_for_every_profile() {
+    let app = build_test_app(Arc::new(NoBrowser), None, Some("from-the-environment"));
+    let saved: Settings = invoke(&app, "save_proxy_profile", belgium());
+    assert!(saved.proxies[0].has_password);
+    assert!(
+        !serde_json::to_string(&saved)
+            .unwrap()
+            .contains("from-the-environment")
+    );
+}
+
+#[test]
+fn configuration_commands_save_run_filter_and_delete() {
+    let browser = Arc::new(ManualBrowser::default());
+    let app = test_app_with_browser(browser.clone());
+    let proxy: Settings = invoke(&app, "save_proxy_profile", belgium());
+    let proxy_id = proxy.proxies[0].id.clone();
+
+    let mut draft = manual_options("example.com");
+    draft["options"]["proxy"] = json!({ "kind": "profile", "id": proxy_id });
+    let saved: ScanConfiguration = invoke(
+        &app,
+        "save_scan_configuration",
+        json!({ "configuration": { "name": "Example BE", "options": draft["options"] } }),
+    );
+    assert_eq!(saved.name, "Example BE");
+    assert_eq!(saved.options.url, "https://example.com/");
+    assert_eq!(
+        saved.options.seed, None,
+        "a configuration never holds a seed"
+    );
+    assert_eq!(
+        (saved.last_scan_id.clone(), saved.last_run_at),
+        (None, None)
+    );
+    let listed: Vec<ScanConfiguration> = invoke(&app, "list_scan_configurations", json!({}));
+    assert_eq!(listed, [saved.clone()]);
+    let raw = invoke_raw(&app, "list_scan_configurations", json!({})).unwrap();
+    assert_eq!(raw[0]["lastScanId"], Value::Null);
+    assert_eq!(
+        raw[0]["options"]["proxy"],
+        json!({ "kind": "profile", "id": proxy_id, "name": "Belgium", "host": "be.proxy.example" })
+    );
+
+    let duplicate = invoke_error(
+        &app,
+        "save_scan_configuration",
+        json!({ "configuration": { "name": "example be", "options": draft["options"] } }),
+    );
+    assert_eq!(
+        (duplicate.code, duplicate.message.as_str()),
+        (
+            ErrorCode::InvalidInput,
+            "A scan configuration named \"example be\" already exists"
+        )
+    );
+
+    // The proxy cannot go while the configuration needs it.
+    let in_use = invoke_error(&app, "delete_proxy_profile", json!({ "id": proxy_id }));
+    assert_eq!(in_use.code, ErrorCode::InvalidInput);
+    assert!(
+        in_use.message.contains("\"Example BE\""),
+        "{}",
+        in_use.message
+    );
+
+    // Running it records where the scan came from.
+    let started: ScanSummary = invoke(&app, "start_scan", json!({ "configurationId": saved.id }));
+    assert_eq!(
+        started
+            .configuration
+            .as_ref()
+            .map(|from| (from.id.as_str(), from.name.as_str())),
+        Some((saved.id.as_str(), "Example BE"))
+    );
+    assert_eq!(
+        started.proxy.as_ref().unwrap().name.as_deref(),
+        Some("Belgium")
+    );
+    wait_for_capture(&browser, 1);
+    invoke::<Value>(&app, "finish_capture", json!({ "scanId": started.id }));
+    let detail = wait_for_end(&app, &started.id);
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+
+    let ran: Vec<ScanConfiguration> = invoke(&app, "list_scan_configurations", json!({}));
+    assert_eq!(ran[0].last_scan_id.as_deref(), Some(started.id.as_str()));
+    assert_eq!(ran[0].last_run_at, Some(started.started_at));
+
+    let other: ScanSummary = invoke(&app, "start_scan", manual_options("example.org"));
+    wait_for_capture(&browser, 2);
+    invoke::<Value>(&app, "finish_capture", json!({ "scanId": other.id }));
+    wait_for_end(&app, &other.id);
+    let of_configuration: ScanList = invoke(
+        &app,
+        "list_scans",
+        json!({ "query": { "configurationId": saved.id } }),
+    );
+    assert_eq!(of_configuration.total, 1);
+    assert_eq!(of_configuration.items[0].id, started.id);
+
+    let markdown: String = invoke(
+        &app,
+        "export_scan",
+        json!({ "scanId": started.id, "format": "markdown" }),
+    );
+    assert!(
+        markdown.contains("- **Scan configuration:** Example BE"),
+        "{markdown}"
+    );
+    assert!(
+        markdown.contains("- **Proxy:** Belgium (be.proxy.example)"),
+        "{markdown}"
+    );
+
+    // Deleting the configuration leaves its scans.
+    assert_eq!(
+        invoke::<Value>(&app, "delete_scan_configuration", json!({ "id": saved.id })),
+        Value::Null
+    );
+    assert!(
+        invoke::<Vec<ScanConfiguration>>(&app, "list_scan_configurations", json!({})).is_empty()
+    );
+    let kept: ScanDetail = invoke(&app, "get_scan", json!({ "scanId": started.id }));
+    assert_eq!(kept.summary.configuration.unwrap().name, "Example BE");
+    assert_eq!(
+        invoke_error(&app, "delete_scan_configuration", json!({ "id": saved.id })).code,
+        ErrorCode::NotFound
+    );
+    assert_eq!(
+        invoke_error(&app, "start_scan", json!({ "configurationId": saved.id })).code,
+        ErrorCode::NotFound
+    );
+    // And now the proxy is free to go.
+    let freed: Settings = invoke(&app, "delete_proxy_profile", json!({ "id": proxy_id }));
+    assert!(freed.proxies.is_empty());
 }

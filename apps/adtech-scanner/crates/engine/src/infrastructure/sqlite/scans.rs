@@ -17,7 +17,7 @@ const MAX_PAGE_SIZE: u32 = 200;
 
 const SUMMARY_COLUMNS: &str = "id, url, hostname, device, status, started_at, finished_at, duration_ms, cost_usd, \
      critical_count, high_count, medium_count, low_count, info_count, health_score, prebid_version, ai_used, error, \
-     configuration_id, configuration_name";
+     configuration_id, configuration_name, proxy";
 
 #[async_trait]
 impl ScanRepository for SqliteStore {
@@ -27,8 +27,8 @@ impl ScanRepository for SqliteStore {
         self.call(move |connection| {
             connection.execute(
                 "INSERT INTO scans (id, url, hostname, device, status, started_at, options,
-                     configuration_id, configuration_name)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                     configuration_id, configuration_name, proxy)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     summary.id,
                     summary.url,
@@ -39,6 +39,7 @@ impl ScanRepository for SqliteStore {
                     to_json(&options)?,
                     summary.configuration.as_ref().map(|from| &from.id),
                     summary.configuration.as_ref().map(|from| &from.name),
+                    summary.proxy.as_ref().map(to_json).transpose()?,
                 ],
             )?;
             write_summary(connection, &summary)
@@ -430,6 +431,11 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<ScanSummary> {
             (Some(id), Some(name)) => Some(ScanConfigurationRef { id, name }),
             _ => None,
         },
+        proxy: row
+            .get::<_, Option<String>>(20)?
+            .as_deref()
+            .map(from_json)
+            .transpose()?,
     })
 }
 

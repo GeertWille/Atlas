@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions, ProfileChoice, ProxyServer};
 pub(crate) use client::{Cdp, CdpError, CdpEvent};
 pub(crate) use profile::{
-    PersistentProfileError, PersistentProfileState, clear as clear_persistent_profile,
+    PersistentProfileError, clear as clear_persistent_profile,
     inspect as inspect_persistent_profile, remove_abandoned as remove_abandoned_profiles,
 };
 

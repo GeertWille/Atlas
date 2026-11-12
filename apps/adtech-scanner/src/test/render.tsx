@@ -25,6 +25,11 @@ export async function renderWithApp(ui: ReactNode) {
     createRoute({ getParentRoute: () => rootRoute, path: "/history", component: () => <p>history screen</p> }),
     createRoute({
       getParentRoute: () => rootRoute,
+      path: "/configurations",
+      component: () => <p>configurations screen</p>,
+    }),
+    createRoute({
+      getParentRoute: () => rootRoute,
       path: "/scans/$scanId",
       component: () => <p>scan screen</p>,
     }),

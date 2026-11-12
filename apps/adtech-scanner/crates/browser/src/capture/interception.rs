@@ -71,6 +71,10 @@ impl Interception {
         self.guarding = false;
     }
 
+    pub(crate) fn has_refused(&self) -> bool {
+        self.refused.is_some()
+    }
+
     /// The address a guarded navigation was refused, once.
     pub(crate) fn take_refused(&mut self) -> Option<String> {
         self.refused.take()
@@ -84,7 +88,12 @@ impl Interception {
 
     /// A document request is paused. `on_site` is whether it stays on the
     /// scanned site; redirects are paused again, hop by hop.
-    pub(crate) fn on_request_paused(&mut self, url: &str, main_frame: bool, on_site: bool) -> Paused {
+    pub(crate) fn on_request_paused(
+        &mut self,
+        url: &str,
+        main_frame: bool,
+        on_site: bool,
+    ) -> Paused {
         if self.guarding && main_frame && !on_site {
             self.refused = Some(url.to_string());
             return Paused::Refuse;
@@ -142,11 +151,15 @@ mod tests {
         assert_eq!(Interception::new(None, false).fetch_enable(), None);
         assert_eq!(
             Interception::new(None, true).fetch_enable(),
-            Some(json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": false }))
+            Some(
+                json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": false })
+            )
         );
         assert_eq!(
             Interception::new(proxy(None, None), false).fetch_enable(),
-            Some(json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": true }))
+            Some(
+                json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": true })
+            )
         );
     }
 
@@ -154,7 +167,10 @@ mod tests {
     fn a_navigation_off_the_site_is_refused_only_while_a_click_is_guarded() {
         let mut interception = Interception::new(None, true);
         let off_site = "https://partner.example/offer?id=1";
-        assert_eq!(interception.on_request_paused(off_site, true, false), Paused::Continue);
+        assert_eq!(
+            interception.on_request_paused(off_site, true, false),
+            Paused::Continue
+        );
 
         interception.guard_navigation();
         assert_eq!(
@@ -167,12 +183,19 @@ mod tests {
             "an iframe may load what it likes"
         );
         assert_eq!(interception.take_refused(), None);
-        assert_eq!(interception.on_request_paused(off_site, true, false), Paused::Refuse);
+        assert_eq!(
+            interception.on_request_paused(off_site, true, false),
+            Paused::Refuse
+        );
+        assert!(interception.has_refused());
         assert_eq!(interception.take_refused().as_deref(), Some(off_site));
         assert_eq!(interception.take_refused(), None);
 
         interception.stop_guarding();
-        assert_eq!(interception.on_request_paused(off_site, true, false), Paused::Continue);
+        assert_eq!(
+            interception.on_request_paused(off_site, true, false),
+            Paused::Continue
+        );
     }
 
     #[test]
@@ -194,18 +217,28 @@ mod tests {
             json!({ "response": "CancelAuth" }),
             "the proxy did not accept the answer"
         );
-        assert_eq!(interception.failed_proxy_login(), Some("proxy.corp.example"));
+        assert_eq!(
+            interception.failed_proxy_login(),
+            Some("proxy.corp.example")
+        );
     }
 
     #[test]
     fn without_a_user_name_or_a_password_the_challenge_is_cancelled() {
-        for login in [proxy(None, None), proxy(Some("scanner"), None), proxy(None, Some("s3cret"))] {
+        for login in [
+            proxy(None, None),
+            proxy(Some("scanner"), None),
+            proxy(None, Some("s3cret")),
+        ] {
             let mut interception = Interception::new(login, false);
             assert_eq!(
                 interception.on_auth_required(&challenge("r1", "Proxy")),
                 json!({ "response": "CancelAuth" })
             );
-            assert_eq!(interception.failed_proxy_login(), Some("proxy.corp.example"));
+            assert_eq!(
+                interception.failed_proxy_login(),
+                Some("proxy.corp.example")
+            );
         }
     }
 

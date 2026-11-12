@@ -419,6 +419,10 @@ contract! {
         /// The saved configuration the scan was started from, if any.
         #[serde(default)]
         pub configuration: Option<ScanConfigurationRef>,
+        /// The proxy the scan runs through. `None` for scans stored before
+        /// it was recorded.
+        #[serde(default)]
+        pub proxy: Option<ProxyUse>,
     }
 
     /// Everything the report screen needs for one scan.

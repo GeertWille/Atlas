@@ -108,6 +108,11 @@ test("read commands answer with the contract's shapes", async () => {
     jevEnabled: false,
     hasTypesafeKey: false,
     checkSellersJson: false,
+    defaultVisitor: "scroll",
+    defaultExtraPages: 2,
+    persistentProfile: false,
+    proxies: [],
+    defaultProxy: { kind: "system" },
   });
 
   const detected = await invokeOk<BrowserInfo | null>(browser, "detect_browser");

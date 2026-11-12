@@ -137,6 +137,7 @@ function asLegacy(scan: StoredScan): StoredScan {
   return {
     detail: {
       ...detail,
+      summary: { ...detail.summary, proxy: null },
       options: { url, device, observeSeconds, autoScroll, acceptConsent, aiEnabled },
       pages: [],
       environment: null,
@@ -166,7 +167,7 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number): StoredScan {
     settings,
     spec.id,
   );
-  const scan = createRunningScan(spec.id, options, startedAt, spec.configuration ?? null);
+  const scan = createRunningScan(spec.id, options, startedAt, proxy, spec.configuration ?? null);
   const scenario = buildScenario({
     scanId: spec.id,
     options,

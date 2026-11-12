@@ -61,18 +61,19 @@ pub(crate) enum Skip {
 }
 
 impl Skip {
+    /// The name the reason has in the audit trail.
     pub(crate) fn label(self) -> &'static str {
         match self {
             Skip::Hidden => "hidden",
-            Skip::InsideAd => "inside an ad",
-            Skip::Scheme => "not a web address",
-            Skip::Anchor => "same page",
+            Skip::InsideAd => "inside-ad",
+            Skip::Scheme => "scheme",
+            Skip::Anchor => "anchor",
             Skip::OffSite => "off-site",
-            Skip::File => "file or download",
-            Skip::Rel => "nofollow or sponsored",
-            Skip::Sensitive => "sign-in, purchase or other action",
-            Skip::Control => "form or button",
-            Skip::Visited => "already visited",
+            Skip::File => "file",
+            Skip::Rel => "rel",
+            Skip::Sensitive => "sensitive",
+            Skip::Control => "control",
+            Skip::Visited => "visited",
         }
     }
 }

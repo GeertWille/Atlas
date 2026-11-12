@@ -13,7 +13,7 @@ use adscan_engine::application::ports::{CaptureError, FormattedSource, SourceFor
 use adscan_engine::application::scans::MAX_CONCURRENT_SCANS;
 use adscan_model::{
     ApiKeyStatus, ApiProvider, DeviceProfile, Effort, EvidenceKind, FindingCategory, FindingSource,
-    LogEntry, LogKind, PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory,
+    LogEntry, LogKind, PageReach, PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory,
     SettingsPatch, Severity, StepStatus,
 };
 use common::*;
@@ -569,6 +569,145 @@ async fn full_scan_runs_every_node_and_merges_ai_and_heuristic_findings() {
             stats.total_findings
         ),
         (1, 1, 1)
+    );
+}
+
+// -- a visit of several page views --------------------------------------------------
+
+/// Header bidding runs on the entry page and is skipped on the page after it.
+fn two_page_visit() -> CaptureBehavior {
+    let mut first = page_setup();
+    first.extend(auction_round(360.0, "auction-1"));
+    first.push(lifecycle(950.0, "load"));
+    first.extend(scroll_events(4000.0));
+    let mut second = page_setup();
+    for slot in ["top", "side", "footer"] {
+        second.push(slot_requested(600.0, slot, false));
+        second.push(slot_rendered(900.0, slot, true));
+    }
+    CaptureBehavior::Return(Box::new(visit(vec![
+        (
+            page_view("https://pub.example/", PageReach::Entry, 0.0, 12_000.0),
+            first,
+        ),
+        (
+            page_view(
+                "https://pub.example/sport/final",
+                PageReach::LinkClick,
+                12_400.0,
+                20_400.0,
+            ),
+            second,
+        ),
+    ])))
+}
+
+#[tokio::test]
+async fn the_analysis_model_is_told_about_page_views_and_can_ask_for_one() {
+    let mut finding = device_check_finding("return window.innerWidth > 768");
+    // Page views are numbered from one towards the model; 9 does not exist.
+    finding["pages"] = json!([2, 9]);
+    let server = mock_api(
+        vec![lazy_script_is_a_wrapper()],
+        vec![
+            turn(
+                json!([
+                    tool_use(
+                        "toolu_1",
+                        "get_telemetry",
+                        json!({ "section": "slots", "page": 2 })
+                    ),
+                    tool_use(
+                        "toolu_2",
+                        "get_telemetry",
+                        json!({ "section": "pages", "page": null })
+                    ),
+                    tool_use(
+                        "toolu_3",
+                        "get_telemetry",
+                        json!({ "section": "slots", "page": 3 })
+                    )
+                ]),
+                "tool_use",
+            ),
+            calls("toolu_4", "report_finding", finding),
+            finish("toolu_5"),
+        ],
+    )
+    .await;
+    let harness = harness(two_page_visit(), &server.uri(), Some(KEY));
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert_eq!(detail.pages.len(), 2);
+
+    let requests = requests_for(&server, SONNET).await;
+    let system = requests[0]["system"].to_string();
+    assert!(
+        system.contains("one visit of one or more page views"),
+        "{system}"
+    );
+    let opening = requests[0]["messages"][0]["content"].to_string();
+    for expected in [
+        "# Visit",
+        "2 page view(s). Times of auctions, slots and events count from the start of their page view.",
+        "page 2 https://pub.example/sport/final reachedBy=LinkClick startedAt=12400ms dwell=8000ms",
+        // Records say which page view they belong to.
+        "page 1 auction auction- start=360ms",
+        "page 2 slot top path=/123/top",
+        // The entry page's timeline, and that of the page the rules flagged.
+        "## page 1",
+        "## page 2",
+        "Later page views are sold without header bidding (slots: footer, side, top; bidders: -; page views: 2)",
+    ] {
+        assert!(
+            opening.contains(expected),
+            "missing `{expected}` in the opening message: {opening}"
+        );
+    }
+
+    // One page view can be asked for; a page view that does not exist is an error.
+    let results = requests[1]["messages"][2]["content"].clone();
+    let result = |index: usize| results[index]["content"].to_string();
+    assert!(
+        result(0).contains("slot top path=/123/top"),
+        "{}",
+        result(0)
+    );
+    assert!(
+        !result(0).contains("page 2 "),
+        "one page view needs no labels: {}",
+        result(0)
+    );
+    assert_eq!(result(0).matches("slot ").count(), 3, "{}", result(0));
+    assert!(result(1).contains("2 page view(s)"), "{}", result(1));
+    assert_eq!(results[2]["is_error"], true);
+    assert!(
+        result(2)
+            .contains("There is no page view 3. This visit has 2 page view(s), counted from 1."),
+        "{}",
+        result(2)
+    );
+    let recorded = requests[2]["messages"][4]["content"][0]["content"].to_string();
+    assert!(
+        recorded.contains("page view 9 does not exist and was left out."),
+        "{recorded}"
+    );
+
+    // The model's finding absorbed the rule's and names the second page view.
+    let merged = detail
+        .findings
+        .iter()
+        .find(|finding| finding.source == FindingSource::Ai)
+        .unwrap();
+    assert_eq!(merged.pages, [1]);
+    assert!(
+        merged
+            .evidence
+            .iter()
+            .any(|evidence| evidence.label == "Slots without bids on page 2 (/sport/final)"),
+        "the rule's measurements are kept: {:#?}",
+        merged.evidence
     );
 }
 

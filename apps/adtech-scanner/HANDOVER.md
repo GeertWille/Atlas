@@ -9,10 +9,13 @@ A Tauri 2 desktop app that finds revenue leaks caused by logic bugs in a publish
 One scan runs these pipeline steps:
 
 1. **Capture**: launches local Chrome over CDP, injects a tracker before any page script, loads the page
-   (desktop or mobile emulation), optionally accepts the consent banner and scrolls. Records Prebid
-   activity, GPT slot lifecycle and timings, Amazon TAM calls and every JavaScript body.
-2. **Telemetry, bidder checks and heuristics**: derives auctions, slots and metrics, verifies each
-   bidder's setup (see "Bidder checks" below), then runs 27 deterministic rules. Works with no API key.
+   (desktop or mobile emulation), optionally accepts the consent banner, and then behaves as the scan's
+   visitor: watches only, scrolls, browses like a reader and follows same-site links, or records while a
+   person browses (see "Visits" below). Records Prebid activity, GPT slot lifecycle and timings, Amazon
+   TAM calls and every JavaScript body, per page view.
+2. **Telemetry, bidder checks and heuristics**: derives page views, auctions, slots and metrics, verifies
+   each bidder's setup (see "Bidder checks" below), then runs 33 deterministic rules. Works with no API
+   key.
 3. **Script triage (Phase 1)**: classifies the scripts the built-in knowledge base cannot decide.
    `claude-haiku-5-5` does it by default. With the optional "Classify scripts with Jev" setting on,
    TypeSafe's Jev System One (`jev-1.14.0`) does it, and Haiku is the fallback.
@@ -25,12 +28,17 @@ Rules that came from you and must keep holding:
 - Local only. A SQLite file in the app data dir, no server, no cloud storage. Outbound traffic is the
   scanned site (through Chrome) and that site's ads.txt (one GET from the app itself),
   api.anthropic.com, api.typesafe.ai only while Jev is on, and, only while "Check sellers.json at ad
-  exchanges" is on, a GET of sellers.json at the ad-system domains that ads.txt names.
+  exchanges" is on, a GET of sellers.json at the ad-system domains that ads.txt names. A scan can send
+  the first three kinds through one proxy the user configured (see "Proxies"); the two model APIs never
+  use it.
 - No raw payloads stored. Script bodies, bid responses, ads.txt and sellers.json stay in memory; only
   findings, derived telemetry, the bidder check results (with excerpts of at most 300 characters) and
   the audit trail (steps plus AI debug logs, full-text indexed) are persisted.
-- API keys live in the macOS Keychain (service `com.webclew.adtech-scanner`, accounts
-  `anthropic-api-key` and `typesafe-api-key`), never in SQLite, logs or the frontend.
+- API keys and proxy passwords live in the macOS Keychain (service `com.webclew.adtech-scanner`,
+  accounts `anthropic-api-key`, `typesafe-api-key` and one `proxy-password:<profile id>` per proxy
+  profile), never in SQLite, logs or the frontend.
+- A scripted visit never hides that it is automated: no stealth flags, no spoofed fingerprint. What the
+  page could see is recorded with the scan and reported (rule `scan-identifiable-as-automated`).
 - Per-scan LLM budget cap, default $0.50.
 - `clew-app` is read-only inspiration.
 - Run a simplify pass and a review pass after every change, fix, repeat.
@@ -42,7 +50,7 @@ Rules that came from you and must keep holding:
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 59 unit and 30 integration tests pass. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (16 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 2 real-browser pipeline tests pass on Linux. |
+| Tauri shell (26 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 3 real-browser pipeline tests on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
 | Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, and every command's contract. Not run on macOS. |
 
@@ -87,6 +95,8 @@ Environment overrides for tests and local runs:
 - `ADSCAN_TYPESAFE_API_KEY`: use this TypeSafe key and skip the Keychain. When either key variable is
   set, both keys live in memory only and the Keychain is never touched.
 - `ADSCAN_CHROME_PATH`: browser executable.
+- `ADSCAN_PROXY_PASSWORD`: stands in for the password of every proxy profile that has none of its own.
+  Like the key variables it moves every secret to memory and leaves the Keychain alone.
 
 The built-in demo publisher page is the fastest way to see a full scan. It is served on a random
 loopback port and has seven planted bugs, documented in `crates/browser/demo-site/README.md`:
@@ -98,6 +108,11 @@ loopback port and has seven planted bugs, documented in `crates/browser/demo-sit
 - `ix` is called but has no line in the site's `/ads.txt`, and never bids.
 - `triplelift` has no `inventoryCode` on two of its three ad units, so Prebid never sends those bids.
 - The `openx` bid request is answered by the demo exchange with OpenRTB no-bid reason 7.
+
+Three more only show when the visit goes beyond one passive page load (visitor browse or manual):
+a sidebar slot refreshed on engagement with the bid it already used, a session-wide "double-fire
+guard" that makes every later page view skip bidding, and a route change that defines the slots again
+without destroying the old ones.
 
 ## What is left, in order
 
@@ -131,7 +146,15 @@ loopback port and has seven planted bugs, documented in `crates/browser/demo-sit
 - Whether Jev judges minified JavaScript well at all. Every threshold, chunk size, question wording,
   ranking weight and token estimate on the Jev path is a starting value. They are named constants in
   `crates/engine/src/domain/{triage,guide,chunks,questions}.rs`, each marked as uncalibrated.
-- Whether a second Keychain item makes macOS prompt a second time.
+- Whether a second Keychain item makes macOS prompt a second time. Proxy profiles add one item each.
+- Proxies of any kind: no scan was run through a real proxy. The browser side (flag mapping, answering
+  the proxy's password challenge) and the fetcher side were tested against local stand-ins only, and
+  SOCKS5 not at all beyond building the client.
+- Headed browse and manual visits (a visible Chrome window, a person at the keyboard), and what a
+  persistent scan profile does to a real consent platform across scans.
+- The thresholds of the six visit rules (5 s minimum dwell, 2 slots, the 2 s consent delay) and the
+  merge of page findings by rule and bidders are starting values that only the demo site has exercised.
+- The detection-vendor table against real pages.
 
 ## Known open issues
 
@@ -142,6 +165,94 @@ loopback port and has seven planted bugs, documented in `crates/browser/demo-sit
 - Very small scripts can fit entirely inside one stored excerpt.
 - The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
   Prebid releases.
+
+## Visits: visitor behaviour, page views, the scan profile
+
+A scan is a visit of one or more page views. The options of a scan choose its visitor
+(`ScanOptions.visitor`; older callers' `autoScroll` still works and means scroll or none):
+
+- **none**: load and watch, no input.
+- **scroll**: scroll through the page (what every scan did before).
+- **browse**: move the pointer, scroll, and follow up to `extraPages` (0-5, default 2) same-site links.
+  Shown in a window unless `headless` is set; planned from `seed`, so a repeated scan with the same
+  seed plans the same visit.
+- **manual**: Chrome opens, a person browses, the app records until `finish_capture` (or the last
+  window closes, or 15 minutes). Never headless, never clicks the consent banner.
+
+What the backend guarantees about it:
+
+- The options a scan is stored with are fully settled (`visitor`, `extraPages`, `seed`, `headless`,
+  `persistentProfile`, `proxy`, `budgetUsd` are always present), so "repeat this visit" is sending them
+  back. Choices left open follow the settings at the start of the scan.
+- **Time base.** Every `t` and `*AtMs` of an auction, slot or script counts from the start of its page
+  view; `pages[page].startedAtMs` is relative to the scan's navigation start. A single-page scan reads
+  exactly as before. `ScanMetrics` counts are sums over page views; load time and the two
+  time-to-first figures are the entry page's. `ConsentReport.resolvedAtMs` is scan-absolute, because a
+  consent choice holds across page views.
+- The same container on two page views is two `AdSlot`s (`page`, `elementId`). After a route change
+  (single-page app) a request opens a slot of the new page view with what is known carried over, and a
+  late answer goes to the slot it answers. Every ad request of a slot is kept in `AdSlot.requests`.
+- Rules are scoped (`Rule::scope`). Page rules run once per page view and equal findings (same rule,
+  same bidders, different page views) merge into one that names its `pages`; scan rules see the whole
+  visit. Six rules need more than one page load, a refreshed slot or the environment
+  (`domain/heuristics/visit.rs`): `later-page-view-without-bids`, `spa-slots-not-reset`,
+  `refresh-with-stale-bids`, `refresh-without-auction`, `consent-asked-again`,
+  `scan-identifiable-as-automated`.
+- **Environment.** `ScanDetail.environment` holds what the pages could see (`navigator.webdriver`,
+  headless, overrides) and which detection vendors were on the page. The vendor table
+  (`domain/environment.rs`) only lists hosts whose ownership was confirmed in the DuckDuckGo Tracker
+  Radar entity data: DoubleVerify, Integral Ad Science, Pixalate, CHEQ, HUMAN, DataDome, hCaptcha,
+  Arkose Labs, reCAPTCHA (`recaptcha.net` only). Left out because they could not be confirmed from
+  here: Cloudflare's challenge host, Anura, Imperva.
+- **Audit trail.** Everything the visitor did is a log entry of kind `visitor` on the Capture step,
+  with `data = { activity, page, detail }`: page views, actions (one per gesture), each link choice with
+  what it passed over and why, what the scanner refused (off-site navigation, downloads), and the
+  environment.
+- **Scan profile.** With "keep a scan profile" (`Settings.persistentProfile`, or per scan) Chrome runs
+  in `<data dir>/scan-profile/{desktop,mobile}` and cookies, consent and cache survive between scans.
+  One scan at a time uses it; a second waits at its Capture step. `get_scan_profile` /
+  `clear_scan_profile` report and remove it (`profileBusy` while a scan uses it). Throwaway profiles
+  that a crash left in the temp dir are swept when the app starts.
+- Phase 2 knows about page views: the opening message has a visit block and the timelines of the entry
+  page plus up to two page views with findings; `get_telemetry` takes a `page`, `report_finding` takes
+  `pages` (numbered from 1 towards the model).
+- Exports: Markdown gains a Visit block, a page-view table, "Seen on" per finding and per-page tables
+  when the visit has more than one page view. A single-page scan stored before this exports as before.
+
+## Proxies
+
+Settings hold named proxy profiles (`Settings.proxies`: name, scheme http/https/socks5, host, port,
+optional user name). A scan runs through none, the system's proxy (the default, as before) or one
+profile: `Settings.defaultProxy`, or `ScanOptions.proxy` per scan.
+
+- The password of a profile is its own Keychain item and is only ever reported as `hasPassword`. It is
+  handed to the browser outside the capture request (answered to the proxy's challenge over CDP, never
+  on the command line) and to the app's own file fetcher.
+- Chrome cannot sign in to a SOCKS5 proxy, so a SOCKS5 profile with a user name is refused.
+- ads.txt and sellers.json of a scan are read through the same proxy as its pages. A page on this
+  machine (the demo site) is always reached directly.
+- Stored scans keep the profile's id plus its name and host as they were (`options.proxy`,
+  `summary.proxy`, `environment.proxy`), so they still read after the profile is renamed or deleted.
+- A profile that a saved scan configuration uses cannot be deleted (the error names the configuration).
+  If it is the settings default, deleting it puts the default back to the system's proxy.
+- **Behind a proxy the app cannot fully verify where a request lands.** The fetcher's private-address
+  check covers IP addresses and what this machine's resolver answers; the proxy resolves names itself,
+  and the connection cannot be pinned to the checked addresses. This is stated in
+  `infrastructure/public_files.rs` and the Settings copy must say it too.
+- Not built: proxy pools, rotation, per-request proxies.
+
+## Scan configurations
+
+A saved setup to scan one site again and again (`ScanConfiguration`: name, the scan options including
+URL, visitor, pages, headless, profile, consent, observation time, AI on/off, budget and proxy; never
+a seed). SQLite table `scan_configurations`, use cases in `application/configurations.rs`.
+
+- Names are unique without regard to case. Options are validated like a scan start when saved.
+- `start_scan { configurationId }` runs the saved options settled against the settings of that moment,
+  records `ScanSummary.configuration` (id and name as they were) and the configuration's last run.
+  `list_scans` filters by `configurationId`; exports name the configuration.
+- Deleting a configuration never deletes scans. Deleting a scan only clears the configuration's link
+  to it.
 
 ## Bidder checks
 
@@ -201,6 +312,7 @@ redirects by hand (any number within the root domain, one outside it, five in to
 cookies, and stops at 1 MiB and 10 s for ads.txt and 24 MiB and 20 s for sellers.json, counted on
 the decompressed bytes. The one exception is the scanned page's own origin when that
 is on loopback, which is how the demo site's `/ads.txt` is read, over http and never through a proxy.
+Every other request leaves through the scan's proxy choice (see "Proxies").
 
 Known limits:
 
@@ -210,7 +322,8 @@ Known limits:
 - A site that answers unknown clients with 403 or a challenge page gets "ads.txt could not be read".
 - Endpoint reasons other than the top-level `error` of AppNexus (confirmed in the adapter source)
   rest on the OpenRTB specification and Xandr's documentation, not on observed live answers.
-- Behind a proxy that resolves names itself, the private-address check falls to that proxy.
+- Behind a proxy (the system's or a profile) the proxy resolves names itself: the private-address
+  check falls to that proxy and the connection is not pinned to the checked addresses.
 - Aliases a publisher defines with `pbjs.aliasBidder`, Prebid Server bidders and non-TCF consent
   (GPP, US Privacy) are not checked.
 
@@ -278,7 +391,8 @@ src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake
 ```
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
-`SecretStore`, `LlmClient`, `JudgeClient`, `CaptureSource`, `PublicFileFetcher`, `SourceFormatter`,
+`ScanConfigurationRepository`, `SecretStore`, `LlmClient`, `JudgeClient`, `CaptureSource`,
+`PublicFileFetcher`, `SourceFormatter`,
 `EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
@@ -294,9 +408,10 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `clear_api_key` | `{ provider? }` | `null` (clearing the TypeSafe key also turns Jev off) |
 | `detect_browser` | – | `BrowserInfo \| null` |
 | `get_demo_url` | – | `string` |
-| `start_scan` | `{ options }` | `ScanSummary` (work continues in the background) |
+| `start_scan` | `{ options }` or `{ configurationId }` | `ScanSummary` (work continues in the background) |
+| `finish_capture` | `{ scanId }` | `null` (ends a manual visit and keeps what it recorded) |
 | `cancel_scan` | `{ scanId }` | `null` |
-| `list_scans` | `{ query }` | `ScanList` |
+| `list_scans` | `{ query }` | `ScanList` (`query.configurationId` narrows to one configuration) |
 | `get_scan` | `{ scanId }` | `ScanDetail` |
 | `delete_scan` | `{ scanId }` | `null` |
 | `delete_all_scans` | – | `null` |
@@ -304,6 +419,15 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `search_logs` | `{ query, limit? }` | `LogSearchHit[]` |
 | `get_dashboard_stats` | – | `DashboardStats` |
 | `export_scan` | `{ scanId, format, path? }` | `string` |
+| `get_scan_profile` | – | `ScanProfileInfo` |
+| `clear_scan_profile` | – | `ScanProfileInfo` (`profileBusy` while a scan uses the profile) |
+| `save_proxy_profile` | `{ profile }` | `Settings` (create, or update with `profile.id`) |
+| `delete_proxy_profile` | `{ id }` | `Settings` |
+| `set_proxy_password` | `{ id, password }` | `Settings` (stored as given, not checked against the proxy) |
+| `clear_proxy_password` | `{ id }` | `Settings` |
+| `list_scan_configurations` | – | `ScanConfiguration[]` |
+| `save_scan_configuration` | `{ configuration }` | `ScanConfiguration` (create, or update with `configuration.id`) |
+| `delete_scan_configuration` | `{ id }` | `null` |
 
 `provider` is `"anthropic"` (the default when omitted) or `"typesafe"`.
 

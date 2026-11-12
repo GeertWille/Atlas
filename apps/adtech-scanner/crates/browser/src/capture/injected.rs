@@ -67,11 +67,17 @@ mod tests {
     #[test]
     fn the_tracker_is_called_with_the_site_it_may_run_on() {
         let anywhere = tracker_script(None);
-        assert!(anywhere.ends_with("})\n(null);"), "{}", &anywhere[anywhere.len() - 20..]);
+        assert!(
+            anywhere.ends_with("})\n(null);"),
+            "{}",
+            &anywhere[anywhere.len() - 20..]
+        );
         assert!(is_tracker_script(&anywhere));
 
         let site = Site::of(&Url::parse("https://www.paper.co.uk/a").unwrap()).unwrap();
-        assert!(tracker_script(Some(&site)).ends_with(r#"({"domain":"paper.co.uk","port":null});"#));
+        assert!(
+            tracker_script(Some(&site)).ends_with(r#"({"domain":"paper.co.uk","port":null});"#)
+        );
         let local = Site::of(&Url::parse("http://127.0.0.1:4100/").unwrap()).unwrap();
         assert!(tracker_script(Some(&local)).ends_with(r#"({"domain":"127.0.0.1","port":4100});"#));
         assert!(!is_tracker_script("(function () { pageCode(); })();"));
@@ -80,7 +86,11 @@ mod tests {
     #[test]
     fn page_scripts_are_called_with_json_arguments() {
         let facts = page_facts_expression(&["ad-\"top".to_string()], true);
-        assert!(facts.ends_with(r#"({"links":true,"slotIds":["ad-\"top"]})"#), "{}", &facts[facts.len() - 60..]);
+        assert!(
+            facts.ends_with(r#"({"links":true,"slotIds":["ad-\"top"]})"#),
+            "{}",
+            &facts[facts.len() - 60..]
+        );
         let hit = hit_test_expression(Point { x: 10.5, y: 20.0 });
         assert!(hit.ends_with(r#"({"x":10.5,"y":20.0})"#));
     }

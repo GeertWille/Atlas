@@ -1,8 +1,10 @@
 import { GavelIcon } from "lucide-react";
-import type { Auction, BidderDiagnostics } from "@/bindings";
+import type { Auction, BidderDiagnostics, PageView } from "@/bindings";
 import { BID_STATUS_META, BID_STATUSES } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
+import { pluralize } from "@/shared/lib/format";
 import { Empty } from "@/shared/ui/empty";
+import { PageSectionHeader } from "../pages/PageSectionHeader";
 import { AuctionWaterfall } from "./AuctionWaterfall";
 import { BidderChecks } from "./BidderChecks";
 import { BidderSummaryTable } from "./BidderSummaryTable";
@@ -33,11 +35,30 @@ function Legend() {
   );
 }
 
+/** The auctions of one page view under its heading; a page that never auctioned says so. */
+function PageAuctions({ page, auctions }: { page: PageView; auctions: { auction: Auction; index: number }[] }) {
+  return (
+    <section aria-label={`Auctions on page ${page.index + 1}`} className="flex flex-col gap-3">
+      <PageSectionHeader page={page} summary={pluralize(auctions.length, "auction")} />
+      {auctions.length === 0 ? (
+        <p className="rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
+          No Prebid auction started on this page view.
+        </p>
+      ) : (
+        auctions.map(({ auction, index }) => <AuctionWaterfall key={auction.id} auction={auction} index={index} />)
+      )}
+    </section>
+  );
+}
+
 export function AuctionsTab({
   auctions,
   diagnostics,
+  pages = [],
 }: {
   auctions: Auction[];
+  /** The page views to group the auctions under, when a multi-page visit is shown whole. */
+  pages?: PageView[];
   /** `null` for scans whose bidder checks did not run. */
   diagnostics: BidderDiagnostics | null;
 }) {
@@ -58,9 +79,16 @@ export function AuctionsTab({
         </p>
         <Legend />
       </div>
-      {auctions.map((auction, index) => (
-        <AuctionWaterfall key={auction.id} auction={auction} index={index} />
-      ))}
+      {pages.length > 0
+        ? pages.map((page) => (
+            <PageAuctions
+              key={page.index}
+              page={page}
+              // Auctions keep one numbering across the visit.
+              auctions={auctions.flatMap((auction, index) => (auction.page === page.index ? [{ auction, index }] : []))}
+            />
+          ))
+        : auctions.map((auction, index) => <AuctionWaterfall key={auction.id} auction={auction} index={index} />)}
       <BidderSummaryTable auctions={auctions} />
       {diagnostics ? <BidderChecks diagnostics={diagnostics} /> : null}
     </div>

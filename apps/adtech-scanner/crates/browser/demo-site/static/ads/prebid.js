@@ -327,11 +327,11 @@
   function creativeMarkup(bid) {
     return (
       '<!doctype html><html><head><style>html,body{margin:0;height:100%}' +
-      '.ad{box-sizing:border-box;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+      '.ad{box-sizing:border-box;height:100%;display:flex;text-decoration:none;flex-direction:column;align-items:center;justify-content:center;' +
       'font:600 14px/1.3 system-ui,sans-serif;color:#fff;background:linear-gradient(135deg,#0f766e,#1d4ed8);text-align:center}' +
       '.ad small{font-weight:400;opacity:.85;margin-top:4px}</style></head><body>' +
-      '<div class="ad"><span>Sponsored · ' + bid.bidderCode + '</span>' +
-      '<small>' + bid.size + ' · $' + bid.cpm.toFixed(2) + ' CPM</small></div></body></html>'
+      '<a class="ad" target="_top" href="/ads/click?bidder=' + bid.bidderCode + '"><span>Sponsored · ' + bid.bidderCode + '</span>' +
+      '<small>' + bid.size + ' · $' + bid.cpm.toFixed(2) + ' CPM</small></a></body></html>'
     );
   }
 
@@ -655,6 +655,14 @@
       var message = 'Error rendering ad (id: ' + adId + '): Cannot find ad \'' + adId + '\'';
       logError(message);
       emit('adRenderFailed', { reason: 'cannotFindAd', message: message, adId: adId });
+      return;
+    }
+    if (bid.status === 'rendered') {
+      // A bid buys one impression. Asked to draw the same ad again, this
+      // stand-in refuses and says so; the frame stays blank.
+      var stale = 'Ad id ' + adId + ' has been rendered before';
+      logWarn(stale);
+      emit('adRenderFailed', { reason: 'exception', message: stale, bid: bid, adId: adId });
       return;
     }
     bid.status = 'rendered';

@@ -471,7 +471,11 @@ mod tests {
 
         assert_eq!(log.navigation_start(), Some(T0 + 3.5));
         assert_eq!(log.place(0, 120.0), Some((0, 120.0)));
-        assert_eq!(log.document_of(T0 + 9_000.0), None, "no document is waiting");
+        assert_eq!(
+            log.document_of(T0 + 9_000.0),
+            None,
+            "no document is waiting"
+        );
     }
 
     #[test]
@@ -610,7 +614,12 @@ mod tests {
             assert_eq!(log.url(0), Some("https://news.example/a"));
         }
         assert_eq!(
-            log.route_changed(0, 1_500.0, "https://news.example/a?ref=canonical", "replace"),
+            log.route_changed(
+                0,
+                1_500.0,
+                "https://news.example/a?ref=canonical",
+                "replace"
+            ),
             Change::None
         );
         assert_eq!(log.url(0), Some("https://news.example/a?ref=canonical"));
@@ -619,7 +628,10 @@ mod tests {
         log.document_committed(committed("https://news.example/b", T0 + 5_000.0));
         let stale = log.route_changed(0, 4_900.0, "https://news.example/x", "push");
         assert_eq!(stale, Change::None, "the visit is on another document");
-        assert_eq!(log.route_changed(7, 1.0, "https://news.example/x", "push"), Change::None);
+        assert_eq!(
+            log.route_changed(7, 1.0, "https://news.example/x", "push"),
+            Change::None
+        );
     }
 
     #[test]
@@ -696,9 +708,18 @@ mod tests {
 
         assert_eq!(pages.len(), 3);
         assert_eq!(pages[0].title.as_deref(), Some("Tide town"));
-        assert_eq!((pages[0].started_at_ms, pages[0].ended_at_ms), (0.0, 8_000.0));
-        assert_eq!((pages[1].started_at_ms, pages[1].ended_at_ms), (8_000.0, 20_000.0));
-        assert_eq!((pages[2].started_at_ms, pages[2].ended_at_ms), (20_000.0, 31_000.0));
+        assert_eq!(
+            (pages[0].started_at_ms, pages[0].ended_at_ms),
+            (0.0, 8_000.0)
+        );
+        assert_eq!(
+            (pages[1].started_at_ms, pages[1].ended_at_ms),
+            (8_000.0, 20_000.0)
+        );
+        assert_eq!(
+            (pages[2].started_at_ms, pages[2].ended_at_ms),
+            (20_000.0, 31_000.0)
+        );
         assert_eq!(pages[0].load_ms, Some(400.0));
         assert_eq!(pages[1].load_ms, None, "a route change loads no document");
         assert_eq!(pages[2].load_ms, Some(402.0));

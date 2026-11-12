@@ -1,4 +1,4 @@
-/* Meridian audience analytics: page views and scroll-depth milestones. First party, no ads. */
+/* Meridian audience analytics: page views, scroll-depth milestones and engagement. First party, no ads. */
 (function (win, doc) {
   'use strict';
 
@@ -37,6 +37,41 @@
       }
     });
   }
+
+  // Engagement: how much the reader moved, scrolled and touched, and whether
+  // a person's devices caused it. Reported when the reader pauses and when
+  // the page is left.
+  var ENGAGEMENT_PAUSE_MS = 3000;
+  var engagement = { pointerMoves: 0, wheels: 0, touches: 0, trusted: true };
+  var engagementTimer = null;
+  var engagementReported = '';
+
+  function reportEngagement() {
+    var summary = JSON.stringify(engagement);
+    if (summary === engagementReported) return;
+    engagementReported = summary;
+    console.log('ENGAGEMENT ' + summary);
+    send('engagement', engagement);
+  }
+
+  function onInput(counter) {
+    return function (event) {
+      engagement[counter] += 1;
+      if (!event.isTrusted) engagement.trusted = false;
+      clearTimeout(engagementTimer);
+      engagementTimer = setTimeout(reportEngagement, ENGAGEMENT_PAUSE_MS);
+    };
+  }
+
+  win.addEventListener('pointermove', onInput('pointerMoves'), { passive: true });
+  win.addEventListener('wheel', onInput('wheels'), { passive: true });
+  win.addEventListener('touchstart', onInput('touches'), { passive: true });
+  win.addEventListener('pagehide', function () {
+    if (engagement.pointerMoves + engagement.wheels + engagement.touches > 0) reportEngagement();
+  });
+  win.addEventListener('meridian:route', function (event) {
+    send('page_view', { route: event.detail.path });
+  });
 
   win.addEventListener('scroll', onScroll, { passive: true });
   send('page_view', { referrer: doc.referrer || null, viewport: win.innerWidth + 'x' + win.innerHeight });

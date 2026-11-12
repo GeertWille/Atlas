@@ -103,6 +103,10 @@ async fn dialogs_and_debugger_statements_do_not_stall_the_scan() {
             .iter()
             .any(|line| line.text == "SURVIVED dialog and debugger")
     );
+    // An alert is closed; a question is never answered with "yes".
+    let said = |text: &str| capture.console.iter().any(|line| line.text == text);
+    assert!(said("CONFIRMED false"), "{:#?}", capture.console);
+    assert!(said("PROMPTED null"), "{:#?}", capture.console);
     assert!(capture.page_load_ms.is_some());
     assert!(
         started.elapsed() < Duration::from_secs(10),

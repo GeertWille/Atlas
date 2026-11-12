@@ -1,7 +1,7 @@
 //! Adapters from the outside world to the engine's ports: the real browser
 //! and the Tauri event bus.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use adscan_browser::{BrowserError, CaptureHooks};
 use adscan_engine::application::ports::{CaptureError, CaptureSession, CaptureSource, EventSink};
@@ -19,7 +19,7 @@ pub struct ChromeCaptureSource {
 }
 
 impl ChromeCaptureSource {
-    pub fn new(data_dir: &std::path::Path) -> Self {
+    pub fn new(data_dir: &Path) -> Self {
         Self {
             scan_profile_dir: data_dir.join(SCAN_PROFILE_DIR),
         }

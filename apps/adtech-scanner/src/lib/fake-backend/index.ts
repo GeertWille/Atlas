@@ -181,7 +181,7 @@ class FakeBackend {
       throw new ApiError("browserNotFound", "No Chrome or Chromium installation was found. Choose one in Settings.");
     }
     const now = Date.now();
-    const scan = createRunningScan(scanId, resolved.options, now, configuration);
+    const scan = createRunningScan(scanId, resolved.options, now, resolved.proxy, configuration);
     this.scans.unshift(scan);
     if (resolved.options.persistentProfile) {
       this.scanProfile = {
@@ -306,7 +306,9 @@ class FakeBackend {
       if (defaultExtraPages !== undefined && (defaultExtraPages < 0 || defaultExtraPages > 5)) {
         throw new ApiError("invalidInput", "A visit can follow links to at most 5 further pages");
       }
-      if (defaultProxy?.kind === "profile") this.proxy(defaultProxy.id);
+      if (defaultProxy?.kind === "profile" && !this.settings.proxies.some((proxy) => proxy.id === defaultProxy.id)) {
+        throw new ApiError("invalidInput", "The default proxy must be one of the saved proxies");
+      }
       const { chromePath, ...rest } = patch;
       this.settings = { ...this.settings, ...rest };
       if (chromePath !== undefined) this.settings.chromePath = chromePath;
@@ -378,7 +380,6 @@ class FakeBackend {
     },
     finishCapture: async (scanId) => {
       const scan = this.find(scanId);
-      if (scan.detail.summary.status !== "running") throw new ApiError("notFound", `Scan ${scanId} is not running`);
       const capturing = scan.detail.steps.some((step) => step.node === "capture" && step.status === "running");
       if (capturing) this.manualSessions.get(scanId)?.finish();
     },

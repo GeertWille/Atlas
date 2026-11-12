@@ -1,11 +1,12 @@
 import { SquareIcon } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ScanDetail } from "@/bindings";
+import type { LogEntry, ScanDetail } from "@/bindings";
 import { useCancelScan } from "@/lib/query/hooks";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, LiveDot, SEVERITY_ICON, SeverityCountPills } from "@/shared/components/status";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
+import { visitorOf } from "@/shared/domain/scan-options";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
 import { useNow } from "@/shared/hooks/use-now";
 import { cn } from "@/shared/lib/cn";
@@ -24,8 +25,11 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 import { BudgetMeter } from "./BudgetMeter";
+import { ManualSessionBar } from "./ManualSessionBar";
 import { PipelineStepper } from "./PipelineStepper";
 import { pipelineProgress, runningStep, tokenTotals } from "./progress";
+import { VisitPanel } from "./VisitPanel";
+import { deriveVisit } from "./visit";
 
 const TEXT_TONE = {
   red: "text-red-fg",
@@ -108,10 +112,13 @@ function FindingsSoFar({ detail }: { detail: ScanDetail }) {
 
 export function LiveScanView({
   detail,
+  logs,
   budgetUsd,
   activity,
 }: {
   detail: ScanDetail;
+  /** The audit trail so far; the visit panel and the manual session read the visitor's entries from it. */
+  logs: LogEntry[] | undefined;
   /** The per-scan cap from settings; the meter waits for it. */
   budgetUsd: number | undefined;
   /** The streaming audit trail, or what stands in for it when it cannot be loaded. */
@@ -122,6 +129,10 @@ export function LiveScanView({
   const current = runningStep(steps);
   const progress = pipelineProgress(steps);
   const tokens = tokenTotals(steps);
+  const capturing = current?.node === "capture";
+  const visit = deriveVisit(capturing ? (logs ?? []) : []);
+  const manualSession = capturing && visitorOf(detail.options) === "manual" && current.startedAt !== null;
+  const cancelButton = <CancelScanButton scanId={summary.id} />;
 
   return (
     <div className="mx-auto flex h-full w-full max-w-[1180px] flex-col gap-4 px-6 py-5">
@@ -150,9 +161,20 @@ export function LiveScanView({
         </div>
         <div className="flex shrink-0 items-center gap-5">
           {budgetUsd === undefined ? null : <BudgetMeter costUsd={summary.costUsd} budgetUsd={budgetUsd} />}
-          <CancelScanButton scanId={summary.id} />
+          {manualSession ? null : cancelButton}
         </div>
       </header>
+
+      {manualSession ? (
+        <ManualSessionBar
+          scanId={summary.id}
+          hostname={summary.hostname}
+          startedAt={current.startedAt ?? now}
+          now={now}
+          pageCount={visit.pages.length}
+          cancel={cancelButton}
+        />
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] gap-4">
         <div className="flex min-h-0 flex-col gap-4">
@@ -161,10 +183,16 @@ export function LiveScanView({
           </Panel>
           <FindingsSoFar detail={detail} />
         </div>
-        <Panel className="flex min-h-0 flex-col overflow-hidden">
-          <PanelHeader title="Activity" description="Live audit trail: progress, model calls, tool use and findings" />
-          {activity}
-        </Panel>
+        <div className="flex min-h-0 flex-col gap-4">
+          <VisitPanel visit={visit} />
+          <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <PanelHeader
+              title="Activity"
+              description="Live audit trail: progress, model calls, tool use and findings"
+            />
+            {activity}
+          </Panel>
+        </div>
       </div>
     </div>
   );

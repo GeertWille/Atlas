@@ -13,6 +13,9 @@ import type { ScriptSort } from "./script-filters";
 const ROW_HEIGHT = 52;
 const COLUMNS =
   "grid grid-cols-[minmax(0,1fr)_104px_72px_84px_100px] items-center gap-x-3 px-4 xl:grid-cols-[minmax(0,1fr)_112px_120px_84px_92px_128px]";
+/** With the page views a script was loaded on, for a multi-page visit. */
+const COLUMNS_WITH_PAGES =
+  "grid grid-cols-[minmax(0,1fr)_104px_56px_72px_84px_100px] items-center gap-x-3 px-4 xl:grid-cols-[minmax(0,1fr)_112px_120px_64px_84px_92px_128px]";
 
 function SortHeader({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
@@ -54,7 +57,17 @@ function ClassifiedBy({ script }: { script: ScriptRecord }) {
   );
 }
 
-function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selected: boolean; onSelect: () => void }) {
+function ScriptRow({
+  script,
+  selected,
+  showPages,
+  onSelect,
+}: {
+  script: ScriptRecord;
+  selected: boolean;
+  showPages: boolean;
+  onSelect: () => void;
+}) {
   const category = SCRIPT_CATEGORY_META[script.category];
   return (
     <div
@@ -69,7 +82,7 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
         }
       }}
       className={cn(
-        COLUMNS,
+        showPages ? COLUMNS_WITH_PAGES : COLUMNS,
         "h-full border-b text-[13px] outline-offset-[-2px] hover:bg-accent/60",
         selected && "bg-primary-soft/60 hover:bg-primary-soft/60",
       )}
@@ -98,6 +111,11 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
       <span role="cell" className="hidden truncate text-muted-foreground xl:block">
         {script.vendor ?? EMPTY}
       </span>
+      {showPages ? (
+        <span role="cell" className="truncate text-muted-foreground tabular-nums">
+          {script.pages.length > 0 ? script.pages.map((page) => page + 1).join(", ") : EMPTY}
+        </span>
+      ) : null}
       <span role="cell" className="text-right tabular-nums">
         {formatBytes(script.sizeBytes)}
       </span>
@@ -115,8 +133,11 @@ export function ScriptsTable({
   onSortChange,
   selectedId,
   onSelect,
+  showPages = false,
 }: {
   scripts: ScriptRecord[];
+  /** Adds the "Pages" column: which page views of a multi-page visit loaded each script. */
+  showPages?: boolean;
   sort: ScriptSort;
   onSortChange: (sort: ScriptSort) => void;
   selectedId: string | null;
@@ -140,12 +161,19 @@ export function ScriptsTable({
   return (
     <div role="table" aria-label="Scripts" aria-rowcount={scripts.length + 1} className="flex min-h-0 flex-col">
       <div role="rowgroup">
-        <div role="row" className={cn(COLUMNS, "h-9 border-b text-xs font-medium text-muted-foreground")}>
+        <div
+          role="row"
+          className={cn(
+            showPages ? COLUMNS_WITH_PAGES : COLUMNS,
+            "h-9 border-b text-xs font-medium text-muted-foreground",
+          )}
+        >
           <span role="columnheader">Script</span>
           <span role="columnheader">Category</span>
           <span role="columnheader" className="hidden xl:block">
             Vendor
           </span>
+          {showPages ? <span role="columnheader">Pages</span> : null}
           <SortHeader label="Size" active={sort === "sizeDesc"} onClick={() => onSortChange("sizeDesc")} />
           <SortHeader label="Loaded" active={sort === "loadOrder"} onClick={() => onSortChange("loadOrder")} />
           <span role="columnheader" className="text-right">
@@ -164,7 +192,12 @@ export function ScriptsTable({
                 className="absolute inset-x-0 top-0"
                 style={{ height: item.size, transform: `translateY(${item.start}px)` }}
               >
-                <ScriptRow script={script} selected={script.id === selectedId} onSelect={() => onSelect(script)} />
+                <ScriptRow
+                  script={script}
+                  selected={script.id === selectedId}
+                  showPages={showPages}
+                  onSelect={() => onSelect(script)}
+                />
               </div>
             );
           })}

@@ -19,6 +19,19 @@
     // time, so phones wait for the reader's first scroll before the auction.
     scrollGatedAuction: true,
     lazyMargin: 250,
+    // PAGE-1744: a consent reload started the first auction twice. A start
+    // that follows the previous one this closely is the same page again.
+    doubleFireGuardMs: 120000,
+    // GROWTH-377: readers who stay and are active see a fresh rail ad.
+    engagementRefresh: { slot: 'ad-sidebar-1', viewableMs: 5000, activeWithinMs: 5000, checkEveryMs: 1000 },
+    // GROWTH-402: a recirculation unit for readers on their second article.
+    recirculation: {
+      id: 'ad-recirc',
+      unit: 'recirc',
+      fromPageView: 2,
+      sizes: { desktop: [[728, 90]], mobile: [[320, 50]] },
+      bidders: ['appnexus', 'rubicon'],
+    },
     slots: [
       {
         id: 'ad-leaderboard',
@@ -78,7 +91,30 @@
   pbjs.que = pbjs.que || [];
 
   var gptSlots = {};
+  var session = sessionState();
   var sizeProfile = (win.innerWidth || doc.documentElement.clientWidth) < CONFIG.breakpoints.mobile ? 'mobile' : 'desktop';
+
+  // What this reader's earlier pages left behind: how many there were, and
+  // when the last auction started.
+  function sessionState() {
+    var state = { pageViews: 1, previousAuctionAt: 0 };
+    try {
+      state.pageViews = (Number(win.sessionStorage.getItem('adstack.pageViews')) || 0) + 1;
+      state.previousAuctionAt = Number(win.sessionStorage.getItem('adstack.lastAuction')) || 0;
+      win.sessionStorage.setItem('adstack.pageViews', String(state.pageViews));
+    } catch (storageBlocked) {}
+    return state;
+  }
+
+  function isDoubleFire() {
+    return session.previousAuctionAt > 0 && Date.now() - session.previousAuctionAt < CONFIG.doubleFireGuardMs;
+  }
+
+  function rememberAuction() {
+    try {
+      win.sessionStorage.setItem('adstack.lastAuction', String(Date.now()));
+    } catch (storageBlocked) {}
+  }
 
   function log() {
     if (/[?&]adstack_debug=1/.test(win.location.search)) {
@@ -150,9 +186,8 @@
     googletag.cmd.push(function () {
       CONFIG.slots.forEach(function (slot) {
         if (!doc.getElementById(slot.id)) return;
-        gptSlots[slot.id] = googletag
-          .defineSlot(CONFIG.network + '/' + slot.unit, sizesFor(slot), slot.id)
-          .addService(googletag.pubads());
+        var defined = googletag.defineSlot(CONFIG.network + '/' + slot.unit, sizesFor(slot), slot.id);
+        gptSlots[slot.id] = defined && defined.addService(googletag.pubads());
       });
       googletag.pubads().disableInitialLoad();
       googletag.pubads().enableSingleRequest();
@@ -201,9 +236,15 @@
     }, CONFIG.failsafeTimeout);
 
     track('auction_start', { label: label, slots: codes.length });
-    pbjs.que.push(function () {
-      pbjs.requestBids({ adUnitCodes: codes, bidsBackHandler: bidsBack('prebid') });
-    });
+    if (isDoubleFire()) {
+      log(label, 'auction skipped: double fire');
+      waitingFor.prebid = false;
+    } else {
+      rememberAuction();
+      pbjs.que.push(function () {
+        pbjs.requestBids({ adUnitCodes: codes, bidsBackHandler: bidsBack('prebid') });
+      });
+    }
     win.apstag.fetchBids(
       {
         slots: slots.map(function (slot) {
@@ -218,12 +259,15 @@
   function startAnchor(slot) {
     googletag.cmd.push(function () {
       pbjs.que.push(function () {
-        pbjs.requestBids({
-          adUnitCodes: [slot.id],
-          bidsBackHandler: function () {
-            pbjs.setTargetingForGPTAsync([slot.id]);
-          },
-        });
+        if (!isDoubleFire()) {
+          rememberAuction();
+          pbjs.requestBids({
+            adUnitCodes: [slot.id],
+            bidsBackHandler: function () {
+              pbjs.setTargetingForGPTAsync([slot.id]);
+            },
+          });
+        }
         googletag.pubads().refresh([gptSlots[slot.id]]);
         track('anchor_request', { slot: slot.id });
       });
@@ -252,14 +296,88 @@
     });
   }
 
+  function isHalfInView(element) {
+    var box = element.getBoundingClientRect();
+    var visible = Math.min(box.bottom, win.innerHeight) - Math.max(box.top, 0);
+    return box.height > 0 && visible >= box.height / 2;
+  }
+
+  // Once the rail ad has counted as viewed, a reader who keeps it on screen
+  // and keeps moving gets a new one.
+  function watchEngagementRefresh() {
+    var rule = CONFIG.engagementRefresh;
+    var lastActiveAt = 0;
+    var inViewSince = 0;
+    function active() {
+      lastActiveAt = Date.now();
+    }
+    win.addEventListener('pointermove', active, { passive: true });
+    win.addEventListener('touchstart', active, { passive: true });
+    win.addEventListener('touchmove', active, { passive: true });
+    googletag.cmd.push(function () {
+      googletag.pubads().addEventListener('impressionViewable', function (event) {
+        if (inViewSince || event.slot.getSlotElementId() !== rule.slot) return;
+        inViewSince = Date.now();
+        var check = setInterval(function () {
+          var slot = gptSlots[rule.slot];
+          var element = doc.getElementById(rule.slot);
+          if (!slot || !element) return clearInterval(check);
+          var now = Date.now();
+          if (!isHalfInView(element)) inViewSince = now;
+          if (now - inViewSince < rule.viewableMs || now - lastActiveAt > rule.activeWithinMs) return;
+          clearInterval(check);
+          track('engagement_refresh', { slot: rule.slot });
+          googletag.pubads().refresh([slot]);
+        }, rule.checkEveryMs);
+      });
+    });
+  }
+
+  function startRecirculation() {
+    var unit = CONFIG.recirculation;
+    if (session.pageViews < unit.fromPageView || !doc.getElementById(unit.id)) return;
+    googletag.cmd.push(function () {
+      var slot = googletag
+        .defineSlot(CONFIG.network + '/' + unit.unit, sizesFor(unit), unit.id)
+        .addService(googletag.pubads());
+      googletag.display(unit.id);
+      pbjs.que.push(function () {
+        pbjs.addAdUnits([toAdUnit(unit)]);
+        pbjs.requestBids({
+          adUnitCodes: [unit.id],
+          bidsBackHandler: function () {
+            pbjs.setTargetingForGPTAsync([unit.id]);
+            googletag.pubads().refresh([slot]);
+          },
+        });
+      });
+    });
+  }
+
+  function initialSlots() {
+    return CONFIG.slots.filter(function (slot) { return !slot.anchor && !slot.lazy; });
+  }
+
+  // PAGE-2291: story cards swap the article in place. Set the stack up for
+  // the new article the way a page load does.
+  function onRoute(event) {
+    track('route', event.detail);
+    configurePrebid();
+    defineSlots();
+    runAuction(initialSlots(), 'route');
+  }
+
   function start() {
     var anchors = CONFIG.slots.filter(function (slot) { return slot.anchor; });
     var lazy = CONFIG.slots.filter(function (slot) { return slot.lazy; });
-    var initial = CONFIG.slots.filter(function (slot) { return !slot.anchor && !slot.lazy; });
+    var initial = initialSlots();
 
     defineSlots();
     anchors.forEach(startAnchor);
     watchLazySlots(lazy);
+    watchEngagementRefresh();
+    startRecirculation();
+    win.addEventListener('meridian:route', onRoute);
 
     if (CONFIG.scrollGatedAuction && isMobileViewport()) {
       win.addEventListener(

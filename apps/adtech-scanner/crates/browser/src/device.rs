@@ -187,10 +187,6 @@ mod tests {
     const HEADLESS_LINUX: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 \
         (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36";
 
-    fn hints(emulation: &Emulation) -> Value {
-        emulation.user_agent_override().unwrap()["userAgentMetadata"].clone()
-    }
-
     fn brand_header(list: &Value) -> String {
         list.as_array()
             .unwrap()

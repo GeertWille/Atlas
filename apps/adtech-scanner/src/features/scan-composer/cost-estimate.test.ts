@@ -57,3 +57,25 @@ test("Jev without an Anthropic key is script triage only, whatever the analysis 
 test("a stored TypeSafe key changes nothing while the Jev switch is off", () => {
   expect(estimateScanCost({ ...settingsFixture, hasTypesafeKey: true })).toEqual(estimateScanCost(settingsFixture));
 });
+
+test("each page after the entry page adds its telemetry to the analysis, and nothing without logic analysis", () => {
+  const roomy = { ...settingsFixture, budgetUsd: 5 };
+  const onePage = estimateScanCost(roomy).expectedUsd;
+  const threePages = estimateScanCost(roomy, { extraPages: 2 }).expectedUsd;
+  const sixPages = estimateScanCost(roomy, { extraPages: 5 }).expectedUsd;
+  expect(estimateScanCost(roomy, { extraPages: 0 }).expectedUsd).toBe(onePage);
+  // 1,500 input tokens per extra page at the analysis model's input price.
+  expect(threePages - onePage).toBeCloseTo((2 * 1_500 * 2) / 1_000_000, 6);
+  expect(sixPages - threePages).toBeCloseTo((3 * 1_500 * 2) / 1_000_000, 6);
+  const triageOnly = { ...roomy, hasApiKey: false, hasTypesafeKey: true, jevEnabled: true };
+  expect(estimateScanCost(triageOnly, { extraPages: 5 })).toEqual(estimateScanCost(triageOnly));
+});
+
+test("a scan's own budget replaces the settings' cap", () => {
+  expect(estimateScanCost(settingsFixture, { budgetUsd: 0.2 })).toEqual({
+    expectedUsd: 0.2,
+    cappedByBudget: true,
+    fallbackPricing: false,
+  });
+  expect(estimateScanCost({ ...settingsFixture, analysisEffort: "high" }, { budgetUsd: 2 }).cappedByBudget).toBe(false);
+});

@@ -6,8 +6,8 @@ mod support;
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    Capture, DeviceProfile, SchainNode, TrackedAdUnit, TrackedBid, TrackerEventKind as Kind,
-    VisitorBehavior,
+    Capture, DeviceProfile, PageReach, SchainNode, TrackedAdUnit, TrackedBid,
+    TrackerEventKind as Kind, VisitorBehavior,
 };
 use serde_json::{Value, json};
 
@@ -49,7 +49,7 @@ fn variant(kind: &Kind) -> &'static str {
     }
 }
 
-const ALL_VARIANTS: [&str; 28] = [
+const ALL_VARIANTS: [&str; 31] = [
     "adRenderFailed",
     "adRenderSucceeded",
     "amazonDetected",
@@ -70,13 +70,16 @@ const ALL_VARIANTS: [&str; 28] = [
     "prebidConfig",
     "prebidDetected",
     "prebidLog",
+    "routeChange",
     "scroll",
     "setTargeting",
     "slotDefined",
+    "slotDefinitionRejected",
     "slotOnload",
     "slotRenderEnded",
     "slotRequested",
     "slotResponseReceived",
+    "slotsDestroyed",
     "tcfState",
 ];
 
@@ -461,17 +464,17 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
             &defined("unit-missing", "/1/site/interstitial", &[], None),
         ]
     );
-    let requested = |id: &str, keys: &[&str]| Kind::SlotRequested {
+    let requested = |id: &str, keys: &[&str], ad_id: Option<&str>| Kind::SlotRequested {
         element_id: id.into(),
         prebid_targeting_keys: strings(keys),
-        prebid_ad_id: None,
+        prebid_ad_id: ad_id.map(str::to_string),
     };
     assert_eq!(
         kinds(&capture, "slotRequested"),
         [
-            &requested("unit-a", &["hb_bidder", "hb_pb"]),
-            &requested("unit-b", &[]),
-            &requested("unit-missing", &["hb_adid"]),
+            &requested("unit-a", &["hb_bidder", "hb_pb"], None),
+            &requested("unit-b", &[], None),
+            &requested("unit-missing", &["hb_adid"], Some("ad-9")),
         ]
     );
     assert_eq!(
@@ -547,6 +550,78 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
         "depth {}",
         capture.max_scroll_depth
     );
+}
+
+#[tokio::test]
+async fn slot_removal_refusal_and_route_changes_are_reported() {
+    let capture = kitchen_sink().await;
+
+    assert_eq!(
+        kinds(&capture, "slotDefinitionRejected"),
+        [&Kind::SlotDefinitionRejected {
+            element_id: "unit-b".into()
+        }]
+    );
+    assert_eq!(
+        kinds(&capture, "slotsDestroyed"),
+        [&Kind::SlotsDestroyed {
+            element_ids: strings(&["unit-hidden", "unit-missing"])
+        }]
+    );
+
+    let page = capture.final_url.clone();
+    let route = |query: &str, navigation_type: &str| Kind::RouteChange {
+        url: format!("{page}{query}"),
+        navigation_type: navigation_type.into(),
+    };
+    assert_eq!(
+        kinds(&capture, "routeChange"),
+        [
+            &route("?route=2", "push"),
+            &route("?route=3", "replace"),
+            &route("?route=3#section", "push"),
+        ]
+    );
+
+    // The pushed route is a page view; tidying its address and jumping
+    // within it are not.
+    assert_eq!(capture.pages.len(), 2, "{:#?}", capture.pages);
+    let (entry, routed) = (&capture.pages[0], &capture.pages[1]);
+    assert_eq!(entry.reached_by, PageReach::Entry);
+    assert!(entry.load_ms.is_some());
+    assert_eq!(routed.reached_by, PageReach::RouteChange);
+    assert_eq!(routed.url, format!("{page}?route=3"));
+    assert_eq!(routed.load_ms, None);
+    assert_eq!(routed.link, None);
+    assert_eq!(entry.ended_at_ms, routed.started_at_ms);
+    assert!(routed.started_at_ms > 400.0 && routed.ended_at_ms > routed.started_at_ms);
+
+    let first_on_route = capture.events.iter().find(|event| event.page == 1).unwrap();
+    assert_eq!(first_on_route.kind, route("?route=2", "push"));
+    assert_eq!(
+        first_on_route.t, 0.0,
+        "the route change starts its page view"
+    );
+    assert!(
+        capture
+            .events
+            .iter()
+            .filter(|event| event.page == 1)
+            .count()
+            > 3,
+        "what happens after the route change belongs to its page view"
+    );
+    assert!(
+        capture
+            .events
+            .iter()
+            .all(|event| event.page <= 1 && event.t >= 0.0)
+    );
+    let in_order = capture
+        .events
+        .windows(2)
+        .all(|pair| (pair[0].page, pair[0].t) <= (pair[1].page, pair[1].t));
+    assert!(in_order, "events are sorted by page view, then time");
 }
 
 #[tokio::test]
@@ -641,6 +716,21 @@ async fn the_tracker_stays_out_of_the_pages_way() {
     assert_eq!(
         state["consentListeners"], 1,
         "the consent platform is listened to once"
+    );
+    assert_eq!(
+        state["secondSlotForOneContainer"],
+        Value::Null,
+        "a refused slot definition still returns what the library returned"
+    );
+    assert_eq!(state["destroyedSome"], true);
+    assert_eq!(
+        state["slotsLeft"], 2,
+        "the page's slots are destroyed as asked"
+    );
+    assert_eq!(state["destroySlotsLooksNative"], true);
+    assert_eq!(
+        state["historyLooksNative"], true,
+        "route changes are observed without touching history"
     );
     assert!(
         !capture.console.iter().any(|line| line.level == "error"),

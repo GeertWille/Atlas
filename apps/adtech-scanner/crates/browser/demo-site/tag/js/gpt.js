@@ -136,7 +136,10 @@
   googletag.defineSlot = function (adUnitPath, sizes, elementId) {
     var id = elementId || 'gpt_unit_' + adUnitPath + '_' + generatedIds++;
     if (definedIds[id]) {
-      console.error('[GPT] Div ID passed to googletag.defineSlot() is already in use: ' + id);
+      console.error(
+        '[GPT] Error in googletag.defineSlot: Cannot create slot ' + adUnitPath + '. Div element "' + id +
+          '" is already associated with another slot.'
+      );
       return null;
     }
     definedIds[id] = true;

@@ -1,6 +1,6 @@
 //! The SQLite repositories against a real database.
 
-use adscan_engine::application::ports::{LogRepository, ScanRepository, SettingsRepository};
+use adscan_engine::application::ports::{self, LogRepository, ScanRepository, SettingsRepository};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_model::{
     AdsTxtLineProblem, AdsTxtReport, AdsTxtStatus, BidderDiagnosis, BidderDiagnostics,
@@ -8,6 +8,11 @@ use adscan_model::{
     Evidence, EvidenceKind, Finding, FindingCategory, FindingSource, LogEntry, LogKind, LogLevel,
     PipelineNode, PipelineStep, ScanListQuery, ScanMetrics, ScanOptions, ScanStatus, ScanSummary,
     Settings, Severity, SeverityCounts, StepStatus,
+};
+use adscan_model::{
+    AutomationDetector, DetectorKind, PageMetrics, PageReach, PageView, ProxyChoice, ProxyKind,
+    ProxyProfile, ProxyScheme, ProxyUse, ScanConfiguration, ScanConfigurationRef, ScanEnvironment,
+    VisitorBehavior,
 };
 use serde_json::json;
 
@@ -20,6 +25,7 @@ fn summary(
 ) -> ScanSummary {
     ScanSummary {
         configuration: None,
+        proxy: None,
         id: id.into(),
         url: url.into(),
         hostname: url
@@ -42,19 +48,10 @@ fn summary(
 
 fn options(url: &str) -> ScanOptions {
     ScanOptions {
-        visitor: None,
-        extra_pages: None,
-        seed: None,
-        headless: None,
-        persistent_profile: None,
-        proxy: None,
-        budget_usd: None,
-        url: url.into(),
-        device: DeviceProfile::Desktop,
         observe_seconds: 20,
-        auto_scroll: true,
         accept_consent: false,
         ai_enabled: true,
+        ..ScanOptions::for_url(url)
     }
 }
 
@@ -191,7 +188,7 @@ async fn scan_round_trips_through_summary_and_detail() {
         ..ScanMetrics::default()
     };
     store
-        .save_telemetry("scan-1", &metrics, &[], &[])
+        .save_telemetry("scan-1", &metrics, &[], &[], &[])
         .await
         .unwrap();
     store
@@ -851,4 +848,312 @@ async fn settings_persist_across_reopen_and_data_survives_on_disk() {
     assert_eq!(settings.chrome_path.as_deref(), Some("/opt/chrome"));
     assert!(settings.check_sellers_json);
     assert!(reopened.summary("scan-1").await.unwrap().is_some());
+}
+
+fn configuration(id: &str, name: &str, url: &str) -> ScanConfiguration {
+    ScanConfiguration {
+        id: id.into(),
+        name: name.into(),
+        options: ScanOptions {
+            visitor: Some(VisitorBehavior::Browse),
+            extra_pages: Some(3),
+            proxy: Some(ProxyChoice::Profile {
+                id: "p1".into(),
+                name: Some("Belgium".into()),
+                host: Some("be.proxy.example".into()),
+            }),
+            budget_usd: Some(0.2),
+            ..options(url)
+        },
+        created_at: 100.0,
+        updated_at: 100.0,
+        last_scan_id: None,
+        last_run_at: None,
+    }
+}
+
+fn of_configuration(id: &str) -> ScanListQuery {
+    ScanListQuery {
+        search: None,
+        status: None,
+        device: None,
+        limit: None,
+        offset: None,
+        configuration_id: Some(id.into()),
+    }
+}
+
+#[tokio::test]
+async fn page_views_environment_proxy_and_configuration_round_trip_with_a_scan() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let used = ProxyUse {
+        kind: ProxyKind::Profile,
+        name: Some("Belgium".into()),
+        host: Some("be.proxy.example".into()),
+    };
+    let from = ScanConfigurationRef {
+        id: "c1".into(),
+        name: "Publisher BE".into(),
+    };
+    let created = ScanSummary {
+        configuration: Some(from.clone()),
+        proxy: Some(used.clone()),
+        ..summary(
+            "scan-1",
+            "https://pub.example/",
+            DeviceProfile::Desktop,
+            ScanStatus::Running,
+            1_000.0,
+        )
+    };
+    store
+        .create(&created, &options("https://pub.example/"))
+        .await
+        .unwrap();
+    create(
+        &store,
+        "scan-2",
+        "https://pub.example/",
+        DeviceProfile::Desktop,
+        ScanStatus::Completed,
+        2_000.0,
+    )
+    .await;
+
+    // Until the capture is derived there are no page views and no environment.
+    let fresh = store.detail("scan-1").await.unwrap().unwrap();
+    assert!(fresh.pages.is_empty());
+    assert_eq!(fresh.environment, None);
+    assert_eq!(fresh.summary.configuration, Some(from.clone()));
+    assert_eq!(fresh.summary.proxy, Some(used.clone()));
+
+    let pages = vec![
+        PageView {
+            index: 0,
+            url: "https://pub.example/".into(),
+            title: Some("Home".into()),
+            started_at_ms: 0.0,
+            dwell_ms: 12_000.0,
+            reached_by: PageReach::Entry,
+            link: None,
+            load_ms: Some(950.0),
+            max_scroll_depth: 1.0,
+            metrics: PageMetrics {
+                auction_count: 1,
+                slot_count: 3,
+                fill_rate: 1.0,
+                time_to_first_auction_ms: Some(360.0),
+                ..PageMetrics::default()
+            },
+        },
+        PageView {
+            index: 1,
+            url: "https://pub.example/sport/final".into(),
+            title: None,
+            started_at_ms: 12_400.5,
+            dwell_ms: 8_000.25,
+            reached_by: PageReach::LinkClick,
+            link: Some(adscan_model::FollowedLink {
+                text: "The final".into(),
+                href: "https://pub.example/sport/final".into(),
+                reason: "content link, article-like path; best of 5".into(),
+            }),
+            load_ms: None,
+            max_scroll_depth: 0.4,
+            metrics: PageMetrics::default(),
+        },
+    ];
+    let environment = ScanEnvironment {
+        visitor: VisitorBehavior::Browse,
+        seed: 4_000_000_000,
+        headless: true,
+        persistent_profile: true,
+        webdriver: Some(true),
+        user_agent_overridden: false,
+        viewport_overridden: true,
+        emulated_mobile: false,
+        detectors: vec![AutomationDetector {
+            vendor: "DoubleVerify".into(),
+            kind: DetectorKind::InvalidTrafficMeasurement,
+            host: "pub.doubleverify.com".into(),
+        }],
+        proxy: used.clone(),
+    };
+    store
+        .save_telemetry("scan-1", &ScanMetrics::default(), &pages, &[], &[])
+        .await
+        .unwrap();
+    store
+        .save_environment("scan-1", &environment)
+        .await
+        .unwrap();
+
+    let detail = store.detail("scan-1").await.unwrap().unwrap();
+    assert_eq!(detail.pages, pages);
+    assert_eq!(detail.environment, Some(environment));
+
+    // The summary keeps both through every later update, and in the list.
+    let mut finished = created.clone();
+    finished.status = ScanStatus::Completed;
+    store.save_summary(&finished).await.unwrap();
+    let listed = ScanRepository::list(&store, &of_configuration("c1"))
+        .await
+        .unwrap();
+    assert_eq!(listed.total, 1);
+    assert_eq!(listed.items[0].id, "scan-1");
+    assert_eq!(listed.items[0].configuration, Some(from));
+    assert_eq!(listed.items[0].proxy, Some(used));
+    let other = ScanRepository::list(&store, &of_configuration("c2"))
+        .await
+        .unwrap();
+    assert_eq!(other.total, 0);
+}
+
+#[tokio::test]
+async fn configurations_are_stored_listed_by_name_and_remember_their_last_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SqliteStore::open(dir.path()).unwrap();
+    for (id, name) in [
+        ("c2", "zeta site"),
+        ("c1", "Alpha site"),
+        ("c3", "beta site"),
+    ] {
+        ports::ScanConfigurationRepository::save(
+            &store,
+            &configuration(id, name, "https://pub.example/"),
+        )
+        .await
+        .unwrap();
+    }
+    let names: Vec<String> = ports::ScanConfigurationRepository::list(&store)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|configuration| configuration.name)
+        .collect();
+    assert_eq!(names, ["Alpha site", "beta site", "zeta site"]);
+    let stored = ports::ScanConfigurationRepository::get(&store, "c1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored,
+        configuration("c1", "Alpha site", "https://pub.example/")
+    );
+    assert_eq!(
+        ports::ScanConfigurationRepository::get(&store, "nope")
+            .await
+            .unwrap(),
+        None
+    );
+
+    // A run is recorded; saving the configuration again does not forget it.
+    create(
+        &store,
+        "scan-1",
+        "https://pub.example/",
+        DeviceProfile::Desktop,
+        ScanStatus::Completed,
+        5_000.0,
+    )
+    .await;
+    ports::ScanConfigurationRepository::record_run(&store, "c1", "scan-1", 5_000.0)
+        .await
+        .unwrap();
+    let renamed = ScanConfiguration {
+        name: "Alpha".into(),
+        updated_at: 6_000.0,
+        ..configuration("c1", "Alpha site", "https://pub.example/news")
+    };
+    ports::ScanConfigurationRepository::save(&store, &renamed)
+        .await
+        .unwrap();
+    let after = ports::ScanConfigurationRepository::get(&store, "c1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.name, "Alpha");
+    assert_eq!(after.options.url, "https://pub.example/news");
+    assert_eq!((after.created_at, after.updated_at), (100.0, 6_000.0));
+    assert_eq!(after.last_scan_id.as_deref(), Some("scan-1"));
+    assert_eq!(after.last_run_at, Some(5_000.0));
+
+    // Everything survives a reopen.
+    drop(store);
+    let store = SqliteStore::open(dir.path()).unwrap();
+    assert_eq!(
+        ports::ScanConfigurationRepository::get(&store, "c1")
+            .await
+            .unwrap()
+            .unwrap(),
+        after
+    );
+
+    // Deleting the scan leaves the configuration, without a link to nothing.
+    assert!(ScanRepository::delete(&store, "scan-1").await.unwrap());
+    let unlinked = ports::ScanConfigurationRepository::get(&store, "c1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unlinked.last_scan_id, None);
+    assert_eq!(unlinked.last_run_at, Some(5_000.0));
+
+    // Deleting a configuration leaves scans alone and is reported once.
+    create(
+        &store,
+        "scan-2",
+        "https://pub.example/",
+        DeviceProfile::Desktop,
+        ScanStatus::Completed,
+        7_000.0,
+    )
+    .await;
+    assert!(
+        ports::ScanConfigurationRepository::delete(&store, "c1")
+            .await
+            .unwrap()
+    );
+    assert!(
+        !ports::ScanConfigurationRepository::delete(&store, "c1")
+            .await
+            .unwrap()
+    );
+    assert!(store.detail("scan-2").await.unwrap().is_some());
+    assert_eq!(
+        ports::ScanConfigurationRepository::list(&store)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn settings_with_proxy_profiles_round_trip() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let settings = Settings {
+        default_visitor: VisitorBehavior::Browse,
+        default_extra_pages: 4,
+        persistent_profile: true,
+        proxies: vec![ProxyProfile {
+            id: "p1".into(),
+            name: "Belgium".into(),
+            scheme: ProxyScheme::Socks5,
+            host: "be.proxy.example".into(),
+            port: 1080,
+            username: None,
+            has_password: false,
+        }],
+        default_proxy: ProxyChoice::Profile {
+            id: "p1".into(),
+            name: Some("Belgium".into()),
+            host: Some("be.proxy.example".into()),
+        },
+        ..Settings::default()
+    };
+    SettingsRepository::save(&store, &settings).await.unwrap();
+    assert_eq!(
+        SettingsRepository::load(&store).await.unwrap(),
+        Some(settings)
+    );
 }

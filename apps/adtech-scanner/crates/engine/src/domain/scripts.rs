@@ -218,36 +218,17 @@ fn registrable_domain(hostname: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adscan_model::{DeviceProfile, Viewport};
 
     fn capture_with(scripts: Vec<CapturedScript>) -> Capture {
         Capture {
-            environment: adscan_model::CaptureEnvironment::default(),
-            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
-            final_url: "https://www.news.example.co.uk/article".into(),
-            page_title: None,
-            device: DeviceProfile::Desktop,
-            viewport: Viewport {
-                width: 1440,
-                height: 900,
-                device_scale_factor: 1.0,
-                mobile: false,
-            },
-            user_agent: "test".into(),
-            navigation_start: 0.0,
-            page_load_ms: None,
             scripts,
-            events: vec![],
-            console: vec![],
-            max_scroll_depth: 0.0,
-            consent_accepted: false,
-            bid_responses: vec![],
+            ..Capture::single_page("https://www.news.example.co.uk/article", Vec::new())
         }
     }
 
     fn script(url: &str, inline: bool, body: &str) -> CapturedScript {
         CapturedScript {
-            pages: Vec::new(),
+            pages: vec![0],
             url: url.into(),
             inline,
             body: body.into(),

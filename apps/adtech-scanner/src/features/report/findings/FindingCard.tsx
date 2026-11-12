@@ -1,14 +1,15 @@
-import { ChevronRightIcon, CpuIcon, SparklesIcon, TrendingDownIcon } from "lucide-react";
-import type { Finding } from "@/bindings";
+import { ChevronRightIcon, CpuIcon, FileTextIcon, SparklesIcon, TrendingDownIcon } from "lucide-react";
+import type { Finding, PageView } from "@/bindings";
 import { CopyButton } from "@/shared/components/copy-button";
 import { Markdown } from "@/shared/components/markdown";
 import { SeverityBadge } from "@/shared/components/status";
+import { pageLabel } from "@/shared/domain/page-views";
 import { FINDING_CATEGORY_LABEL, FINDING_SOURCE_LABEL } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatPercent } from "@/shared/lib/format";
 import { Badge } from "@/shared/ui/badge";
 import { EvidenceBlock } from "./EvidenceBlock";
-import { findingToMarkdown } from "./finding-markdown";
+import { findingPages, findingToMarkdown } from "./finding-markdown";
 
 function Chips({ label, items }: { label: string; items: string[] }) {
   if (items.length === 0) return null;
@@ -26,16 +27,20 @@ function Chips({ label, items }: { label: string; items: string[] }) {
 
 export function FindingCard({
   finding,
+  pages = [],
   expanded,
   onToggle,
   onOpenScript,
 }: {
   finding: Finding;
+  /** The page views of the scan. A multi-page visit shows which of them the finding was seen on. */
+  pages?: PageView[];
   expanded: boolean;
   onToggle: () => void;
   onOpenScript: (scriptUrl: string) => void;
 }) {
   const SourceIcon = finding.source === "ai" ? SparklesIcon : CpuIcon;
+  const seenOn = findingPages(finding, pages);
   return (
     <article
       id={`finding-${finding.id}`}
@@ -64,6 +69,12 @@ export function FindingCard({
                 <SourceIcon />
                 {FINDING_SOURCE_LABEL[finding.source]}
               </Badge>
+              {seenOn.length > 0 ? (
+                <Badge tone="outline" title={seenOn.map(pageLabel).join(", ")}>
+                  <FileTextIcon />
+                  {seenOn.length === 1 ? "Page" : "Pages"} {seenOn.map((page) => page.index + 1).join(", ")}
+                </Badge>
+              ) : null}
               <span className="text-xs text-muted-foreground">{finding.impact}</span>
             </span>
           </span>
@@ -77,7 +88,11 @@ export function FindingCard({
             <span className="text-subtle-foreground">{formatPercent(finding.confidence)} confidence</span>
           </span>
         </button>
-        <CopyButton text={() => findingToMarkdown(finding)} label="Copy finding as Markdown" className="mt-2.5" />
+        <CopyButton
+          text={() => findingToMarkdown(finding, pages)}
+          label="Copy finding as Markdown"
+          className="mt-2.5"
+        />
       </div>
 
       {expanded ? (
@@ -103,6 +118,7 @@ export function FindingCard({
           <div className="flex flex-col gap-1.5">
             <Chips label="Slots" items={finding.affectedSlots} />
             <Chips label="Bidders" items={finding.affectedBidders} />
+            <Chips label="Seen on" items={seenOn.map(pageLabel)} />
           </div>
         </div>
       ) : null}

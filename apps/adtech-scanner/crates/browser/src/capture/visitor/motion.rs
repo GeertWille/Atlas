@@ -217,10 +217,18 @@ const THUMB_ACROSS: (f64, f64) = (0.4, 0.7);
 const THUMB_DOWN_ONWARD: (f64, f64) = (0.68, 0.82);
 const THUMB_DOWN_BACK: (f64, f64) = (0.2, 0.35);
 
-/// The finger's way across the screen for one swipe. `onward` moves the page
-/// down (the finger goes up). Returns the path and the distance scrolled.
-pub(crate) fn swipe_path(rng: &mut Rng, viewport: Size, onward: bool) -> (Vec<Waypoint>, f64) {
+/// The finger's way across the screen for one swipe of a length a thumb
+/// would choose. `onward` moves the page down (the finger goes up).
+pub(crate) fn swipe_path(rng: &mut Rng, viewport: Size, onward: bool) -> Vec<Waypoint> {
     let distance = viewport.height * rng.between(SWIPE_VIEWPORTS.0, SWIPE_VIEWPORTS.1);
+    swipe_by(rng, viewport, if onward { distance } else { -distance })
+}
+
+/// One swipe that scrolls the page by `distance` pixels, down when positive,
+/// or by as much of it as one swipe covers.
+pub(crate) fn swipe_by(rng: &mut Rng, viewport: Size, distance: f64) -> Vec<Waypoint> {
+    let onward = distance >= 0.0;
+    let length = distance.abs().min(viewport.height * SWIPE_VIEWPORTS.1);
     let duration = rng.between(SWIPE_MS.0, SWIPE_MS.1);
     let drift = rng.between(-SWIPE_DRIFT_PX, SWIPE_DRIFT_PX);
     let down = if onward {
@@ -232,9 +240,9 @@ pub(crate) fn swipe_path(rng: &mut Rng, viewport: Size, onward: bool) -> (Vec<Wa
         x: viewport.width * rng.between(THUMB_ACROSS.0, THUMB_ACROSS.1),
         y: viewport.height * rng.between(down.0, down.1),
     };
-    let travel = if onward { -distance } else { distance };
+    let travel = if onward { -length } else { length };
     let frames = (duration / SWIPE_FRAME_MS).ceil().max(2.0) as u32;
-    let path = (0..=frames)
+    (0..=frames)
         .map(|frame| {
             let time = f64::from(frame) / f64::from(frames);
             // A swipe is fastest as the finger lands and slows towards its end.
@@ -247,8 +255,7 @@ pub(crate) fn swipe_path(rng: &mut Rng, viewport: Size, onward: bool) -> (Vec<Wa
                 at_ms: duration * time,
             }
         })
-        .collect();
-    (path, distance)
+        .collect()
 }
 
 #[cfg(test)]
@@ -385,13 +392,12 @@ mod tests {
                     .all(|tick| (30.0..=90.0).contains(&tick.gap_ms))
             );
         }
-        let back = wheel_back(&mut Rng::new(1), WheelDevice::Mouse, 340.0);
+        let back = wheel_by(&mut Rng::new(1), WheelDevice::Mouse, -340.0);
         assert_eq!(back.len(), 3);
         assert!(back.iter().all(|tick| tick.delta_y == -100.0));
-        assert_eq!(
-            wheel_back(&mut Rng::new(1), WheelDevice::Mouse, 10.0).len(),
-            1
-        );
+        let on = wheel_by(&mut Rng::new(1), WheelDevice::Mouse, 10.0);
+        let deltas: Vec<f64> = on.iter().map(|tick| tick.delta_y).collect();
+        assert_eq!(deltas, [100.0]);
     }
 
     #[test]
@@ -437,10 +443,13 @@ mod tests {
             height: 915.0,
         };
         for seed in 0..100 {
-            let (path, distance) = swipe_path(&mut Rng::new(seed), phone, true);
+            let path = swipe_path(&mut Rng::new(seed), phone, true);
             let (first, last) = (path[0], *path.last().unwrap());
-            assert!((0.25 * 915.0..=0.6 * 915.0).contains(&distance));
-            assert!((first.point.y - last.point.y - distance).abs() < 1e-6);
+            let distance = first.point.y - last.point.y;
+            assert!(
+                (0.25 * 915.0..=0.6 * 915.0).contains(&distance),
+                "{distance}"
+            );
             assert!((first.point.x - last.point.x).abs() <= SWIPE_DRIFT_PX);
             assert!((180.0..=450.0).contains(&last.at_ms));
             assert_eq!(first.at_ms, 0.0);
@@ -453,7 +462,22 @@ mod tests {
             let late = path[path.len() - 2].point.y - last.point.y;
             assert!(early > late, "a swipe slows down towards its end");
         }
-        let (back, distance) = swipe_path(&mut Rng::new(3), phone, false);
-        assert!((back.last().unwrap().point.y - back[0].point.y - distance).abs() < 1e-6);
+        let back = swipe_path(&mut Rng::new(3), phone, false);
+        assert!(back.last().unwrap().point.y > back[0].point.y + 0.25 * 915.0 - 1e-6);
+    }
+
+    #[test]
+    fn a_swipe_of_a_given_length_covers_it_up_to_a_thumbs_reach() {
+        let phone = Size {
+            width: 412.0,
+            height: 915.0,
+        };
+        let travelled = |distance: f64| {
+            let path = swipe_by(&mut Rng::new(8), phone, distance);
+            path[0].point.y - path.last().unwrap().point.y
+        };
+        assert!((travelled(120.0) - 120.0).abs() < 1e-6);
+        assert!((travelled(-200.0) + 200.0).abs() < 1e-6);
+        assert!((travelled(5_000.0) - 0.6 * 915.0).abs() < 1e-6);
     }
 }

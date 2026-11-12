@@ -7,14 +7,16 @@ import {
   type LucideIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import type { AdSlot, ScanMetrics, SlotOutcome } from "@/bindings";
+import type { AdSlot, PageView, SlotOutcome } from "@/bindings";
 import { Panel } from "@/shared/components/panel";
 import { SLOT_OUTCOME_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
-import { formatDuration, formatOffset } from "@/shared/lib/format";
+import { formatDuration, formatOffset, pluralize } from "@/shared/lib/format";
 import { Badge } from "@/shared/ui/badge";
 import { Empty } from "@/shared/ui/empty";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import { PageSectionHeader } from "../pages/PageSectionHeader";
+import { type PageMarkers, pageMarkers } from "../pages/page-scope";
 import {
   layoutSlotTimeline,
   SLOT_PHASE_LABEL,
@@ -47,8 +49,21 @@ function PhaseMark({ phase, className }: { phase: SlotPhase; className?: string 
   return <span className={cn("block ring-2 ring-card", PHASE_MARK[phase], className)} />;
 }
 
+/** A refresh is a smaller, hollow "ad requested" mark; a refresh that re-used a bid is amber. */
+function RefreshMark({ staleBid, className }: { staleBid: boolean; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "block size-2 rounded-full border-2 bg-card ring-2 ring-card",
+        staleBid ? "border-amber" : "border-blue",
+        className,
+      )}
+    />
+  );
+}
+
 function SlotTooltip({ row }: { row: SlotRow }) {
-  const { slot, marks } = row;
+  const { slot, marks, refreshes } = row;
   return (
     <div className="flex flex-col gap-1.5">
       <p className="font-mono font-medium">{slot.elementId}</p>
@@ -70,6 +85,21 @@ function SlotTooltip({ row }: { row: SlotRow }) {
           );
         })}
       </dl>
+      {refreshes.length > 0 ? (
+        <ul className="flex flex-col gap-0.5 tabular-nums">
+          {refreshes.map((refresh) => (
+            <li key={refresh.atMs} className="flex items-center gap-1.5 text-muted-foreground">
+              <RefreshMark staleBid={refresh.staleBid} className="ring-0" />
+              Refresh at {formatOffset(refresh.atMs)}
+              {refresh.staleBid
+                ? ", same hb_adid as before"
+                : refresh.hadPrebidTargeting
+                  ? ", with Prebid targeting"
+                  : ", no Prebid targeting"}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {slot.renderedSize ? (
         <p className="text-muted-foreground">
           Rendered {slot.renderedSize}
@@ -141,6 +171,15 @@ function SlotTrack({ row }: { row: SlotRow }) {
           <PhaseMark phase={mark.phase} />
         </span>
       ))}
+      {row.refreshes.map((refresh) => (
+        <span
+          key={refresh.atMs}
+          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+          style={{ left: `${refresh.percent}%` }}
+        >
+          <RefreshMark staleBid={refresh.staleBid} />
+        </span>
+      ))}
     </div>
   );
 }
@@ -180,7 +219,7 @@ function Axis({ timeline }: { timeline: SlotTimeline }) {
   );
 }
 
-function Legend() {
+function Legend({ refreshes }: { refreshes: boolean }) {
   return (
     <ul
       aria-label="Lifecycle legend"
@@ -192,6 +231,12 @@ function Legend() {
           {SLOT_PHASE_LABEL[phase]}
         </li>
       ))}
+      {refreshes ? (
+        <li className="flex items-center gap-1.5">
+          <RefreshMark staleBid={false} className="ring-0" />
+          Refresh request
+        </li>
+      ) : null}
       <li className="flex items-center gap-1.5">
         <span className="h-3 w-px bg-violet" />
         Page lifecycle
@@ -200,7 +245,63 @@ function Legend() {
   );
 }
 
-export function SlotsTab({ slots, metrics }: { slots: AdSlot[]; metrics: ScanMetrics }) {
+function SlotTimelinePanel({ slots, markers }: { slots: AdSlot[]; markers: PageMarkers }) {
+  const timeline = layoutSlotTimeline(slots, markers);
+  return (
+    <Panel className="relative overflow-hidden pt-14">
+      <Axis timeline={timeline} />
+      <ul className="relative">
+        {timeline.rows.map((row) => (
+          <li key={row.slot.elementId} className="border-t">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact timings on focus
+                  tabIndex={0}
+                  className={cn(GRID, "items-stretch pr-5 outline-offset-[-2px] hover:bg-accent/50")}
+                >
+                  <SlotLabel slot={row.slot} flags={row.flags} />
+                  <SlotTrack row={row} />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="top" align="end">
+                <SlotTooltip row={row} />
+              </TooltipContent>
+            </Tooltip>
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
+
+/** The slots of one page view under its heading; a page whose slots were never defined says so. */
+function PageSlots({ page, slots }: { page: PageView; slots: AdSlot[] }) {
+  return (
+    <section aria-label={`Ad slots on page ${page.index + 1}`} className="flex flex-col gap-3">
+      <PageSectionHeader page={page} summary={pluralize(slots.length, "slot")} />
+      {slots.length === 0 ? (
+        <p className="rounded-xl border border-dashed px-4 py-3 text-[13px] text-muted-foreground">
+          GPT defined no ad slot on this page view.
+        </p>
+      ) : (
+        <SlotTimelinePanel slots={slots} markers={pageMarkers(page)} />
+      )}
+    </section>
+  );
+}
+
+export function SlotsTab({
+  slots,
+  metrics,
+  pages = [],
+}: {
+  slots: AdSlot[];
+  /** Page lifecycle times of the page the slots are on. */
+  metrics: PageMarkers;
+  /** The page views to group the slots under, when a multi-page visit is shown whole. */
+  pages?: PageView[];
+}) {
   if (slots.length === 0) {
     return (
       <Empty
@@ -210,39 +311,21 @@ export function SlotsTab({ slots, metrics }: { slots: AdSlot[]; metrics: ScanMet
       />
     );
   }
-  const timeline = layoutSlotTimeline(slots, metrics);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-1.5">
         <p className="text-[13px] text-muted-foreground">
           Every slot from definition to viewable impression, in ms since navigation start.
         </p>
-        <Legend />
+        <Legend refreshes={slots.some((slot) => slot.requests.length > 1)} />
       </div>
-      <Panel className="relative overflow-hidden pt-14">
-        <Axis timeline={timeline} />
-        <ul className="relative">
-          {timeline.rows.map((row) => (
-            <li key={row.slot.elementId} className="border-t">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div
-                    // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact timings on focus
-                    tabIndex={0}
-                    className={cn(GRID, "items-stretch pr-5 outline-offset-[-2px] hover:bg-accent/50")}
-                  >
-                    <SlotLabel slot={row.slot} flags={row.flags} />
-                    <SlotTrack row={row} />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent side="top" align="end">
-                  <SlotTooltip row={row} />
-                </TooltipContent>
-              </Tooltip>
-            </li>
-          ))}
-        </ul>
-      </Panel>
+      {pages.length > 0 ? (
+        pages.map((page) => (
+          <PageSlots key={page.index} page={page} slots={slots.filter((slot) => slot.page === page.index)} />
+        ))
+      ) : (
+        <SlotTimelinePanel slots={slots} markers={metrics} />
+      )}
     </div>
   );
 }

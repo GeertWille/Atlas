@@ -169,7 +169,15 @@
     apiReady: true,
     cmd: { push: function (command) { command(); } },
     getVersion: function () { return 20261101; },
-    defineSlot: function (path, sizes, elementId) { return slot(path, sizes.map(function (s) { return size(s[0], s[1]); }), elementId); },
+    defineSlot: function (path, sizes, elementId) {
+      // Like GPT: a container can have one slot.
+      if (slots.some(function (existing) { return existing.getSlotElementId() === elementId; })) return null;
+      return slot(path, sizes.map(function (s) { return size(s[0], s[1]); }), elementId);
+    },
+    destroySlots: function (doomed) {
+      (doomed || slots.slice()).forEach(function (gone) { slots.splice(slots.indexOf(gone), 1); });
+      return true;
+    },
     defineOutOfPageSlot: function (path, elementId) {
       return modernSlot(path, elementId, { hb_adid: ['ad-9'], hb_cleared: null, hb_empty: [], section: 'news' });
     },
@@ -199,6 +207,9 @@
     fire('slotRequested', { slot: missing });
     fire('slotRenderEnded', { slot: missing, size: 'fluid', sourceAgnosticLineItemId: 789 });
     fire('slotVisibilityChanged', { slot: early, inViewPercentage: 100 });
+    window.secondSlotForOneContainer = googletag.defineSlot('/1/site/again', [[1, 1]], 'unit-b');
+    window.destroyedSome = googletag.destroySlots([hidden, missing]);
+    window.slotsLeft = googletag.pubads().getSlots().length;
   }, 250);
 })();
 </script>
@@ -297,7 +308,17 @@ setTimeout(function () {
     pbjsCreated: 'pbjs' in window,
     consentListeners: window.consentListenerCount(),
     hostileParamsUntouched: window.hostileParamsUntouched,
+    secondSlotForOneContainer: window.secondSlotForOneContainer,
+    destroyedSome: window.destroyedSome,
+    slotsLeft: window.slotsLeft,
+    destroySlotsLooksNative: String(googletag.destroySlots).indexOf('slots.splice') >= 0,
+    historyLooksNative: /\[native code\]/.test(String(history.pushState)),
   }));
+  // A single-page app moving on: a new route, its address tidied, a jump
+  // within the page.
+  history.pushState({}, '', location.pathname + '?route=2');
+  history.replaceState({}, '', location.pathname + '?route=3');
+  location.hash = 'section';
 }, 500);
 </script>
 </body>

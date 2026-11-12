@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use adscan_engine::application::ports::EventSink;
 use adscan_model::{
-    AdsTxtStatus, DeviceProfile, DiagnosticStatus, FindingCategory, PipelineNode, ScanDetail,
-    ScanEvent, ScanOptions, ScanStatus, SettingsPatch, StepStatus,
+    AdsTxtStatus, DeviceProfile, DiagnosticStatus, FindingCategory, LogEntry, LogKind, PageReach,
+    PipelineNode, ProxyKind, ScanDetail, ScanEvent, ScanOptions, ScanStatus, SettingsPatch,
+    StepStatus, VisitorBehavior,
 };
 use adtech_scanner_lib::ChromeCaptureSource;
 use adtech_scanner_lib::state::{AppConfig, AppState};
@@ -65,6 +66,21 @@ fn scripted_model(request: &Request) -> ResponseTemplate {
 }
 
 async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
+    let (detail, _logs, server) = scan_demo_site_with(|url| ScanOptions {
+        device,
+        observe_seconds: 6,
+        ai_enabled: true,
+        ..ScanOptions::for_url(url)
+    })
+    .await;
+    (detail, server)
+}
+
+/// Scans the demo site with the options `options_for` builds for its URL.
+/// Returns the scan, its audit trail and the mock of the Messages API.
+async fn scan_demo_site_with(
+    options_for: impl FnOnce(String) -> ScanOptions,
+) -> (ScanDetail, Vec<LogEntry>, MockServer) {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -79,8 +95,9 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
             typesafe_base_url: "http://127.0.0.1:1".into(),
             api_key_override: Some("sk-ant-real-browser-test".into()),
             typesafe_api_key_override: None,
+            proxy_password_override: None,
         },
-        Arc::new(ChromeCaptureSource),
+        Arc::new(ChromeCaptureSource::new(data_dir.path())),
         Arc::new(CollectedEvents::default()),
     )
     .await
@@ -98,26 +115,9 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
         "no Chrome/Chromium found; set ADSCAN_CHROME_PATH"
     );
 
-    let started = state
-        .scans
-        .start(ScanOptions {
-            visitor: None,
-            extra_pages: None,
-            seed: None,
-            headless: None,
-            persistent_profile: None,
-            proxy: None,
-            budget_usd: None,
-            url: state.demo_site.url.clone(),
-            device,
-            observe_seconds: 6,
-            auto_scroll: true,
-            accept_consent: true,
-            ai_enabled: true,
-        })
-        .await
-        .unwrap();
-    let detail = tokio::time::timeout(Duration::from_secs(120), async {
+    let options = options_for(state.demo_site.url.clone());
+    let started = state.scans.start(options).await.unwrap();
+    let detail = tokio::time::timeout(Duration::from_secs(240), async {
         loop {
             let detail = state.scans.get(&started.id).await.unwrap();
             if !matches!(
@@ -131,8 +131,9 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
     })
     .await
     .expect("the scan did not finish in time");
+    let logs = state.scans.logs(&started.id, None).await.unwrap();
     state.scans.shutdown().await;
-    (detail, server)
+    (detail, logs, server)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -367,4 +368,126 @@ async fn demo_site_reference_bug_differs_between_device_profiles() {
         gated(&desktop),
         gated(&mobile),
     );
+}
+
+/// The findings only a visit of several page views, or a refreshed slot,
+/// can produce. Which of the demo site's bugs a browse visit meets depends
+/// on the links it follows.
+const VISIT_FINDINGS: [&str; 3] = [
+    "Later page views are sold without header bidding",
+    "Ad slots are not reset when the page changes route",
+    "Slots are refreshed with bids that were already used",
+];
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Chrome/Chromium"]
+async fn a_browse_visit_of_the_demo_site_follows_links_and_reports_per_page_view() {
+    let (detail, logs, _server) = scan_demo_site_with(|url| ScanOptions {
+        visitor: Some(VisitorBehavior::Browse),
+        extra_pages: Some(2),
+        headless: Some(true),
+        seed: Some(20_261_112),
+        observe_seconds: 8,
+        ..ScanOptions::for_url(url)
+    })
+    .await;
+
+    assert_eq!(
+        detail.summary.status,
+        ScanStatus::Completed,
+        "{:?}",
+        detail.summary.error
+    );
+    // The visit left the entry page and stayed on the site.
+    assert!(detail.pages.len() >= 2, "{:#?}", detail.pages);
+    assert_eq!(detail.pages[0].reached_by, PageReach::Entry);
+    assert_eq!(detail.pages[0].started_at_ms, 0.0);
+    for (index, page) in detail.pages.iter().enumerate() {
+        assert_eq!(page.index as usize, index);
+        assert!(page.url.starts_with(&detail.summary.url), "{}", page.url);
+        if index > 0 {
+            assert!(
+                matches!(
+                    page.reached_by,
+                    PageReach::LinkClick | PageReach::RouteChange
+                ),
+                "{page:#?}"
+            );
+            assert!(page.started_at_ms > detail.pages[index - 1].started_at_ms);
+        }
+    }
+    assert!(
+        detail
+            .auctions
+            .iter()
+            .all(|auction| (auction.page as usize) < detail.pages.len())
+            && detail
+                .slots
+                .iter()
+                .all(|slot| (slot.page as usize) < detail.pages.len())
+    );
+    assert!(
+        detail.slots.iter().any(|slot| slot.page > 0),
+        "a later page view has slots"
+    );
+
+    // The environment is reported as it was: an automated, headless visit.
+    let environment = detail
+        .environment
+        .as_ref()
+        .expect("recorded with the telemetry");
+    assert_eq!(environment.visitor, VisitorBehavior::Browse);
+    assert_eq!(environment.seed, 20_261_112);
+    assert!(environment.headless);
+    assert_eq!(
+        environment.webdriver,
+        Some(true),
+        "scripted visits do not hide"
+    );
+    assert_eq!(environment.proxy.kind, ProxyKind::System);
+
+    // Every step of the visit is in the audit trail.
+    let activities: Vec<&str> = logs
+        .iter()
+        .filter(|entry| entry.kind == LogKind::Visitor)
+        .filter_map(|entry| entry.data.as_ref()?.get("activity")?.as_str())
+        .collect();
+    for expected in ["environment", "pageView", "action", "linkChoice"] {
+        assert!(
+            activities.contains(&expected),
+            "no `{expected}` in {activities:?}"
+        );
+    }
+    let page_views = activities
+        .iter()
+        .filter(|kind| **kind == "pageView")
+        .count();
+    assert_eq!(page_views, detail.pages.len());
+
+    // At least one of the bugs that need more than one page load was found,
+    // on the page view it happened on.
+    let visit_findings: Vec<_> = detail
+        .findings
+        .iter()
+        .filter(|finding| VISIT_FINDINGS.contains(&finding.title.as_str()))
+        .collect();
+    assert!(
+        !visit_findings.is_empty(),
+        "none of {VISIT_FINDINGS:?} in {:#?}",
+        detail
+            .findings
+            .iter()
+            .map(|finding| &finding.title)
+            .collect::<Vec<_>>()
+    );
+    for finding in visit_findings {
+        assert!(!finding.pages.is_empty(), "{finding:#?}");
+        assert!(
+            finding
+                .pages
+                .iter()
+                .all(|page| (*page as usize) < detail.pages.len()),
+            "{finding:#?}"
+        );
+    }
 }

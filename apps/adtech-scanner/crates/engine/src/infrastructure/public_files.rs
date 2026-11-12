@@ -504,13 +504,20 @@ mod tests {
         port
     }
 
+    fn system_proxy() -> FetchProxy {
+        FetchProxy {
+            route: CaptureProxy::System,
+            password: None,
+        }
+    }
+
     #[tokio::test]
     async fn a_host_name_is_connected_at_the_checked_addresses_only() {
         // The name does not exist, so only the pinned address can answer for it.
         let port = one_shot_server().await;
         let url = Url::parse(&format!("http://files.pinned.invalid:{port}/ads.txt")).unwrap();
         let pinned = Route::PublicName(vec![SocketAddr::from(([127, 0, 0, 1], port))]);
-        let body = client(&url, &pinned)
+        let body = client(&url, &pinned, &system_proxy())
             .unwrap()
             .get(url.clone())
             .send()
@@ -528,7 +535,7 @@ mod tests {
         // client must have nowhere to connect to rather than resolve it itself.
         let port = one_shot_server().await;
         let url = Url::parse(&format!("http://localhost:{port}/ads.txt")).unwrap();
-        let outcome = client(&url, &Route::PublicName(Vec::new()))
+        let outcome = client(&url, &Route::PublicName(Vec::new()), &system_proxy())
             .unwrap()
             .get(url.clone())
             .send()

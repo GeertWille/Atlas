@@ -1,4 +1,4 @@
-/* The Meridian Post - article page behaviour (navigation, theme, reading progress). */
+/* The Meridian Post - article page behaviour (navigation, theme, reading progress, in-page routing). */
 (function (win, doc) {
   'use strict';
 
@@ -76,13 +76,65 @@
     });
   }
 
-  kit.each('[data-tabs]', doc, kit.tabs);
-  kit.each('[data-accordion]', doc, kit.accordion);
+  // Story cards load their article into the page instead of loading a page.
+  var ENTRY_ARTICLE = 'tide-powered-town';
+
+  function fragmentUrl(path) {
+    var slug = path.replace(/^\/climate\//, '').replace(/^\/$/, ENTRY_ARTICLE);
+    return '/fragments/' + slug + '.html';
+  }
+
+  function showArticle(path, pushed) {
+    return fetch(fragmentUrl(path))
+      .then(function (response) {
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        return response.text();
+      })
+      .then(function (html) {
+        var holder = doc.createElement('div');
+        holder.innerHTML = html;
+        var next = holder.querySelector('.article');
+        var current = doc.querySelector('.article');
+        if (!next || !current) throw new Error('no article');
+        current.replaceWith(next);
+        doc.title = next.getAttribute('data-title') + ' | The Meridian Post';
+        site.articleId = next.getAttribute('data-article-id');
+        if (pushed) win.history.pushState({ article: site.articleId }, '', path);
+        win.scrollTo(0, 0);
+        initArticle();
+        win.dispatchEvent(new CustomEvent('meridian:route', { detail: { path: path, article: site.articleId } }));
+      })
+      .catch(function () {
+        // The article could not be loaded in place: load its page.
+        win.location.assign(path);
+      });
+  }
+
+  function initRouter() {
+    doc.addEventListener('click', function (event) {
+      var link = event.target.closest ? event.target.closest('a[data-route]') : null;
+      var plainClick = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+      if (!link || !plainClick || event.defaultPrevented) return;
+      event.preventDefault();
+      showArticle(link.getAttribute('href'), true);
+    });
+    win.addEventListener('popstate', function () {
+      showArticle(win.location.pathname, false);
+    });
+  }
+
+  function initArticle() {
+    kit.each('[data-tabs]', doc, kit.tabs);
+    kit.each('[data-accordion]', doc, kit.accordion);
+    initReadingProgress();
+    initReadingTime();
+    initRelativeTimes();
+  }
+
+  initArticle();
   initNavigation();
   initTheme();
-  initReadingProgress();
-  initReadingTime();
-  initRelativeTimes();
   initNewsletter();
   initStickyAd();
+  initRouter();
 })(window, document);

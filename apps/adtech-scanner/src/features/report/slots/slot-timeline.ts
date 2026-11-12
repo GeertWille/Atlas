@@ -1,5 +1,7 @@
-import type { AdSlot, ScanMetrics } from "@/bindings";
+import type { AdSlot } from "@/bindings";
+
 import { createTimeScale, type TimeScale } from "@/shared/lib/time-scale";
+import type { PageMarkers } from "../pages/page-scope";
 
 export const SLOT_PHASES = ["defined", "requested", "response", "rendered", "viewable"] as const;
 export type SlotPhase = (typeof SLOT_PHASES)[number];
@@ -15,10 +17,18 @@ export const SLOT_PHASE_LABEL: Record<SlotPhase, string> = {
 export type SlotMark = { phase: SlotPhase; atMs: number; percent: number };
 
 export type SlotFlag = {
-  key: "earlyRequest" | "noPrebidTargeting" | "belowFold";
+  key: "earlyRequest" | "noPrebidTargeting" | "belowFold" | "refreshed";
   label: string;
   description: string;
   warning: boolean;
+};
+
+export type SlotRefresh = {
+  atMs: number;
+  percent: number;
+  hadPrebidTargeting: boolean;
+  /** The request carried the same `hb_adid` as the one before it: a bid that was already used. */
+  staleBid: boolean;
 };
 
 export type SlotRow = {
@@ -28,6 +38,8 @@ export type SlotRow = {
   span: { startPercent: number; widthPercent: number } | null;
   /** The lifecycle stopped early: draw a faint continuation to the end of the axis. */
   unfinishedFromPercent: number | null;
+  /** Ad requests after the first one: refreshes of the slot. */
+  refreshes: SlotRefresh[];
   flags: SlotFlag[];
 };
 
@@ -70,6 +82,18 @@ export function slotFlags(slot: AdSlot): SlotFlag[] {
       warning: true,
     });
   }
+  const refreshes = slot.requests.length - 1;
+  if (refreshes > 0) {
+    const stale = slotRefreshes(slot).some((refresh) => refresh.staleBid);
+    flags.push({
+      key: "refreshed",
+      label: stale ? "Refreshed with a used bid" : refreshes === 1 ? "Refreshed once" : `Refreshed ${refreshes} times`,
+      description: stale
+        ? "A refresh carried the hb_adid of the previous request: no new auction ran for it."
+        : "The slot made more than one ad request on this page view.",
+      warning: stale,
+    });
+  }
   if (slot.inInitialViewport === false) {
     flags.push({
       key: "belowFold",
@@ -81,6 +105,17 @@ export function slotFlags(slot: AdSlot): SlotFlag[] {
   return flags;
 }
 
+function slotRefreshes(slot: AdSlot): Omit<SlotRefresh, "percent">[] {
+  return slot.requests.slice(1).map((request, index) => {
+    const previous = slot.requests[index];
+    return {
+      atMs: request.atMs,
+      hadPrebidTargeting: request.hadPrebidTargeting,
+      staleBid: request.prebidAdId !== null && request.prebidAdId === previous?.prebidAdId,
+    };
+  });
+}
+
 function slotMarkTimes(slot: AdSlot): { phase: SlotPhase; atMs: number }[] {
   return SLOT_PHASES.flatMap((phase) => {
     const atMs = PHASE_TIME[phase](slot);
@@ -88,7 +123,7 @@ function slotMarkTimes(slot: AdSlot): { phase: SlotPhase; atMs: number }[] {
   });
 }
 
-function pageMarkers(metrics: ScanMetrics, scale: TimeScale): PageMarker[] {
+function pageMarkers(metrics: PageMarkers, scale: TimeScale): PageMarker[] {
   const candidates: [string, number | null][] = [
     ["First auction", metrics.timeToFirstAuctionMs],
     ["Page load", metrics.pageLoadMs],
@@ -107,8 +142,11 @@ function pageMarkers(metrics: ScanMetrics, scale: TimeScale): PageMarker[] {
 }
 
 /** Puts every slot's lifecycle and the page lifecycle markers on one axis (ms since navigation start). */
-export function layoutSlotTimeline(slots: AdSlot[], metrics: ScanMetrics): SlotTimeline {
-  const times = slots.flatMap((slot) => slotMarkTimes(slot).map((mark) => mark.atMs));
+export function layoutSlotTimeline(slots: AdSlot[], metrics: PageMarkers): SlotTimeline {
+  const times = slots.flatMap((slot) => [
+    ...slotMarkTimes(slot).map((mark) => mark.atMs),
+    ...slotRefreshes(slot).map((refresh) => refresh.atMs),
+  ]);
   const pageTimes = [metrics.pageLoadMs, metrics.timeToFirstAuctionMs, metrics.timeToFirstAdMs].filter(
     (value): value is number => value !== null,
   );
@@ -116,6 +154,7 @@ export function layoutSlotTimeline(slots: AdSlot[], metrics: ScanMetrics): SlotT
 
   const rows = slots.map((slot): SlotRow => {
     const marks = slotMarkTimes(slot).map((mark) => ({ ...mark, percent: scale.toPercent(mark.atMs) }));
+    const refreshes = slotRefreshes(slot).map((refresh) => ({ ...refresh, percent: scale.toPercent(refresh.atMs) }));
     const first = marks[0];
     const last = marks[marks.length - 1];
     const unfinished = slot.outcome === "neverRequested" || slot.outcome === "pending";
@@ -127,6 +166,7 @@ export function layoutSlotTimeline(slots: AdSlot[], metrics: ScanMetrics): SlotT
           ? { startPercent: first.percent, widthPercent: last.percent - first.percent }
           : null,
       unfinishedFromPercent: unfinished && last ? last.percent : null,
+      refreshes,
       flags: slotFlags(slot),
     };
   });

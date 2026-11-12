@@ -26,7 +26,9 @@ export function visitorSummary(configuration: ScanConfiguration): string {
 /** The proxy a run would use; a configuration that names none follows the settings at run time. */
 export function proxySummary(configuration: ScanConfiguration, settings: Pick<Settings, "proxies">): string {
   const { proxy } = configuration.options;
-  return proxy ? proxyChoiceLabel(proxy, settings.proxies) : "Settings default";
+  if (!proxy) return "Settings default";
+  const label = proxyChoiceLabel(proxy, settings.proxies);
+  return hasMissingProxy(configuration.options, settings) ? `${label} (deleted)` : label;
 }
 
 /** "Name copy", then "Name copy 2", …: the first one no configuration has yet (names compare without case). */

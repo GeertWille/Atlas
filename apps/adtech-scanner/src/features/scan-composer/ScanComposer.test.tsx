@@ -1,8 +1,8 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, test, vi } from "vitest";
 import { api } from "@/lib/api";
-import { settingsFixture } from "@/test/fixtures";
+import { makeConfiguration, makeProxy, settingsFixture } from "@/test/fixtures";
 import { renderWithApp } from "@/test/render";
 import { ScanComposer } from "./ScanComposer";
 
@@ -14,7 +14,17 @@ vi.hoisted(() => {
 
 beforeEach(async () => {
   await api.deleteAllScans();
+  for (const configuration of await api.listScanConfigurations()) await api.deleteScanConfiguration(configuration.id);
 });
+
+const validOptions = {
+  url: "https://example.com/news",
+  device: "desktop",
+  observeSeconds: 20,
+  autoScroll: true,
+  acceptConsent: true,
+  aiEnabled: true,
+} as const;
 
 const urlInput = () => screen.getByRole("textbox", { name: "Page URL" });
 const scanButton = () => screen.getByRole("button", { name: "Scan" });
@@ -50,7 +60,7 @@ test("a bare domain is normalised, started with the chosen options, and the live
   await user.type(urlInput(), "  News.Example.com/sport ");
   await user.click(screen.getByRole("radio", { name: "Mobile" }));
   await user.click(screen.getByRole("button", { name: "Options" }));
-  await user.click(screen.getByRole("switch", { name: "Auto-scroll" }));
+  await user.click(screen.getByRole("radio", { name: "Observe only" }));
   await user.click(scanButton());
 
   expect(await screen.findByText("scan screen")).toBeInTheDocument();
@@ -65,6 +75,14 @@ test("a bare domain is normalised, started with the chosen options, and the live
     autoScroll: false,
     acceptConsent: true,
     aiEnabled: true,
+    // The backend resolves what the composer leaves to the settings.
+    visitor: "none",
+    extraPages: 0,
+    headless: true,
+    persistentProfile: false,
+    proxy: { kind: "system" },
+    budgetUsd: 0.5,
+    seed: expect.any(Number),
   });
 });
 
@@ -141,4 +159,289 @@ test("pressing Enter twice starts one scan, not two", async () => {
 
   await screen.findByText("scan screen");
   expect((await api.listScans({})).total).toBe(1);
+});
+
+const openOptions = async (user: ReturnType<typeof userEvent.setup>) =>
+  user.click(screen.getByRole("button", { name: "Options" }));
+const startedOptions = async () => {
+  await waitFor(async () => expect((await api.listScans({})).total).toBe(1));
+  const [scan] = (await api.listScans({})).items;
+  return (await api.getScan(scan?.id ?? "")).options;
+};
+
+test("the visitor choice replaces auto-scroll: four behaviours, scroll by default, each described", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  expect(screen.getByText("Scroll", { selector: "span" })).toBeInTheDocument();
+  await openOptions(user);
+
+  expect(screen.queryByRole("switch", { name: "Auto-scroll" })).toBeNull();
+  const visitor = screen.getByRole("radiogroup", { name: "Visitor" });
+  expect(
+    within(visitor)
+      .getAllByRole("radio")
+      .map((radio) => radio.textContent),
+  ).toEqual(["Observe only", "Scroll", "Browse like a visitor", "I'll browse myself"]);
+  expect(within(visitor).getByRole("radio", { name: "Scroll" })).toBeChecked();
+  expect(
+    screen.getByText("Scrolls to the bottom in steps, so lazy-loaded slots get their chance."),
+  ).toBeInTheDocument();
+  // A scripted visit never claims to be a person.
+  expect(
+    screen.getByText(/This visit is automated and says so to the page \(navigator\.webdriver is true\)/),
+  ).toBeInTheDocument();
+  // Scroll and observe have no page count; the settings run them headless.
+  expect(screen.queryByRole("button", { name: "More pages" })).toBeNull();
+  expect(screen.getByRole("switch", { name: "Show the browser" })).not.toBeChecked();
+  expect(screen.getByText(/Headless Chrome is easier for ad partners to recognise as automated/)).toBeInTheDocument();
+});
+
+test("browse like a visitor: pages to visit, the browser shown by default, and a cost that grows per page", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={{ ...settingsFixture, budgetUsd: 5 }} />);
+  await openOptions(user);
+  expect(screen.getByText(/Estimated/)).toHaveTextContent(
+    "Estimated $0.36 with claude-sonnet-5-5, hard cap $5.00 per scan.",
+  );
+
+  await user.click(screen.getByRole("radio", { name: "Browse like a visitor" }));
+  expect(screen.getByRole("switch", { name: "Show the browser" })).toBeChecked();
+  expect(screen.getByText("3 pages")).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      /The entry page, then up to 2 links on the same site\. Ads, sign-in and checkout links are never clicked\./,
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByText(/Estimated/)).toHaveTextContent(
+    "Estimated $0.37 with claude-sonnet-5-5 for 3 pages, hard cap $5.00 per scan.",
+  );
+  expect(screen.getByText("Browse like a visitor, 3 pages")).toBeInTheDocument();
+
+  for (let press = 0; press < 3; press += 1) await user.click(screen.getByRole("button", { name: "More pages" }));
+  expect(screen.getByText("6 pages")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "More pages" })).toBeDisabled();
+  expect(screen.getByText(/Estimated/)).toHaveTextContent("Estimated $0.38 with claude-sonnet-5-5 for 6 pages");
+  await user.click(screen.getByRole("button", { name: "Fewer pages" }));
+  await user.click(screen.getByRole("switch", { name: "Show the browser" }));
+
+  await user.type(urlInput(), "example.com{Enter}");
+  expect(await startedOptions()).toMatchObject({ visitor: "browse", extraPages: 4, headless: true, autoScroll: true });
+});
+
+test("I'll browse myself: no observe time, no consent click, no hidden browser, and an honest explanation", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+  await user.click(screen.getByRole("radio", { name: "I'll browse myself" }));
+
+  expect(screen.queryByRole("slider")).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Accept consent banner" })).toBeNull();
+  expect(screen.queryByRole("switch", { name: "Show the browser" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "More pages" })).toBeNull();
+  const explanation = screen.getByText(/Chrome opens; browse the site, then press/);
+  expect(explanation).toHaveTextContent(
+    "Chrome opens; browse the site, then press Finish capture (up to 15 minutes). You drive the browser and handle the consent banner yourself. The page can still notice the debugger that records it.",
+  );
+  expect(screen.queryByText(/This visit is automated/)).toBeNull();
+  expect(document.body).not.toHaveTextContent(/undetect|indistinguishable/i);
+
+  await user.type(urlInput(), "example.com{Enter}");
+  expect(await startedOptions()).toMatchObject({
+    visitor: "manual",
+    headless: false,
+    acceptConsent: false,
+    extraPages: 0,
+  });
+});
+
+test("the profile state is shown with a way to change it, and follows the settings", async () => {
+  const user = userEvent.setup();
+  const { unmount } = await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+  expect(
+    screen.getByText(/A fresh profile for this scan: no cookies, like a first-time visitor\./),
+  ).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Change the default" })).toHaveAttribute("href", "/settings");
+  unmount();
+
+  await renderWithApp(<ScanComposer settings={{ ...settingsFixture, persistentProfile: true }} />);
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(
+    screen.getByText(/Kept between scans: cookies and consent persist, like a returning visitor's\./),
+  ).toBeInTheDocument();
+});
+
+test("proxy, profile and budget stay out of the way until asked for, and then override the settings for this scan", async () => {
+  const user = userEvent.setup();
+  // Belgium exists in the backend, so a scan through it can start; Netherlands is only listed.
+  const stored = await api.saveProxyProfile({
+    name: "Belgium",
+    scheme: "http",
+    host: "be.proxy.example",
+    port: 8080,
+    username: null,
+  });
+  const belgium = stored.proxies[0] ?? makeProxy();
+  const proxies = [belgium, makeProxy({ id: "proxy-nl", name: "Netherlands" })];
+  await renderWithApp(<ScanComposer settings={{ ...settingsFixture, proxies }} />);
+  await openOptions(user);
+  expect(screen.queryByRole("combobox", { name: "Proxy" })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Proxy, profile and budget" }));
+  await user.click(screen.getByRole("combobox", { name: "Proxy" }));
+  expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
+    "Settings default (System proxy)",
+    "No proxy",
+    "System proxy",
+    "Belgium",
+    "Netherlands",
+  ]);
+  await user.click(screen.getByRole("option", { name: "Belgium" }));
+  await user.click(screen.getByRole("combobox", { name: "Browser profile" }));
+  await user.click(await screen.findByRole("option", { name: "Kept scan profile" }));
+  expect(screen.getByText(/Kept between scans/)).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "Change the default" })).toBeNull();
+
+  const budget = screen.getByLabelText("LLM budget");
+  await user.type(budget, "0.01");
+  await user.type(urlInput(), "example.com{Enter}");
+  expect(await screen.findByText("Enter an amount from $0.05 to $20.00.")).toBeInTheDocument();
+  expect(budget).toBeInvalid();
+  expect((await api.listScans({})).total).toBe(0);
+
+  await user.clear(budget);
+  await user.type(budget, "0.2");
+  expect(screen.getByText(/Estimated/)).toHaveTextContent(
+    "Estimated $0.20 with claude-sonnet-5-5, hard cap $0.20 per scan. Analysis may stop early at the cap.",
+  );
+  await user.click(scanButton());
+  expect(await startedOptions()).toMatchObject({
+    proxy: { kind: "profile", id: belgium.id, name: "Belgium" },
+    persistentProfile: true,
+    budgetUsd: 0.2,
+  });
+  await api.deleteProxyProfile(belgium.id);
+});
+
+test("the options can be saved as a named configuration, which the composer then has open", async () => {
+  const user = userEvent.setup();
+  const { router } = await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+  await user.click(screen.getByRole("radio", { name: "Browse like a visitor" }));
+
+  // Nothing to save without a page.
+  await user.click(screen.getByRole("button", { name: "Save as configuration…" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Enter the address of a page to scan.");
+  expect(screen.queryByRole("dialog")).toBeNull();
+
+  await user.type(urlInput(), "example.com/news");
+  await user.click(screen.getByRole("button", { name: "Save as configuration…" }));
+  const dialog = await screen.findByRole("dialog", { name: "Save as configuration" });
+  await user.click(within(dialog).getByRole("button", { name: "Save configuration" }));
+  expect(within(dialog).getByRole("alert")).toHaveTextContent("Give the configuration a name.");
+  await user.type(within(dialog).getByLabelText("Name"), "Example, three pages");
+  await user.click(within(dialog).getByRole("button", { name: "Save configuration" }));
+
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  const [saved] = await api.listScanConfigurations();
+  expect(saved).toMatchObject({
+    name: "Example, three pages",
+    options: { url: "https://example.com/news", visitor: "browse", extraPages: 2, headless: false },
+  });
+  expect(router.state.location.search).toEqual({ configuration: saved?.id });
+  // Saving started no scan.
+  expect((await api.listScans({})).total).toBe(0);
+
+  // The same name again is refused by the backend, in the dialog.
+  await user.click(screen.getByRole("button", { name: "Save as configuration…" }));
+  const again = await screen.findByRole("dialog");
+  await user.type(within(again).getByLabelText("Name"), "example, THREE pages");
+  await user.click(within(again).getByRole("button", { name: "Save configuration" }));
+  expect(await within(again).findByRole("alert")).toHaveTextContent(
+    "A configuration named “example, THREE pages” already exists",
+  );
+});
+
+test("a loaded configuration shows its name, runs as saved, and offers to save edits or copy them", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example on mobile",
+    options: { ...validOptions, device: "mobile", visitor: "browse", extraPages: 1, headless: false },
+  });
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+
+  // Opened for editing: the options are in view and filled in from the configuration.
+  expect(screen.getByText("Example on mobile")).toBeInTheDocument();
+  expect(urlInput()).toHaveValue("https://example.com/news");
+  expect(screen.getByRole("radio", { name: "Mobile" })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Browse like a visitor" })).toBeChecked();
+  expect(screen.getByText("2 pages")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Update configuration" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Save as configuration…" })).toBeNull();
+  expect(screen.getByRole("link", { name: "Close configuration" })).toHaveAttribute("href", "/");
+
+  // Unchanged, Scan is a run of the configuration.
+  await user.click(scanButton());
+  await screen.findByText("scan screen");
+  const [run] = (await api.listScans({})).items;
+  expect(run?.configuration).toEqual({ id: configuration.id, name: "Example on mobile" });
+});
+
+test("edits to a loaded configuration are marked, scanned once without it, or saved into it", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example on mobile",
+    options: { ...validOptions, device: "mobile", visitor: "browse", extraPages: 1, headless: false },
+  });
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+
+  await user.click(screen.getByRole("button", { name: "More pages" }));
+  expect(screen.getByText("Edited")).toBeInTheDocument();
+  expect(
+    screen.getByText("Scan runs these edited options once. Update the configuration to keep them."),
+  ).toBeInTheDocument();
+  // Back to the saved value: no longer edited.
+  await user.click(screen.getByRole("button", { name: "Fewer pages" }));
+  expect(screen.queryByText("Edited")).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "More pages" }));
+  await user.click(screen.getByRole("button", { name: "Update configuration" }));
+  expect(await screen.findByText("Updated “Example on mobile”")).toBeInTheDocument();
+  await waitFor(() => expect(screen.queryByText("Edited")).toBeNull());
+  expect((await api.listScanConfigurations())[0]?.options.extraPages).toBe(2);
+
+  // Edited again and scanned: a scan of its own, not a run of the configuration.
+  await user.click(screen.getByRole("radio", { name: "Desktop" }));
+  await user.click(screen.getByRole("button", { name: "Save as new…" }));
+  expect(await screen.findByRole("dialog", { name: "Save as configuration" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  await user.click(scanButton());
+  await screen.findByText("scan screen");
+  const [scan] = (await api.listScans({})).items;
+  expect(scan).toMatchObject({ device: "desktop", configuration: null });
+  expect((await api.listScanConfigurations())[0]?.options.device).toBe("mobile");
+});
+
+test("a configuration whose proxy was deleted says so and cannot be scanned until another proxy is chosen", async () => {
+  const user = userEvent.setup();
+  const configuration = makeConfiguration({
+    options: {
+      ...validOptions,
+      proxy: { kind: "profile", id: "proxy-gone", name: "Germany", host: "de.proxy.example" },
+    },
+  });
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+
+  // The advanced options are open, because that is where the problem is.
+  const proxy = screen.getByRole("combobox", { name: "Proxy" });
+  expect(proxy).toBeInvalid();
+  expect(screen.getByText("This proxy was deleted. Choose another one.")).toBeInTheDocument();
+  await user.click(scanButton());
+  expect((await api.listScans({})).total).toBe(0);
+
+  await user.click(proxy);
+  await user.click(await screen.findByRole("option", { name: "No proxy" }));
+  expect(screen.queryByText("This proxy was deleted. Choose another one.")).toBeNull();
+  await user.click(scanButton());
+  expect(await startedOptions()).toMatchObject({ proxy: { kind: "none" } });
 });

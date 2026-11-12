@@ -47,24 +47,15 @@ impl PageState {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Action {
     /// Reading: nothing happens.
-    Idle {
-        ms: f64,
-    },
-    MovePointer {
-        path: Vec<Waypoint>,
-    },
+    Idle { ms: f64 },
+    /// To `reading_targets[target]`.
+    MovePointer { path: Vec<Waypoint>, target: usize },
     /// The pointer rests where the last movement took it.
-    Hover {
-        ms: f64,
-    },
+    Hover { ms: f64 },
     /// Wheel events at the pointer's position.
-    Wheel {
-        ticks: Vec<WheelTick>,
-    },
+    Wheel { ticks: Vec<WheelTick> },
     /// One finger swipe along `path`.
-    Swipe {
-        path: Vec<Waypoint>,
-    },
+    Swipe { path: Vec<Waypoint> },
 }
 
 impl Action {
@@ -93,6 +84,11 @@ const SCROLL_WEIGHT: f64 = 5.0;
 const POINT_WEIGHT: f64 = 3.0;
 const READ_WEIGHT: f64 = 1.5;
 
+/// What the visitor scrolls with on every page of the visit.
+pub(crate) fn wheel_device(visit: &Rng) -> WheelDevice {
+    WheelDevice::draw(&mut visit.clone())
+}
+
 /// Plans the actions of one page view.
 pub(crate) struct Planner {
     rng: Rng,
@@ -107,12 +103,10 @@ impl Planner {
     /// `visit` is the visit's seed stream; `page` keeps pages independent, so
     /// a longer first page does not change what happens on the second.
     pub(crate) fn new(visit: &Rng, page: u32, touch: bool) -> Self {
-        // The device is the visit's: drawn before the page's stream splits off.
-        let wheel = WheelDevice::draw(&mut visit.clone());
         Self {
             rng: visit.fork(u64::from(page) + 1),
             touch,
-            wheel,
+            wheel: wheel_device(visit),
             owed: None,
         }
     }
@@ -198,8 +192,9 @@ impl Planner {
             return self.reading_pause();
         };
         self.owed = Some(self.reading_pause());
-        let (path, _) = swipe_path(&mut self.rng, page.viewport, direction == 0);
-        Action::Swipe { path }
+        Action::Swipe {
+            path: swipe_path(&mut self.rng, page.viewport, direction == 0),
+        }
     }
 
     fn reading_pause(&mut self) -> Action {
