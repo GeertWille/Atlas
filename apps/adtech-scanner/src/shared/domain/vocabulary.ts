@@ -49,6 +49,7 @@ export const STEP_STATUS_LABEL: Record<StepStatus, string> = {
   completed: "Completed",
   failed: "Failed",
   skipped: "Skipped",
+  cancelled: "Cancelled",
 };
 
 export const DEVICE_LABEL: Record<DeviceProfile, string> = {

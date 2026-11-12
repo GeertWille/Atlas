@@ -229,7 +229,7 @@ export function cancelScan(scan: StoredScan, now: number): ScanEvent[] {
   }
   if (running) {
     events.push(
-      ...applyBeat(scan, { at: 0, type: "stepEnd", node: running.node, status: "failed", summary: "Cancelled" }, now),
+      ...applyBeat(scan, { at: 0, type: "stepEnd", node: running.node, status: "cancelled", summary: "Cancelled" }, now),
     );
   }
   finishScan(scan, "cancelled", now);

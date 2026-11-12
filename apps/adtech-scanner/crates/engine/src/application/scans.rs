@@ -410,7 +410,10 @@ async fn close_after_crash(deps: &PipelineDeps, fallback: ScanSummary) {
                 step.status = StepStatus::Skipped;
                 step.summary = Some("Not run".to_string());
             }
-            StepStatus::Completed | StepStatus::Failed | StepStatus::Skipped => continue,
+            StepStatus::Completed
+            | StepStatus::Failed
+            | StepStatus::Skipped
+            | StepStatus::Cancelled => continue,
         }
         let _ = deps.scans.save_step(&step).await;
         deps.events.emit(ScanEvent::StepUpdated { step });

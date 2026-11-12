@@ -1164,7 +1164,7 @@ async fn cancelling_while_jev_is_answering_ends_the_scan_as_cancelled() {
     let filter = step(&detail, PipelineNode::FilterScripts);
     assert_eq!(
         (filter.status, filter.summary.as_deref()),
-        (StepStatus::Failed, Some("Cancelled"))
+        (StepStatus::Cancelled, Some("Cancelled"))
     );
     assert!(requests_for(&claude, HAIKU).await.is_empty());
 }

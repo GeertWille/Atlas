@@ -379,7 +379,7 @@ async fn cancelling_while_a_file_is_being_read_cancels_the_scan() {
     let step = checks_step(&detail);
     assert_eq!(
         (step.status, step.summary.as_deref()),
-        (StepStatus::Failed, Some("Cancelled"))
+        (StepStatus::Cancelled, Some("Cancelled"))
     );
     assert_eq!(detail.bidder_diagnostics, None);
 }

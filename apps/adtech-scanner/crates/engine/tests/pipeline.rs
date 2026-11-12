@@ -1531,7 +1531,7 @@ async fn cancelling_during_capture_ends_as_cancelled() {
     let capture = step(&detail, PipelineNode::Capture);
     assert_eq!(
         (capture.status, capture.summary.as_deref()),
-        (StepStatus::Failed, Some("Cancelled"))
+        (StepStatus::Cancelled, Some("Cancelled"))
     );
     assert_eq!(
         step(&detail, PipelineNode::Synthesize).status,
@@ -1587,9 +1587,10 @@ async fn cancelling_mid_analysis_keeps_what_was_already_persisted() {
     assert_eq!(detail.summary.finding_counts.critical, 1);
     assert!(detail.summary.cost_usd > 0.0);
     assert_eq!((detail.auctions.len(), detail.scripts.len()), (1, 5));
+    let analyze = step(&detail, PipelineNode::AnalyzeLogic);
     assert_eq!(
-        step(&detail, PipelineNode::AnalyzeLogic).summary.as_deref(),
-        Some("Cancelled")
+        (analyze.status, analyze.summary.as_deref()),
+        (StepStatus::Cancelled, Some("Cancelled"))
     );
     assert_eq!(
         step(&detail, PipelineNode::Synthesize).status,

@@ -235,6 +235,26 @@ impl Flight {
         )
     }
 
+    /// Chrome stamps the announcement of a CORS preflight when the browser
+    /// process hears of it, which can be after the network service sent it
+    /// and even after it finished (measured on Chromium 1243: up to a few
+    /// ms). The network's own start is the true one then.
+    fn start_no_later_than_the_network(&mut self, response: &Value) {
+        if self.kind != ResourceKind::Preflight {
+            return;
+        }
+        let (Some(announced), Some((request_time_ms, _))) =
+            (self.started_mono_ms, timing(&response["timing"]))
+        else {
+            return;
+        };
+        let announced_late_by = announced - request_time_ms;
+        if announced_late_by > 0.0 {
+            self.started_mono_ms = Some(request_time_ms);
+            self.started_epoch_ms -= announced_late_by;
+        }
+    }
+
     fn is_complete(&self) -> bool {
         self.end.is_some() && self.body != Body::Asked && self.post != Post::Asked
     }
@@ -257,7 +277,10 @@ impl Flight {
     fn end(&mut self, how: RequestEnd, at_epoch_ms: f64, encoded_bytes: u64, now_ms: f64) {
         self.end = Some(End {
             how,
-            at_epoch_ms,
+            // Without a response there is no network start to correct a
+            // late announcement with; the request still did not end before
+            // it began.
+            at_epoch_ms: at_epoch_ms.max(self.started_epoch_ms),
             encoded_bytes,
             seen_ms: now_ms,
         });
@@ -925,6 +948,7 @@ impl Assembler {
         let Some(flight) = chain.current() else {
             return;
         };
+        flight.start_no_later_than_the_network(&params["response"]);
         flight.response = Some(flight.response(&params["response"], &params["timestamp"], now_ms));
         // The session that answers may know less about the request than the
         // one that announced it: a worker's script is "other" to the worker.

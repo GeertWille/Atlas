@@ -343,6 +343,16 @@ async fn the_demo_visit_is_recorded_on_every_target_with_links_and_bodies() {
         preflight.request_headers
     );
     assert!(by_kind(ResourceKind::Preflight).all(|preflight| preflight.preflight_of.is_some()));
+    for preflight in by_kind(ResourceKind::Preflight) {
+        let ended = preflight.ended_at_ms.unwrap();
+        assert!(
+            preflight.started_at_ms <= preflight.response_at_ms.unwrap()
+                && ended >= preflight.started_at_ms,
+            "{} started at {}, ended at {ended}",
+            preflight.url,
+            preflight.started_at_ms
+        );
+    }
 
     // -- A bidder slower than the auction: on the network, its answer is late.
     let auction_end: BTreeMap<&str, f64> = capture
@@ -815,6 +825,65 @@ async fn a_body_the_browser_no_longer_has_is_recorded_as_unavailable() {
         CapturedBody::Read { bytes, .. } => assert_eq!(bytes, b"<h1>200 OK</h1>"),
         CapturedBody::Unavailable(why) => assert!(!why.is_empty()),
         other => panic!("{other:?}"),
+    }
+}
+
+/// A route change is reported by the tracker, in a batch that arrives up to
+/// a tenth of a second after it; what the page requests in between is
+/// already on the new page view.
+#[tokio::test]
+async fn requests_after_a_route_change_are_on_the_page_view_it_opened() {
+    let site = adscan_browser::start_demo_site().await.unwrap();
+    let mut request = support::request(&site.url, DeviceProfile::Desktop);
+    request.visitor = VisitorBehavior::Browse;
+    request.extra_pages = 1;
+    request.observe_seconds = 6;
+    // This seed's visit follows a link the site routes in place.
+    request.seed = 6;
+    let (capture, records) = capture_with_requests(request).await;
+    assert_every_request_has_one_record(&records);
+    assert_eq!(capture.pages.len(), 2, "{:#?}", capture.pages);
+    let (entry, routed) = (&capture.pages[0], &capture.pages[1]);
+    assert_eq!(routed.reached_by, PageReach::RouteChange);
+
+    // The site's analytics reports the new page view as the route changes.
+    let route = routed
+        .url
+        .trim_start_matches(site.url.trim_end_matches('/'));
+    let page_views: Vec<&NetworkRecord> = records
+        .iter()
+        .filter(|record| {
+            path(record) == "/collect"
+                && record.post_data.as_ref().is_some_and(|post| {
+                    let sent: serde_json::Value = serde_json::from_slice(&post.bytes).unwrap();
+                    sent["event"] == "page_view" && sent["properties"]["route"] == route
+                })
+        })
+        .collect();
+    assert_eq!(page_views.len(), 1, "{records:#?}");
+    assert_eq!(page_views[0].page, 1);
+    assert!(
+        (0.0..1_000.0).contains(&page_views[0].started_at_ms),
+        "{}",
+        page_views[0].started_at_ms
+    );
+
+    let entry_lasted = entry.ended_at_ms - entry.started_at_ms;
+    for record in &records {
+        let started = f64::from(record.page) * entry_lasted + record.started_at_ms;
+        assert_eq!(
+            record.page,
+            u32::from(started >= entry_lasted),
+            "{} started {} ms into page view {}; the entry page lasted {entry_lasted} ms",
+            record.url,
+            record.started_at_ms,
+            record.page
+        );
+        assert!(
+            record.started_at_ms >= 0.0 || record.page == 0,
+            "{}",
+            record.url
+        );
     }
 }
 

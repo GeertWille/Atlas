@@ -635,6 +635,82 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
     assert_eq!((record.seq, record.preflight_of), (0, None));
 }
 
+/// Chromium 1243 on a busy page: `requestWillBeSent` of a preflight carried
+/// a later timestamp than its own `loadingFinished`.
+#[test]
+fn a_preflight_announced_after_it_was_sent_starts_when_the_network_sent_it() {
+    let preflight = |id: &str, at: f64| {
+        let mut event = request(id, "https://bid.example/auction", at);
+        event["type"] = json!("Other");
+        event["request"]["method"] = json!("OPTIONS");
+        event["initiator"] = json!({ "type": "preflight", "url": PAGE, "requestId": "5.5" });
+        event
+    };
+    let mut assembler = Assembler::default();
+    let now = epoch(1_020.0);
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("5.5", "https://bid.example/auction", 1_019.999),
+    );
+
+    // Announced at 1020.0040; the network sent it at 1020.0005, had the
+    // headers 1.5 ms later and was done at 1020.0021.
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &preflight("P1", 1_020.004),
+    );
+    let mut answer = response("P1", 204, 1_020.0045);
+    answer["type"] = json!("Preflight");
+    answer["hasExtraInfo"] = json!(false);
+    answer["response"]["timing"]["requestTime"] = json!(1_020.0005);
+    answer["response"]["timing"]["receiveHeadersStart"] = json!(1.4);
+    answer["response"]["timing"]["receiveHeadersEnd"] = json!(1.5);
+    assembler.observe(&tab(now), "Network.responseReceived", &answer);
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("P1", 1_020.0021, 0),
+    );
+    let seq = finished_of(&outputs).unwrap().seq;
+    let record = placed(
+        ended(assembler.body_settled(seq, CapturedBody::Skipped(BodySkip::Type), now)).remove(0),
+    );
+    assert_eq!(record.kind, ResourceKind::Preflight);
+    let close = |actual: f64, expected: f64| (actual - expected).abs() < 1e-3;
+    assert!(close(record.started_at_ms, 20_000.5), "{record:?}");
+    assert!(
+        close(record.response_at_ms.unwrap(), 20_002.0),
+        "{record:?}"
+    );
+    assert!(close(record.ended_at_ms.unwrap(), 20_002.1), "{record:?}");
+    assert_eq!(record.queued_ms, Some(0.0));
+
+    // A preflight that fails has no network timing: it ends no earlier
+    // than it was announced.
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("5.6", "https://bid.example/auction", 1_020.1),
+    );
+    let mut refused = preflight("P2", 1_020.104);
+    refused["initiator"]["requestId"] = json!("5.6");
+    assembler.observe(&tab(now), "Network.requestWillBeSent", &refused);
+    assembler.observe(
+        &tab(now),
+        "Network.loadingFailed",
+        &failed("P2", 1_020.102, "net::ERR_FAILED"),
+    );
+    let record = assembler
+        .finish()
+        .into_iter()
+        .map(placed)
+        .find(|record| record.kind == ResourceKind::Preflight && record.status.is_none())
+        .unwrap();
+    assert_eq!(record.ended_at_ms, Some(record.started_at_ms));
+}
+
 #[test]
 fn where_a_response_came_from_is_read_from_the_browser() {
     let served = |change: &dyn Fn(&mut Value), memory_cache: bool| {

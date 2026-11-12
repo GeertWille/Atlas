@@ -1068,6 +1068,8 @@ contract! {
         Failed,
         /// Not run (AI disabled, no API key, budget exhausted, nothing to do).
         Skipped,
+        /// Running when the scan was cancelled.
+        Cancelled,
     }
 
     pub struct PipelineStep {

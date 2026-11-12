@@ -198,6 +198,7 @@ impl RequestIndexRow {
             method: record.method.clone(),
             scheme,
             no_hb_targeting: category == NetworkCategory::AdServer
+                && record.kind != ResourceKind::Preflight
                 && !classify::has_prebid_targeting(query, post.as_deref()),
             query_len: query.len() as u32,
             host,

@@ -129,6 +129,7 @@ const STEP_STATUS_STYLE: Record<StepStatus, { icon: LucideIcon; className: strin
   completed: { icon: CheckCircle2Icon, className: "text-green-fg" },
   failed: { icon: XCircleIcon, className: "text-red-fg" },
   skipped: { icon: MinusCircleIcon, className: "text-subtle-foreground" },
+  cancelled: { icon: BanIcon, className: "text-muted-foreground" },
 };
 
 export function StepStatusIcon({ status, className }: { status: StepStatus; className?: string }) {

@@ -63,6 +63,24 @@ describe("the simulated network record", () => {
     expect(rows.every((row) => row.id === `r${row.seq}`)).toBe(true);
   });
 
+  it("puts every request on the page view that was showing when it started, route changes included", async () => {
+    const detail = await api.getScan(BROWSE);
+    const rows = await allRows(api, BROWSE);
+    expect(detail.pages.map((page) => page.reachedBy)).toContain("routeChange");
+    for (const page of detail.pages) {
+      const next = detail.pages[page.index + 1];
+      const ofPage = rows.filter((row) => row.page === page.index);
+      expect(ofPage.length, `page view ${page.index}`).toBeGreaterThan(0);
+      if (!next) continue;
+      const lasted = next.startedAtMs - page.startedAtMs;
+      const late = ofPage.filter((row) => row.startedAtMs >= lasted);
+      expect(
+        late.map((row) => `${row.url} at ${row.startedAtMs}`),
+        `page view ${page.index} lasted ${lasted} ms`,
+      ).toEqual([]);
+    }
+  });
+
   it("serves the list in chunks that add up", async () => {
     const first = await api.listNetworkRequests(BROWSE, { limit: 150 });
     expect(first.rows).toHaveLength(150);

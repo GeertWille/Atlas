@@ -34,9 +34,12 @@ impl RecordAnalysis {
     /// Sees one finished request, body included. `row` is what the index
     /// would keep of it.
     pub fn observe(&mut self, record: &NetworkRecord, row: &RequestIndexRow) {
+        // A preflight is filed with its request but is neither a bid request
+        // nor an ad call.
+        if record.kind == ResourceKind::Preflight {
+            return;
+        }
         match row.category {
-            // A preflight is filed with its bid request but carries no bids.
-            NetworkCategory::Bid if record.kind == ResourceKind::Preflight => {}
             NetworkCategory::Bid => self.exchanges.push(exchange(record, row)),
             NetworkCategory::AdServer => self.ad_server_calls.push(AdServerCall {
                 seq: record.seq,

@@ -173,7 +173,7 @@ export function summariseRequests(bidder: MatrixBidder, viaServer: boolean): str
   const parts = [only.cells > 1 ? `1 request for ${only.cells} ad units` : "1 request"];
   if (only.row?.outcome === "failed") parts[0] = "failed";
   if (only.row?.durationMs != null) parts.push(formatDuration(only.row.durationMs));
-  // Two clocks time a preflight and its request; a difference of a millisecond or two can come out negative.
+  // Scans recorded before the capture corrected a preflight's late announcement can hold a negative duration.
   if (only.preflightMs !== null) parts.push(`preflight +${formatDuration(Math.max(0, only.preflightMs))}`);
   return parts.join(", ");
 }

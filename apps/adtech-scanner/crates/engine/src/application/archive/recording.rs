@@ -18,7 +18,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use adscan_model::{
-    BodyAdmission, BodyOffer, BodySkip, BodyState, CapturedBody, NetworkRecord, NetworkSink,
+    BodyAdmission, BodyOffer, BodySkip, BodyState, CapturedBody, NetworkCategory, NetworkRecord,
+    NetworkSink,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
@@ -268,6 +269,8 @@ impl Recording {
             analysis: RecordAnalysis::default(),
             store,
             store_error: None,
+            categories: HashMap::new(),
+            early_preflights: HashMap::new(),
         };
         Ok(Self {
             sink,
@@ -332,6 +335,11 @@ struct Recorder {
     /// `None` when the scan stores nothing, and after storing failed.
     store: Option<Store>,
     store_error: Option<String>,
+    /// How each request seen so far was filed, by `seq`.
+    categories: HashMap<u32, NetworkCategory>,
+    /// Preflights that ended before the request they belong to, by that
+    /// request's `seq`: a preflight is filed under its request's category.
+    early_preflights: HashMap<u32, Vec<(NetworkRecord, Keep)>>,
 }
 
 impl Recorder {
@@ -350,11 +358,18 @@ impl Recorder {
                     None => Ok(()),
                 },
             };
-            if let Err(error) = written {
-                // Storing is over for this scan; the analysis goes on.
-                self.store = None;
-                self.store_error = Some(error);
-            }
+            self.note_store_failure(written);
+        }
+        // Preflights of requests the capture never handed over.
+        let mut unclaimed: Vec<_> = self
+            .early_preflights
+            .drain()
+            .flat_map(|(_, held)| held)
+            .collect();
+        unclaimed.sort_by_key(|(record, _)| record.seq);
+        for (record, keep) in unclaimed {
+            let written = self.file(record, keep).await;
+            self.note_store_failure(written);
         }
         let stored = match (self.store, self.store_error) {
             (_, Some(error)) => Some(Err(error)),
@@ -370,9 +385,42 @@ impl Recorder {
         }
     }
 
-    async fn take(&mut self, mut record: NetworkRecord, keep: Keep) -> Result<(), String> {
+    fn note_store_failure(&mut self, written: Result<(), String>) {
+        if let Err(error) = written {
+            // Storing is over for this scan; the analysis goes on.
+            self.store = None;
+            self.store_error = Some(error);
+        }
+    }
+
+    async fn take(&mut self, record: NetworkRecord, keep: Keep) -> Result<(), String> {
+        if let Some(request) = record.preflight_of
+            && !self.categories.contains_key(&request)
+        {
+            self.early_preflights
+                .entry(request)
+                .or_default()
+                .push((record, keep));
+            return Ok(());
+        }
+        let seq = record.seq;
+        self.file(record, keep).await?;
+        for (preflight, keep) in self.early_preflights.remove(&seq).unwrap_or_default() {
+            self.file(preflight, keep).await?;
+        }
+        Ok(())
+    }
+
+    async fn file(&mut self, mut record: NetworkRecord, keep: Keep) -> Result<(), String> {
         let state = state_without_bytes(&record.body, &record.end);
         let mut row = RequestIndexRow::of(&record, &self.scan_site, state, None);
+        if let Some(category) = record
+            .preflight_of
+            .and_then(|request| self.categories.get(&request))
+        {
+            row.category = *category;
+        }
+        self.categories.insert(record.seq, row.category);
         self.analysis.observe(&record, &row);
 
         let captured = std::mem::replace(&mut record.body, CapturedBody::Absent);
@@ -1131,6 +1179,75 @@ mod tests {
         assert_eq!(recorded.analysis.ad_server_calls.len(), 1);
         assert_eq!(fixture.archive.index.record("scan").await.unwrap(), None);
         assert!(fixture.archive.packs.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_preflight_is_filed_under_the_category_of_its_request() {
+        // An exchange only the capture recognises (it names the bidder):
+        // by its address alone the call is some third party's.
+        const EXCHANGE: &str = "https://partner.example.net/ut/v3/prebid";
+        let preflight = |seq: u32, of: Option<u32>| {
+            let mut preflight = record(seq, EXCHANGE, CapturedBody::Absent);
+            preflight.method = "OPTIONS".into();
+            preflight.kind = ResourceKind::Preflight;
+            preflight.status = Some(204);
+            preflight.preflight_of = of;
+            preflight
+        };
+        let bid = |seq: u32| {
+            let mut bid = record(seq, EXCHANGE, read(r#"{"tags":[]}"#));
+            bid.method = "POST".into();
+            bid.kind = ResourceKind::Xhr;
+            bid.bidder = Some("appnexus".into());
+            bid
+        };
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        // The preflight is handed over first, as Chrome usually ends it first.
+        sink.record(preflight(0, Some(1)));
+        sink.record(bid(1));
+        // The other order: the preflight waited for its headers.
+        sink.record(bid(2));
+        sink.record(preflight(3, Some(2)));
+        // Its request was never handed over, and one that names none.
+        sink.record(preflight(4, Some(9)));
+        sink.record(preflight(5, None));
+
+        let recorded = recording.finish().await.unwrap();
+        recorded.stored.unwrap().unwrap();
+        let (rows, total) = fixture
+            .archive
+            .index
+            .rows("scan", &[], 0, 10)
+            .await
+            .unwrap();
+        assert_eq!(total, 6);
+        let mut filed: Vec<_> = rows.iter().map(|row| (row.seq, row.category)).collect();
+        filed.sort_by_key(|(seq, _)| *seq);
+        assert_eq!(
+            filed,
+            [
+                (0, NetworkCategory::Bid),
+                (1, NetworkCategory::Bid),
+                (2, NetworkCategory::Bid),
+                (3, NetworkCategory::Bid),
+                (4, NetworkCategory::OtherThirdParty),
+                (5, NetworkCategory::OtherThirdParty),
+            ]
+        );
+        assert_eq!(
+            recorded
+                .analysis
+                .exchanges
+                .iter()
+                .map(|exchange| exchange.seq)
+                .collect::<Vec<_>>(),
+            [1, 2],
+            "a preflight is not a bid request"
+        );
     }
 
     #[tokio::test]

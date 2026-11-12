@@ -1095,8 +1095,12 @@
     })();
   }
 
+  // Sent at once, not with the next batch: the scanner puts each network
+  // request on the page view that is showing when the request starts, and
+  // a page asks for things in the same task that changes its route.
   function reportRoute(navigationType) {
     emit('routeChange', { url: clip(String(win.location.href)), navigationType: navigationType });
+    flush();
   }
 
   // ------------------------------------------------------------------ wiring

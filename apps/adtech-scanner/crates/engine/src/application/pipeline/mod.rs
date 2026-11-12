@@ -151,7 +151,7 @@ impl Pipeline {
                 None
             }
             Err(NodeError::Cancelled) => {
-                run.finish(StepStatus::Failed, "Cancelled".into(), now);
+                run.finish(StepStatus::Cancelled, "Cancelled".into(), now);
                 Some(RunOutcome::Cancelled)
             }
             Err(NodeError::Failed(error)) => {
