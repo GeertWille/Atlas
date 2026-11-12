@@ -2,7 +2,7 @@ import { getSearchQuery, searchPanelOpen, setSearchQuery } from "@codemirror/sea
 import { type EditorState, StateField } from "@codemirror/state";
 
 /** Counting stops here; beyond it the panel says "10,000+" and the ruler shows the first ones. */
-export const MATCH_CAP = 10_000;
+const MATCH_CAP = 10_000;
 
 export type SearchSummary = {
   /** Start offsets of the matches, in document order. */

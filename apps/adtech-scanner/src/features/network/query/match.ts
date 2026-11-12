@@ -92,7 +92,7 @@ export function buildMatchContext(detail: Pick<ScanDetail, "auctions">): MatchCo
 
 type RowTest = (indexed: IndexedRow, context: MatchContext) => boolean;
 
-export function isSlow({ row }: IndexedRow, context: MatchContext): boolean {
+function isSlow({ row }: IndexedRow, context: MatchContext): boolean {
   if (row.durationMs === null) return false;
   if (row.durationMs > SLOW_MS) return true;
   const timeout =

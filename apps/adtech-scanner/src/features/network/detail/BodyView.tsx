@@ -18,7 +18,7 @@ const BodyEditor = lazy(() => import("./BodyEditor"));
 const PRETTY_PRINT_LIMIT = 2 * 1024 * 1024;
 
 /** Indents JSON for reading. Anything that does not parse (a truncated body, JSONP) is left as it is. */
-export function prettyPrint(text: string, mime: string | null, complete: boolean): string {
+function prettyPrint(text: string, mime: string | null, complete: boolean): string {
   if (!complete || text.length > PRETTY_PRINT_LIMIT || languageForMime(mime) !== "json") return text;
   try {
     return JSON.stringify(JSON.parse(text), null, 2);

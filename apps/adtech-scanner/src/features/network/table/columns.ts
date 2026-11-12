@@ -1,7 +1,7 @@
 import type { NetworkRow } from "@/bindings";
 import { KIND_LABEL } from "../labels";
 
-export const COLUMN_KEYS = [
+const COLUMN_KEYS = [
   "status",
   "name",
   "vendor",

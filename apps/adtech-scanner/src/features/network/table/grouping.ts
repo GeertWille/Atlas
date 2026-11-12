@@ -94,7 +94,7 @@ export function buildGrid(
 }
 
 /** Above this many rows, page groups other than the one being looked at start folded. */
-export const AUTO_COLLAPSE_ROWS = 5000;
+const AUTO_COLLAPSE_ROWS = 5000;
 
 export function initiallyCollapsed(rowCount: number, pages: PageView[], shownPage: number | undefined): Set<string> {
   if (rowCount <= AUTO_COLLAPSE_ROWS) return new Set();

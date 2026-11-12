@@ -3,8 +3,8 @@ import type { NetworkRequestDetail } from "@/bindings";
 /** Headers curl works out for itself, or that would make the copy fail when sent as they were captured. */
 const SKIPPED_HEADERS = new Set(["host", "content-length", "accept-encoding", "connection"]);
 
-export const REDACTED_PLACEHOLDER = "<redacted: not stored>";
-export const MISSING_BODY_PLACEHOLDER = "<request body not stored>";
+const REDACTED_PLACEHOLDER = "<redacted: not stored>";
+const MISSING_BODY_PLACEHOLDER = "<request body not stored>";
 
 export type CurlCommand = {
   command: string;

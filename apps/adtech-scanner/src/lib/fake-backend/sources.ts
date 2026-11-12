@@ -193,7 +193,7 @@ export function capturedText(detail: ScanDetail, script: ScriptRecord): string {
 }
 
 /** Where a position in the captured source lies in the formatted text. */
-export function formattedLineOf(detail: ScanDetail, script: ScriptRecord, position: SourcePosition): number {
+function formattedLineOf(detail: ScanDetail, script: ScriptRecord, position: SourcePosition): number {
   const source = builtSource(detail, script);
   if (!source.lineStarts) return Math.min(Math.max(1, position.line), source.formatted.length);
   return lineAtOffset(source.lineStarts, Math.max(0, (position.column ?? 1) - 1));
