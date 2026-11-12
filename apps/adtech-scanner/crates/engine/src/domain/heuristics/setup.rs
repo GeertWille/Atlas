@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use adscan_model::{FindingCategory, ScriptCategory, Severity, TrackerEventKind as Ev};
 
 use super::{Rule, RuleContext, heuristic, ms};
+use crate::domain::diagnostics::codes;
 use crate::domain::finding::{FindingDraft, log_line, metric};
 
 /// Prebid majors at or below this are several yearly releases behind (v7 dates
@@ -244,7 +245,19 @@ impl Rule for ConsentNotWired {
             .scripts
             .iter()
             .find(|script| script.category == ScriptCategory::Cmp);
-        if !prebid_ignores_consent || (cmp.is_none() && !ctx.capture.consent_accepted) {
+        // Where the bidder checks saw the bid requests leave without a consent
+        // string, that finding names the same gap with what it caused.
+        let reported_per_bidder = ctx.diagnostics.is_some_and(|diagnostics| {
+            diagnostics
+                .bidders
+                .iter()
+                .flat_map(|bidder| &bidder.checks)
+                .any(|check| check.code == codes::CONSENT_NO_STRING)
+        });
+        if !prebid_ignores_consent
+            || reported_per_bidder
+            || (cmp.is_none() && !ctx.capture.consent_accepted)
+        {
             return Vec::new();
         }
         let mut finding = heuristic(

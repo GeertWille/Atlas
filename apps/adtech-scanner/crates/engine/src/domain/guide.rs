@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use super::chunks::LineRange;
-use super::knowledge::{has_call_site, logic_anchors};
+use super::knowledge::{ad_api_calls, has_call_site, logic_anchors};
 use super::questions::{
     AD_ORCHESTRATION, AUCTION_GATING, CONSENT_GATING, DEVICE_DETECTION, LAZY_LOAD,
     PUBLISHER_SPECIFIC, SLOT_DEFINITION, TIMING_CONFIG,
@@ -75,9 +75,12 @@ pub fn names_a_placement(text: &str, literals: &[String]) -> bool {
     })
 }
 
-/// The line ranges of a vendor library that hold the publisher's own
-/// placements, which keeps them searchable while the rest of the library is
-/// only searched on request.
+/// The line ranges of a vendor library that can hold the publisher's own
+/// code: they name one of the page's placements or call the ad stack the way
+/// only orchestration code does. A wrapper bundled with the library (before
+/// it, after it, or under a renamed global) stays searchable through these
+/// calls even when the page never got as far as an auction, while the rest of
+/// the library is only searched on request.
 pub fn publisher_ranges(
     lines: &[String],
     chunks: &[LineRange],
@@ -86,7 +89,10 @@ pub fn publisher_ranges(
     chunks
         .iter()
         .copied()
-        .filter(|chunk| names_a_placement(&chunk.of(lines).join("\n"), literals))
+        .filter(|chunk| {
+            let text = chunk.of(lines).join("\n");
+            names_a_placement(&text, literals) || ad_api_calls(&text) > 0
+        })
         .collect()
 }
 
@@ -339,7 +345,33 @@ mod tests {
         );
         assert_eq!(
             publisher_ranges(&source, &chunks, &literals),
-            [LineRange { start: 8, end: 8 }]
+            [
+                LineRange { start: 6, end: 6 },
+                LineRange { start: 8, end: 8 }
+            ]
+        );
+    }
+
+    #[test]
+    fn a_wrapper_bundled_with_the_library_stays_searchable_without_any_telemetry() {
+        // The auction never started, so the telemetry names no placement, and
+        // the publisher renamed the Prebid global.
+        let mut source = vec!["function adapterInternals(){return bidderSettings}".to_string(); 6];
+        source[0] = "function isMobile(){return window.innerWidth>768}".into();
+        source[1] = "if(isMobile()){addEventListener('scroll',start)}".into();
+        source[2] = "function start(){acmeHb.requestBids({timeout:800})}".into();
+        source[5] = "window.googletag.cmd.push(function(){googletag.defineSlot(p,s,i)})".into();
+        let chunks = [
+            LineRange { start: 1, end: 3 },
+            LineRange { start: 4, end: 5 },
+            LineRange { start: 6, end: 6 },
+        ];
+        assert_eq!(
+            publisher_ranges(&source, &chunks, &[]),
+            [
+                LineRange { start: 1, end: 3 },
+                LineRange { start: 6, end: 6 }
+            ]
         );
     }
 

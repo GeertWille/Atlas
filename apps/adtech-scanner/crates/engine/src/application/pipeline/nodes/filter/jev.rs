@@ -6,16 +6,16 @@
 use adscan_model::{LogKind, LogLevel};
 use serde_json::{Value, json};
 
-use super::{Candidate, ScriptVerdict, Tally, apply_verdict, audit_excerpt};
-use crate::application::judge::{JudgeRequest, JudgeResponse};
+use super::{AUDIT_EXCERPT_CHARS, Candidate, ScriptVerdict, Tally, apply_verdict};
+use crate::application::judge::{JudgeRequest, JudgeResponse, questions_for_audit};
 use crate::application::llm::LlmError;
-use crate::application::pipeline::audit::StepRun;
+use crate::application::pipeline::audit::{AuditExcerpts, StepRun};
 use crate::application::pipeline::judging::{BatchEnd, JudgeWork, judge_batch};
 use crate::application::pipeline::state::NodeError;
 use crate::domain::chunks::split_text;
 use crate::domain::pricing::JEV_SYSTEM_ONE;
 use crate::domain::questions::{
-    AD_ORCHESTRATION, PUBLISHER_SPECIFIC, QUESTION_SET_VERSION, YesNoQuestion, triage_questions,
+    AD_ORCHESTRATION, PUBLISHER_SPECIFIC, QUESTION_SET_VERSION, triage_questions,
 };
 use crate::domain::triage::{
     ANALYSE_THRESHOLD, DROP_THRESHOLD, MAX_SCREENED_PARTS, PUBLISHER_SPECIFIC_THRESHOLD, PartScore,
@@ -28,7 +28,8 @@ struct Part {
     identifiers: Vec<&'static str>,
     /// Taken when the request is built, so the source is held once.
     code: String,
-    excerpt: String,
+    /// The start of the code, in case this part is the one the audit entry shows.
+    head: String,
     score: Option<PartScore>,
 }
 
@@ -101,6 +102,7 @@ pub(super) async fn classify(
     api_key: &str,
     pending: &mut Vec<Candidate>,
     tally: &mut Tally,
+    excerpts: &mut AuditExcerpts,
 ) -> Result<Option<LlmError>, NodeError> {
     let mut work = plan(run, std::mem::take(pending))?;
     run.log(
@@ -115,7 +117,7 @@ pub(super) async fn classify(
         Some(json!({
             "model": JEV_SYSTEM_ONE,
             "questionSet": QUESTION_SET_VERSION,
-            "questions": triage_questions().iter().map(question_json).collect::<Vec<_>>(),
+            "questions": questions_for_audit(triage_questions()),
             "thresholds": thresholds_json(),
             "maxPartsPerScript": MAX_SCREENED_PARTS,
         })),
@@ -137,7 +139,7 @@ pub(super) async fn classify(
             .flatten();
         match decision {
             Some(decision) => {
-                log_decision(run, &screening, &decision).await?;
+                log_decision(run, &screening, &decision, excerpts).await?;
                 tally.classified += apply_verdict(
                     run.state,
                     &screening.candidate,
@@ -178,7 +180,10 @@ fn plan(run: &StepRun<'_>, candidates: Vec<Candidate>) -> Result<TriageWork, Nod
                 index: part.index,
                 identifiers: part.identifiers,
                 code: texts[part.index].to_string(),
-                excerpt: audit_excerpt(texts[part.index]),
+                head: texts[part.index]
+                    .chars()
+                    .take(AUDIT_EXCERPT_CHARS)
+                    .collect(),
                 score: None,
             })
             .collect();
@@ -202,6 +207,7 @@ async fn log_decision(
     run: &mut StepRun<'_>,
     screening: &Screening,
     decision: &TriageDecision,
+    excerpts: &mut AuditExcerpts,
 ) -> Result<(), NodeError> {
     let script_id = |index: usize| run.state.scripts[index].record.id.clone();
     let id = script_id(screening.candidate.script_index);
@@ -254,19 +260,10 @@ async fn log_decision(
                 "publisherSpecific": score.publisher_specific,
             })).collect::<Vec<_>>(),
         },
-        "excerpt": best.map(|(part, _)| part.excerpt.as_str()),
+        "excerpt": best.map(|(part, _)| excerpts.excerpt(&part.head, AUDIT_EXCERPT_CHARS)),
     });
     run.log(LogLevel::Info, LogKind::Classification, message, Some(data))
         .await
-}
-
-fn question_json(question: &YesNoQuestion) -> Value {
-    json!({
-        "id": question.id,
-        "instructions": question.instructions,
-        "yes": question.yes,
-        "no": question.no,
-    })
 }
 
 fn thresholds_json() -> Value {

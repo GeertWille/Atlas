@@ -17,7 +17,7 @@ use crate::application::AppError;
 use crate::application::llm::{
     AssistantBlock, AssistantTurn, LlmMessage, LlmRequest, StopReason, UserBlock,
 };
-use crate::application::pipeline::audit::{ModelCall, StepRun};
+use crate::application::pipeline::audit::{AuditExcerpts, ModelCall, StepRun};
 use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::domain::pricing::{TokenUsage, affordable_output_tokens, estimate_tokens};
 
@@ -25,11 +25,8 @@ const MAX_TOKENS_PER_TURN: u32 = 8_000;
 /// Below this a turn cannot hold thinking plus a useful tool call, so the
 /// loop stops instead of paying for a turn that will be cut off.
 const MIN_USEFUL_OUTPUT_TOKENS: u64 = 1_000;
-/// Tool results and the source inlined in the opening message are stretches
-/// of captured script source and raw telemetry, which must not be persisted.
-/// The audit trail keeps a short excerpt of each and stops keeping any once a
-/// scan's excerpts add up to the total, so reading a script chunk by chunk
-/// cannot copy it into the log.
+/// What the audit trail keeps of one tool result, of the source inlined in
+/// the opening message, and of both together over a scan.
 const MAX_LOGGED_TOOL_RESULT_CHARS: usize = 800;
 const MAX_LOGGED_INLINED_SOURCE_CHARS: usize = 300;
 const MAX_LOGGED_SOURCE_CHARS_PER_SCAN: usize = 24_000;
@@ -76,9 +73,7 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
     let toolbox = build_toolbox(run)?;
     mark_scripts_analyzed(run).await?;
     let aids = reading_aids(&toolbox, &guide);
-    let mut audit_excerpts = AuditExcerpts {
-        remaining_chars: MAX_LOGGED_SOURCE_CHARS_PER_SCAN,
-    };
+    let mut audit_excerpts = AuditExcerpts::new(MAX_LOGGED_SOURCE_CHARS_PER_SCAN);
 
     let heuristic_findings: Vec<_> = run
         .state
@@ -258,11 +253,10 @@ fn build_toolbox(run: &StepRun<'_>) -> Result<Toolbox, NodeError> {
             }
         })
         .collect();
-    Ok(Toolbox::new(
-        scripts,
-        run.state.capture()?,
-        run.state.telemetry()?,
-    ))
+    Ok(
+        Toolbox::new(scripts, run.state.capture()?, run.state.telemetry()?)
+            .with_bidder_checks(run.state.diagnostics.as_ref()),
+    )
 }
 
 async fn mark_scripts_analyzed(run: &mut StepRun<'_>) -> Result<(), NodeError> {
@@ -303,27 +297,6 @@ fn projected_prompt(last_usage: Option<TokenUsage>, pending_chars: usize) -> Tok
             cache_write: pending,
             ..TokenUsage::default()
         },
-    }
-}
-
-struct AuditExcerpts {
-    remaining_chars: usize,
-}
-
-impl AuditExcerpts {
-    /// The part of captured data (`what` names it) that goes into the audit
-    /// trail: at most `limit` characters of it.
-    fn take(&mut self, content: &str, limit: usize, what: &str) -> String {
-        let total = content.chars().count();
-        let kept = total.min(limit).min(self.remaining_chars);
-        self.remaining_chars -= kept;
-        if kept == total {
-            return content.to_string();
-        }
-        let excerpt: String = content.chars().take(kept).collect();
-        format!(
-            "{excerpt}\n[audit excerpt: {kept} of {total} characters; {what} is not stored in full]"
-        )
     }
 }
 
@@ -488,9 +461,7 @@ mod tests {
 
     #[test]
     fn audit_excerpts_are_capped_per_result_and_per_scan() {
-        let mut excerpts = AuditExcerpts {
-            remaining_chars: MAX_LOGGED_TOOL_RESULT_CHARS + 100,
-        };
+        let mut excerpts = AuditExcerpts::new(MAX_LOGGED_TOOL_RESULT_CHARS + 100);
         let mut take =
             |content: &str| excerpts.take(content, MAX_LOGGED_TOOL_RESULT_CHARS, "tool output");
         assert_eq!(take("3 matching lines"), "3 matching lines");

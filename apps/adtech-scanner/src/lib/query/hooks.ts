@@ -16,29 +16,35 @@ export function useSettings() {
   return useQuery({ queryKey: queryKeys.settings, queryFn: api.getSettings, staleTime: Number.POSITIVE_INFINITY });
 }
 
+const SETTINGS_UPDATE_KEY = ["settings", "update"] as const;
+
+/**
+ * Saves one patch and shows it at once. Each field of the settings screen saves on its own, so several
+ * saves are often under way together, and a response describes the settings as they were when that
+ * save was applied: it can lack what a later save already shows. The cache therefore takes nothing
+ * from the backend while another save is under way; the last one to finish reloads the stored settings.
+ */
 export function useUpdateSettings() {
   const client = useQueryClient();
+  const isLastSaveUnderWay = () => client.isMutating({ mutationKey: SETTINGS_UPDATE_KEY }) === 1;
   return useMutation({
+    mutationKey: SETTINGS_UPDATE_KEY,
     mutationFn: (patch: SettingsPatch) => api.updateSettings(patch),
     onMutate: async (patch) => {
       await client.cancelQueries({ queryKey: queryKeys.settings });
-      const previous = client.getQueryData<Settings>(queryKeys.settings);
-      if (previous) {
-        const { chromePath, ...rest } = patch;
-        client.setQueryData<Settings>(queryKeys.settings, {
-          ...previous,
-          ...rest,
-          chromePath: chromePath === undefined ? previous.chromePath : chromePath,
-        });
-      }
-      return { previous };
-    },
-    onError: (_error, _patch, context) => {
-      if (context?.previous) client.setQueryData(queryKeys.settings, context.previous);
+      const { chromePath, ...rest } = patch;
+      client.setQueryData<Settings>(
+        queryKeys.settings,
+        (current) =>
+          current && { ...current, ...rest, chromePath: chromePath === undefined ? current.chromePath : chromePath },
+      );
     },
     onSuccess: (settings, patch) => {
-      client.setQueryData(queryKeys.settings, settings);
+      if (isLastSaveUnderWay()) client.setQueryData(queryKeys.settings, settings);
       if (patch.chromePath !== undefined) void client.invalidateQueries({ queryKey: queryKeys.browser });
+    },
+    onSettled: () => {
+      if (isLastSaveUnderWay()) void client.invalidateQueries({ queryKey: queryKeys.settings });
     },
   });
 }

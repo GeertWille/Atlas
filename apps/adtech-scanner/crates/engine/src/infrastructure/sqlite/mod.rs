@@ -109,6 +109,10 @@ const MIGRATIONS: &[&str] = &[
     UPDATE settings
     SET data = json_set(data, '$.jevEnabled', json('false'), '$.hasTypesafeKey', json('false'));
     ",
+    "
+    ALTER TABLE scans ADD COLUMN diagnostics TEXT;
+    UPDATE settings SET data = json_set(data, '$.checkSellersJson', json('false'));
+    ",
 ];
 
 /// Implements the scan, log and settings repositories on one database.
@@ -209,6 +213,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_schema_version_two_database_gains_the_diagnostics_column_and_setting() {
+        const V2_SETTINGS: &str = r#"{"filterModel":"claude-haiku-5-5","analysisModel":"claude-sonnet-5-5","analysisEffort":"medium","budgetUsd":0.5,"chromePath":null,"headless":true,"defaultDevice":"desktop","defaultObserveSeconds":20,"theme":"system","hasApiKey":false,"jevEnabled":true,"hasTypesafeKey":false}"#;
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection.execute_batch(MIGRATIONS[1]).unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings (id, data) VALUES (1, ?1)",
+                [V2_SETTINGS],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO scans (id, url, hostname, device, status, started_at, options)
+                 VALUES ('old', 'https://a.test/', 'a.test', 'desktop', 'completed', 1, '{}')",
+                [],
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let stored: String = connection
+            .query_row("SELECT data FROM settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let settings: adscan_model::Settings = from_json(&stored).unwrap();
+        assert!(settings.jev_enabled, "existing choices are kept");
+        assert!(!settings.check_sellers_json, "the new lookup starts off");
+        let diagnostics: Option<String> = connection
+            .query_row(
+                "SELECT diagnostics FROM scans WHERE id = 'old'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(diagnostics, None);
+    }
+
+    #[test]
     fn migrations_set_user_version_and_are_idempotent_across_reopens() {
         let dir = tempfile::tempdir().unwrap();
         for _ in 0..2 {
@@ -262,7 +307,7 @@ mod tests {
         let version: u32 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version as usize, MIGRATIONS.len());
         let stored: String = connection
             .query_row("SELECT data FROM settings WHERE id = 1", [], |row| {
                 row.get(0)

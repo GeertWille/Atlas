@@ -8,7 +8,6 @@ use tokio::task::JoinSet;
 
 use super::audit::{ModelCall, StepRun};
 use super::state::NodeError;
-use crate::application::AppError;
 use crate::application::judge::{JudgeRequest, JudgeResponse};
 use crate::application::llm::LlmError;
 use crate::domain::pricing::{TokenUsage, cost_of};
@@ -45,7 +44,9 @@ struct Finished {
 }
 
 /// Sends the requests of jobs `0..jobs`. Requests already under way when the
-/// batch ends early are still awaited, so what they cost is booked.
+/// batch ends early are still awaited, so what they cost is booked. The first
+/// reason to stop sending is the one reported: a request that fails after the
+/// budget ran out does not turn a budget stop into a provider failure.
 pub async fn judge_batch(
     run: &mut StepRun<'_>,
     api_key: &str,
@@ -88,11 +89,19 @@ pub async fn judge_batch(
         let Some(joined) = in_flight.join_next().await else {
             return Ok(end);
         };
-        let finished = joined.map_err(|error| {
-            NodeError::Failed(AppError::Internal(format!(
-                "a decision-model request stopped unexpectedly: {error}"
-            )))
-        })?;
+        let finished = match joined {
+            Ok(finished) => finished,
+            // A request that panicked is one more way for the provider call
+            // to fail; the step's fallback handles it like any other.
+            Err(error) => {
+                if end == BatchEnd::Completed {
+                    end = BatchEnd::Failed(LlmError::InvalidResponse(format!(
+                        "a request stopped unexpectedly: {error}"
+                    )));
+                }
+                continue;
+            }
+        };
         reserved_usd -= finished.cost;
         match finished.answer {
             Ok(response) => {
@@ -111,7 +120,7 @@ pub async fn judge_batch(
             }
             Err(LlmError::Cancelled) => return Err(NodeError::Cancelled),
             Err(error) => {
-                if !matches!(end, BatchEnd::Failed(_)) {
+                if end == BatchEnd::Completed {
                     end = BatchEnd::Failed(error);
                 }
             }

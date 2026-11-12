@@ -138,9 +138,10 @@ test("with only a TypeSafe key the composer offers script triage and the scan sk
   await expect(triage).toContainText("Jev System One");
   await expect(triage).toContainText("Logic analysis needs an Anthropic key.");
 
-  // Onboarding still asks for the Anthropic key; it is skipped here.
+  // A stored TypeSafe key counts as set up: Home opens on the composer, not on the welcome screen.
   await page.getByRole("link", { name: "Home", exact: true }).click();
-  await page.getByRole("button", { name: "Continue without AI" }).click();
+  await expect(page).toHaveTitle("Home · Ad-Tech Scanner");
+  await expect(page.getByRole("button", { name: /Continue/ })).toHaveCount(0);
 
   await expect(page.getByText(/Estimated \$0\.006 for Jev script triage\./)).toBeVisible();
   await page.getByRole("button", { name: "Options" }).click();
@@ -167,8 +168,12 @@ test("with only a TypeSafe key the composer offers script triage and the scan sk
 
   await reportTab(page, "Audit trail").click();
   const steps = page.getByRole("navigation", { name: "Pipeline steps" });
-  await expect(steps.getByRole("button", { name: /Filter scripts/ })).toContainText("Classified 36 scripts");
-  await expect(steps.getByRole("button", { name: /Analyse logic/ })).toContainText("No Anthropic API key configured");
+  await expect(steps.getByRole("button", { name: /Filter scripts/ })).toContainText(
+    "Classified 14 of 14 undecided scripts",
+  );
+  await expect(steps.getByRole("button", { name: /Analyse logic/ })).toContainText(
+    "No Anthropic API key is configured",
+  );
 });
 
 for (const colorScheme of ["light", "dark"] as const) {
@@ -210,7 +215,6 @@ for (const colorScheme of ["light", "dark"] as const) {
       await page.getByRole("button", { name: "Remove key", exact: true }).click();
       await page.getByRole("alertdialog").getByRole("button", { name: "Remove key" }).click();
       await page.getByRole("link", { name: "Home", exact: true }).click();
-      await page.getByRole("button", { name: "Continue without AI" }).click();
       await page.getByRole("button", { name: "Options" }).click();
       await expect(page.getByRole("switch", { name: "AI script triage" })).toBeChecked();
       await toastsGone(page);

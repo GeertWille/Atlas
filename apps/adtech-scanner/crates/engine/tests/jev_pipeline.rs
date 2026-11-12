@@ -263,7 +263,7 @@ async fn jev_classifies_the_undecided_script_and_guides_the_analysis() {
             .iter()
             .map(|step| step.status)
             .collect::<Vec<_>>(),
-        [StepStatus::Completed; 8]
+        [StepStatus::Completed; 9]
     );
     assert!(
         requests_for(&claude, HAIKU).await.is_empty(),
@@ -990,6 +990,58 @@ async fn a_budget_too_small_for_jev_never_sends_the_script_to_the_dearer_filter_
 }
 
 #[tokio::test]
+async fn a_request_that_fails_after_the_budget_ran_out_does_not_send_scripts_to_the_filter_model() {
+    let claude = anthropic(None).await;
+    // The one request the budget pays for is still under way when the next
+    // one turns out to be unaffordable, and then fails.
+    let jev = typesafe(|_| {
+        ResponseTemplate::new(400)
+            .set_delay(Duration::from_millis(300))
+            .set_body_json(json!({ "detail": "Body is not valid UTF-8" }))
+    })
+    .await;
+    let page = page_with(&[(
+        "https://pub.example/js/promo.js",
+        "var x=window.hb_config;render(x)",
+    )]);
+    let harness = jev_harness(page, Some(&claude), &jev).await;
+    harness
+        .settings
+        .update(SettingsPatch {
+            // One triage request of a short script is estimated at about $0.00003.
+            budget_usd: Some(0.000_05),
+            ..SettingsPatch::default()
+        })
+        .await
+        .unwrap();
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert_eq!(judged_requests(&jev).await.len(), 1);
+    assert!(requests_for(&claude, HAIKU).await.is_empty());
+    assert_eq!(
+        step(&detail, PipelineNode::FilterScripts)
+            .summary
+            .as_deref(),
+        Some(
+            "Classified 0 of 2 undecided scripts; 3 scripts are ad-related (2 scripts were not classified by AI because the scan budget was reached)"
+        )
+    );
+    let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
+    assert!(
+        warnings(&logs)
+            .iter()
+            .all(|entry| !entry.message.contains("fall back")),
+        "nothing is handed to the dearer model: {:?}",
+        warnings(&logs)
+            .iter()
+            .map(|entry| &entry.message)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn usage_jev_does_not_report_is_estimated_and_marked_as_an_estimate() {
     let jev = typesafe(|request| {
         let code = request["state"]["code"].as_str().unwrap();
@@ -1130,6 +1182,54 @@ async fn persisted_audit_trail_of_a_jev_scan_holds_bounded_excerpts_never_script
         marks > 0 && marks < MARKS / 20,
         "{marks} of {MARKS} statements of the classified script were persisted"
     );
+}
+
+#[tokio::test]
+async fn the_excerpts_of_one_scan_are_bounded_however_many_scripts_are_classified() {
+    const SCRIPTS: usize = 120;
+    // Each script is longer than one excerpt and unlike every other.
+    let bodies: Vec<(String, String)> = (0..SCRIPTS)
+        .map(|n| {
+            (
+                format!("https://pub.example/js/widget{n}.js"),
+                format!(
+                    "var w{n}=el.dataset.adunit;{}",
+                    format!("mark{n:03}();").repeat(40)
+                ),
+            )
+        })
+        .collect();
+    let extra: Vec<(&str, &str)> = bodies
+        .iter()
+        .map(|(url, body)| (url.as_str(), body.as_str()))
+        .collect();
+    let jev = typesafe(|request| judged(request, |_, _| 0.02)).await;
+    let harness = jev_harness(page_with(&extra), None, &jev).await;
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+
+    let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
+    let decisions = classifications(&logs);
+    assert_eq!(
+        decisions.len(),
+        SCRIPTS + 1,
+        "every script still has its entry"
+    );
+    let excerpt_chars: usize = decisions
+        .iter()
+        .map(|decision| {
+            decision.data.as_ref().unwrap()["excerpt"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+        })
+        .sum();
+    assert_eq!(excerpt_chars, 24_000);
+    let last = decisions.last().unwrap().data.as_ref().unwrap();
+    assert_eq!(last["excerpt"], "");
+    assert_eq!(last["decision"]["route"], "jev-no");
 }
 
 // -- settings ---------------------------------------------------------------------------

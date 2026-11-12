@@ -5,7 +5,7 @@
 use adscan_model::{LogKind, LogLevel};
 use serde_json::{Map, Value, json};
 
-use crate::application::judge::{JudgeRequest, JudgeResponse};
+use crate::application::judge::{JudgeRequest, JudgeResponse, questions_for_audit};
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::judging::{BatchEnd, JudgeWork, judge_batch};
 use crate::application::pipeline::state::NodeError;
@@ -72,12 +72,7 @@ pub(super) async fn build(
         Some(json!({
             "model": JEV_SYSTEM_ONE,
             "questionSet": QUESTION_SET_VERSION,
-            "questions": QUESTIONS.iter().map(|question| json!({
-                "id": question.id,
-                "instructions": question.instructions,
-                "yes": question.yes,
-                "no": question.no,
-            })).collect::<Vec<_>>(),
+            "questions": questions_for_audit(&QUESTIONS),
             "minRank": guide::MIN_RANK,
             "maxEntries": guide::MAX_ENTRIES,
         })),

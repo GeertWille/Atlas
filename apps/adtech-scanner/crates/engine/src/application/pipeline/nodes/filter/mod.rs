@@ -11,13 +11,16 @@ use adscan_model::{FindingSource, LogKind, LogLevel, ScriptCategory};
 use serde_json::json;
 
 use crate::application::llm::LlmError;
-use crate::application::pipeline::audit::StepRun;
+use crate::application::pipeline::audit::{AuditExcerpts, StepRun};
 use crate::application::pipeline::state::{NodeError, NodeResult, ScanState};
 use crate::domain::pricing::JEV_SYSTEM_ONE;
 
 /// Script source the audit trail keeps per classified script. The models see
 /// more; the log must stay a short excerpt.
 const AUDIT_EXCERPT_CHARS: usize = 300;
+/// And per scan, so a page with hundreds of undecided scripts cannot copy a
+/// large part of its source into the log excerpt by excerpt.
+const AUDIT_EXCERPT_CHARS_PER_SCAN: usize = 24_000;
 
 /// An undecided script, with the scripts whose body is identical to it.
 struct Candidate {
@@ -82,15 +85,16 @@ async fn classify(
     tally: &mut Tally,
 ) -> Result<(), NodeError> {
     let api_key = run.job.api_key.clone();
+    let mut excerpts = AuditExcerpts::new(AUDIT_EXCERPT_CHARS_PER_SCAN);
     if let Some(jev_key) = run.job.jev_key.clone()
-        && let Some(error) = jev::classify(run, &jev_key, pending, tally).await?
+        && let Some(error) = jev::classify(run, &jev_key, pending, tally, &mut excerpts).await?
     {
         report_jev_failure(run, &error, pending, api_key.is_some()).await?;
     }
     if let Some(api_key) = api_key
         && !pending.is_empty()
     {
-        claude::classify(run, &api_key, pending, tally).await?;
+        claude::classify(run, &api_key, pending, tally, &mut excerpts).await?;
     }
     Ok(())
 }
@@ -134,10 +138,6 @@ fn apply_verdict(state: &mut ScanState, candidate: &Candidate, verdict: ScriptVe
         record.ad_probability = verdict.ad_probability;
     }
     candidate.script_count()
-}
-
-fn audit_excerpt(source: &str) -> String {
-    source.chars().take(AUDIT_EXCERPT_CHARS).collect()
 }
 
 async fn report_jev_failure(

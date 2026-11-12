@@ -11,6 +11,8 @@ use url::{Host, Url};
 
 use crate::application::llm::LlmError;
 
+const RETRY_AFTER_MS: &str = "retry-after-ms";
+
 #[derive(Debug, Clone, Copy)]
 pub struct RetryPolicy {
     /// Total tries, including the first.
@@ -141,16 +143,17 @@ fn is_retryable(status: StatusCode) -> bool {
         || status.is_server_error()
 }
 
+/// The wait the server asks for: `retry-after-ms` in milliseconds when it is
+/// sent, else `retry-after` in seconds. Never longer than `max`.
 fn retry_after(headers: &HeaderMap, max: Duration) -> Option<Duration> {
-    let seconds: f64 = headers
-        .get(RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    (seconds.is_finite() && seconds >= 0.0)
-        .then(|| Duration::from_secs_f64(seconds.min(max.as_secs_f64())))
+    let number = |name: &str| -> Option<f64> {
+        let value: f64 = headers.get(name)?.to_str().ok()?.trim().parse().ok()?;
+        (value.is_finite() && value >= 0.0).then_some(value)
+    };
+    let seconds = number(RETRY_AFTER_MS)
+        .map(|milliseconds| milliseconds / 1000.0)
+        .or_else(|| number(RETRY_AFTER.as_str()))?;
+    Some(Duration::from_secs_f64(seconds.min(max.as_secs_f64())))
 }
 
 fn exhausted_error(status: StatusCode, attempts: u32) -> LlmError {
@@ -189,5 +192,17 @@ mod tests {
             assert_eq!(retry_after(&headers(unusable), max), None, "{unusable}");
         }
         assert_eq!(retry_after(&HeaderMap::new(), max), None);
+    }
+
+    #[test]
+    fn retry_after_in_milliseconds_takes_precedence() {
+        let max = Duration::from_secs(10);
+        let mut both = headers("7");
+        both.insert(RETRY_AFTER_MS, HeaderValue::from_static("250"));
+        assert_eq!(retry_after(&both, max), Some(Duration::from_millis(250)));
+        both.insert(RETRY_AFTER_MS, HeaderValue::from_static("60000"));
+        assert_eq!(retry_after(&both, max), Some(max));
+        both.insert(RETRY_AFTER_MS, HeaderValue::from_static("soon"));
+        assert_eq!(retry_after(&both, max), Some(Duration::from_secs(7)));
     }
 }

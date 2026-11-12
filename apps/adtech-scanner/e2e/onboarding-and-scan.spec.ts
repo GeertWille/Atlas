@@ -73,7 +73,9 @@ test("first run: onboarding → demo scan → live view → report with every ta
   // Audit trail: steps with skipped AI phases, and their log entries
   await reportTab(page, "Audit trail").click();
   const stepNav = page.getByRole("navigation", { name: "Pipeline steps" });
-  await expect(stepNav.getByRole("button", { name: /Analyse logic/ })).toContainText("No Anthropic API key configured");
+  await expect(stepNav.getByRole("button", { name: /Analyse logic/ })).toContainText(
+    "AI analysis is turned off for this scan",
+  );
   await stepNav.getByRole("button", { name: /Deterministic checks/ }).click();
   await expect(
     page.getByRole("region", { name: "Log entries" }).getByText("Evaluating 14 deterministic rules"),

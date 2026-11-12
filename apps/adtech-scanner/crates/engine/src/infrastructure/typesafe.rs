@@ -28,6 +28,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// A scan has another classifier to fall back on, so a long server-requested
 /// wait is not worth honouring.
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
+/// How a 400 says that the request exceeds the model's context.
+const CONTEXT_OVERFLOW: &str = "max_tokens_exceeded";
 /// Error text ends up in the audit trail; the API bounds it, this makes sure.
 const MAX_ERROR_MESSAGE_CHARS: usize = 300;
 
@@ -195,7 +197,7 @@ fn permanent_error(status: StatusCode, message: String) -> LlmError {
         402 => LlmError::Billing(message),
         404 => LlmError::NotFound(message),
         413 => LlmError::RequestTooLarge,
-        400 if message.contains("max_tokens_exceeded") => LlmError::RequestTooLarge,
+        400 if message.contains(CONTEXT_OVERFLOW) => LlmError::RequestTooLarge,
         400 | 415 | 422 => LlmError::BadRequest(message),
         other => LlmError::InvalidResponse(format!("HTTP {other}: {message}")),
     }
@@ -213,6 +215,10 @@ fn error_message(body: &Value) -> Option<String> {
             match (field("error_type"), field("message")) {
                 (Some(kind), Some(message)) => format!("{kind}: {message}"),
                 (Some(only), None) | (None, Some(only)) => only.to_string(),
+                // Where the context-overflow marker sits is not documented.
+                (None, None) if detail.to_string().contains(CONTEXT_OVERFLOW) => {
+                    CONTEXT_OVERFLOW.to_string()
+                }
                 (None, None) => return None,
             }
         }
@@ -248,6 +254,15 @@ mod tests {
         assert_eq!(
             error_message(&json!({ "detail": { "error_type": "max_tokens_exceeded" } })).as_deref(),
             Some("max_tokens_exceeded")
+        );
+        assert_eq!(
+            error_message(&json!({ "detail": { "code": "max_tokens_exceeded", "limit": 32000 } }))
+                .as_deref(),
+            Some("max_tokens_exceeded")
+        );
+        assert_eq!(
+            error_message(&json!({ "detail": { "code": "other" } })),
+            None
         );
         assert_eq!(error_message(&json!({ "detail": 7 })), None);
         assert_eq!(error_message(&json!({ "error": "other envelope" })), None);

@@ -1,11 +1,12 @@
 //! Everything the application needs from the outside world.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use adscan_model::{
-    AdSlot, ApiProvider, Auction, BrowserInfo, Capture, CaptureRequest, DashboardStats, Finding,
-    LogEntry, LogSearchHit, PipelineStep, ScanDetail, ScanEvent, ScanList, ScanListQuery,
-    ScanMetrics, ScanOptions, ScanSummary, ScriptRecord, Settings,
+    AdSlot, ApiProvider, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureRequest,
+    DashboardStats, Finding, LogEntry, LogSearchHit, PipelineStep, ScanDetail, ScanEvent, ScanList,
+    ScanListQuery, ScanMetrics, ScanOptions, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -31,6 +32,11 @@ pub trait ScanRepository: Send + Sync {
         slots: &[AdSlot],
     ) -> RepoResult<()>;
     async fn save_scripts(&self, scan_id: &str, scripts: &[ScriptRecord]) -> RepoResult<()>;
+    async fn save_diagnostics(
+        &self,
+        scan_id: &str,
+        diagnostics: &BidderDiagnostics,
+    ) -> RepoResult<()>;
     /// Replaces the scan's findings with `findings`, in order.
     async fn save_findings(&self, scan_id: &str, findings: &[Finding]) -> RepoResult<()>;
     async fn save_overview(&self, scan_id: &str, overview: &str) -> RepoResult<()>;
@@ -133,6 +139,55 @@ pub trait CaptureSource: Send + Sync {
         cancel: CancellationToken,
         on_progress: ProgressFn,
     ) -> Result<Capture, CaptureError>;
+}
+
+/// A request for a public text file of a website (ads.txt, sellers.json).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicFileRequest {
+    pub url: String,
+    /// A larger body is an error, not a truncated file.
+    pub max_bytes: usize,
+    /// For the whole exchange, redirects included.
+    pub timeout: Duration,
+    /// `scheme://host:port` of the scanned page when it is served from this
+    /// machine. It is the only origin that may be contacted although it is
+    /// not public and not https.
+    pub loopback_origin: Option<String>,
+}
+
+/// The final answer after redirects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicFile {
+    pub status: u16,
+    pub content_type: Option<String>,
+    /// In memory only; empty unless `status` is a success.
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum FetchError {
+    /// The address, or one it redirected to, must not be contacted.
+    #[error("{0}")]
+    Refused(String),
+    #[error("the file is larger than {0} bytes")]
+    TooLarge(usize),
+    #[error("the request timed out")]
+    TimedOut,
+    #[error("{0}")]
+    Network(String),
+    #[error("The scan was cancelled")]
+    Cancelled,
+}
+
+/// Reads public files from the open web: no cookies, no credentials, public
+/// https addresses only.
+#[async_trait]
+pub trait PublicFileFetcher: Send + Sync {
+    async fn fetch(
+        &self,
+        request: &PublicFileRequest,
+        cancel: &CancellationToken,
+    ) -> Result<PublicFile, FetchError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

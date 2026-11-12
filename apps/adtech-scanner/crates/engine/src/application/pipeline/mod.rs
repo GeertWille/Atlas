@@ -18,7 +18,7 @@ use self::state::{NodeError, NodeResult, ScanJob, ScanState};
 use super::AppError;
 use super::ports::{
     CaptureSource, Clock, EventSink, IdGenerator, JudgeClient, LlmClient, LogRepository,
-    RepoResult, ScanRepository, SourceFormatter,
+    PublicFileFetcher, RepoResult, ScanRepository, SourceFormatter,
 };
 use crate::domain::pricing::Budget;
 
@@ -29,6 +29,7 @@ pub struct PipelineDeps {
     pub llm: Arc<dyn LlmClient>,
     pub judge: Arc<dyn JudgeClient>,
     pub capture: Arc<dyn CaptureSource>,
+    pub files: Arc<dyn PublicFileFetcher>,
     pub formatter: Arc<dyn SourceFormatter>,
     pub events: Arc<dyn EventSink>,
     pub clock: Arc<dyn Clock>,
@@ -216,6 +217,7 @@ async fn run_node(node: PipelineNode, run: &mut StepRun<'_>) -> NodeResult {
         PipelineNode::LaunchBrowser => nodes::capture::launch_browser(run).await,
         PipelineNode::Capture => nodes::capture::capture_page(run).await,
         PipelineNode::Telemetry => nodes::telemetry::derive_telemetry(run).await,
+        PipelineNode::BidderDiagnostics => nodes::diagnostics::diagnose_bidders(run).await,
         PipelineNode::Heuristics => nodes::heuristics::run_rules(run).await,
         PipelineNode::FilterScripts => nodes::filter::classify_scripts(run).await,
         PipelineNode::Beautify => nodes::beautify::beautify_scripts(run).await,
@@ -229,6 +231,7 @@ pub fn node_label(node: PipelineNode) -> &'static str {
         PipelineNode::LaunchBrowser => "Browser launch",
         PipelineNode::Capture => "Page capture",
         PipelineNode::Telemetry => "Telemetry",
+        PipelineNode::BidderDiagnostics => "Bidder checks",
         PipelineNode::Heuristics => "Heuristic checks",
         PipelineNode::FilterScripts => "Script classification",
         PipelineNode::Beautify => "Beautify",

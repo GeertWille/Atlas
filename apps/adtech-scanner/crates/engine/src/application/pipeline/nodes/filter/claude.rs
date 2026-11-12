@@ -7,10 +7,10 @@ use adscan_model::{ApiProvider, CapturedScript, Effort, LogKind, LogLevel, Scrip
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{Candidate, ScriptVerdict, Tally, apply_verdict, audit_excerpt};
+use super::{AUDIT_EXCERPT_CHARS, Candidate, ScriptVerdict, Tally, apply_verdict};
 use crate::application::AppError;
 use crate::application::llm::{LlmMessage, LlmRequest, StopReason, UserBlock};
-use crate::application::pipeline::audit::{ModelCall, StepRun};
+use crate::application::pipeline::audit::{AuditExcerpts, ModelCall, StepRun};
 use crate::application::pipeline::state::NodeError;
 use crate::domain::knowledge::{identifier_counts, is_ad_related};
 use crate::domain::pricing::{TokenUsage, cost_of, estimate_tokens};
@@ -114,6 +114,7 @@ pub(super) async fn classify(
     api_key: &str,
     pending: &mut Vec<Candidate>,
     tally: &mut Tally,
+    excerpts: &mut AuditExcerpts,
 ) -> Result<(), NodeError> {
     let capture = run.state.capture()?;
     let prompted: Vec<Prompted> = pending
@@ -123,7 +124,7 @@ pub(super) async fn classify(
             let captured = &capture.scripts[candidate.script_index];
             Prompted {
                 prompt: describe_for_model(script, captured, &candidate.hints),
-                audit: describe_for_audit(script, captured, &candidate.hints),
+                audit: describe_for_audit(script, captured, &candidate.hints, excerpts),
                 candidate,
             }
         })
@@ -213,10 +214,11 @@ fn describe_for_audit(
     script: &DescribedScript,
     captured: &CapturedScript,
     hints: &[String],
+    excerpts: &mut AuditExcerpts,
 ) -> String {
     let record = &script.record;
     let total = captured.body.chars().count();
-    let excerpt = audit_excerpt(&captured.body);
+    let excerpt = excerpts.excerpt(&captured.body, AUDIT_EXCERPT_CHARS);
     let kept = excerpt.chars().count();
     format!(
         "{} {} ({} bytes, hints: {})\n[excerpt: first {kept} of {total} characters]\n{excerpt}",

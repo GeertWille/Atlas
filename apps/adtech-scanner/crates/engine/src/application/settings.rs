@@ -161,6 +161,9 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) -> Result<(), Doma
     if let Some(jev_enabled) = patch.jev_enabled {
         settings.jev_enabled = jev_enabled;
     }
+    if let Some(check_sellers_json) = patch.check_sellers_json {
+        settings.check_sellers_json = check_sellers_json;
+    }
     Ok(())
 }
 

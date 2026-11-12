@@ -42,6 +42,26 @@ pub struct Capture {
     /// Final scroll depth reached, 0-1.
     pub max_scroll_depth: f64,
     pub consent_accepted: bool,
+    /// What the bidders' endpoints answered, reduced to a status and a short
+    /// reason. The response bodies themselves are dropped during capture.
+    #[serde(default)]
+    pub bid_responses: Vec<ObservedBidResponse>,
+}
+
+/// One answer of a known bidder endpoint, as seen on the network.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ObservedBidResponse {
+    /// ms since navigation start when the response arrived.
+    pub t: f64,
+    /// Prebid bidder code the endpoint belongs to.
+    pub bidder: String,
+    pub host: String,
+    /// `None` when the request failed before any response.
+    pub status: Option<u16>,
+    /// The endpoint's own explanation for not bidding, or the network error.
+    /// At most 200 characters.
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -130,6 +150,17 @@ pub enum TrackerEventKind {
         auction_id: String,
         bidder: String,
         ad_unit_codes: Vec<String>,
+        /// `gdprConsent.gdprApplies` of the bidder request. `None` when Prebid
+        /// attached no consent data at all.
+        #[serde(default)]
+        gdpr_applies: Option<bool>,
+        /// Whether the bidder request carried a TC string. The string itself
+        /// is never captured.
+        #[serde(default)]
+        has_consent_string: Option<bool>,
+        /// Supply chain nodes Prebid passed to the bidder.
+        #[serde(default)]
+        schain: Vec<SchainNode>,
     },
     BidResponse {
         auction_id: String,
@@ -233,6 +264,25 @@ pub enum TrackerEventKind {
         level: String,
         message: String,
     },
+
+    // -- Consent -----------------------------------------------------------------
+    /// The page exposes a consent API (`__tcfapi`); a stub counts.
+    CmpDetected {
+        /// "tcf"
+        api: String,
+    },
+    /// What the CMP told a TCF event listener. Derived flags only: the TC
+    /// string is never captured.
+    TcfState {
+        /// "tcloaded" | "cmpuishown" | "useractioncomplete"
+        event_status: Option<String>,
+        gdpr_applies: Option<bool>,
+        has_tc_string: bool,
+        /// Purposes (1-11) the user consented to.
+        purpose_consents: Vec<u32>,
+        /// IAB GVL ids of the vendors the user consented to.
+        vendor_consents: Vec<u32>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -241,4 +291,27 @@ pub struct TrackedAdUnit {
     pub code: String,
     pub sizes: Vec<String>,
     pub bidders: Vec<String>,
+    /// The ad unit's bids with their adapter params.
+    #[serde(default)]
+    pub bids: Vec<TrackedBid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackedBid {
+    pub bidder: String,
+    /// The adapter params as configured, depth and width bounded.
+    pub params: serde_json::Value,
+}
+
+/// One node of an OpenRTB supply chain object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchainNode {
+    /// Canonical domain of the advertising system.
+    pub asi: String,
+    /// Seller id within that system.
+    pub sid: String,
+    /// Whether the node takes part in the flow of payment.
+    pub hp: Option<bool>,
 }

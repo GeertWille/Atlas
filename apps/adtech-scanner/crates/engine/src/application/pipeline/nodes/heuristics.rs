@@ -9,6 +9,7 @@ pub async fn run_rules(run: &mut StepRun<'_>) -> NodeResult {
     let hits = heuristics::evaluate(&RuleContext {
         capture: run.state.capture()?,
         telemetry: run.state.telemetry()?,
+        diagnostics: run.state.diagnostics.as_ref(),
         scripts: &scripts,
     });
     let rule_count = heuristics::all_rules().len();

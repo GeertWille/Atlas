@@ -1,6 +1,7 @@
 //! Pure domain logic: no I/O, no async runtime, no storage or HTTP types.
 
 pub mod chunks;
+pub mod diagnostics;
 pub mod error;
 pub mod finding;
 pub mod guide;

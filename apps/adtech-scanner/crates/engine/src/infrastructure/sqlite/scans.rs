@@ -1,6 +1,7 @@
 use adscan_model::{
-    AdSlot, Auction, DashboardStats, Finding, PipelineStep, ScanDetail, ScanList, ScanListQuery,
-    ScanMetrics, ScanOptions, ScanStatus, ScanSummary, ScriptRecord, SeverityCounts, StepStatus,
+    AdSlot, Auction, BidderDiagnostics, DashboardStats, Finding, PipelineStep, ScanDetail,
+    ScanList, ScanListQuery, ScanMetrics, ScanOptions, ScanStatus, ScanSummary, ScriptRecord,
+    SeverityCounts, StepStatus,
 };
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
@@ -82,6 +83,23 @@ impl ScanRepository for SqliteStore {
         .await
     }
 
+    async fn save_diagnostics(
+        &self,
+        scan_id: &str,
+        diagnostics: &BidderDiagnostics,
+    ) -> RepoResult<()> {
+        let scan_id = scan_id.to_string();
+        let diagnostics = to_json(diagnostics);
+        self.call(move |connection| {
+            connection.execute(
+                "UPDATE scans SET diagnostics = ?2 WHERE id = ?1",
+                params![scan_id, diagnostics?],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     async fn save_findings(&self, scan_id: &str, findings: &[Finding]) -> RepoResult<()> {
         let scan_id = scan_id.to_string();
         let findings = findings.to_vec();
@@ -137,12 +155,12 @@ impl ScanRepository for SqliteStore {
             let Some(summary) = read_summary_by_id(connection, &scan_id)? else {
                 return Ok(None);
             };
-            let (options, metrics, overview): (String, Option<String>, Option<String>) = connection
-                .query_row(
-                    "SELECT options, metrics, overview FROM scans WHERE id = ?1",
-                    [&scan_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )?;
+            type Columns = (String, Option<String>, Option<String>, Option<String>);
+            let (options, metrics, overview, diagnostics): Columns = connection.query_row(
+                "SELECT options, metrics, overview, diagnostics FROM scans WHERE id = ?1",
+                [&scan_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
             Ok(Some(ScanDetail {
                 summary,
                 options: from_json(&options)?,
@@ -157,6 +175,7 @@ impl ScanRepository for SqliteStore {
                 scripts: read_rows(connection, "scripts", "position", &scan_id)?,
                 steps: read_rows(connection, "steps", "seq", &scan_id)?,
                 overview,
+                bidder_diagnostics: diagnostics.as_deref().map(from_json).transpose()?,
             }))
         })
         .await

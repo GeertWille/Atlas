@@ -53,6 +53,11 @@ test("the built frontend runs under the production CSP without a violation", asy
   expect(reloaded).toContain("loaded /theme-boot.js");
 
   const fonts = await browser.execute(async () => {
+    // A font file is only fetched once some text on screen uses it, and nothing guarantees that for
+    // the monospace face on this screen. Ask for both, so the check is about the policy, not timing.
+    await Promise.all(
+      ['13px "Inter Variable"', '13px "JetBrains Mono Variable"'].map((font) => document.fonts.load(font)),
+    );
     await document.fonts.ready;
     return {
       body: getComputedStyle(document.body).fontFamily,

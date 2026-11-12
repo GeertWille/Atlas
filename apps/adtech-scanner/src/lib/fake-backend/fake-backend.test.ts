@@ -89,8 +89,10 @@ describe("a full AI scan of the reference-bug site", () => {
 
 describe("scans without the model", () => {
   test.each([
-    ["no API key", false, true, "No Anthropic API key configured"],
-    ["AI disabled for the scan", true, false, "AI analysis disabled for this scan"],
+    ["no API key", false, true, "No Anthropic API key is configured"],
+    ["AI disabled for the scan", true, false, "AI analysis is turned off for this scan"],
+    // The backend checks the scan's own switch first, which is also what a composer without a key sends.
+    ["AI disabled and no API key", false, false, "AI analysis is turned off for this scan"],
   ])("%s: only deterministic checks run", async (_name, hasKey, aiEnabled, reason) => {
     const api = createFakeBackend({ profile: "fresh", speed: 5000 });
     if (hasKey) await api.setApiKey(VALID_KEY);
@@ -289,14 +291,16 @@ describe("scans with Jev System One", () => {
     const { detail, step } = await withJev({ anthropicKey: false });
     expect(byModel(detail.scripts, "jev-1.14.0").length).toBeGreaterThan(10);
     expect(step("filterScripts")).toMatchObject({ status: "completed", model: "jev-1.14.0" });
-    expect(step("beautify")).toMatchObject({ status: "skipped", summary: "No Anthropic API key configured" });
-    expect(step("analyzeLogic")).toMatchObject({ status: "skipped", summary: "No Anthropic API key configured" });
+    expect(step("beautify")).toMatchObject({ status: "skipped", summary: "No Anthropic API key is configured" });
+    expect(step("analyzeLogic")).toMatchObject({ status: "skipped", summary: "No Anthropic API key is configured" });
     expect(step("synthesize")).toMatchObject({ status: "completed", model: null });
     expect(detail.scripts.some((script) => script.analyzed)).toBe(false);
     expect(detail.findings.every((finding) => finding.source === "heuristic")).toBe(true);
     expect(detail.summary.aiUsed).toBe(true);
     expect(detail.summary.costUsd).toBeGreaterThan(0);
     expect(detail.summary.costUsd).toBeLessThan(0.01);
+    expect(detail.overview).toContain("Scripts were classified by AI, but wrapper logic was not analysed");
+    expect(detail.overview).not.toContain("Only deterministic checks ran");
   });
 
   test("when Jev fails mid-scan the remaining scripts go to Claude Haiku, with a warning and a caveat", async () => {

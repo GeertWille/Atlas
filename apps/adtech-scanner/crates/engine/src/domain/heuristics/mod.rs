@@ -3,6 +3,7 @@
 //! Every rule is one unit behind [`Rule`]; [`all_rules`] is the single place
 //! they are registered.
 
+mod bidders;
 mod delivery;
 mod lazy;
 mod setup;
@@ -11,8 +12,8 @@ mod timing;
 use std::collections::BTreeMap;
 
 use adscan_model::{
-    AdSlot, Auction, Bid, BidStatus, Capture, DeviceProfile, FindingCategory, FindingSource,
-    ScriptRecord, Severity, TrackerEventKind as Ev,
+    AdSlot, Auction, Bid, BidStatus, BidderDiagnostics, Capture, DeviceProfile, FindingCategory,
+    FindingSource, ScriptRecord, Severity, TrackerEventKind as Ev,
 };
 
 use super::finding::{FindingDraft, metric};
@@ -43,6 +44,15 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(delivery::SlotsOutsideHeaderBidding),
         Box::new(delivery::WonBidNotRendered),
         Box::new(delivery::BiddersNeverBid),
+        Box::new(bidders::BidderParamsInvalid),
+        Box::new(bidders::BidderTestIds),
+        Box::new(bidders::BidderEndpointErrors),
+        Box::new(bidders::AdsTxtMissing),
+        Box::new(bidders::BiddersNotInAdsTxt),
+        Box::new(bidders::AdsTxtInvalidLines),
+        Box::new(bidders::SellersJsonIssues),
+        Box::new(bidders::AuctionBeforeConsent),
+        Box::new(bidders::BiddersWithoutConsent),
         Box::new(setup::NoPriceFloors),
         Box::new(setup::DuplicatePrebid),
         Box::new(setup::AdLibraryLoadedTwice),
@@ -72,6 +82,8 @@ pub fn evaluate(ctx: &RuleContext) -> Vec<RuleHit> {
 pub struct RuleContext<'a> {
     pub capture: &'a Capture,
     pub telemetry: &'a Telemetry,
+    /// `None` when the bidder checks did not run.
+    pub diagnostics: Option<&'a BidderDiagnostics>,
     pub scripts: &'a [ScriptRecord],
 }
 

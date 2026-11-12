@@ -32,8 +32,8 @@ pub async fn beautify_scripts(run: &mut StepRun<'_>) -> NodeResult {
         );
         let data = json!({ "scriptId": record.id, "lines": formatted.lines.len() });
         // A stock Prebid build drowns every search in library internals, so
-        // only the stretches that name this page's placements stay in the
-        // default search. The whole file remains readable by id.
+        // only the stretches that can be the publisher's own code stay in
+        // the default search. The whole file remains readable by id.
         let default_search = (record.category == ScriptCategory::Prebid).then(|| {
             publisher_ranges(
                 &formatted.lines,

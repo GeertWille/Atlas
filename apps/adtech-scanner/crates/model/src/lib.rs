@@ -83,6 +83,10 @@ contract! {
         pub jev_enabled: bool,
         /// Read-only: whether a TypeSafe API key is stored in the keychain.
         pub has_typesafe_key: bool,
+        /// Look up the publisher's seller ids in the sellers.json of the ad
+        /// exchanges its ads.txt names. Contacts those third-party hosts, so
+        /// it is off unless the user turns it on.
+        pub check_sellers_json: bool,
     }
 
     /// Partial update; omitted fields keep their current value.
@@ -110,6 +114,8 @@ contract! {
         pub theme: Option<ThemePreference>,
         #[ts(optional)]
         pub jev_enabled: Option<bool>,
+        #[ts(optional)]
+        pub check_sellers_json: Option<bool>,
     }
 
     pub struct BrowserInfo {
@@ -162,6 +168,7 @@ impl Default for Settings {
             has_api_key: false,
             jev_enabled: false,
             has_typesafe_key: false,
+            check_sellers_json: false,
         }
     }
 }
@@ -247,6 +254,10 @@ contract! {
         pub steps: Vec<PipelineStep>,
         /// Short executive summary written by the synthesis step.
         pub overview: Option<String>,
+        /// `None` for scans stored before the bidder checks existed, and for
+        /// scans that ended before they ran.
+        #[serde(default)]
+        pub bidder_diagnostics: Option<BidderDiagnostics>,
     }
 
     #[derive(Default)]
@@ -449,6 +460,121 @@ contract! {
 }
 
 // ---------------------------------------------------------------------------
+// Bidder diagnostics (derived results only - ads.txt, sellers.json and bid
+// responses are never persisted)
+// ---------------------------------------------------------------------------
+
+contract! {
+    /// What the scanner verified about each bidder's setup by itself.
+    pub struct BidderDiagnostics {
+        pub ads_txt: AdsTxtReport,
+        /// Whether sellers.json was looked up at the ad exchanges.
+        pub sellers_json_checked: bool,
+        pub consent: ConsentReport,
+        /// One entry per bidder of the page's ad units, by bidder code.
+        pub bidders: Vec<BidderDiagnosis>,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum AdsTxtStatus {
+        /// Fetched and parsed.
+        Found,
+        /// The site answered that there is no such file.
+        Missing,
+        /// The request failed or the answer was not an ads.txt file; nothing
+        /// can be concluded.
+        Unreadable,
+    }
+
+    pub struct AdsTxtReport {
+        /// The address the file was requested from.
+        pub url: String,
+        pub status: AdsTxtStatus,
+        /// Why the file could not be used, when it could not.
+        pub detail: Option<String>,
+        /// Valid seller records in the file.
+        pub record_count: u32,
+        pub invalid_line_count: u32,
+        /// The first few lines that are not valid records.
+        pub invalid_lines: Vec<AdsTxtLineProblem>,
+        pub owner_domain: Option<String>,
+        pub manager_domains: Vec<String>,
+    }
+
+    pub struct AdsTxtLineProblem {
+        /// 1-based line number in the file.
+        pub line: u32,
+        /// The line itself, at most 300 characters.
+        pub excerpt: String,
+        pub problem: String,
+    }
+
+    pub struct ConsentReport {
+        /// Whether the page exposes the TCF API (`__tcfapi`).
+        pub cmp_present: bool,
+        /// Whether Prebid's `consentManagement` is configured. `None` when no
+        /// Prebid config was captured.
+        pub consent_management_configured: Option<bool>,
+        /// What the CMP last reported. `None` when it reported nothing.
+        pub gdpr_applies: Option<bool>,
+        /// ms since navigation start when the CMP first reported a decided
+        /// consent state.
+        pub resolved_at_ms: Option<f64>,
+        pub auction_count: u32,
+        /// Auctions that started before the consent state was decided.
+        pub auctions_before_consent: u32,
+        /// Purposes (1-11) the user consented to, as last reported.
+        pub consented_purposes: Vec<u32>,
+    }
+
+    pub struct BidderDiagnosis {
+        pub bidder: String,
+        /// Bid requests and bids in this scan, for context.
+        pub requests: u32,
+        pub bids: u32,
+        /// Most certain first.
+        pub checks: Vec<DiagnosticCheck>,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum DiagnosticArea {
+        /// Adapter params of the ad units.
+        Params,
+        /// What the bidder's endpoint answered.
+        Response,
+        AdsTxt,
+        SellersJson,
+        Consent,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum DiagnosticStatus {
+        /// Checked and fine.
+        Pass,
+        /// Checked and wrong: a likely reason for missing bids.
+        Problem,
+        /// Worth a look, not necessarily wrong.
+        Notice,
+        /// Could not be checked; `summary` says why.
+        NotChecked,
+    }
+
+    pub struct DiagnosticCheck {
+        pub area: DiagnosticArea,
+        pub status: DiagnosticStatus,
+        /// Stable identifier of the outcome, e.g. "params-missing".
+        pub code: String,
+        /// One sentence, e.g. "placementId missing on 3 of 4 ad units".
+        pub summary: String,
+        /// Short supporting excerpt (the matching ads.txt line, the endpoint's
+        /// reason), at most 300 characters. Never a raw payload.
+        pub excerpt: Option<String>,
+        /// Ad unit codes the outcome concerns; empty when it concerns all.
+        pub ad_units: Vec<String>,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Scripts (metadata only - bodies are never persisted)
 // ---------------------------------------------------------------------------
 
@@ -521,6 +647,9 @@ contract! {
         Capture,
         /// Derive auctions, slots and metrics from the raw telemetry.
         Telemetry,
+        /// Check each bidder's params, responses, ads.txt, sellers.json and
+        /// consent.
+        BidderDiagnostics,
         /// Deterministic revenue-leak rules.
         Heuristics,
         /// Script triage: classify which scripts are ad-related.

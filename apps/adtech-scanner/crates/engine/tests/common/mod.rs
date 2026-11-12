@@ -2,12 +2,14 @@
 //! the pipeline and the Anthropic client under test are always the real ones.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureError, CaptureSource, EventSink, ProgressFn, SourceFormatter,
+    CaptureError, CaptureSource, EventSink, FetchError, ProgressFn, PublicFile, PublicFileFetcher,
+    PublicFileRequest, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
@@ -153,6 +155,7 @@ pub fn auction_round(start: f64, auction: &str) -> Vec<TrackerEvent> {
                     code: code.to_string(),
                     sizes: strings(&["300x250"]),
                     bidders: strings(&BIDDERS),
+                    bids: vec![],
                 })
                 .collect(),
         },
@@ -164,6 +167,9 @@ pub fn auction_round(start: f64, auction: &str) -> Vec<TrackerEvent> {
                 auction_id: auction.into(),
                 bidder: bidder.into(),
                 ad_unit_codes: strings(&SLOTS),
+                gdpr_applies: None,
+                has_consent_string: None,
+                schain: vec![],
             },
         ));
     }
@@ -300,6 +306,7 @@ pub fn capture_with(
         console: vec![],
         max_scroll_depth,
         consent_accepted: false,
+        bid_responses: vec![],
     }
 }
 
@@ -386,6 +393,71 @@ impl CaptureSource for FakeCaptureSource {
     }
 }
 
+/// The ads.txt of the fixture site: it authorises both fixture bidders.
+pub const SITE_ADS_TXT_URL: &str = "https://pub.example/ads.txt";
+pub const SITE_ADS_TXT: &str = "appnexus.com, 958, DIRECT\nrubiconproject.com, 1001, DIRECT\n";
+
+pub fn text_file(status: u16, body: &str) -> Result<PublicFile, FetchError> {
+    Ok(PublicFile {
+        status,
+        content_type: Some("text/plain".into()),
+        body: body.as_bytes().to_vec(),
+    })
+}
+
+/// The open web as far as a scan may read it: canned answers by address.
+/// An address without one cannot be connected to.
+pub struct FakePublicFiles {
+    answers: Mutex<HashMap<String, Result<PublicFile, FetchError>>>,
+    pub requests: Mutex<Vec<PublicFileRequest>>,
+}
+
+impl Default for FakePublicFiles {
+    fn default() -> Self {
+        let files = Self {
+            answers: Mutex::new(HashMap::new()),
+            requests: Mutex::new(Vec::new()),
+        };
+        files.answer(SITE_ADS_TXT_URL, text_file(200, SITE_ADS_TXT));
+        files
+    }
+}
+
+impl FakePublicFiles {
+    pub fn answer(&self, url: &str, answer: Result<PublicFile, FetchError>) {
+        self.answers.lock().unwrap().insert(url.to_string(), answer);
+    }
+
+    pub fn requested_urls(&self) -> Vec<String> {
+        let mut urls: Vec<String> = self
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
+        urls.sort();
+        urls
+    }
+}
+
+#[async_trait]
+impl PublicFileFetcher for FakePublicFiles {
+    async fn fetch(
+        &self,
+        request: &PublicFileRequest,
+        _cancel: &CancellationToken,
+    ) -> Result<PublicFile, FetchError> {
+        self.requests.lock().unwrap().push(request.clone());
+        self.answers
+            .lock()
+            .unwrap()
+            .get(&request.url)
+            .cloned()
+            .unwrap_or_else(|| Err(FetchError::Network("could not connect".into())))
+    }
+}
+
 #[derive(Default)]
 pub struct RecordingSink {
     events: Mutex<Vec<ScanEvent>>,
@@ -409,6 +481,7 @@ pub struct Harness {
     pub store: SqliteStore,
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
+    pub files: Arc<FakePublicFiles>,
 }
 
 pub fn fast_retry() -> RetryPolicy {
@@ -485,12 +558,14 @@ fn build_harness(
     ));
     let events = Arc::new(RecordingSink::default());
     let capture = Arc::new(FakeCaptureSource::new(behavior));
+    let files = Arc::new(FakePublicFiles::default());
     let deps = PipelineDeps {
         scans: Arc::new(store.clone()),
         logs: Arc::new(store.clone()),
         llm,
         judge,
         capture: capture.clone(),
+        files: files.clone(),
         formatter,
         events: events.clone(),
         clock: Arc::new(SystemClock),
@@ -502,6 +577,7 @@ fn build_harness(
         store,
         events,
         capture,
+        files,
     }
 }
 

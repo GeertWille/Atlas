@@ -1,7 +1,8 @@
 //! Executes the Phase 2 tools against in-memory sources and telemetry.
 
 use adscan_model::{
-    Capture, Evidence, EvidenceKind, FindingCategory, FindingSource, ScriptCategory, Severity,
+    BidderDiagnostics, Capture, Evidence, EvidenceKind, FindingCategory, FindingSource,
+    ScriptCategory, Severity,
 };
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
@@ -72,6 +73,7 @@ struct TelemetrySections {
     prebid_config: String,
     console: String,
     page_events: String,
+    bidder_checks: String,
 }
 
 pub struct Toolbox {
@@ -171,8 +173,15 @@ impl Toolbox {
                 prebid_config: render::prebid_config(capture),
                 console: render::console(capture),
                 page_events: render::page_events(capture),
+                bidder_checks: render::bidder_checks(None),
             },
         }
+    }
+
+    /// Adds what the bidder checks found, when they ran for this scan.
+    pub fn with_bidder_checks(mut self, diagnostics: Option<&BidderDiagnostics>) -> Self {
+        self.sections.bidder_checks = render::bidder_checks(diagnostics);
+        self
     }
 
     pub fn script_index(&self) -> String {
@@ -364,9 +373,10 @@ impl Toolbox {
             "prebid_config" => &self.sections.prebid_config,
             "console" => &self.sections.console,
             "page_events" => &self.sections.page_events,
+            "bidder_checks" => &self.sections.bidder_checks,
             other => {
                 return ToolOutcome::error(format!(
-                    "Unknown section `{other}`. Use auctions, slots, prebid_config, console or page_events."
+                    "Unknown section `{other}`. Use auctions, slots, prebid_config, console, page_events or bidder_checks."
                 ));
             }
         };
@@ -598,6 +608,7 @@ mod tests {
             console: vec![],
             max_scroll_depth: 0.0,
             consent_accepted: false,
+            bid_responses: vec![],
         };
         let telemetry = Telemetry {
             auctions: vec![],

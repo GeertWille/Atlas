@@ -1,12 +1,13 @@
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    AdSlot, BidStatus, FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
+    AdSlot, AdsTxtStatus, BidStatus, BidderDiagnostics, DiagnosticCheck, DiagnosticStatus,
+    FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
 };
 
 use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
-    RuleContext, estimate_impact, heuristic, ms, pct, share,
+    RuleContext, bidders, estimate_impact, heuristic, ms, pct, share,
 };
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
 use crate::domain::telemetry::{auction_covers, slot_matches_code};
@@ -471,22 +472,24 @@ pub struct BiddersNeverBid;
 
 const MIN_REQUESTS_TO_JUDGE_BIDDER: u32 = 3;
 
+/// Bidders with enough requests to judge and not one bid, with their request count.
+pub(super) fn silent_bidders<'a>(ctx: &RuleContext<'a>) -> Vec<(&'a str, u32)> {
+    ctx.bidder_stats()
+        .into_iter()
+        .filter(|(_, stats)| {
+            stats.requests >= MIN_REQUESTS_TO_JUDGE_BIDDER && stats.bids == 0 && stats.timeouts == 0
+        })
+        .map(|(bidder, stats)| (bidder, stats.requests))
+        .collect()
+}
+
 impl Rule for BiddersNeverBid {
     fn id(&self) -> &'static str {
         "bidders-never-bid"
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
-        let silent: Vec<(&str, u32)> = ctx
-            .bidder_stats()
-            .into_iter()
-            .filter(|(_, stats)| {
-                stats.requests >= MIN_REQUESTS_TO_JUDGE_BIDDER
-                    && stats.bids == 0
-                    && stats.timeouts == 0
-            })
-            .map(|(bidder, stats)| (bidder, stats.requests))
-            .collect();
+        let silent = silent_bidders(ctx);
         if silent.is_empty() {
             return Vec::new();
         }
@@ -498,34 +501,140 @@ impl Rule for BiddersNeverBid {
             .iter()
             .map(|(bidder, _)| bidder.to_string())
             .collect();
+        // What the bidder checks found wrong for each silent bidder, most
+        // certain first.
+        let causes: Vec<(&str, Vec<&DiagnosticCheck>)> = silent
+            .iter()
+            .map(|(bidder, _)| (*bidder, likely_causes(ctx.diagnostics, bidder)))
+            .collect();
+        let explained = causes.iter().filter(|(_, found)| !found.is_empty()).count();
+        let has_problem = causes
+            .iter()
+            .flat_map(|(_, found)| found)
+            .any(|check| check.status == DiagnosticStatus::Problem);
+
         let mut finding = heuristic(
-            Severity::Low,
+            if has_problem {
+                Severity::Medium
+            } else {
+                Severity::Low
+            },
             FindingCategory::Configuration,
-            0.4,
+            if has_problem { 0.7 } else { 0.4 },
             format!("{} bidder(s) never returned a bid", names.len()),
         );
         finding.description = format!(
-            "`{}` answered every bid request in this scan without a bid. One page view is a small sample, but a \
-             bidder that never bids usually has wrong placement parameters, an unapproved domain (ads.txt / \
-             sellers.json) or missing consent.",
+            "`{}` answered every bid request in this scan without a bid. One page view is a small sample, so \
+             read the causes below as leads to confirm, not as a verdict.",
             names.join("`, `"),
         );
-        finding.recommendation = "Verify the adapter params (placement / site / zone ids) with each partner, check \
-             the domain is approved in their platform and listed in ads.txt, and compare with their own reporting."
-            .into();
+        let site_has_no_ads_txt = ctx
+            .diagnostics
+            .is_some_and(|diagnostics| diagnostics.ads_txt.status == AdsTxtStatus::Missing);
+        if site_has_no_ads_txt {
+            finding.description.push_str(
+                " The site has no ads.txt at all, which on its own keeps many buyers from bidding.",
+            );
+        }
+        let mut advice: Vec<&str> = Vec::new();
+        let mut unexplained: Vec<&str> = Vec::new();
+        for (bidder, found) in &causes {
+            let Some((most_likely, others)) = found.split_first() else {
+                unexplained.push(bidder);
+                continue;
+            };
+            finding.description.push_str(&format!(
+                "\n\n- `{bidder}`: {}{}",
+                most_likely.summary,
+                if others.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Also: {}.",
+                        others
+                            .iter()
+                            .map(|check| check.summary.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )
+                },
+            ));
+            for check in found {
+                if let Some(line) =
+                    bidders::advice(&check.code).filter(|line| !advice.contains(line))
+                {
+                    advice.push(line);
+                }
+                let label = format!("{bidder}: {}", check.summary);
+                finding.evidence.push(match &check.excerpt {
+                    Some(excerpt) => log_line(label, excerpt.clone()),
+                    None => metric(label, format!("Bidder check `{}`", check.code)),
+                });
+            }
+        }
+        if !unexplained.is_empty() {
+            let checked = if ctx.diagnostics.is_some() {
+                "the checks the scanner can run on its own (adapter params, the endpoint's answers, ads.txt, consent) found nothing wrong"
+            } else {
+                "the bidder checks did not run for this scan"
+            };
+            finding.description.push_str(&format!(
+                "\n\n- `{}`: {checked}. A bidder that never bids usually has wrong placement parameters, an \
+                 unapproved domain (ads.txt / sellers.json) or missing consent.",
+                unexplained.join("`, `"),
+            ));
+        }
+        finding.recommendation = advice
+            .iter()
+            .enumerate()
+            .map(|(index, line)| {
+                format!("{}. {}{}.", index + 1, line[..1].to_uppercase(), &line[1..])
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !unexplained.is_empty() {
+            if !finding.recommendation.is_empty() {
+                finding.recommendation.push_str("\n\n");
+            }
+            finding.recommendation.push_str(&format!(
+                "For `{}`: verify the adapter params (placement / site / zone ids) with the partner, check the \
+                 domain is approved in their platform and listed in ads.txt, and compare with their own reporting.",
+                unexplained.join("`, `"),
+            ));
+        }
         finding.impact = "Requests are sent to partners that add no auction pressure".into();
         finding.evidence.push(metric(
             "Bidders without bids",
             format!(
-                "{}; bidder errors in scan: {errored}",
+                "{}; bidder errors in scan: {errored}; causes found for {explained} of {}",
                 silent
                     .iter()
                     .map(|(bidder, requests)| format!("{bidder}: 0 bids / {requests} requests"))
                     .collect::<Vec<_>>()
                     .join(", "),
+                silent.len(),
             ),
         ));
         finding.affected_bidders = names;
         vec![finding]
     }
+}
+
+/// The failed checks of one bidder, in the order the diagnostics rank them.
+fn likely_causes<'a>(
+    diagnostics: Option<&'a BidderDiagnostics>,
+    bidder: &str,
+) -> Vec<&'a DiagnosticCheck> {
+    diagnostics
+        .into_iter()
+        .flat_map(|diagnostics| &diagnostics.bidders)
+        .filter(|diagnosis| diagnosis.bidder == bidder)
+        .flat_map(|diagnosis| &diagnosis.checks)
+        .filter(|check| {
+            matches!(
+                check.status,
+                DiagnosticStatus::Problem | DiagnosticStatus::Notice
+            )
+        })
+        .collect()
 }

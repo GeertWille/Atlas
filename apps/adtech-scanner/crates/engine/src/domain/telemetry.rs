@@ -72,6 +72,7 @@ fn derive_auctions(capture: &Capture) -> Vec<Auction> {
                 auction_id,
                 bidder,
                 ad_unit_codes,
+                ..
             } => {
                 if let Some(auction) = find_auction(&mut auctions, auction_id) {
                     for code in ad_unit_codes {

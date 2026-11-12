@@ -1,6 +1,8 @@
 //! Compact text views of the telemetry for the analysis model.
 
-use adscan_model::{AdSlot, Auction, Capture, TrackerEventKind as Ev};
+use adscan_model::{
+    AdSlot, AdsTxtStatus, Auction, BidderDiagnostics, Capture, TrackerEventKind as Ev,
+};
 use serde_json::json;
 
 pub fn auctions_overview(auctions: &[Auction]) -> String {
@@ -185,6 +187,68 @@ pub fn page_events(capture: &Capture) -> String {
         };
         Some(format!("t={} {what}", ms(Some(event.t))))
     }));
+    out.join("\n")
+}
+
+/// What the scanner verified about each bidder, one line per check.
+pub fn bidder_checks(diagnostics: Option<&BidderDiagnostics>) -> String {
+    let Some(diagnostics) = diagnostics else {
+        return "The bidder checks did not run for this scan.".into();
+    };
+    let ads_txt = &diagnostics.ads_txt;
+    let mut out = vec![
+        format!(
+            "ads.txt {} status={} records={} invalidLines={}{}",
+            ads_txt.url,
+            match ads_txt.status {
+                AdsTxtStatus::Found => "found",
+                AdsTxtStatus::Missing => "missing",
+                AdsTxtStatus::Unreadable => "unreadable",
+            },
+            ads_txt.record_count,
+            ads_txt.invalid_line_count,
+            ads_txt
+                .detail
+                .as_ref()
+                .map_or(String::new(), |detail| format!(" ({detail})")),
+        ),
+        format!(
+            "sellers.json lookups: {}",
+            if diagnostics.sellers_json_checked {
+                "on"
+            } else {
+                "off (user setting)"
+            }
+        ),
+        format!(
+            "consent: cmp={} prebidConsentManagement={} gdprApplies={} consentKnownAt={} auctionsBeforeConsent={}/{}",
+            diagnostics.consent.cmp_present,
+            flag(diagnostics.consent.consent_management_configured),
+            flag(diagnostics.consent.gdpr_applies),
+            ms(diagnostics.consent.resolved_at_ms),
+            diagnostics.consent.auctions_before_consent,
+            diagnostics.consent.auction_count,
+        ),
+    ];
+    for bidder in &diagnostics.bidders {
+        out.push(format!(
+            "bidder {} requests={} bids={}",
+            bidder.bidder, bidder.requests, bidder.bids
+        ));
+        for check in &bidder.checks {
+            out.push(format!(
+                "  {:?}/{:?} {}: {}{}",
+                check.area,
+                check.status,
+                check.code,
+                check.summary,
+                check
+                    .excerpt
+                    .as_ref()
+                    .map_or(String::new(), |excerpt| format!(" | {excerpt}")),
+            ));
+        }
+    }
     out.join("\n")
 }
 

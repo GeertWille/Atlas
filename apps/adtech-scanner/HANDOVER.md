@@ -158,7 +158,9 @@ classified and Phase 2 is skipped.
 
 Jev returns numbers and no reasons. The audit trail therefore records the question set once per step
 and one `classification` entry per script: the probabilities, the thresholds, the rule that routed it
-(`jev-yes`, `jev-unsure`, `jev-no`) and at most 300 characters of the best-scoring part.
+(`jev-yes`, `jev-unsure`, `jev-no`) and at most 300 characters of the best-scoring part. All script
+triage excerpts of one scan together stay under 24,000 characters; entries after that keep their
+numbers and no source.
 
 Three Phase 2 cost levers apply to every AI scan, with or without Jev:
 
@@ -166,8 +168,9 @@ Three Phase 2 cost levers apply to every AI scan, with or without Jev:
   last), not by load order. That order decides which scripts make the cap of 12 and whose matches fill
   a search result.
 - `search_scripts` without a script id skips the internals of stock Prebid builds and says how many
-  matches it hid. Lines of such a file that name one of the page's ad placements stay searchable, and
-  the whole file stays readable by id.
+  matches it hid. Stretches of such a file that name one of the page's ad placements or call the ad
+  stack (`requestBids`, `addAdUnits`, `defineSlot`, `googletag.cmd`, ...) stay searchable, so a
+  wrapper bundled with Prebid is still found; the whole file stays readable by id.
 - Publisher scripts that together stay under 400 beautified lines and 15,000 characters are inlined
   in the opening message, so a small wrapper costs no tool turns.
 

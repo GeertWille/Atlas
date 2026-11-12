@@ -4,12 +4,14 @@
 use adscan_model::PipelineNode::{self, *};
 
 use super::state::{ScanJob, ScanState};
+use crate::domain::diagnostics::has_bidders;
 use crate::domain::scripts::select_for_analysis;
 
-pub const NODES: [PipelineNode; 8] = [
+pub const NODES: [PipelineNode; 9] = [
     LaunchBrowser,
     Capture,
     Telemetry,
+    BidderDiagnostics,
     Heuristics,
     FilterScripts,
     Beautify,
@@ -33,7 +35,9 @@ pub enum OnFailure {
 pub fn on_failure(node: PipelineNode) -> OnFailure {
     match node {
         FilterScripts | Beautify | AnalyzeLogic => OnFailure::ContinueWithoutAi,
-        LaunchBrowser | Capture | Telemetry | Heuristics | Synthesize => OnFailure::FailScan,
+        LaunchBrowser | Capture | Telemetry | BidderDiagnostics | Heuristics | Synthesize => {
+            OnFailure::FailScan
+        }
     }
 }
 
@@ -41,6 +45,13 @@ pub fn on_failure(node: PipelineNode) -> OnFailure {
 pub fn skip_reason(node: PipelineNode, job: &ScanJob, state: &ScanState) -> Option<String> {
     match node {
         LaunchBrowser | Capture | Telemetry | Heuristics | Synthesize => None,
+        // Without bidders there is nothing to verify, and no reason to
+        // request the site's ads.txt.
+        BidderDiagnostics => state
+            .capture
+            .as_ref()
+            .is_some_and(|capture| !has_bidders(capture))
+            .then(|| "The page has no Prebid bidders to check".to_string()),
         FilterScripts => ai_unavailable(job, state, job.jev_key.is_some()).or_else(|| {
             let ambiguous = state
                 .scripts

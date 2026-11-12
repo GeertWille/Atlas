@@ -95,12 +95,12 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         },
         ToolSpec {
             name: "get_telemetry",
-            description: "Get detailed telemetry for one section: auctions (every bid with status and timing), slots (GPT slot lifecycle), prebid_config (version, modules, getConfig snapshot), console (console and Prebid log lines) or page_events (lifecycle, scroll and auction timeline).",
+            description: "Get detailed telemetry for one section: auctions (every bid with status and timing), slots (GPT slot lifecycle), prebid_config (version, modules, getConfig snapshot), console (console and Prebid log lines), page_events (lifecycle, scroll and auction timeline) or bidder_checks (per bidder: adapter params, endpoint answers, ads.txt, sellers.json and consent, as verified by the scanner).",
             input_schema: object_schema(
                 json!({
                     "section": {
                         "type": "string",
-                        "enum": ["auctions", "slots", "prebid_config", "console", "page_events"]
+                        "enum": ["auctions", "slots", "prebid_config", "console", "page_events", "bidder_checks"]
                     }
                 }),
                 &["section"],

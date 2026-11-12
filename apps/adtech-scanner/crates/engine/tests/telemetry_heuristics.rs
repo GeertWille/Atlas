@@ -22,6 +22,7 @@ fn evaluate(capture: &Capture) -> Vec<(&'static str, FindingDraft)> {
     heuristics::evaluate(&RuleContext {
         capture,
         telemetry: &telemetry,
+        diagnostics: None,
         scripts: &records,
     })
     .into_iter()
@@ -465,6 +466,7 @@ fn a_request_racing_its_own_auction_is_still_reported_next_to_a_scroll_gate() {
                 code: "anchor".into(),
                 sizes: strings(&["320x50"]),
                 bidders: strings(&["rubicon"]),
+                bids: vec![],
             }],
         },
     ));
@@ -539,6 +541,7 @@ fn scroll_gate_behind_an_earlier_auction_for_another_slot_is_still_found() {
                 code: "anchor".into(),
                 sizes: strings(&["320x50"]),
                 bidders: strings(&["rubicon"]),
+                bids: vec![],
             }],
         },
     ));
@@ -585,6 +588,7 @@ fn lazy_auction_for_a_below_the_fold_slot_after_scrolling_is_not_a_gate() {
                 code: "deep".into(),
                 sizes: strings(&["300x250"]),
                 bidders: strings(&["rubicon"]),
+                bids: vec![],
             }],
         },
     ));
@@ -773,6 +777,7 @@ fn prebid_ad_unit_without_a_gpt_slot() {
                     code: "sticky".into(),
                     sizes: strings(&["320x50"]),
                     bidders: strings(&["rubicon"]),
+                    bids: vec![],
                 });
             }
         }

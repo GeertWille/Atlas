@@ -661,7 +661,15 @@ export function healthScore(findings: Pick<Finding, "severity">[]): number {
   return Math.max(4, 100 - penalty);
 }
 
-export function overviewFor(site: CapturedSite, findings: Finding[], aiRan: boolean): string {
+const OVERVIEW_MODE = {
+  analysed: "",
+  // A scan with only a TypeSafe key: the model classified scripts, nothing read their logic.
+  triaged: " Scripts were classified by AI, but wrapper logic was not analysed: that needs an Anthropic API key.",
+  deterministic: " Only deterministic checks ran for this scan, so wrapper logic was not analysed.",
+} as const;
+
+/** `ai` is how far the AI steps got: logic analysed, scripts only triaged, or nothing but the rules. */
+export function overviewFor(site: CapturedSite, findings: Finding[], ai: keyof typeof OVERVIEW_MODE): string {
   const top = [...findings].sort((a, b) => SEVERITY_PENALTY[b.severity] - SEVERITY_PENALTY[a.severity])[0];
   const filled = site.slots.filter((slot) => slot.outcome === "filled").length;
   const base = `${filled} of ${site.slots.length} ad slots rendered a creative across ${site.auctions.length} Prebid auction${site.auctions.length === 1 ? "" : "s"} on ${site.device}.`;
@@ -669,6 +677,5 @@ export function overviewFor(site: CapturedSite, findings: Finding[], aiRan: bool
     top && SEVERITY_PENALTY[top.severity] >= 6
       ? ` The most important issue: ${top.title.charAt(0).toLowerCase()}${top.title.slice(1)}.`
       : " No revenue-critical problems were found; the remaining items are tuning opportunities.";
-  const mode = aiRan ? "" : " Only deterministic checks ran for this scan, so wrapper logic was not analysed.";
-  return `${base}${lead}${mode}`;
+  return `${base}${lead}${OVERVIEW_MODE[ai]}`;
 }

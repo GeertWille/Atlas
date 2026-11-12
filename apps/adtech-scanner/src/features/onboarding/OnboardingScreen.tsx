@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 import type { BrowserInfo, Settings } from "@/bindings";
 import { useDemoUrl, useUpdateSettings } from "@/lib/query/hooks";
 import { ApiKeyForm } from "@/shared/components/api-key-form";
+import { anyAiAvailable } from "@/shared/domain/ai-availability";
 import { defaultScanOptions } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
@@ -161,7 +162,7 @@ export function OnboardingScreen({
 
       <div className="flex justify-end">
         <Button variant="ghost" onClick={finish}>
-          {settings.hasApiKey ? "Continue" : "Continue without AI"}
+          {anyAiAvailable(settings) ? "Continue" : "Continue without AI"}
           <ArrowRightIcon />
         </Button>
       </div>

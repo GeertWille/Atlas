@@ -153,8 +153,9 @@ const JEV_EXCERPT = {
 const JEV_ANSWERS_BEFORE_FAILURE = 4;
 const JEV_FAILURE = "rate limited by the API after 3 attempts";
 
-const NO_ANTHROPIC_KEY = "No Anthropic API key configured";
-const AI_DISABLED = "AI analysis disabled for this scan";
+// The backend's own skip reasons, and its order: a scan with AI turned off says so whatever keys exist.
+const AI_TURNED_OFF = "AI analysis is turned off for this scan";
+const NO_ANTHROPIC_KEY = "No Anthropic API key is configured";
 
 export type ScenarioContext = {
   scanId: string;
@@ -175,8 +176,9 @@ export function buildScenario({
   const hostname = new URL(options.url).hostname;
   const timeline = new Timeline();
   const ai = aiAvailability(settings);
-  const triageSkipReason = ai.triage === null ? NO_ANTHROPIC_KEY : options.aiEnabled ? null : AI_DISABLED;
-  const analysisSkipReason = !ai.logicAnalysis ? NO_ANTHROPIC_KEY : options.aiEnabled ? null : AI_DISABLED;
+  const skipReason = (available: boolean) => (!options.aiEnabled ? AI_TURNED_OFF : available ? null : NO_ANTHROPIC_KEY);
+  const triageSkipReason = skipReason(ai.triage !== null);
+  const analysisSkipReason = skipReason(ai.logicAnalysis);
   const triageRan = triageSkipReason === null;
   const analysisRan = analysisSkipReason === null;
   const jevTriage = triageRan && ai.triage === "jev";
@@ -306,9 +308,10 @@ export function buildScenario({
 
   timeline.start("synthesize", analysisRan ? settings.filterModel : null);
   const score = healthScore(findings);
-  const overview = [overviewFor(site, findings, analysisRan), ...caveats.map((caveat) => `**Note:** ${caveat}.`)].join(
-    "\n\n",
-  );
+  const overview = [
+    overviewFor(site, findings, analysisRan ? "analysed" : triageRan ? "triaged" : "deterministic"),
+    ...caveats.map((caveat) => `**Note:** ${caveat}.`),
+  ].join("\n\n");
   timeline.log(`Ranked ${findings.length} findings; no duplicates between rule and model findings`, { after: 200 });
   if (analysisRan) {
     timeline.log(`Writing overview with ${settings.filterModel}`, {
@@ -444,7 +447,9 @@ export function buildScenario({
       });
     }
     if (byClaude.length > 0) classifyWithClaude(byClaude);
-    timeline.end(`Classified ${scripts.length} scripts, ${metrics.adScriptCount} ad-related`);
+    timeline.end(
+      `Classified ${byJev.length + byClaude.length} of ${undecided} undecided scripts; ${metrics.adScriptCount} scripts are ad-related`,
+    );
   }
 
   /** Jev marks where in the selected scripts the logic worth reading is, before the analysis model starts. */
@@ -469,7 +474,7 @@ export function buildScenario({
     spent += timeline.usage(JEV_MODEL, chunks.length * 2_600, 0);
     timeline.log(
       `Jev System One judged ${chunks.length} chunks; ${chunks.filter((chunk) => chunk.rank >= 0.3).length} ranked high enough for the reading guide`,
-      { after: 0, level: "debug", kind: "llmResponse", data: { model: JEV_MODEL, chunks } },
+      { after: 0, level: "debug", data: { model: JEV_MODEL, chunks } },
     );
   }
 

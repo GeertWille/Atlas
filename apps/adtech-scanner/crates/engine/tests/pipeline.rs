@@ -218,7 +218,7 @@ async fn full_scan_runs_every_node_and_merges_ai_and_heuristic_findings() {
     assert!(summary.ai_used);
     assert_eq!(summary.prebid_version.as_deref(), Some("9.20.0"));
     assert!(summary.finished_at.is_some() && summary.duration_ms.is_some());
-    assert_eq!(statuses(&detail), [StepStatus::Completed; 8]);
+    assert_eq!(statuses(&detail), [StepStatus::Completed; 9]);
     assert_eq!(
         detail
             .steps
@@ -908,7 +908,7 @@ async fn malformed_tool_input_and_unknown_tools_are_returned_as_errors_to_the_mo
 
     let detail = run_scan(&harness, scan_options(true)).await;
 
-    assert_eq!(statuses(&detail), [StepStatus::Completed; 8]);
+    assert_eq!(statuses(&detail), [StepStatus::Completed; 9]);
     let sonnet = requests_for(&server, SONNET).await;
     let results = sonnet[1]["messages"][2]["content"].as_array().unwrap();
     assert_eq!(results.len(), 3);
@@ -1303,7 +1303,7 @@ async fn capture_failure_fails_the_scan_with_a_user_facing_message() {
     assert_eq!(
         statuses(&detail),
         [
-            Completed, Failed, Skipped, Skipped, Skipped, Skipped, Skipped, Skipped
+            Completed, Failed, Skipped, Skipped, Skipped, Skipped, Skipped, Skipped, Skipped
         ]
     );
     assert_eq!(

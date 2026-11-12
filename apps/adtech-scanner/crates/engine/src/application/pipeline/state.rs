@@ -1,4 +1,4 @@
-use adscan_model::{Capture, Finding, ScanSummary, ScriptRecord, Settings};
+use adscan_model::{BidderDiagnostics, Capture, Finding, ScanSummary, ScriptRecord, Settings};
 use tokio_util::sync::CancellationToken;
 
 use crate::application::AppError;
@@ -40,6 +40,8 @@ pub struct ScanState {
     pub budget: Budget,
     pub capture: Option<Capture>,
     pub telemetry: Option<Telemetry>,
+    /// `None` when the page has no bidders to check.
+    pub diagnostics: Option<BidderDiagnostics>,
     pub scripts: Vec<DescribedScript>,
     pub sources: Vec<SourceFile>,
     pub findings: Vec<Finding>,
@@ -60,6 +62,7 @@ impl ScanState {
             budget,
             capture: None,
             telemetry: None,
+            diagnostics: None,
             scripts: Vec::new(),
             sources: Vec::new(),
             findings: Vec::new(),

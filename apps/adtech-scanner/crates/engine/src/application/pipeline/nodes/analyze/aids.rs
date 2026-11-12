@@ -133,6 +133,7 @@ mod tests {
             console: vec![],
             max_scroll_depth: 0.0,
             consent_accepted: false,
+            bid_responses: vec![],
         };
         let telemetry = Telemetry {
             auctions: vec![],

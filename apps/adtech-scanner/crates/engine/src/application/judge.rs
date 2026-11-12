@@ -2,7 +2,7 @@
 //! about it, one probability per question. Nothing here resembles a chat
 //! turn, which is why it is not an [`LlmRequest`](super::llm::LlmRequest).
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::domain::pricing::{TokenUsage, estimate_tokens};
 use crate::domain::questions::{REQUEST_OVERHEAD_TOKENS, YesNoQuestion};
@@ -29,6 +29,21 @@ impl JudgeRequest {
             ..TokenUsage::default()
         }
     }
+}
+
+/// The questions in full, as the audit trail records them once per step.
+pub fn questions_for_audit(questions: &[YesNoQuestion]) -> Value {
+    questions
+        .iter()
+        .map(|question| {
+            json!({
+                "id": question.id,
+                "instructions": question.instructions,
+                "yes": question.yes,
+                "no": question.no,
+            })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]

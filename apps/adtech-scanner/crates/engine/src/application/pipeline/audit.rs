@@ -25,6 +25,48 @@ pub struct ModelCall<'a> {
     pub usage_estimated: bool,
 }
 
+/// How much captured text (script source, raw telemetry) a step may still
+/// copy into the audit trail. Captured data must not be persisted, so each
+/// entry keeps a short excerpt and a scan's excerpts stop once they add up
+/// to the allowance: reading or classifying a script piece by piece cannot
+/// copy it into the log.
+pub struct AuditExcerpts {
+    remaining_chars: usize,
+}
+
+impl AuditExcerpts {
+    pub fn new(chars: usize) -> Self {
+        Self {
+            remaining_chars: chars,
+        }
+    }
+
+    /// The start of `content`: at most `limit` characters, and no more than
+    /// the allowance still holds.
+    pub fn excerpt(&mut self, content: &str, limit: usize) -> String {
+        let kept = content
+            .chars()
+            .take(limit.min(self.remaining_chars))
+            .collect::<String>();
+        self.remaining_chars -= kept.chars().count();
+        kept
+    }
+
+    /// Like [`excerpt`](Self::excerpt), with a note of what was left out
+    /// (`what` names the data) when something was.
+    pub fn take(&mut self, content: &str, limit: usize, what: &str) -> String {
+        let total = content.chars().count();
+        let excerpt = self.excerpt(content, limit);
+        let kept = excerpt.chars().count();
+        if kept == total {
+            return excerpt;
+        }
+        format!(
+            "{excerpt}\n[audit excerpt: {kept} of {total} characters; {what} is not stored in full]"
+        )
+    }
+}
+
 pub struct StepRun<'a> {
     pub deps: &'a PipelineDeps,
     pub job: &'a ScanJob,
