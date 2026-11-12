@@ -40,7 +40,7 @@ Rules that came from you and must keep holding:
 | Part | Path | State |
 |---|---|---|
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
-| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 52 unit and 29 integration tests pass. |
+| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 59 unit and 30 integration tests pass. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
 | Tauri shell (16 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 2 real-browser pipeline tests pass on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
@@ -96,7 +96,7 @@ loopback port and has seven planted bugs, documented in `crates/browser/demo-sit
 - Bidder timeout is 250 ms instead of 1200 ms, so two bidders always time out.
 - A ghost ad unit with no container, and GPT loaded twice.
 - `ix` is called but has no line in the site's `/ads.txt`, and never bids.
-- `triplelift` has no `inventoryCode` on two of its three ad units, so Prebid drops those bids.
+- `triplelift` has no `inventoryCode` on two of its three ad units, so Prebid never sends those bids.
 - The `openx` bid request is answered by the demo exchange with OpenRTB no-bid reason 7.
 
 ## What is left, in order
@@ -157,7 +157,10 @@ every check passed or could not be made.
    are validated against a table of 24 adapters (`domain/diagnostics/adapters.rs`) whose required
    params and types were read from `isBidRequestValid` in Prebid.js 11.49.0: missing param, wrong
    type, the adapter documentation's test id, and one placement id shared by three or more
-   differently sized ad units. A bidder code that is not a built-in code or alias is not checked.
+   differently sized ad units. Prebid announces such a bid in `bidRequested`, sends nothing and
+   reports `noBid`, so a rejected bid looks like a bidder that declined. A bidder code that is not
+   a built-in code or alias is not checked against the table; for those, and for rules the table
+   does not model, Prebid's own "Invalid bid sent to bidder" warning is used.
 2. **Bid responses.** The browser crate recognises bid requests by endpoint host and path (same
    Prebid release) and keeps status, failure and a reason of at most 200 characters: a top-level
    `error` or `message`, AppNexus per-tag `error`, or the OpenRTB `nbr` code. Bodies are read in
