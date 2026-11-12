@@ -587,7 +587,7 @@ export function recordNetwork(detail: ScanDetail, mode: ArchiveMode): void {
     bodyCount: mode.evicted ? 0 : drafts.filter((draft) => stored(draft.response) || stored(draft.request)).length,
     storedBytes: mode.evicted ? 0 : Math.round(drafts.reduce((sum, draft) => sum + draft.size, 0) * 0.24),
     headersRedacted: mode.redactHeaders,
-    truncated: drafts.some((draft) => draft.response.state === "dropped"),
+    truncated: drafts.some((draft) => draft.response.state === "dropped" || draft.response.state === "scanLimit"),
   };
 }
 

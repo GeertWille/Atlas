@@ -95,8 +95,15 @@ test("find shows how many matches there are and which one the caret is on", asyn
   // Typed key by key, the query grows: jumping to the first match must not select what is typed so far.
   await code(page).locator(".cm-content").click();
   await page.keyboard.press(`${MOD}+f`);
+  // The option chosen before is still on.
+  await expect(find.getByRole("button", { name: "Match case" })).toHaveAttribute("aria-pressed", "true");
   await find.getByRole("textbox", { name: "Find" }).fill("");
   await page.keyboard.type("requestBids");
+  await expect(find.getByRole("textbox", { name: "Find" })).toHaveValue("requestBids");
+  await expect(find.getByRole("status")).toHaveText(/of 5$/);
+  await page.keyboard.press("Escape");
+  // Opened with a word selected (the match the caret was left on), the bar searches for that word.
+  await page.keyboard.press(`${MOD}+f`);
   await expect(find.getByRole("textbox", { name: "Find" })).toHaveValue("requestBids");
   await expect(find.getByRole("status")).toHaveText(/of 5$/);
   await page.keyboard.press("Escape");
@@ -272,6 +279,24 @@ test("a scan without stored sources says why, shows the evidence it kept and off
   await expect(page.getByRole("button", { name: "Scan again without AI (free)" })).toBeHidden();
   await page.getByRole("button", { name: "Scan again", exact: true }).click();
   await expect(page).toHaveURL(/#\/scans\/(?!seed-)[\w-]+$/);
+});
+
+test("a script larger than a reply may be says so and keeps the file's facts and its findings in reach", async ({
+  page,
+}) => {
+  await openApp(page, WRAPPER, { sourceLimit: 300_000 });
+  // A file under the limit is shown as ever.
+  await expect(code(page).locator(".cm-line").first()).toBeVisible();
+  await page.goto(`/#${SCAN}/source/s2`);
+  await expect(page.getByRole("heading", { level: 1, name: /^main\./ })).toBeVisible();
+  await expect(page.getByText("This script is too large to show")).toBeVisible();
+  await expect(page.getByText(/Text over 8 MB is not loaded into the viewer\./)).toBeVisible();
+  await expect(page.getByText(/This file is [\d.]+ (KB|MB) as transferred\./)).toBeVisible();
+  // There is nothing a new scan would change about it, so none is offered.
+  await expect(page.getByRole("button", { name: "Scan again", exact: true })).toBeHidden();
+  // The original text is as large: the other view says the same instead of failing.
+  await page.getByRole("radio", { name: "Original" }).click();
+  await expect(page.getByText("This script is too large to show")).toBeVisible();
 });
 
 test("an unknown script and a deleted scan have their own screens", async ({ page }) => {

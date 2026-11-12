@@ -170,8 +170,10 @@ pub fn stored_request_body(text: &str) -> Cow<'_, str> {
     }
     let stored = stored_json(text);
     let stored = replace_all(stored, &FORM_PAIR, |found| {
+        // In a form a space is written as a plus sign.
         credential_field(&found[2], &found[3]).then(|| {
-            format!("{}{}={}", &found[1], &found[2], length_of(&found[3]))
+            let placeholder = length_of(&found[3]).replace(' ', "+");
+            format!("{}{}={placeholder}", &found[1], &found[2])
         })
     });
     replace_all(stored, &MULTIPART_FIELD, |found| {
@@ -198,7 +200,26 @@ pub fn stored_json(text: &str) -> Cow<'_, str> {
 }
 
 fn credential_field(name: &str, value: &str) -> bool {
-    !value.is_empty() && names_a_credential(&percent_decoded(name))
+    !value.is_empty() && !is_placeholder(value) && names_a_credential(&percent_decoded(name))
+}
+
+/// What this module wrote in place of a value: storing a stored text again
+/// changes nothing.
+fn is_placeholder(value: &str) -> bool {
+    let length = |text: &str, unit: &str| {
+        text.strip_suffix(unit)
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    };
+    value
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .is_some_and(|inner| {
+            length(inner, " bytes")
+                || length(inner, "+bytes")
+                || inner
+                    .strip_prefix("redacted-")
+                    .is_some_and(|rest| length(rest, "-bytes"))
+        })
 }
 
 /// `user%5Bpassword%5D` as `user[password]`. Only what a name is made of
@@ -296,7 +317,7 @@ static MULTIPART_FIELD: LazyLock<Regex> = LazyLock::new(|| {
 /// Whether a header, parameter or field of this name carries a credential.
 /// Names are read word by word (`X-Api-Key`, `access_token`, `csrfToken`),
 /// so that `:authority` or `Sec-WebSocket-Key` are not taken for one.
-pub fn names_a_credential(name: &str) -> bool {
+fn names_a_credential(name: &str) -> bool {
     const WORDS: &[&str] = &[
         "password",
         "pass",
@@ -318,10 +339,34 @@ pub fn names_a_credential(name: &str) -> bool {
     ];
     /// What makes the word "key" a credential when it stands before it.
     const KEY_OF: &[&str] = &["api", "secret", "private", "access", "subscription"];
+    /// What follows such a word when the field describes the credential
+    /// instead of carrying it (`token_type`, `auth_method`).
+    const DESCRIBES: &[&str] = &[
+        "type",
+        "expires",
+        "expiry",
+        "expiration",
+        "ttl",
+        "endpoint",
+        "url",
+        "uri",
+        "method",
+        "mode",
+        "status",
+        "required",
+        "enabled",
+        "name",
+        "length",
+    ];
     let words = words_of(name);
     words.iter().enumerate().any(|(index, word)| {
-        WORDS.contains(&word.as_str())
-            || (word == "key" && index > 0 && KEY_OF.contains(&words[index - 1].as_str()))
+        let word = word.trim_end_matches(|character: char| character.is_ascii_digit());
+        let described = words
+            .get(index + 1)
+            .is_some_and(|next| DESCRIBES.contains(&next.as_str()));
+        let is_one = WORDS.contains(&word)
+            || (word == "key" && index > 0 && KEY_OF.contains(&words[index - 1].as_str()));
+        is_one && !described
     })
 }
 
@@ -549,8 +594,16 @@ mod tests {
             ("X-Goog-Api-Key", "AIza-secret"),
             ("X-Hub-Signature", "sha1=secret"),
         ] {
-            assert_eq!(redaction_of(name), Some(HeaderRedaction::Credential), "{name}");
-            assert_eq!(stored(name, value), format!("[{} bytes]", value.len()), "{name}");
+            assert_eq!(
+                redaction_of(name),
+                Some(HeaderRedaction::Credential),
+                "{name}"
+            );
+            assert_eq!(
+                stored(name, value),
+                format!("[{} bytes]", value.len()),
+                "{name}"
+            );
         }
     }
 
@@ -558,7 +611,10 @@ mod tests {
     fn a_first_word_that_is_no_scheme_is_part_of_the_credential() {
         assert_eq!(stored("Authorization", "s3cr3t-part more"), "[16 bytes]");
         assert_eq!(
-            stored("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA/x, Signature=abc"),
+            stored(
+                "Authorization",
+                "AWS4-HMAC-SHA256 Credential=AKIA/x, Signature=abc"
+            ),
             "AWS4-HMAC-SHA256 [32 bytes]"
         );
     }
@@ -648,14 +704,18 @@ mod tests {
     fn a_login_form_keeps_its_user_name_and_loses_its_password() {
         assert_eq!(
             stored_request_body("log=jo%40pub.example&pwd=hunter2&rememberme=forever"),
-            "log=jo%40pub.example&pwd=[7 bytes]&rememberme=forever"
+            "log=jo%40pub.example&pwd=[7+bytes]&rememberme=forever"
         );
         assert_eq!(
-            stored_request_body("user%5Bemail%5D=jo&user%5Bpassword%5D=hunter2&authenticity_token=abc"),
-            "user%5Bemail%5D=jo&user%5Bpassword%5D=[7 bytes]&authenticity_token=[3 bytes]"
+            stored_request_body(
+                "user%5Bemail%5D=jo&user%5Bpassword%5D=hunter2&authenticity_token=abc"
+            ),
+            "user%5Bemail%5D=jo&user%5Bpassword%5D=[7+bytes]&authenticity_token=[3+bytes]"
         );
         assert_eq!(
-            stored_request_body(r#"{"username":"jo","password":"hun\"ter2","otp":123456,"remember":true}"#),
+            stored_request_body(
+                r#"{"username":"jo","password":"hun\"ter2","otp":123456,"remember":true}"#
+            ),
             r#"{"username":"jo","password":"[9 bytes]","otp":"[6 bytes]","remember":true}"#
         );
         let multipart = "--b\r\nContent-Disposition: form-data; name=\"user\"\r\n\r\njo\r\n--b\r\n\
@@ -670,7 +730,7 @@ mod tests {
     fn credentials_inside_nested_json_and_cut_off_bodies_are_found_too() {
         assert_eq!(
             stored_request_body(r#"{"body":"{\"user\":\"jo\",\"passwd\":\"a\\\"b\"}","n":1}"#),
-            r#"{"body":"{\"user\":\"jo\",\"passwd\":\"[4 bytes]\"}","n":1}"#
+            r#"{"body":"{\"user\":\"jo\",\"passwd\":\"[6 bytes]\"}","n":1}"#
         );
         // Cut off after the first megabyte: no closing brace.
         assert_eq!(
@@ -679,7 +739,7 @@ mod tests {
         );
         assert_eq!(
             stored_request_body(r#"{"page":"https://pub.example/?token=abc&x=1"}"#),
-            r#"{"page":"https://pub.example/?token=[3 bytes]&x=1"}"#
+            r#"{"page":"https://pub.example/?token=[3+bytes]&x=1"}"#
         );
     }
 
@@ -691,15 +751,20 @@ mod tests {
             "plain text with the word authority and a keyword",
             "",
         ] {
-            assert!(matches!(stored_request_body(body), Cow::Borrowed(_)), "{body}");
+            assert!(
+                matches!(stored_request_body(body), Cow::Borrowed(_)),
+                "{body}"
+            );
         }
     }
 
     #[test]
     fn a_token_endpoints_answer_keeps_its_shape_and_loses_its_tokens() {
         assert_eq!(
-            stored_json(r#"{"access_token":"ya29.a0","expires_in":3599,"refresh_token":"1//0g","token_type":"Bearer","scope":"openid"}"#),
-            r#"{"access_token":"[7 bytes]","expires_in":3599,"refresh_token":"[5 bytes]","token_type":"[6 bytes]","scope":"openid"}"#
+            stored_json(
+                r#"{"access_token":"ya29.a0","expires_in":3599,"refresh_token":"1//0g","token_type":"Bearer","scope":"openid"}"#
+            ),
+            r#"{"access_token":"[7 bytes]","expires_in":3599,"refresh_token":"[5 bytes]","token_type":"Bearer","scope":"openid"}"#
         );
         let bid_answer = r#"{"id":"1","seatbid":[{"bid":[{"impid":"1","price":1.2,"adm":"<div>","crid":"c1"}],"seat":"x"}],"cur":"USD"}"#;
         assert!(matches!(stored_json(bid_answer), Cow::Borrowed(_)));
@@ -708,18 +773,66 @@ mod tests {
     #[test]
     fn names_are_read_word_by_word() {
         for name in [
-            "password", "Password", "user_pass", "pwd", "client_secret", "accessToken",
-            "access_token", "id-token", "csrfToken", "X-XSRF-TOKEN", "api_key", "apiKey",
-            "apikey", "x-api-key", "auth", "Authorization", "secretKey", "private_key", "cvv",
+            "password",
+            "Password",
+            "user_pass",
+            "pwd",
+            "client_secret",
+            "accessToken",
+            "access_token",
+            "id-token",
+            "csrfToken",
+            "X-XSRF-TOKEN",
+            "api_key",
+            "apiKey",
+            "apikey",
+            "x-api-key",
+            "auth",
+            "Authorization",
+            "secretKey",
+            "private_key",
+            "cvv",
+            "password2",
+            "password_confirmation",
         ] {
             assert!(names_a_credential(name), "{name}");
         }
         for name in [
-            ":authority", "author", "authority", "key", "keywords", "cache-key", "sec-websocket-key",
-            "tokens_per_minute_limit_reached", "passive", "bypass", "compass", "hb_pb", "gdpr_consent",
-            "session_id", "sid", "sig", "buyeruid", "us_privacy", "secretary", "", "x-request-id",
+            ":authority",
+            "author",
+            "authority",
+            "key",
+            "keywords",
+            "cache-key",
+            "sec-websocket-key",
+            "tokens_per_minute_limit_reached",
+            "passive",
+            "bypass",
+            "compass",
+            "hb_pb",
+            "gdpr_consent",
+            "session_id",
+            "sid",
+            "sig",
+            "buyeruid",
+            "us_privacy",
+            "secretary",
+            "",
+            "x-request-id",
+            "token_type",
+            "auth_method",
+            "tokenEndpoint",
+            "password_required",
         ] {
             assert!(!names_a_credential(name), "{name}");
         }
+    }
+
+    #[test]
+    fn storing_what_was_stored_changes_nothing() {
+        let url = stored_url("https://x.example/a?token=abc&b=1").into_owned();
+        assert_eq!(stored_url(&url), url);
+        let body = stored_request_body(r#"{"password":"hunter2"}&pwd=x"#).into_owned();
+        assert_eq!(stored_request_body(&body), body);
     }
 }

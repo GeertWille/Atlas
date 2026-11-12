@@ -30,3 +30,5 @@ serde_json.workspace = true
 tauri = { version = "2.12", features = ["test"] }
 tempfile = "3"
 wiremock = "0.6"
+# To read a scan's pack back in the real-browser tests.
+zstd = "0.14"

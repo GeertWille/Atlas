@@ -7,6 +7,7 @@ import {
   axisTicks,
   binRequests,
   buildAxis,
+  describeMoment,
   inWindow,
   lifecycleMarks,
   normalizeWindow,
@@ -141,6 +142,16 @@ describe("lifecycleMarks", () => {
       { atMs: 26_000, page: 1 },
     ]);
     expect(marks.consentAtMs).toBe(410);
+  });
+
+  it("names what is under a moment of the axis: the event next to it, or the auction it falls in", () => {
+    const marks = lifecycleMarks(detail, 410, buildAxis(pages, undefined, rows));
+    expect(describeMoment(marks, 1500, 50)).toBe("Auction 1: 900 ms to 2.40 s, timeout at 2.40 s, 1 bid timed out");
+    expect(describeMoment(marks, 49_280, 50)).toBe("Auction 2: 47.8 s to 48.4 s, timeout at 49.3 s");
+    expect(describeMoment(marks, 2720, 50)).toBe("top rendered at 2.70 s");
+    expect(describeMoment(marks, 400, 50)).toBe("Consent known at 410 ms");
+    expect(describeMoment(marks, 26_030, 50)).toBe("Page 2 loaded at 26.0 s");
+    expect(describeMoment(marks, 12_000, 50)).toBeNull();
   });
 
   it("shows only the selected page's marks, on its own clock", () => {

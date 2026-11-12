@@ -67,6 +67,23 @@ impl AppConfig {
     }
 }
 
+/// Held for as long as the app runs: says that this process is the one that
+/// may clean up what an earlier run left in the data directory.
+const INSTANCE_LOCK_FILE: &str = "instance.lock";
+
+/// The lock of the first app running on `data_dir`, or `None` when another
+/// one holds it (or the lock cannot be taken at all).
+fn first_instance(data_dir: &std::path::Path) -> Option<std::fs::File> {
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(data_dir.join(INSTANCE_LOCK_FILE))
+        .ok()?;
+    lock.try_lock().ok()?;
+    Some(lock)
+}
+
 pub struct AppState {
     pub scans: Arc<ScanService>,
     pub settings: Arc<SettingsService>,
@@ -75,6 +92,8 @@ pub struct AppState {
     pub sources: ScriptSources,
     /// The built-in demo publisher page; it is served for as long as the app runs.
     pub demo_site: DemoSite,
+    /// Released when the app ends, by the system if need be.
+    _instance: Option<std::fs::File>,
 }
 
 impl AppState {
@@ -145,10 +164,16 @@ impl AppState {
             Arc::clone(&settings),
             Arc::new(store.clone()),
         ));
-        scans.recover_interrupted().await?;
-        // After the interrupted scans are closed: what they were still
-        // writing, and files that a crash left without rows, are removed.
-        archive.sweep().await?;
+        // A second app on the same data directory finds scans that are
+        // running, not interrupted, and packs that are being written, not
+        // abandoned: only the first one cleans up.
+        let instance = first_instance(&config.data_dir);
+        if instance.is_some() {
+            scans.recover_interrupted().await?;
+            // After the interrupted scans are closed: what they were still
+            // writing, and files that a crash left without rows, are removed.
+            archive.sweep().await?;
+        }
         let network = NetworkView::new(archive.clone(), Arc::new(store.clone()));
         let sources =
             ScriptSources::new(archive, Arc::new(store.clone()), Arc::new(store), formatter);
@@ -162,6 +187,7 @@ impl AppState {
             network,
             sources,
             demo_site,
+            _instance: instance,
         })
     }
 }

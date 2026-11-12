@@ -9,6 +9,29 @@ const header = (name: string, value: string, redaction: Header["redaction"] = nu
   redaction,
 });
 
+/**
+ * One word as a POSIX shell reads it when it is made of single-quoted stretches and `\\'` only. Anything
+ * else outside the quotes (a space, `$`, a backtick) would be the shell's to interpret, and fails.
+ */
+function readShellWord(word: string): string {
+  let text = "";
+  let at = 0;
+  while (at < word.length) {
+    if (word[at] === "'") {
+      const close = word.indexOf("'", at + 1);
+      if (close < 0) throw new Error("unterminated quote");
+      text += word.slice(at + 1, close);
+      at = close + 1;
+    } else if (word.startsWith("\\'", at)) {
+      text += "'";
+      at += 2;
+    } else {
+      throw new Error(`unquoted ${JSON.stringify(word[at])} at ${at}`);
+    }
+  }
+  return text;
+}
+
 describe("toCurl", () => {
   it("writes a GET with its headers", () => {
     const detail = makeRequestDetail({
@@ -88,6 +111,37 @@ describe("toCurl", () => {
     const { command } = toCurl(detail, "a'; rm -rf ~; echo '");
     expect(command).toContain("curl 'https://x.example/a?q=it'\\''s&b=$(id)`id`'");
     expect(command).toContain("--data-raw 'a'\\''; rm -rf ~; echo '\\'''");
+  });
+
+  it("quotes header values and methods that carry shell syntax, and never puts a line break inside a header", () => {
+    const detail = makeRequestDetail({
+      row: makeRow({ url: "https://x.example/a", method: "`id`$(id)" }),
+      requestHeaders: [
+        header("X-Note", 'it\'s $(touch /tmp/owned) `whoami` "quoted" \\ $HOME; rm -rf ~ #'),
+        header("X-Twice", "first\nsecond\r\nthird"),
+      ],
+    });
+    const { command } = toCurl(detail, null);
+    expect(command.split(" \\\n  ")).toEqual([
+      "curl 'https://x.example/a'",
+      "-X '`id`$(id)'",
+      `-H 'X-Note: it'\\''s $(touch /tmp/owned) \`whoami\` "quoted" \\ $HOME; rm -rf ~ #'`,
+      "-H 'X-Twice: first'",
+      "-H 'X-Twice: second'",
+      "-H 'X-Twice: third'",
+    ]);
+  });
+
+  it("keeps a body with line breaks, quotes and substitutions as one inert argument", () => {
+    const detail = makeRequestDetail({
+      row: makeRow({ url: "https://rtb.example/bid", method: "POST" }),
+      requestBody: makeBodyRef({ bytes: 40 }),
+    });
+    const body = "line one\n'$(reboot)' `reboot`\n\"end\"\\";
+    const { command } = toCurl(detail, body);
+    const argument = command.slice(command.indexOf("--data-raw ") + "--data-raw ".length);
+    // Read back the way a POSIX shell reads it, the argument is the body, byte for byte.
+    expect(readShellWord(argument)).toBe(body);
   });
 
   it("says when the body is missing or cut short", () => {

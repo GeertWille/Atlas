@@ -1448,3 +1448,185 @@ fn a_bid_request_is_recognised_and_its_preflight_is_not() {
     );
     assert_eq!(other.bidder, None);
 }
+
+#[test]
+fn a_redirect_whose_first_hop_went_unseen_does_not_get_that_hops_cookies() {
+    // The first hop was made while the tab showed another site: its
+    // announcement is not followed, its `ExtraInfo` arrives all the same.
+    // Then the tab is on the scanned site and the second hop is announced.
+    let mut assembler = Assembler::default();
+    let elsewhere = Source {
+        recording: false,
+        ..tab(epoch(1_000.0))
+    };
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSent",
+        &request("7.1", "https://other.example/start", 1_000.0),
+    );
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("7.1", "of_the_first_hop=secret"),
+    );
+    assembler.observe(
+        &elsewhere,
+        "Network.responseReceivedExtraInfo",
+        &response_extra("7.1", "set_by_the_first_hop=secret"),
+    );
+    let now = epoch(1_000.5);
+    let mut second = request("7.1", "https://www.pub.example/landed", 1_000.5);
+    second["redirectResponse"] = response("7.1", 302, 1_000.4)["response"].clone();
+    assembler.observe(&tab(now), "Network.requestWillBeSent", &second);
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("7.1", "of_the_second_hop=1"),
+    );
+    assembler.observe(
+        &tab(now),
+        "Network.responseReceived",
+        &response("7.1", 200, 1_000.6),
+    );
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("7.1", 1_000.7, 200),
+    );
+    let seq = finished_of(&outputs).unwrap().seq;
+    let mut records = ended(assembler.body_settled(seq, CapturedBody::Empty, now));
+    assert_eq!(records.len(), 1);
+    let record = placed(records.remove(0));
+    assert_eq!(record.url, "https://www.pub.example/landed");
+    // Which `ExtraInfo` belongs to this hop cannot be counted off, so it
+    // has the headers of its own announcement and nobody's cookies.
+    assert_eq!(header_of(&record.request_headers, "Cookie"), None);
+    assert_eq!(header_of(&record.request_headers, "Accept"), Some("*/*"));
+    assert_eq!(header_of(&record.response_headers, "Set-Cookie"), None);
+    assert!(assembler.chains.is_empty());
+}
+
+#[test]
+fn events_the_browser_sends_twice_make_one_record_and_one_body_request() {
+    let mut assembler = Assembler::default();
+    let now = epoch(1_200.0);
+    let mut outputs = Vec::new();
+    for (method, event) in [
+        (
+            "Network.requestWillBeSent",
+            request("9.1", "https://a.example/x", 1_200.0),
+        ),
+        (
+            "Network.requestWillBeSent",
+            request("9.1", "https://a.example/x", 1_200.0),
+        ),
+        ("Network.responseReceived", {
+            let mut response = response("9.1", 200, 1_200.1);
+            response["hasExtraInfo"] = json!(false);
+            response
+        }),
+        ("Network.responseReceived", {
+            let mut response = response("9.1", 200, 1_200.1);
+            response["hasExtraInfo"] = json!(false);
+            response
+        }),
+        ("Network.loadingFinished", finished("9.1", 1_200.2, 300)),
+        ("Network.loadingFinished", finished("9.1", 1_200.2, 300)),
+        (
+            "Network.loadingFailed",
+            failed("9.1", 1_200.3, "net::ERR_ABORTED"),
+        ),
+    ] {
+        outputs.extend(assembler.observe(&tab(now), method, &event));
+    }
+    let asked: Vec<&Output> = outputs
+        .iter()
+        .filter(|output| matches!(output, Output::Finished(_)))
+        .collect();
+    assert_eq!(asked.len(), 1, "the body is asked for once");
+    let seq = finished_of(&outputs).unwrap().seq;
+    let mut records = ended(assembler.body_settled(seq, CapturedBody::Empty, now));
+    // Answering twice hands nothing over twice.
+    assert!(
+        assembler
+            .body_settled(seq, CapturedBody::Empty, now)
+            .is_empty()
+    );
+    assert_eq!(records.len(), 1);
+    let record = placed(records.remove(0));
+    assert_eq!((record.seq, &record.end), (0, &RequestEnd::Finished));
+    assert_eq!(assembler.open_flights, 0);
+    assert!(assembler.finish().is_empty());
+}
+
+#[test]
+fn a_request_whose_target_dies_is_pending_at_the_end_and_its_lost_body_is_said_so() {
+    let mut assembler = Assembler::default();
+    let worker = |now| child("worker", Reporter::Worker, now);
+    let now = epoch(1_300.0);
+    // One request never ends: the worker was terminated mid-flight.
+    assembler.observe(
+        &worker(now),
+        "Network.requestWillBeSent",
+        &request("5.1", "https://a.example/stream", 1_300.0),
+    );
+    // Another finished, but the worker was gone before its body was read.
+    assembler.observe(
+        &worker(now),
+        "Network.requestWillBeSent",
+        &request("5.2", "https://a.example/data.json", 1_300.0),
+    );
+    assembler.observe(&worker(now), "Network.responseReceived", &{
+        let mut response = response("5.2", 200, 1_300.1);
+        response["hasExtraInfo"] = json!(false);
+        response
+    });
+    let outputs = assembler.observe(
+        &worker(now),
+        "Network.loadingFinished",
+        &finished("5.2", 1_300.2, 300),
+    );
+    assert_eq!(finished_of(&outputs).unwrap().session, "worker");
+
+    let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(placed).collect();
+    assert_eq!(records.len(), 2);
+    assert_eq!(
+        (&records[0].end, &records[0].body, records[0].ended_at_ms),
+        (&RequestEnd::Pending, &CapturedBody::Absent, None)
+    );
+    assert_eq!(records[1].end, RequestEnd::Finished);
+    assert!(matches!(&records[1].body, CapturedBody::Unavailable(_)));
+    assert_eq!(records[0].context, RequestContext::Worker);
+    assert_eq!(assembler.open_flights, 0);
+}
+
+#[test]
+fn a_request_id_that_comes_back_after_its_request_ended_is_not_a_second_request() {
+    // Ids are the browser's and are not given out twice; events that name
+    // an ended one are late or replayed, whatever they claim to start.
+    let mut assembler = Assembler::default();
+    let first = fetched(&mut assembler, "3.1", "https://a.example/one", 1_400.0);
+    let now = epoch(1_405.0);
+    let mut again = request("3.1", "https://a.example/two", 1_405.0);
+    again["redirectResponse"] = response("3.1", 302, 1_404.9)["response"].clone();
+    for (method, event) in [
+        ("Network.requestWillBeSent", again),
+        (
+            "Network.webSocketCreated",
+            json!({ "requestId": "3.1", "url": "wss://a.example/s" }),
+        ),
+        ("Network.responseReceived", response("3.1", 200, 1_405.1)),
+        (
+            "Network.loadingFailed",
+            failed("3.1", 1_405.2, "net::ERR_FAILED"),
+        ),
+    ] {
+        assert!(
+            assembler.observe(&tab(now), method, &event).is_empty(),
+            "{method}"
+        );
+    }
+    assert!(assembler.finish().is_empty());
+    assert_eq!(first.seq, 0);
+    assert_eq!(assembler.next_seq, 1, "no number was spent on it");
+}

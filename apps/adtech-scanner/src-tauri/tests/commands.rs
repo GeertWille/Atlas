@@ -189,6 +189,7 @@ impl CaptureSource for RecordedBrowser {
             NetworkRecord {
                 seq,
                 page: 0,
+                page_host: String::new(),
                 context: RequestContext::Page,
                 frame_id: None,
                 target_id: None,
@@ -1493,4 +1494,52 @@ fn storage_commands_report_usage_and_the_settings_switch_storage_off() {
     assert!(!pack.exists());
     let cleared: ArchiveStorage = invoke(&app, "clear_archive", json!({}));
     assert_eq!((cleared.scans, cleared.stored_bytes), (0, 0.0));
+}
+
+/// Two apps on one data directory (the binary started twice): the second
+/// finds scans that are running and packs that are being written, not what
+/// a crash left behind. Only the first one sweeps.
+#[test]
+fn only_the_first_app_on_a_data_directory_cleans_up_after_earlier_runs() {
+    struct Silent;
+    impl adscan_engine::application::ports::EventSink for Silent {
+        fn emit(&self, _event: ScanEvent) {}
+    }
+    let data_dir = tempfile::tempdir().unwrap();
+    let start = || {
+        tauri::async_runtime::block_on(AppState::build(
+            AppConfig {
+                data_dir: data_dir.path().to_path_buf(),
+                anthropic_base_url: "http://127.0.0.1:1".into(),
+                typesafe_base_url: "http://127.0.0.1:1".into(),
+                api_key_override: Some("sk-ant-test".into()),
+                typesafe_api_key_override: None,
+                proxy_password_override: None,
+            },
+            Arc::new(NoBrowser),
+            Arc::new(Silent),
+        ))
+        .unwrap()
+    };
+    let first = start();
+    // What the first app's running scan has on disk, as the second sees it:
+    // a pack the index knows nothing final about.
+    let scans = data_dir.path().join("archive/scans");
+    std::fs::create_dir_all(&scans).unwrap();
+    let being_written = scans.join("of-the-first-app.pack.zst");
+    std::fs::write(&being_written, b"frames so far").unwrap();
+
+    let second = start();
+    assert!(
+        being_written.exists(),
+        "the second app swept what the first is writing"
+    );
+    drop(second);
+    assert!(being_written.exists());
+
+    // With no other app left, the next start does clean up.
+    drop(first);
+    let alone = start();
+    assert!(!being_written.exists());
+    drop(alone);
 }

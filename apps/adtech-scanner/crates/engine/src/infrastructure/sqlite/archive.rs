@@ -369,7 +369,11 @@ impl ArchiveRepository for SqliteStore {
     async fn remove(&self, scan_id: &str) -> RepoResult<bool> {
         let scan_id = scan_id.to_string();
         self.call(move |connection| {
-            Ok(connection.execute("DELETE FROM scan_archives WHERE scan_id = ?1", [scan_id])? > 0)
+            let removed =
+                connection.execute("DELETE FROM scan_archives WHERE scan_id = ?1", [scan_id])? > 0;
+            forget_unused_hosts(connection)?;
+            drop_deleted_pages(connection);
+            Ok(removed)
         })
         .await
     }
@@ -394,6 +398,7 @@ impl ArchiveRepository for SqliteStore {
                     )?;
                 } else {
                     transaction.execute("DELETE FROM requests WHERE scan_no = ?1", [scan_no])?;
+                    forget_unused_hosts(&transaction)?;
                 }
                 transaction.execute(
                     "UPDATE scan_archives SET state = ?2, pack_file = NULL, pack_bytes = 0, body_count = 0,
@@ -402,7 +407,9 @@ impl ArchiveRepository for SqliteStore {
                     params![scan_no, state_name(ArchiveState::Evicted)],
                 )?;
             }
-            transaction.commit()
+            transaction.commit()?;
+            drop_deleted_pages(connection);
+            Ok(())
         })
         .await
     }
@@ -455,6 +462,24 @@ pub(super) fn network_info(
     scan_id: &str,
 ) -> rusqlite::Result<Option<adscan_model::NetworkArchiveInfo>> {
     Ok(read_archive(connection, scan_id)?.map(|archive| archive.info()))
+}
+
+/// Host names are shared by the requests of all scans. One that no request
+/// names any more would still say where a deleted scan went.
+pub(super) fn forget_unused_hosts(connection: &Connection) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM hosts WHERE NOT EXISTS (SELECT 1 FROM requests WHERE requests.host_id = hosts.id)",
+        [],
+    )?;
+    Ok(())
+}
+
+/// After scan data was deleted: the write-ahead log still holds the pages
+/// as they were before. Folding it into the database and emptying it is
+/// what makes the deletion true of the files. Best effort: a reader in
+/// another process can hold it back, and the next deletion catches up.
+pub(super) fn drop_deleted_pages(connection: &Connection) {
+    let _ = connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
 }
 
 fn scan_no(connection: &Connection, scan_id: &str) -> rusqlite::Result<Option<i64>> {

@@ -13,8 +13,7 @@ use adscan_model::{
     request_id, request_seq,
 };
 
-use super::storage::pack_error;
-use super::{Archive, codec};
+use super::Archive;
 use crate::application::AppError;
 use crate::application::ports::{ArchiveRecord, RequestIndexRow, ScanRepository};
 use crate::domain::archive::Location;
@@ -240,7 +239,7 @@ impl NetworkView {
         let request_body = match document {
             Some(document) => BodyRef {
                 state: match &document.post_data {
-                    Some(_) if document.post_truncated() => BodyState::Truncated,
+                    Some(_) if document.post_truncated => BodyState::Truncated,
                     Some(_) => BodyState::Kept,
                     None if document.post_missing => BodyState::Unavailable,
                     None => BodyState::Empty,
@@ -318,7 +317,21 @@ impl NetworkView {
         max_bytes: Option<f64>,
     ) -> Result<NetworkBodyChunk, AppError> {
         self.scan(scan_id).await?;
-        let (record, _, row) = self.locate(scan_id, id).await?;
+        let not_found = || AppError::NotFound(format!("Request {id}"));
+        let record = self
+            .archive
+            .index
+            .record(scan_id)
+            .await?
+            .ok_or_else(not_found)?;
+        let seq = request_seq(id).ok_or_else(not_found)?;
+        let row = self
+            .archive
+            .index
+            .rows_by_seq(scan_id, &[seq])
+            .await?
+            .pop()
+            .ok_or_else(not_found)?;
         let (state, content) = match side {
             BodySide::Response => match row.body_no {
                 Some(_) => (
@@ -331,7 +344,7 @@ impl NetworkView {
                 let documents = self.documents(&record, std::slice::from_ref(&row)).await;
                 match documents.get(&row.seq) {
                     Some(document) => match &document.post_data {
-                        Some(post) if document.post_truncated() => {
+                        Some(post) if document.post_truncated => {
                             (BodyState::Truncated, Some(post.clone().into_bytes()))
                         }
                         Some(post) => (BodyState::Kept, Some(post.clone().into_bytes())),
@@ -422,14 +435,13 @@ impl NetworkView {
                 offset,
                 length,
             };
-            let Ok(frame) = self.archive.packs.read(&location).await else {
+            let Ok(content) = self.archive.frame(location, MAX_RECORD_FRAME_CONTENT).await else {
                 continue;
             };
             let parsed = tokio::task::spawn_blocking({
                 let wanted: Vec<(u32, u32)> =
                     rows.iter().map(|row| (row.seq, row.record_index)).collect();
                 move || {
-                    let content = codec::decompress(&frame, MAX_RECORD_FRAME_CONTENT).ok()?;
                     let text = std::str::from_utf8(&content).ok()?;
                     let lines: Vec<&str> = text.split('\n').collect();
                     Some(
@@ -469,38 +481,8 @@ impl NetworkView {
             .body(scan_id, body_no)
             .await?
             .ok_or_else(missing)?;
-        read_body(
-            &self.archive,
-            file,
-            body.pack_offset,
-            body.pack_length,
-            body.raw_len,
-        )
-        .await
+        self.archive.body(file, &body).await
     }
-}
-
-/// Reads and unpacks one body frame.
-pub(super) async fn read_body(
-    archive: &Archive,
-    file: String,
-    offset: u64,
-    length: u32,
-    raw_len: u64,
-) -> Result<Vec<u8>, AppError> {
-    let frame = archive
-        .packs
-        .read(&Location {
-            file,
-            offset,
-            length,
-        })
-        .await
-        .map_err(pack_error)?;
-    tokio::task::spawn_blocking(move || codec::decompress(&frame, raw_len as usize))
-        .await
-        .map_err(|error| AppError::Internal(error.to_string()))?
-        .map_err(|error| AppError::Storage(format!("a stored body could not be read: {error}")))
 }
 
 /// Start and end of at most `limit` bytes from `offset` that do not cut a

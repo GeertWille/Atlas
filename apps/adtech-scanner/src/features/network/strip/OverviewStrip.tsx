@@ -14,10 +14,20 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { Hint } from "@/shared/ui/tooltip";
 import type { IndexedRow } from "../query/match";
-import { axisTicks, binRequests, type LifecycleMarks, type StripAxis, type TimeWindow } from "./strip-layout";
+import { LifecycleLane, StripLegend } from "./LifecycleLane";
+import {
+  axisTicks,
+  binRequests,
+  describeMoment,
+  type LifecycleMarks,
+  type StripAxis,
+  type TimeWindow,
+} from "./strip-layout";
 
 const BIN_PX = 4;
 const DRAG_THRESHOLD_PX = 3;
+/** How near the pointer has to be to a mark for the readout to name it. */
+const HOVER_REACH_PX = 5;
 /** How much is shown around a single moment picked from the events menu. */
 const EVENT_MARGIN_MS = 1000;
 
@@ -63,6 +73,38 @@ function eventsOf(marks: LifecycleMarks, axis: StripAxis): StripEvent[] {
   ].sort((a, b) => a.fromMs - b.fromMs);
 }
 
+/** The moment under the pointer: a hairline, the time, and the name of the event it is on. */
+function HoverReadout({
+  atMs,
+  axis,
+  marks,
+  trackWidth,
+}: {
+  atMs: number;
+  axis: StripAxis;
+  marks: LifecycleMarks;
+  trackWidth: number;
+}) {
+  const reachMs = trackWidth > 0 ? (HOVER_REACH_PX / trackWidth) * axis.endMs : 0;
+  const what = describeMoment(marks, atMs, reachMs);
+  const left = axis.endMs > 0 ? (atMs / axis.endMs) * 100 : 0;
+  return (
+    <span aria-hidden="true" className="pointer-events-none absolute inset-y-0" style={{ left: `${left}%` }}>
+      <span className="absolute inset-y-0 w-px bg-foreground/40" />
+      <span
+        data-testid="strip-readout"
+        className={cn(
+          "absolute top-0.5 max-w-80 truncate rounded-sm border bg-popover px-1.5 py-px text-[11px] leading-4 whitespace-nowrap text-popover-foreground shadow-xs tabular-nums",
+          left > 60 ? "right-1.5" : "left-1.5",
+        )}
+      >
+        {formatDuration(atMs)}
+        {what ? <span className="text-muted-foreground"> · {what}</span> : null}
+      </span>
+    </span>
+  );
+}
+
 /**
  * The whole visit, or one page view, on a time axis: requests per moment above, what the ad stack
  * did below. Dragging selects a window, which filters the list and rescales its waterfall. The
@@ -91,6 +133,7 @@ export function OverviewStrip({
   const track = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ startX: number; moved: boolean } | null>(null);
   const [dragged, setDragged] = useState<TimeWindow | null>(null);
+  const [hoverMs, setHoverMs] = useState<number | null>(null);
   const width = size?.width ?? 0;
   const bins = binRequests(rows, axis, Math.max(1, Math.floor(width / BIN_PX)));
   const shown = dragged ?? window;
@@ -110,6 +153,7 @@ export function OverviewStrip({
   };
   const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
     const state = drag.current;
+    setHoverMs(state ? null : msAt(event.clientX));
     if (!state) return;
     if (Math.abs(event.clientX - state.startX) < DRAG_THRESHOLD_PX && !state.moved) return;
     state.moved = true;
@@ -157,13 +201,14 @@ export function OverviewStrip({
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
+          onPointerLeave={() => setHoverMs(null)}
           className={cn(
             "relative cursor-crosshair touch-none overflow-hidden rounded-md border bg-background select-none",
-            compact ? "h-10" : "h-16",
+            compact ? "h-[44px]" : "h-[78px]",
           )}
         >
           {/* Network lane: request starts per moment, failures marked beneath. */}
-          <div className={cn("absolute inset-x-0 top-0 flex items-end", compact ? "h-[22px]" : "h-[34px]")}>
+          <div className={cn("absolute inset-x-0 top-0 flex items-end", compact ? "h-[20px]" : "h-[36px]")}>
             {bins.counts.map((count, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: bins are positions on the axis
               <span key={index} className="relative h-full min-w-0 flex-1">
@@ -177,59 +222,17 @@ export function OverviewStrip({
               </span>
             ))}
           </div>
-          {/* Ad lifecycle lane: each kind of event has its own shape. */}
-          <div
-            data-lane="ads"
-            className={cn(
-              "absolute inset-x-0 border-t border-border/70",
-              compact ? "top-[22px] h-[17px]" : "top-[34px] h-[18px]",
-            )}
-          >
-            {marks.auctions.map((auction) => (
-              <span key={auction.id}>
-                <span
-                  className="absolute top-[4px] h-[9px] rounded-[2px] bg-violet"
-                  style={{
-                    left: percent(auction.startMs),
-                    width: `max(3px, calc(${percent(auction.endMs)} - ${percent(auction.startMs)}))`,
-                  }}
-                />
-                {auction.timeoutAtMs !== null ? (
-                  <span
-                    className="absolute top-[1px] h-[15px] w-0.5 bg-amber"
-                    style={{ left: percent(auction.timeoutAtMs) }}
-                  />
-                ) : null}
-              </span>
-            ))}
-            {marks.renders.map((render, index) => (
-              <span
-                // biome-ignore lint/suspicious/noArrayIndexKey: renders are positions on the axis
-                key={index}
-                className="absolute top-[5px] size-0 -translate-x-1/2 border-x-[4px] border-t-[7px] border-x-transparent border-t-green"
-                style={{ left: percent(render.atMs) }}
-              />
-            ))}
-            {marks.consentAtMs !== null ? (
-              <span
-                className="absolute top-[5px] size-[7px] -translate-x-1/2 rotate-45 bg-blue"
-                style={{ left: percent(marks.consentAtMs) }}
-              />
-            ) : null}
-            {marks.loads.map((load) => (
-              <span
-                key={load.page}
-                className="absolute inset-y-0 w-px border-l border-dashed border-foreground/50"
-                style={{ left: percent(load.atMs) }}
-              />
-            ))}
-          </div>
+          <LifecycleLane
+            marks={marks}
+            percent={percent}
+            className={cn("border-t border-border/70", compact ? "top-[20px] h-[23px]" : "top-[36px] h-[27px]")}
+          />
           {compact ? null : (
-            <div className="absolute inset-x-0 bottom-0 h-3 border-t border-border/70">
+            <div className="absolute inset-x-0 bottom-0 h-3.5 border-t border-border/70">
               {axisTicks(axis.endMs, Math.max(2, Math.floor(width / 110))).map((tick) => (
                 <span
                   key={tick}
-                  className="absolute top-0 pl-1 text-[9px] leading-3 text-subtle-foreground tabular-nums"
+                  className="absolute top-0 pl-1 text-[10px] leading-[13px] text-subtle-foreground tabular-nums"
                   style={{ left: percent(tick) }}
                 >
                   {tick === 0 ? "0" : formatDuration(tick)}
@@ -257,6 +260,7 @@ export function OverviewStrip({
               }}
             />
           ) : null}
+          {hoverMs !== null ? <HoverReadout atMs={hoverMs} axis={axis} marks={marks} trackWidth={width} /> : null}
           {shown ? (
             <>
               <span
@@ -301,6 +305,7 @@ export function OverviewStrip({
             />
           ))}
         </SliderPrimitive.Root>
+        {compact ? null : <StripLegend className="pt-0.5 pl-0.5" />}
       </div>
       <div className="flex shrink-0 flex-col justify-between gap-1">
         <DropdownMenu>

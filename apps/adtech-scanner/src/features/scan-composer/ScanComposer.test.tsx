@@ -645,6 +645,34 @@ test("the keyboard scans from any field with Mod+Enter and saves with Mod+S", as
   expect(await startedOptions()).toMatchObject({ url: "https://example.com/news" });
 });
 
+test("Mod+Enter and Mod+S work from anywhere on the screen, but not from a field that is not the composer's", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(
+    <>
+      <ScanComposer settings={settingsFixture} />
+      <input aria-label="Another field" />
+      <button type="button">Elsewhere</button>
+    </>,
+  );
+  await user.type(urlInput(), "example.com/news");
+
+  // Typing in a field outside the composer is not a wish to scan or save.
+  screen.getByRole("textbox", { name: "Another field" }).focus();
+  await user.keyboard("{Control>}{Enter}{/Control}{Control>}s{/Control}");
+  expect(screen.queryByRole("dialog")).toBeNull();
+  expect((await api.listScans({})).total).toBe(0);
+
+  // From a button elsewhere on the screen, and with nothing focused at all, the keys reach the composer.
+  screen.getByRole("button", { name: "Elsewhere" }).focus();
+  await user.keyboard("{Control>}s{/Control}");
+  expect(await screen.findByRole("dialog", { name: "Save as configuration" })).toBeInTheDocument();
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  (document.activeElement as HTMLElement | null)?.blur();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(await startedOptions()).toMatchObject({ url: "https://example.com/news" });
+});
+
 test("Mod+S updates the open configuration once it is edited", async () => {
   const user = userEvent.setup();
   const configuration = await api.saveScanConfiguration({ name: "Example", options: validOptions });

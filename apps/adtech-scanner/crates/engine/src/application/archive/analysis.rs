@@ -62,6 +62,7 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
         .as_ref()
         .and_then(|decoded| decoded.response.as_ref());
     let mut haystack = record.url.clone();
+    let mut complete = !record.post_data_missing;
     if let Some(post) = &post {
         haystack.push('\n');
         let cut = (0..=post.len().min(MAX_HAYSTACK_BYTES))
@@ -69,6 +70,10 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
             .find(|at| post.is_char_boundary(*at))
             .unwrap_or(0);
         haystack.push_str(&post[..cut]);
+        let sent = record.post_data.as_ref().map_or(0, |post| post.total_bytes);
+        // A body that is not text (compressed by the adapter) reads as
+        // replacement characters: its ids cannot be seen either.
+        complete &= cut == post.len() && post.len() as u64 == sent && !post.contains('\u{FFFD}');
     }
     ExchangeRequest {
         seq: record.seq,
@@ -86,6 +91,7 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
             RequestEnd::Pending => Answer::Pending,
         },
         haystack,
+        complete,
         best_cpm: response.and_then(openrtb::best_price),
         nbr: response.and_then(|response| response.nbr),
     }

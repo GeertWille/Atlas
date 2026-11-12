@@ -12,16 +12,6 @@ export type ExchangeFacts = {
   error?: string | null;
 };
 
-export const EXCHANGE_VERDICT_LABEL: Record<ExchangeVerdict, string> = {
-  inTime: "In time",
-  atDeadline: "At the deadline",
-  lateOnNetwork: "Late",
-  inTimeButTimedOut: "In time, timed out in the page",
-  neverAnswered: "Never answered",
-  failed: "Failed",
-  notSent: "Not sent",
-};
-
 const ms = (value: number) => formatDuration(Math.abs(value));
 
 /**

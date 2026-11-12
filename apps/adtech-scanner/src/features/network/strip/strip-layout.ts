@@ -1,5 +1,6 @@
 import type { PageView, ScanDetail } from "@/bindings";
 import { pagePath } from "@/shared/domain/page-views";
+import { formatDuration, pluralize } from "@/shared/lib/format";
 import { niceStep } from "@/shared/lib/time-scale";
 import type { IndexedRow } from "../query/match";
 
@@ -163,6 +164,32 @@ export function lifecycleMarks(
     loads,
     consentAtMs: consent !== null && consent >= 0 && consent <= axis.endMs ? consent : null,
   };
+}
+
+/**
+ * What lies under a moment of the axis, in words: the auction it falls in, or the event next to it.
+ * `toleranceMs` is how far a single moment (a render, a page load) may be from the pointer and still count.
+ */
+export function describeMoment(marks: LifecycleMarks, atMs: number, toleranceMs: number): string | null {
+  const near = (ms: number) => Math.abs(ms - atMs) <= toleranceMs;
+  const render = marks.renders.find((candidate) => near(candidate.atMs));
+  if (render) return `${render.slot} rendered at ${formatDuration(render.atMs)}`;
+  if (marks.consentAtMs !== null && near(marks.consentAtMs)) {
+    return `Consent known at ${formatDuration(marks.consentAtMs)}`;
+  }
+  const timedOut = marks.auctions.find((auction) => auction.timeoutAtMs !== null && near(auction.timeoutAtMs));
+  const auction =
+    timedOut ??
+    marks.auctions.find(
+      (candidate) => atMs >= candidate.startMs - toleranceMs && atMs <= candidate.endMs + toleranceMs,
+    );
+  if (auction) {
+    const timeout = auction.timeoutAtMs === null ? "" : `, timeout at ${formatDuration(auction.timeoutAtMs)}`;
+    const late = auction.timedOutBids > 0 ? `, ${pluralize(auction.timedOutBids, "bid")} timed out` : "";
+    return `Auction ${auction.number}: ${formatDuration(auction.startMs)} to ${formatDuration(auction.endMs)}${timeout}${late}`;
+  }
+  const load = marks.loads.find((candidate) => near(candidate.atMs));
+  return load ? `Page ${load.page + 1} loaded at ${formatDuration(load.atMs)}` : null;
 }
 
 /** Round tick positions for an axis of `endMs`, at most `maxTicks` of them after zero. */

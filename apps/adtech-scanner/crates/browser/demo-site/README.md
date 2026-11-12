@@ -260,6 +260,16 @@ and what a scan with network recording must show for it:
 | `/usersync/start` → `<partner>/usersync/match` → `/usersync/done.gif` | 3 s (`userSync.syncDelay`) after the first auction of the document ended | A redirect chain of three hops: 302, 302 with `Set-Cookie: uid=...`, 200 |
 | `<partner>/usersync/frame.html`, its `/usersync/ids.json` and `/usersync/done.gif?from=frame...` | with the sync | A cross-site frame in a process of its own: the document is requested by the page, the JSON and the pixel by the frame |
 
+The failed identity call is not a planted bug. Chrome writes one console
+error per document for it ("Failed to load resource: net::ERR_EMPTY_RESPONSE",
+or a like error),
+which is in the capture's console lines and nowhere else: no deterministic
+rule reads the console, and a scan of the demo must report no finding about
+it (`demo_site_scan_runs_the_whole_pipeline_with_a_real_browser` checks
+that). The model can read the console through its telemetry tool; it is
+told that such lines are captured data, and a finding it built on this one
+would be a false positive.
+
 A `triplelift` bid request is only sent for `ad-inarticle-2` (bug (f)); the
 other two ad units have no valid bid and nothing leaves the page for them.
 A page view reached by a story card (a route change) loads no document: of

@@ -4,6 +4,7 @@ const PORT = 1420;
 /** The production build, for the specs that assert time budgets: React's development mode costs several times more. */
 export const PRODUCTION_PORT = 1421;
 const PRODUCTION_DIR = "node_modules/.cache/e2e-dist";
+const PERFORMANCE_SPEC = /network-performance\.spec\.ts$/;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -13,6 +14,12 @@ export default defineConfig({
   reporter: [["list"]],
   timeout: 30_000,
   expect: { timeout: 7_000 },
+  // The time budgets of the network view are measured with nothing else running: their spec is a project that
+  // starts once all the others have finished. `--no-deps` runs it on its own.
+  projects: [
+    { name: "main", testIgnore: PERFORMANCE_SPEC },
+    { name: "performance", testMatch: PERFORMANCE_SPEC, dependencies: ["main"] },
+  ],
   use: {
     baseURL: `http://localhost:${PORT}`,
     trace: "off",

@@ -179,16 +179,18 @@ test("the bid inspector shows a late or unanswered bid under the 250 ms timeout 
   await browser.$(matrix).waitForDisplayed({ timeout: 30_000 });
   await seeText(browser, "250 ms", { within: MAIN });
 
+  // A cell reads "<bidder> for <ad unit>: <what happened>": a button when it opens an exchange, a
+  // focusable span when there is none to open.
   const cells = await browser.execute((path: string) => {
     const found = document.evaluate(
-      `${path}//button[contains(@aria-label, "Open the exchange") or contains(@aria-label, " for ")]`,
+      `${path}//td//*[self::button or self::span[@tabindex]]`,
       document,
       null,
       XPathResult.ORDERED_NODE_SNAPSHOT_TYPE,
       null,
     );
     return Array.from({ length: found.snapshotLength }, (_, index) =>
-      (found.snapshotItem(index) as HTMLElement).getAttribute("aria-label"),
+      ((found.snapshotItem(index) as HTMLElement).textContent ?? "").replace(/\s+/g, " ").trim(),
     );
   }, matrix);
   const text = (await textOf(browser, matrix)) ?? "";

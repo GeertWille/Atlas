@@ -15,6 +15,8 @@ import type { WaterfallScale } from "./waterfall-scale";
 export const ROW_HEIGHT = { compact: 28, comfortable: 36 } as const;
 const HEADER_HEIGHT = 28;
 const OVERSCAN = 8;
+/** How long after the list appears its height may still be settling. */
+const ARRIVAL_SETTLE_MS = 600;
 
 export function itemKey(item: GridItem): string {
   return item.kind === "group" ? `group:${item.group.key}` : item.indexed.row.id;
@@ -24,12 +26,14 @@ const rowDomId = (key: string) => `net-item-${key.replaceAll(/[^\w-]/g, "_")}`;
 
 function GroupRow({
   id,
+  rowIndex,
   group,
   active,
   onToggle,
 }: {
   /** Absent on the copy pinned to the top, which stands in for a row scrolled out of view. */
   id?: string;
+  rowIndex?: number;
   group: GridGroup;
   active: boolean;
   onToggle: () => void;
@@ -44,6 +48,7 @@ function GroupRow({
       id={id}
       role="row"
       aria-level={1}
+      aria-rowindex={rowIndex}
       aria-expanded={!group.collapsed}
       aria-selected={active}
       onClick={onToggle}
@@ -283,15 +288,20 @@ export function RequestGrid({
     return () => observer.disconnect();
   }, [template]);
 
-  const arrived = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll when the active item changes, not when the list does
+  // On arrival (a link to a request) the list has no height to scroll in until its pane is laid out, and
+  // that height keeps changing while the strip and the details settle around it. For that short while the
+  // row is centred again whenever the height changes; afterwards only moving the active row scrolls.
+  const arrival = useRef<{ at: number; key: string | null }>({ at: performance.now(), key: null });
+  const height = virtualizer.scrollRect?.height ?? 0;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll when the active item or the height changes, not when the list does
   useEffect(() => {
-    if (activeIndex < 0) return;
-    // On arrival (a link to a request) the list is still settling into its height: the row is centred,
-    // so it stays in view when the details open beside or below it.
-    virtualizer.scrollToIndex(activeIndex, { align: arrived.current ? "auto" : "center" });
-    arrived.current = true;
-  }, [activeKey]);
+    if (activeIndex < 0 || height === 0) return;
+    const moved = arrival.current.key !== null && arrival.current.key !== activeKey;
+    const settling = performance.now() - arrival.current.at < ARRIVAL_SETTLE_MS;
+    if (!moved && !settling && arrival.current.key !== null) return;
+    virtualizer.scrollToIndex(activeIndex, { align: moved ? "auto" : "center" });
+    arrival.current.key = activeKey;
+  }, [activeKey, height]);
 
   const move = (index: number) => {
     const item = items[Math.min(items.length - 1, Math.max(0, index))];
@@ -361,15 +371,15 @@ export function RequestGrid({
   const pinned = pinnedIndex >= 0 ? items[pinnedIndex] : undefined;
   const span = scale.endMs - scale.startMs;
   const toPx = (ms: number) => ((ms - scale.startMs) / span) * waterfall.width;
-  const dataRows = items.reduce((count, item) => count + (item.kind === "row" ? 1 : 0), 0);
-  const grouped = dataRows < items.length;
+  const grouped = items.some((item) => item.kind === "group");
 
   return (
     <div
       ref={scroller}
       role="treegrid"
       aria-label={label}
-      aria-rowcount={dataRows + 1}
+      // Every row counts, group headings included: `aria-rowindex` numbers them all.
+      aria-rowcount={items.length + 1}
       aria-colcount={columns.length}
       aria-activedescendant={activeIndex >= 0 && activeKey ? rowDomId(activeKey) : undefined}
       tabIndex={0}
@@ -384,13 +394,7 @@ export function RequestGrid({
         className="sticky top-0 z-20 grid min-w-max items-center gap-x-3 border-b bg-background px-2 text-[11px] font-medium text-muted-foreground"
       >
         {columns.map((column) => (
-          <HeaderCell
-            key={column.key}
-            column={column}
-            sort={sort}
-            onSort={onSort}
-            range={scale.label}
-          />
+          <HeaderCell key={column.key} column={column} sort={sort} onSort={onSort} range={scale.label} />
         ))}
       </div>
       {pinned?.kind === "group" ? (
@@ -433,6 +437,7 @@ export function RequestGrid({
               {item.kind === "group" ? (
                 <GroupRow
                   id={rowDomId(key)}
+                  rowIndex={virtual.index + 2}
                   group={item.group}
                   active={key === activeKey}
                   onToggle={() => onToggleGroup(item.group.key)}

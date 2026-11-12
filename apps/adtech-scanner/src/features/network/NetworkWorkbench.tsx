@@ -180,8 +180,13 @@ export function NetworkWorkbench({
   const activeKey = activeChoice ?? selected?.row.id ?? (items[0] ? itemKey(items[0]) : null);
 
   const scale = useMemo(
-    () => buildWaterfallScale({ axis, context, marks, window: windowFrom === undefined ? null : timeWindow }),
-    // biome-ignore lint/correctness/useExhaustiveDependencies: the window is its two numbers
+    () =>
+      buildWaterfallScale({
+        axis,
+        context,
+        marks,
+        window: windowFrom === undefined || windowTo === undefined ? null : { fromMs: windowFrom, toMs: windowTo },
+      }),
     [axis, context, marks, windowFrom, windowTo],
   );
 
@@ -352,7 +357,7 @@ export function NetworkWorkbench({
         selectedId={selected?.row.id}
         onOpen={(requestId) => openRequest(requestId)}
         onToggleGroup={toggleGroup}
-        onCopyUrl={(url) => void copy(url)}
+        onCopyUrl={(url) => void copy(url, "URL copied")}
         scale={scale}
         rowHeight={comfortable ? ROW_HEIGHT.comfortable : ROW_HEIGHT.compact}
       />
@@ -369,7 +374,11 @@ export function NetworkWorkbench({
       onDockChange={setDockChoice}
       maximized={maximized}
       onMaximizedChange={setMaximized}
-      onClose={() => openRequest(undefined)}
+      onClose={() => {
+        openRequest(undefined);
+        // The button that was pressed is gone with the panel: the keys go back to the list.
+        requestAnimationFrame(() => gridHost.current?.querySelector<HTMLElement>("[role='treegrid']")?.focus());
+      }}
       onOpenRequest={(requestId) => openRequest(requestId)}
     />
   ) : null;

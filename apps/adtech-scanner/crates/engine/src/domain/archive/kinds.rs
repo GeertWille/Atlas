@@ -6,6 +6,9 @@ use crate::domain::DomainError;
 
 /// A response body is stored up to this many bytes.
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
+/// No stored body is longer than this. More than [`MAX_BODY_BYTES`], because
+/// a placeholder can be longer than the value it stands for.
+pub const MAX_STORED_BODY_BYTES: usize = 2 * MAX_BODY_BYTES;
 /// Kept bodies of one scan, before compression. After that requests keep
 /// their metadata only.
 pub const MAX_SCAN_BODY_BYTES: u64 = 256 * 1024 * 1024;

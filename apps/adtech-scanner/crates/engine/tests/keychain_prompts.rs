@@ -649,3 +649,56 @@ async fn tasks_that_need_secrets_at_the_same_moment_cause_one_read() {
     }
     assert_eq!(keychain.accesses(), (1, 0, 0));
 }
+
+#[tokio::test]
+async fn a_vault_that_cannot_be_read_as_one_is_reported_and_never_overwritten() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let keychain = Arc::new(CountingKeychain::default());
+    let proxy_id = an_earlier_run_stored_everything(&store, &keychain).await;
+    let recorded = store.load_presence().await.unwrap();
+    // Something else wrote to the item, or it was cut short: the secrets
+    // may still be recoverable from it by hand.
+    const DAMAGED: &str = r#"{"anthropic":"sk-ant-still-in-here","typesafe":"#;
+    keychain.put(VAULT, DAMAGED);
+    let app = launch(
+        CaptureBehavior::Fail(CaptureError::Navigation("unreachable".into())),
+        &store,
+        &keychain,
+    );
+
+    let reading = app.settings.api_key(ApiProvider::Anthropic).await;
+    let storing = app
+        .settings
+        .set_proxy_password(&proxy_id, "another")
+        .await
+        .map(drop);
+    let clearing = app.settings.clear_api_key(ApiProvider::Typesafe).await;
+    for failed in [reading.map(drop), storing, clearing] {
+        let message = failed
+            .expect_err("a damaged vault must not read as empty")
+            .to_string();
+        assert!(message.contains("not in the expected format"), "{message}");
+        assert!(!message.contains("sk-ant-still-in-here"), "{message}");
+    }
+    assert_eq!(
+        app.scans
+            .start(ai_scan_through(&proxy_id))
+            .await
+            .err()
+            .map(|error| error.to_string()),
+        app.settings
+            .api_key(ApiProvider::Anthropic)
+            .await
+            .err()
+            .map(|error| error.to_string()),
+        "a scan that needs a key says the same, instead of running without AI"
+    );
+
+    // Nothing was written, deleted or forgotten.
+    assert_eq!(keychain.item(VAULT).as_deref(), Some(DAMAGED));
+    let (_, writes, deletes) = keychain.accesses();
+    assert_eq!((writes, deletes), (0, 0));
+    assert_eq!(store.load_presence().await.unwrap(), recorded);
+    let settings = app.settings.get().await.unwrap();
+    assert!(settings.has_api_key && settings.proxies[0].has_password);
+}

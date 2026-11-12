@@ -85,37 +85,37 @@ export function DetailPanel({
   const { copy } = useCopy();
   const [pendingCopy, setPendingCopy] = useState<(() => void) | null>(null);
 
-  const copyBody = async (side: BodySide) => {
-    try {
-      const text = await readNetworkBody(scanId, row.id, side);
-      if (text === null)
-        toast.info(side === "request" ? "This request has no stored body" : "The response body is not stored");
-      else await copy(text);
-    } catch (reason) {
-      notifyError("Could not read the body", reason);
-    }
+  // The text is still to be read when the menu item is chosen: the copy starts with a promise of it.
+  const copyBody = (side: BodySide) => {
+    const body = readNetworkBody(scanId, row.id, side).then((text) => {
+      if (text !== null) return text;
+      toast.info(side === "request" ? "This request has no stored body" : "The response body is not stored");
+      throw new Error("no stored body");
+    });
+    body.catch((reason) => {
+      if (!(reason instanceof Error && reason.message === "no stored body"))
+        notifyError("Could not read the body", reason);
+    });
+    void copy(body, side === "request" ? "Payload copied" : "Response copied");
   };
 
   const copyCurl = async () => {
     if (!detail) return;
-    try {
-      const hasBody = detail.requestBody.state === "kept" || detail.requestBody.state === "truncated";
-      const { command, redactedHeaders, bodyIncomplete } = toCurl(
-        detail,
-        hasBody ? await readNetworkBody(scanId, row.id, "request") : null,
-      );
-      await copy(command);
-      if (redactedHeaders.length > 0) {
-        toast.warning("Copied, with placeholders", {
-          description: `${redactedHeaders.join(" and ")} ${redactedHeaders.length === 1 ? "was" : "were"} not stored, so the command will not reproduce a signed-in request.`,
-        });
-      } else if (bodyIncomplete) {
-        toast.warning("Copied without the full request body", { description: "The body is not stored whole." });
-      } else {
-        toast.success("Copied as cURL");
-      }
-    } catch (reason) {
-      notifyError("Could not build the command", reason);
+    const hasBody = detail.requestBody.state === "kept" || detail.requestBody.state === "truncated";
+    const built = (hasBody ? readNetworkBody(scanId, row.id, "request") : Promise.resolve(null)).then((body) =>
+      toCurl(detail, body),
+    );
+    built.catch((reason) => notifyError("Could not build the command", reason));
+    if (!(await copy(built.then(({ command }) => command)))) return;
+    const { redactedHeaders, bodyIncomplete } = await built;
+    if (redactedHeaders.length > 0) {
+      toast.warning("Copied, with placeholders", {
+        description: `${redactedHeaders.join(" and ")} ${redactedHeaders.length === 1 ? "was" : "were"} not stored, so the command will not reproduce a signed-in request.`,
+      });
+    } else if (bodyIncomplete) {
+      toast.warning("Copied without the full request body", { description: "The body is not stored whole." });
+    } else {
+      toast.success("Copied as cURL");
     }
   };
 
@@ -141,14 +141,14 @@ export function DetailPanel({
           </Hint>
           <DropdownMenuContent align="end">
             <DropdownMenuGroup>
-              <DropdownMenuItem onSelect={() => void copy(row.url)}>Copy URL</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void copy(row.url, "URL copied")}>Copy URL</DropdownMenuItem>
               <DropdownMenuItem disabled={!detail?.available} onSelect={() => guarded(() => void copyCurl())}>
                 Copy as cURL
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={!row.hasRequestBody} onSelect={() => guarded(() => void copyBody("request"))}>
+              <DropdownMenuItem disabled={!row.hasRequestBody} onSelect={() => guarded(() => copyBody("request"))}>
                 Copy payload
               </DropdownMenuItem>
-              <DropdownMenuItem disabled={!row.hasResponseBody} onSelect={() => void copyBody("response")}>
+              <DropdownMenuItem disabled={!row.hasResponseBody} onSelect={() => copyBody("response")}>
                 Copy response
               </DropdownMenuItem>
             </DropdownMenuGroup>

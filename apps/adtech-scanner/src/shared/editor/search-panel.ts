@@ -62,7 +62,9 @@ export function createSearchPanel(view: EditorView): Panel {
   count.setAttribute("role", "status");
   count.setAttribute("aria-live", "polite");
 
-  const flags = { caseSensitive: false, regexp: false, wholeWord: false };
+  // The options of the last search stay on when the bar is reopened: CodeMirror keeps them in its query.
+  const { caseSensitive, regexp, wholeWord } = getSearchQuery(view.state);
+  const flags = { caseSensitive, regexp, wholeWord };
 
   const commit = () => {
     const query = new SearchQuery({ search: input.value, ...flags });
@@ -91,7 +93,7 @@ export function createSearchPanel(view: EditorView): Panel {
       commit();
       input.focus();
     });
-    element.setAttribute("aria-pressed", "false");
+    element.setAttribute("aria-pressed", String(flags[flag]));
     return element;
   };
 
@@ -134,15 +136,9 @@ export function createSearchPanel(view: EditorView): Panel {
     dom,
     top: true,
     mount() {
-      // Opening with a selection searches for it, as editors do.
-      const { main } = view.state.selection;
-      const selected = main.empty ? "" : view.state.sliceDoc(main.from, Math.min(main.to, main.from + 200));
-      if (selected && !selected.includes("\n")) {
-        input.value = selected;
-        view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: selected, ...flags })) });
-      } else {
-        input.value = getSearchQuery(view.state).search;
-      }
+      // Opening with a selection searches for it, as editors do: CodeMirror has put it into the query already.
+      // Nothing may be dispatched from here, the view is in the middle of the update that opens the bar.
+      input.value = getSearchQuery(view.state).search;
       input.select();
       render();
     },

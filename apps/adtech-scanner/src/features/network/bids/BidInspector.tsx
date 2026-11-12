@@ -1,8 +1,9 @@
-import { CircleOffIcon, GavelIcon, ServerIcon } from "lucide-react";
+import { ChevronRightIcon, CircleOffIcon, GavelIcon, ServerIcon } from "lucide-react";
 import type { Auction, BidStatus, DecodedBidResponse, ExchangeVerdict, NetworkRow, ScanDetail } from "@/bindings";
 import { useNetworkRequests } from "@/lib/query/hooks";
 import { verdictSentence } from "@/shared/domain/exchange-verdict";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
+import { useScrollEdges } from "@/shared/hooks/use-scroll-edges";
 import { cn } from "@/shared/lib/cn";
 import { formatDuration, pluralize } from "@/shared/lib/format";
 import { Empty } from "@/shared/ui/empty";
@@ -130,7 +131,7 @@ function BidderRow({
       <th
         scope="row"
         className={cn(
-          "sticky left-0 z-10 bg-background py-0.5 pr-3 text-left font-medium",
+          "sticky left-0 z-10 bg-background py-0.5 pr-3 text-left font-medium group-data-[scrolled=true]/matrix:shadow-[6px_0_6px_-6px_var(--color-border-strong)]",
           viaServer ? "pl-7" : "pl-3",
         )}
       >
@@ -201,6 +202,7 @@ export function BidInspector({
       ]
     : [];
   const serverRequests = useNetworkRequests(scan.summary.id, serverIds);
+  const [scroller, edges] = useScrollEdges<HTMLDivElement>();
   if (!auction) {
     return (
       <Empty
@@ -242,77 +244,90 @@ export function BidInspector({
           {pluralize(bidderCount, "bidder")} · {pluralize(matrix.adUnits.length, "ad unit")}
         </p>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        <table
-          aria-label={`Bid exchanges of auction ${number}`}
-          className="w-full min-w-max border-separate border-spacing-0 text-xs"
+      <div className="relative min-h-0 flex-1">
+        {/* More ad units than fit: the edges say so, and the bidder column stays in place. */}
+        <span
+          aria-hidden="true"
+          data-shown={edges.end}
+          className="pointer-events-none absolute inset-y-0 right-0 z-30 flex w-10 items-center justify-end bg-linear-to-l from-background via-background/80 to-transparent pr-1 opacity-0 transition-opacity data-[shown=true]:opacity-100"
         >
-          <thead>
-            <tr className="text-[11px] text-muted-foreground">
-              <th
-                scope="col"
-                className="sticky top-0 left-0 z-20 border-b bg-background py-1.5 pr-3 pl-3 text-left font-medium"
-              >
-                Bidder
-              </th>
-              {matrix.adUnits.map((unit) => (
+          <ChevronRightIcon className="size-4 text-muted-foreground" />
+        </span>
+        <div ref={scroller} data-scrolled={edges.start} className="group/matrix h-full overflow-auto">
+          <table
+            aria-label={`Bid exchanges of auction ${number}`}
+            className="w-full min-w-max border-separate border-spacing-0 text-xs"
+          >
+            <thead>
+              <tr className="text-[11px] text-muted-foreground">
                 <th
-                  key={unit.code}
                   scope="col"
-                  className="sticky top-0 z-10 min-w-48 border-b bg-background px-3 py-1.5 text-left font-medium"
+                  className="sticky top-0 left-0 z-20 border-b bg-background py-1.5 pr-3 pl-3 text-left align-bottom font-medium group-data-[scrolled=true]/matrix:shadow-[6px_0_6px_-6px_var(--color-border-strong)]"
                 >
-                  <span className="selectable font-mono text-foreground">{unit.code}</span>{" "}
-                  <span className="font-normal">{unit.sizes.join(", ")}</span>
+                  Bidder
                 </th>
-              ))}
-              <th scope="col" className="sticky top-0 z-10 border-b bg-background px-3 py-1.5 text-left font-medium">
-                Request
-              </th>
-            </tr>
-          </thead>
-          {matrix.sections.map((section) => (
-            <tbody
-              key={section.kind === "server" ? section.request.id : "client"}
-              className="[&_td]:border-b [&_td]:border-border/60 [&_th]:border-b [&_th]:border-border/60"
-            >
-              {section.kind === "server" ? (
-                <tr>
+                {matrix.adUnits.map((unit) => (
                   <th
-                    scope="rowgroup"
-                    colSpan={matrix.adUnits.length + 2}
-                    className="bg-muted/50 px-3 py-1 text-left font-medium"
+                    key={unit.code}
+                    scope="col"
+                    className="sticky top-0 z-10 min-w-40 border-b bg-background px-3 py-1.5 text-left font-medium"
                   >
-                    <span className="sticky left-3 flex w-fit items-center gap-2">
-                      <ServerIcon aria-hidden="true" className="size-3.5 text-subtle-foreground" />
-                      Prebid Server: 1 request for {pluralize(section.bidders.length, "bidder")}
-                      {section.request.row?.durationMs != null
-                        ? `, ${formatDuration(section.request.row.durationMs)}`
-                        : ""}
-                      <button
-                        type="button"
-                        onClick={() => onOpen(section.request.id)}
-                        className="rounded-sm font-normal text-primary-text underline-offset-4 hover:underline"
-                      >
-                        Open the exchange
-                      </button>
-                    </span>
+                    <span className="selectable block font-mono text-foreground">{unit.code}</span>
+                    <span className="block font-normal tabular-nums">{unit.sizes.join(", ") || "no sizes"}</span>
                   </th>
-                </tr>
-              ) : null}
-              {section.bidders.map((bidder) => (
-                <BidderRow
-                  key={bidder.bidder}
-                  bidder={bidder}
-                  units={matrix.adUnits}
-                  viaServer={section.kind === "server"}
-                  rows={rows}
-                  selectedId={selectedId}
-                  onOpen={onOpen}
-                />
-              ))}
-            </tbody>
-          ))}
-        </table>
+                ))}
+                <th
+                  scope="col"
+                  className="sticky top-0 z-10 border-b bg-background px-3 py-1.5 text-left align-bottom font-medium"
+                >
+                  Request
+                </th>
+              </tr>
+            </thead>
+            {matrix.sections.map((section) => (
+              <tbody
+                key={section.kind === "server" ? section.request.id : "client"}
+                className="[&_td]:border-b [&_td]:border-border/60 [&_th]:border-b [&_th]:border-border/60"
+              >
+                {section.kind === "server" ? (
+                  <tr>
+                    <th
+                      scope="rowgroup"
+                      colSpan={matrix.adUnits.length + 2}
+                      className="bg-muted/50 px-3 py-1 text-left font-medium"
+                    >
+                      <span className="sticky left-3 flex w-fit items-center gap-2">
+                        <ServerIcon aria-hidden="true" className="size-3.5 text-subtle-foreground" />
+                        Prebid Server: 1 request for {pluralize(section.bidders.length, "bidder")}
+                        {section.request.row?.durationMs != null
+                          ? `, ${formatDuration(section.request.row.durationMs)}`
+                          : ""}
+                        <button
+                          type="button"
+                          onClick={() => onOpen(section.request.id)}
+                          className="rounded-sm font-normal text-primary-text underline-offset-4 hover:underline"
+                        >
+                          Open the exchange
+                        </button>
+                      </span>
+                    </th>
+                  </tr>
+                ) : null}
+                {section.bidders.map((bidder) => (
+                  <BidderRow
+                    key={bidder.bidder}
+                    bidder={bidder}
+                    units={matrix.adUnits}
+                    viaServer={section.kind === "server"}
+                    rows={rows}
+                    selectedId={selectedId}
+                    onOpen={onOpen}
+                  />
+                ))}
+              </tbody>
+            ))}
+          </table>
+        </div>
       </div>
       <ul
         aria-label="Legend"

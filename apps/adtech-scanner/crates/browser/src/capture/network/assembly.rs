@@ -285,6 +285,12 @@ struct Chain {
     /// The last hop has ended, and not with a redirect.
     closed: bool,
     hold: Option<Hold>,
+    /// The first hop that was followed is not the request's first: hops
+    /// before it went unseen (the tab was on another site, or too many
+    /// requests were open), so `ExtraInfo` cannot be counted off against
+    /// the hops any more. Rather no cookies on a record than another
+    /// request's.
+    extras_misaligned: bool,
 }
 
 impl Chain {
@@ -302,8 +308,22 @@ impl Chain {
     }
 
     fn extras_are_known(&self, flight: &Flight) -> bool {
-        self.request_extras.len() > flight.hop
-            && (self.response_extras.len() > flight.hop || flight.response.is_none())
+        self.extras_misaligned
+            || (self.request_extras.len() > flight.hop
+                && (self.response_extras.len() > flight.hop || flight.response.is_none()))
+    }
+
+    /// The `ExtraInfo` headers of hop `hop`, request and response.
+    fn take_extras(&mut self, hop: usize) -> (Option<Vec<RawHeader>>, Option<Vec<RawHeader>>) {
+        if self.extras_misaligned {
+            return (None, None);
+        }
+        let take =
+            |extras: &mut Vec<Option<Vec<RawHeader>>>| extras.get_mut(hop).and_then(Option::take);
+        (
+            take(&mut self.request_extras),
+            take(&mut self.response_extras),
+        )
     }
 }
 
@@ -391,6 +411,7 @@ impl Ended {
         NetworkRecord {
             seq: flight.seq,
             page,
+            page_host: String::new(),
             context: flight.context,
             frame_id: flight.frame_id,
             target_id: flight.target_id,
@@ -649,9 +670,10 @@ impl Assembler {
                 continue;
             }
             while let Some(flight) = chain.hops.pop_front() {
+                let (request_extra, response_extra) = chain.take_extras(flight.hop);
                 remaining.push(Ended {
-                    request_extra: take_extra(&mut chain.request_extras, flight.hop),
-                    response_extra: take_extra(&mut chain.response_extras, flight.hop),
+                    request_extra,
+                    response_extra,
                     flight,
                 });
             }
@@ -743,12 +765,14 @@ impl Assembler {
                 self.revisit
                     .push_back((source.now_ms + SETTLE_GRACE_MS, request_id.to_string()));
             }
-            None if main_document => {
-                chain.hold = Some(Hold {
-                    started_recording: source.recording,
-                });
+            None => {
+                chain.extras_misaligned |= !redirect.is_null();
+                if main_document {
+                    chain.hold = Some(Hold {
+                        started_recording: source.recording,
+                    });
+                }
             }
-            None => {}
         }
 
         let initiator = &params["initiator"];
@@ -1101,9 +1125,10 @@ impl Assembler {
             let Some(flight) = chain.hops.pop_front() else {
                 break;
             };
+            let (request_extra, response_extra) = chain.take_extras(flight.hop);
             handed_over.push(Ended {
-                request_extra: take_extra(&mut chain.request_extras, flight.hop),
-                response_extra: take_extra(&mut chain.response_extras, flight.hop),
+                request_extra,
+                response_extra,
                 flight,
             });
         }
@@ -1167,10 +1192,6 @@ impl Assembler {
             self.ended.remove(&oldest);
         }
     }
-}
-
-fn take_extra(extras: &mut [Option<Vec<RawHeader>>], hop: usize) -> Option<Vec<RawHeader>> {
-    extras.get_mut(hop).and_then(Option::take)
 }
 
 fn status_of(response: &Value) -> Option<u16> {

@@ -30,7 +30,9 @@ export function toCurl(detail: NetworkRequestDetail, requestBody: string | null)
   const expectsBody = hasBody || detail.requestBody.bytes > 0;
   const parts = [`curl ${quote(row.url)}`];
   // curl sends GET by default, and POST once it has data.
-  if (row.method !== "GET" && !(row.method === "POST" && expectsBody)) parts.push(`-X ${row.method}`);
+  // A method is whatever the page passed to fetch(): quoted like everything else unless it is plain letters.
+  const method = /^[A-Za-z]+$/.test(row.method) ? row.method : quote(row.method);
+  if (row.method !== "GET" && !(row.method === "POST" && expectsBody)) parts.push(`-X ${method}`);
 
   const redactedHeaders: string[] = [];
   let compressed = false;
@@ -40,7 +42,9 @@ export function toCurl(detail: NetworkRequestDetail, requestBody: string | null)
     if (name === "accept-encoding") compressed = true;
     if (SKIPPED_HEADERS.has(name)) continue;
     if (header.redaction !== null) redactedHeaders.push(header.name);
-    parts.push(`-H ${quote(`${header.name}: ${header.redaction === null ? header.value : REDACTED_PLACEHOLDER}`)}`);
+    // The browser reports a header that was sent several times as one value with line breaks: one -H each.
+    const values = header.redaction === null ? header.value.split(/\r?\n/) : [REDACTED_PLACEHOLDER];
+    for (const value of values) parts.push(`-H ${quote(`${header.name}: ${value}`)}`);
   }
 
   const bodyIncomplete = expectsBody && (requestBody === null || detail.requestBody.state === "truncated");

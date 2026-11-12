@@ -24,16 +24,22 @@ test("the site is the hostname without www", () => {
   expect(siteOf(configuration("a", "https://m.example.com/"))).toBe("m.example.com");
 });
 
-test("recently run sorts by the last run, and a configuration that never ran by its last change", () => {
+test("recently used sorts by the last run, and configurations that never ran below all that did", () => {
   const sorted = sortConfigurations(
     [
+      configuration("never ran, changed long ago", "https://a.example/", { updatedAt: 50 }),
       configuration("ran long ago", "https://a.example/", { lastRunAt: 100, updatedAt: 900 }),
-      configuration("never ran, changed lately", "https://a.example/", { updatedAt: 500 }),
+      configuration("never ran, changed lately", "https://a.example/", { updatedAt: 950 }),
       configuration("ran just now", "https://a.example/", { lastRunAt: 800 }),
     ],
     "recent",
   );
-  expect(names(sorted)).toEqual(["ran just now", "never ran, changed lately", "ran long ago"]);
+  expect(names(sorted)).toEqual([
+    "ran just now",
+    "ran long ago",
+    "never ran, changed lately",
+    "never ran, changed long ago",
+  ]);
 });
 
 test("by name sorts without case and with numbers in order", () => {

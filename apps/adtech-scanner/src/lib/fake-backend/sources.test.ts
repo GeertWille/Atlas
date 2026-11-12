@@ -86,4 +86,23 @@ describe("the simulated script sources", () => {
     }
     await expect(api.getScriptSource(DESKTOP, "s999", "formatted")).rejects.toMatchObject({ code: "notFound" });
   });
+
+  it("gives no text for a source larger than a reply may be, in either view", async () => {
+    localStorage.clear();
+    const tight = createFakeBackend({ profile: "seeded", speed: 1000, sourceLimitBytes: 100_000 });
+    const detail = await tight.getScan(DESKTOP);
+    const bundle = detail.scripts.find((script) => script.url.includes("/static/js/main."));
+    const wrapper = detail.scripts.find((script) => script.url.endsWith("hb-wrapper.min.js"));
+    for (const view of ["formatted", "original"] as const) {
+      expect(await tight.getScriptSource(DESKTOP, bundle?.id ?? "", view)).toMatchObject({
+        availability: "tooLarge",
+        text: null,
+        lineCount: 0,
+        anchors: [],
+      });
+    }
+    expect((await tight.getScriptSource(DESKTOP, wrapper?.id ?? "", "formatted")).availability).toBe("available");
+    // The backend's own limit of 8 MB lets the 20,000-line bundle through.
+    expect((await api.getScriptSource(DESKTOP, bundle?.id ?? "", "formatted")).availability).toBe("available");
+  });
 });

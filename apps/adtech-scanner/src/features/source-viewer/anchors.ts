@@ -1,5 +1,6 @@
 import type { Finding, Severity, SourceAnchor, SourceRegion } from "@/bindings";
 import { SEVERITIES } from "@/shared/domain/vocabulary";
+import { revealInvisibles } from "@/shared/lib/invisible";
 
 /** A finding's code evidence placed in the file: where it is, and what to say about it. */
 export type FindingMark = {
@@ -38,7 +39,7 @@ export function findingMarks(anchors: SourceAnchor[], findings: Finding[], lineC
         {
           findingId: finding.id,
           evidenceIndex: anchor.evidenceIndex,
-          title: finding.title,
+          title: revealInvisibles(finding.title),
           label: finding.evidence[anchor.evidenceIndex]?.label ?? "",
           severity: finding.severity,
           startLine,

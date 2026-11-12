@@ -1,6 +1,6 @@
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { BookmarkIcon, ChevronDownIcon, GlobeIcon, MonitorIcon, ScanSearchIcon, SmartphoneIcon } from "lucide-react";
-import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ScanConfiguration, Settings } from "@/bindings";
 import { useSaveScanConfiguration } from "@/lib/query/hooks";
@@ -9,6 +9,7 @@ import { proxyChoiceKey } from "@/shared/domain/proxy";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
 import { notifyError } from "@/shared/lib/notify-error";
+import { hasModifier } from "@/shared/lib/platform";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -130,27 +131,36 @@ export function ScanComposer({
     if (validOptions()) setSavingAsNew(true);
   };
 
-  /** Mod+Enter scans from any field; Mod+S keeps the options: into the open configuration, or as a new one. */
-  const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
-    // Dialogs opened from the composer are portals: their keys bubble here through React, not through the form.
-    if (!event.currentTarget.contains(event.target as Node)) return;
-    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
-    if (event.key === "Enter") {
+  // Mod+Enter scans and Mod+S keeps the options (into the open configuration, or as a new one) from anywhere
+  // on the screen the composer is on. A dialog, a menu and a field that is not the composer's keep their keys.
+  const formRef = useRef<HTMLFormElement>(null);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const form = formRef.current;
+      if (!form || event.defaultPrevented || !hasModifier(event) || event.altKey || event.shiftKey) return;
+      const key = event.key.toLowerCase();
+      if (key !== "enter" && key !== "s") return;
+      const target = event.target as HTMLElement;
+      const ownField = form.contains(target);
+      const otherField = target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
+      const overlayOpen =
+        document.querySelector("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox']") !== null;
+      if (overlayOpen || (otherField && !ownField)) return;
       event.preventDefault();
-      event.currentTarget.requestSubmit();
-    } else if (event.key.toLowerCase() === "s") {
-      event.preventDefault();
-      if (!configuration) saveAsNew();
+      if (key === "enter") form.requestSubmit();
+      else if (!configuration) saveAsNew();
       else if (edited) updateConfiguration();
-    }
-  };
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   const budgetUsd = validation.ok ? validation.options.budgetUsd : undefined;
 
   return (
     <form
+      ref={formRef}
       onSubmit={submit}
-      onKeyDown={onKeyDown}
       noValidate
       aria-label="New scan"
       className="overflow-hidden rounded-xl border bg-card shadow-xs transition-shadow focus-within:shadow-pop"

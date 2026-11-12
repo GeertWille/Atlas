@@ -7,6 +7,7 @@ import { pageLabel } from "@/shared/domain/page-views";
 import { FINDING_CATEGORY_LABEL, FINDING_SOURCE_LABEL } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatPercent } from "@/shared/lib/format";
+import { revealInvisibles } from "@/shared/lib/invisible";
 import { Badge } from "@/shared/ui/badge";
 import { EvidenceBlock } from "./EvidenceBlock";
 import { findingPages, findingToMarkdown } from "./finding-markdown";
@@ -61,7 +62,7 @@ export function FindingCard({
             )}
           />
           <span className="flex min-w-0 flex-1 flex-col gap-1.5">
-            <span className="text-sm leading-5 font-semibold text-pretty">{finding.title}</span>
+            <span className="text-sm leading-5 font-semibold text-pretty">{revealInvisibles(finding.title)}</span>
             <span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <SeverityBadge severity={finding.severity} />
               <Badge tone="outline">{FINDING_CATEGORY_LABEL[finding.category]}</Badge>

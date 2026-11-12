@@ -107,7 +107,7 @@ async fn start_recording(run: &mut StepRun<'_>) -> Result<Recording, NodeError> 
     let start = RecordingStart {
         scan_id: run.state.summary.id.clone(),
         url: run.state.summary.url.clone(),
-        page_host: run.state.summary.hostname.clone(),
+        scan_host: run.state.summary.hostname.clone(),
         started_at: run.state.summary.started_at,
         full_headers: settings.store_full_headers,
     };

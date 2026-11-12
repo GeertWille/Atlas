@@ -12,12 +12,14 @@ use super::classify;
 use crate::domain::archive::RequestDocument;
 use crate::domain::archive::document::{StoredInitiator, StoredTiming};
 use crate::domain::archive::index::{RequestEndKind, RequestIndexRow};
+use crate::domain::archive::redact;
 use crate::domain::scripts::stored_url;
 
 /// The scan's scripts by the two things a request can know of one: its URL
 /// and its content.
 pub struct ScriptIndex<'a> {
-    by_url: HashMap<&'a str, &'a str>,
+    /// By the URL as the archive writes it, which is how requests name it.
+    by_url: HashMap<String, &'a str>,
     by_sha256: HashMap<&'a str, &'a str>,
 }
 
@@ -28,7 +30,7 @@ impl<'a> ScriptIndex<'a> {
         for script in scripts {
             // A URL loaded twice names its first load; so does the viewer.
             by_url
-                .entry(script.url.as_str())
+                .entry(redact::stored_url(&script.url).into_owned())
                 .or_insert(script.id.as_str());
             if let Some(sha256) = &script.sha256 {
                 by_sha256
@@ -39,10 +41,11 @@ impl<'a> ScriptIndex<'a> {
         Self { by_url, by_sha256 }
     }
 
-    /// `url` as the capture reported it; script records hold it as stored.
+    /// `url` as the capture reported it or as the archive holds it; script
+    /// records hold it as stored.
     pub fn id_of_url(&self, url: &str) -> Option<String> {
         self.by_url
-            .get(stored_url(url).as_str())
+            .get(redact::stored_url(&stored_url(url)).as_ref())
             .map(|id| (*id).to_string())
     }
 

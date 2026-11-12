@@ -14,13 +14,25 @@ const auctions = [
   makeAuction([], { id: "a2", page: 1, startedAtMs: 400, timeoutMs: 1500 }),
 ];
 const bid = indexRow(
-  makeRow({ id: "bid", page: 1, category: "bid", startedAtMs: 500, durationMs: 1600, ad: makeAdLink({ auctionId: "a2" }) }),
+  makeRow({
+    id: "bid",
+    page: 1,
+    category: "bid",
+    startedAtMs: 500,
+    durationMs: 1600,
+    ad: makeAdLink({ auctionId: "a2" }),
+  }),
 );
 const context = buildMatchContext({ auctions });
 
 function scaleFor(page: number | undefined, window: { fromMs: number; toMs: number } | null) {
   const axis = buildAxis(pages, page, [bid]);
-  return buildWaterfallScale({ axis, context, marks: lifecycleMarks({ auctions, slots: [], pages }, null, axis), window });
+  return buildWaterfallScale({
+    axis,
+    context,
+    marks: lifecycleMarks({ auctions, slots: [], pages }, null, axis),
+    window,
+  });
 }
 
 describe("buildWaterfallScale", () => {

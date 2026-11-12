@@ -61,7 +61,7 @@ function Usage({ limitBytes }: { limitBytes: number }) {
           {limitLabel(limitBytes)} in {pluralize(scans, "scan")}
           {oldestAt === null ? "" : `, the oldest from ${formatDateTime(oldestAt)}`}.
           {evictedScans > 0
-            ? ` ${pluralize(evictedScans, "older scan")} already lost ${evictedScans === 1 ? "its" : "their"} network data to the limit.`
+            ? ` ${pluralize(evictedScans, "scan")} no longer ${evictedScans === 1 ? "has its" : "have their"} network data: it was cleared here, or removed to stay under the limit.`
             : ""}
         </p>
         <AlertDialog>

@@ -5,7 +5,7 @@ import { highlightSpecialChars } from "@codemirror/view";
  * code display in a different order than it runs, and zero-width characters. CodeMirror already
  * replaces most control characters; these complete the set.
  */
-const HIDDEN_CHARS = /‌|‍|⁠|⁨|[‪-‬]/g;
+const HIDDEN_CHARS = /\u200c|\u200d|\u2060|\u2068|[\u202a-\u202c]/g;
 
 const NAMES: Record<number, string> = {
   8203: "zero width space",

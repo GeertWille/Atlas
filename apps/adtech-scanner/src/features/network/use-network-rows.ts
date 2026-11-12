@@ -25,11 +25,15 @@ export function useNetworkRows(scanId: string, enabled: boolean): NetworkRows {
   const query = useNetworkRowChunks(scanId, enabled);
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = query;
 
+  const pages = query.data?.pages;
+  const chunkCount = pages?.length ?? 0;
+  // A chunk that is answered at once never shows up as "fetching": the next one is asked for when it has
+  // arrived, which the number of chunks tells.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the chunk count is the trigger
   useEffect(() => {
     if (hasNextPage && !isFetchingNextPage) void fetchNextPage();
-  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, chunkCount]);
 
-  const pages = query.data?.pages;
   const rows = useMemo(() => (pages ?? []).flatMap((page) => page.rows.map(indexRow)), [pages]);
   const byId = useMemo(() => new Map(rows.map((indexed) => [indexed.row.id, indexed])), [rows]);
   const total = pages?.[0]?.total ?? 0;

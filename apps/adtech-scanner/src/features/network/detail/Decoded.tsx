@@ -1,6 +1,10 @@
 import type { ReactNode } from "react";
 import type { DecodedBidRequest, DecodedBidResponse } from "@/bindings";
 import { EMPTY, formatBytes, formatDuration } from "@/shared/lib/format";
+import { revealInvisibles } from "@/shared/lib/invisible";
+
+/** What a decoded body says is the exchange's or the advertiser's text: shown as it is, invisible characters included. */
+const shown = (value: ReactNode) => (typeof value === "string" ? revealInvisibles(value) : value);
 
 function Facts({ items }: { items: [label: string, value: ReactNode][] }) {
   return (
@@ -8,7 +12,7 @@ function Facts({ items }: { items: [label: string, value: ReactNode][] }) {
       {items.map(([label, value]) => (
         <div key={label} className="flex gap-1.5">
           <dt className="text-muted-foreground">{label}</dt>
-          <dd className="selectable tabular-nums">{value}</dd>
+          <dd className="selectable tabular-nums">{shown(value)}</dd>
         </div>
       ))}
     </dl>
@@ -35,7 +39,7 @@ function Table({ label, head, rows }: { label: string; head: string[]; rows: Rea
               {row.map((cell, cellIndex) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: cells follow the fixed column order
                 <td key={cellIndex} className="selectable px-3 py-1.5 align-top whitespace-nowrap tabular-nums">
-                  {cell}
+                  {shown(cell)}
                 </td>
               ))}
             </tr>
@@ -74,7 +78,7 @@ export function DecodedRequest({ request }: { request: DecodedBidRequest }) {
         ]}
         rows={request.imps.map((imp) => [
           <span key="id" className="font-mono">
-            {imp.id}
+            {revealInvisibles(imp.id)}
           </span>,
           imp.adUnit ?? imp.tagId ?? EMPTY,
           imp.mediaTypes.join(", ") || EMPTY,
@@ -109,7 +113,7 @@ export function DecodedRequest({ request }: { request: DecodedBidRequest }) {
           rows={schain.nodes.map((node) => [
             node.asi,
             <span key="sid" className="font-mono">
-              {node.sid}
+              {revealInvisibles(node.sid)}
             </span>,
             yesNo(node.hp),
           ])}
@@ -136,7 +140,7 @@ export function DecodedResponse({ response }: { response: DecodedBidResponse }) 
         <p className="border-t px-3 py-2 text-xs">
           <span className="font-medium">No bid, reason {response.nbr}</span>
           {response.nbrMeaning ? `: ${response.nbrMeaning}` : ""}
-          <span className="text-muted-foreground"> (OpenRTB 2.x, list 5.24)</span>
+          <span className="text-muted-foreground"> (OpenRTB no-bid reason code)</span>
         </p>
       ) : bids.length === 0 ? (
         <p className="border-t px-3 py-2 text-xs text-muted-foreground">
@@ -149,8 +153,8 @@ export function DecodedResponse({ response }: { response: DecodedBidResponse }) 
           rows={bids.map(({ seat, bid }) => [
             seat ?? EMPTY,
             <span key="imp">
-              <span className="font-mono">{bid.impId}</span>
-              {bid.adUnit ? ` (${bid.adUnit})` : ""}
+              <span className="font-mono">{revealInvisibles(bid.impId)}</span>
+              {bid.adUnit ? revealInvisibles(` (${bid.adUnit})`) : ""}
             </span>,
             bid.price.toFixed(2),
             bid.size ?? EMPTY,

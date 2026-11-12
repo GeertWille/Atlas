@@ -865,6 +865,7 @@ pub fn net(seq: u32, url: &str) -> NetworkRecord {
     NetworkRecord {
         seq,
         page: 0,
+        page_host: String::new(),
         context: RequestContext::Page,
         frame_id: Some("MAIN".into()),
         target_id: None,

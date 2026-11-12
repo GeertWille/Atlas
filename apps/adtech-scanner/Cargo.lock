@@ -82,6 +82,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "wiremock",
+ "zstd",
 ]
 
 [[package]]

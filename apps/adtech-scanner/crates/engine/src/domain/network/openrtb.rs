@@ -6,6 +6,7 @@
 use adscan_model::{
     DecodedBid, DecodedBidRequest, DecodedBidResponse, DecodedExchange, DecodedImp, DecodedSchain,
     DecodedSeat, ExchangeProtocol, SchainNode, ServerBidderError, ServerBidderTiming,
+    no_bid_reason_name,
 };
 use serde_json::Value;
 
@@ -44,31 +45,6 @@ pub fn decode(
         protocol,
         request,
         response,
-    })
-}
-
-/// What OpenRTB calls a no-bid reason code (2.5 list 5.24, extended in 2.6).
-pub fn nbr_meaning(code: u32) -> Option<&'static str> {
-    Some(match code {
-        0 => "Unknown Error",
-        1 => "Technical Error",
-        2 => "Invalid Request",
-        3 => "Known Web Spider",
-        4 => "Suspected Non-Human Traffic",
-        5 => "Cloud, Data Center, or Proxy IP",
-        6 => "Unsupported Device",
-        7 => "Blocked Publisher or Site",
-        8 => "Unmatched User",
-        9 => "Daily Reader Cap Met",
-        10 => "Daily Domain Cap Met",
-        11 => "Ads.txt Authorization Unavailable",
-        12 => "Ads.txt Authorization Violation",
-        13 => "Ads.cert Authentication Unavailable",
-        14 => "Ads.cert Authentication Violation",
-        15 => "Insufficient Auction Time",
-        16 => "Incomplete SupplyChain",
-        17 => "Blocked SupplyChain Node",
-        _ => return None,
     })
 }
 
@@ -182,7 +158,7 @@ fn decode_response(
         id: text(&json["id"]),
         currency: text(&json["cur"]),
         nbr,
-        nbr_meaning: nbr.and_then(nbr_meaning).map(str::to_string),
+        nbr_meaning: nbr.and_then(no_bid_reason_name).map(str::to_string),
         seats: seat_bids
             .into_iter()
             .flatten()
@@ -454,12 +430,22 @@ mod tests {
     #[test]
     fn every_listed_no_bid_reason_has_a_name_and_others_have_none() {
         for code in 0..=17 {
-            assert!(nbr_meaning(code).is_some(), "{code}");
+            assert!(no_bid_reason_name(code).is_some(), "{code}");
         }
-        assert_eq!(nbr_meaning(2), Some("Invalid Request"));
-        assert_eq!(nbr_meaning(18), None);
+        assert_eq!(no_bid_reason_name(2), Some("Invalid Request"));
+        // As published in the list OpenRTB 2.6 points to; 2.5 called these
+        // "Known Web Spider" and "Daily Reader Cap Met".
+        assert_eq!(no_bid_reason_name(3), Some("Known Web Crawler"));
+        assert_eq!(no_bid_reason_name(9), Some("Daily User Cap Met"));
         assert_eq!(
-            nbr_meaning(500),
+            no_bid_reason_name(11),
+            Some("Ads.txt Authorization Unavailable")
+        );
+        assert_eq!(no_bid_reason_name(15), Some("Insufficient Auction Time"));
+        assert_eq!(no_bid_reason_name(17), Some("Blocked SupplyChain Node"));
+        assert_eq!(no_bid_reason_name(18), None);
+        assert_eq!(
+            no_bid_reason_name(500),
             None,
             "exchange-specific codes are left as numbers"
         );

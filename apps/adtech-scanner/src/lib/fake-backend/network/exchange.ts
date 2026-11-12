@@ -94,19 +94,26 @@ export const PREBID_SERVER: BidEndpoint = {
 /** What the server adds on top of its slowest bidder. */
 export const SERVER_OVERHEAD_MS = 28;
 
-/** OpenRTB 2.x list 5.24. */
+/** As the backend names them: the list OpenRTB 2.6 refers to (OpenRTB 3.0, "No-Bid Reason Codes"). */
 export const NO_BID_REASONS: Record<number, string> = {
   0: "Unknown Error",
   1: "Technical Error",
   2: "Invalid Request",
-  3: "Known Web Spider",
+  3: "Known Web Crawler",
   4: "Suspected Non-Human Traffic",
   5: "Cloud, Data Center, or Proxy IP",
   6: "Unsupported Device",
   7: "Blocked Publisher or Site",
   8: "Unmatched User",
-  9: "Daily Reader Cap Met",
+  9: "Daily User Cap Met",
   10: "Daily Domain Cap Met",
+  11: "Ads.txt Authorization Unavailable",
+  12: "Ads.txt Authorization Violation",
+  13: "Ads.cert Authentication Unavailable",
+  14: "Ads.cert Authentication Violation",
+  15: "Insufficient Auction Time",
+  16: "Incomplete SupplyChain",
+  17: "Blocked SupplyChain Node",
 };
 
 /** The reason these exchanges give when they decline: the site is blocked at one, the visitor looks hosted to another. */

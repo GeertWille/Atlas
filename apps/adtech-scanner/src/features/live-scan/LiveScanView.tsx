@@ -11,6 +11,7 @@ import { SEVERITY_META } from "@/shared/domain/vocabulary";
 import { useNow } from "@/shared/hooks/use-now";
 import { cn } from "@/shared/lib/cn";
 import { formatCompact, formatDuration } from "@/shared/lib/format";
+import { revealInvisibles } from "@/shared/lib/invisible";
 import { notifyError } from "@/shared/lib/notify-error";
 import {
   AlertDialog,
@@ -100,7 +101,7 @@ function FindingsSoFar({ detail }: { detail: ScanDetail }) {
                   aria-label={SEVERITY_META[finding.severity].label}
                   className={cn("mt-0.5 size-3.5 shrink-0", TEXT_TONE[tone])}
                 />
-                <span className="text-pretty">{finding.title}</span>
+                <span className="text-pretty">{revealInvisibles(finding.title)}</span>
               </li>
             );
           })}

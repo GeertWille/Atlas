@@ -52,6 +52,10 @@ pub struct ExchangeRequest {
     pub answer: Answer,
     /// URL and request body: where the ids are looked for.
     pub haystack: String,
+    /// `haystack` is all of the request. False when the body could not be
+    /// read or was longer than what is searched: an id that is not found
+    /// may then have been sent all the same.
+    pub complete: bool,
     /// From the decoded answer.
     pub best_cpm: Option<f64>,
     pub nbr: Option<u32>,
@@ -135,15 +139,6 @@ pub fn announcements(events: &[TrackerEvent]) -> Vec<Announcement> {
         .collect()
 }
 
-/// The ad unit a bid id of the tracker stands for.
-pub fn ad_unit_of_bid(announcements: &[Announcement], bid_id: &str) -> Option<String> {
-    announcements
-        .iter()
-        .flat_map(|announcement| &announcement.bids)
-        .find(|bid| bid.bid_id == bid_id)
-        .map(|bid| bid.ad_unit_code.clone())
-}
-
 /// What linking found out about one request.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RequestAdLink {
@@ -180,34 +175,50 @@ pub fn link(
         .iter()
         .map(|announcement| exact_matches(announcement, requests))
         .collect();
-    let mut claimed: HashSet<u32> = matched
+    let named: HashSet<u32> = matched
         .iter()
         .flatten()
         .map(|found| found.request.seq)
         .collect();
-    for (announcement, matches) in announcements.iter().zip(&mut matched) {
-        if !matches.is_empty() {
+    // Without an id, a request is taken for an announcement only when the
+    // two can belong to nobody else: it is the one request of that bidder
+    // that started around the announcement, and no other announcement
+    // without ids could claim it. A bidder that sends one request per ad
+    // unit, or two auctions at the same moment, stay unmatched: a wrong
+    // guess here would put one request's timing on another's bid.
+    let started_around = |announcement: &Announcement, request: &ExchangeRequest| {
+        let after = absolute(request.page, request.started_ms)
+            - absolute(announcement.page, announcement.at_ms);
+        (-TIMING_MATCH_BEFORE_MS..=TIMING_MATCH_AFTER_MS).contains(&after)
+    };
+    let candidates: Vec<Vec<&ExchangeRequest>> = announcements
+        .iter()
+        .zip(&matched)
+        .map(|(announcement, matches)| {
+            if !matches.is_empty() {
+                return Vec::new();
+            }
+            requests
+                .iter()
+                .filter(|request| {
+                    request.bidder.as_deref() == Some(announcement.bidder.as_str())
+                        && !named.contains(&request.seq)
+                        && started_around(announcement, request)
+                })
+                .collect()
+        })
+        .collect();
+    for (index, matches) in matched.iter_mut().enumerate() {
+        let [only] = candidates[index].as_slice() else {
             continue;
-        }
-        let announced_at = absolute(announcement.page, announcement.at_ms);
-        let nearest = requests
+        };
+        let contested = candidates
             .iter()
-            .filter(|request| {
-                request.bidder.as_deref() == Some(announcement.bidder.as_str())
-                    && !claimed.contains(&request.seq)
-            })
-            .map(|request| {
-                (
-                    request,
-                    absolute(request.page, request.started_ms) - announced_at,
-                )
-            })
-            .filter(|(_, after)| (-TIMING_MATCH_BEFORE_MS..=TIMING_MATCH_AFTER_MS).contains(after))
-            .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
-        if let Some((request, _)) = nearest {
-            claimed.insert(request.seq);
+            .enumerate()
+            .any(|(other, theirs)| other != index && theirs.iter().any(|r| r.seq == only.seq));
+        if !contested {
             matches.push(Match {
-                request,
+                request: only,
                 exact: false,
             });
         }
@@ -245,7 +256,12 @@ pub fn link(
                 Some(id) if ids_are_visible => matches
                     .iter()
                     .find(|found| contains_id(&found.request.haystack, id)),
-                _ => matches.first(),
+                // One request and no bid ids in it: it carried the whole
+                // bidder request. Several, and nothing says which carried
+                // which ad unit.
+                _ if matches.len() == 1 => matches.first(),
+                _ if matches.is_empty() => None,
+                _ => continue,
             };
             let Some(bid) = auction
                 .ad_units
@@ -260,10 +276,30 @@ pub fn link(
                 continue;
             };
             let Some(found) = carrier else {
-                // "Not sent" is only said where the bidder's requests can be
-                // seen at all: another ad unit's bid is in the request, or
-                // the capture knows this bidder's endpoint.
-                if ids_are_visible || visible_bidders.contains(announcement.bidder.as_str()) {
+                // "Not sent" is an accusation, and is only made where the
+                // bidder's requests can be seen and nothing is left that
+                // could have been this one: either the bidder's request is
+                // there, whole, with the other ad units' bid ids in it, or
+                // the capture knows this bidder's endpoint and no request
+                // that might be the missing one started since the
+                // announcement.
+                let left_out =
+                    ids_are_visible && matches.iter().all(|found| found.request.complete);
+                let announced_at = absolute(announcement.page, announcement.at_ms);
+                let could_be_it = |request: &&ExchangeRequest| {
+                    let carries_this_bidder = request.via_server
+                        || request.bidder.is_none()
+                        || request.bidder.as_deref() == Some(announcement.bidder.as_str());
+                    carries_this_bidder
+                        && !named.contains(&request.seq)
+                        && request.page == announcement.page
+                        && absolute(request.page, request.started_ms)
+                            >= announced_at - TIMING_MATCH_BEFORE_MS
+                };
+                let never_made = matches.is_empty()
+                    && visible_bidders.contains(announcement.bidder.as_str())
+                    && !requests.iter().any(|request| could_be_it(&request));
+                if left_out || never_made {
                     bid.exchange = Some(BidExchange {
                         request_id: None,
                         verdict: ExchangeVerdict::NotSent,
@@ -282,6 +318,11 @@ pub fn link(
                 deadline,
                 bid.status == BidStatus::Timeout,
             );
+            if !found.exact && contradicts(verdict, bid.status) {
+                // Prebid has this bidder's answer, and the request guessed
+                // by timing has none in time: the guess is wrong.
+                continue;
+            }
             bid.exchange = Some(BidExchange {
                 request_id: Some(request_id(request.seq)),
                 verdict,
@@ -353,6 +394,22 @@ fn exact_matches<'a>(
             exact: true,
         })
         .collect()
+}
+
+/// Whether what the network says of a request cannot be true of a bid that
+/// Prebid recorded as answered.
+fn contradicts(verdict: ExchangeVerdict, status: BidStatus) -> bool {
+    let answered_in_prebid = matches!(
+        status,
+        BidStatus::Bid | BidStatus::Won | BidStatus::Rendered | BidStatus::NoBid
+    );
+    answered_in_prebid
+        && matches!(
+            verdict,
+            ExchangeVerdict::LateOnNetwork
+                | ExchangeVerdict::NeverAnswered
+                | ExchangeVerdict::Failed
+        )
 }
 
 fn contains_id(haystack: &str, id: &str) -> bool {
@@ -468,6 +525,7 @@ mod tests {
                 Answer::Pending
             },
             haystack: body.into(),
+            complete: true,
             best_cpm: None,
             nbr: None,
         }
@@ -749,7 +807,7 @@ mod tests {
             page: 1,
             ..auction(
                 "auction-0001",
-                vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
+                vec![("top", vec![bid("openx", BidStatus::Timeout, None)])],
             )
         }];
         let announcements = [Announcement {
@@ -952,7 +1010,204 @@ mod tests {
             (found[0].page, found[0].at_ms, found[0].bidder.as_str()),
             (2, 77.0, "ix")
         );
-        assert_eq!(ad_unit_of_bid(&found, "b1").as_deref(), Some("top"));
-        assert_eq!(ad_unit_of_bid(&found, "nope"), None);
+        assert_eq!(found[0].bidder_request_id.as_deref(), Some("br"));
+        assert_eq!(
+            (
+                found[0].bids[0].bid_id.as_str(),
+                found[0].bids[0].ad_unit_code.as_str()
+            ),
+            ("b1", "top")
+        );
+    }
+
+    #[test]
+    fn a_bidder_that_sends_one_request_per_ad_unit_without_ids_is_not_guessed_at() {
+        // Three requests of one bidder right after its announcement, none
+        // with an id: which carried which ad unit cannot be told, and the
+        // late one must not be pinned on a bid that was in time.
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![
+                ("top", vec![bid("rubicon", BidStatus::Bid, Some(1.0))]),
+                ("side", vec![bid("rubicon", BidStatus::Timeout, None)]),
+                ("foot", vec![bid("rubicon", BidStatus::NoBid, None)]),
+            ],
+        )];
+        let announcements = [Announcement {
+            bidder_request_id: None,
+            bids: Vec::new(),
+            ..announced(
+                "auction-0001",
+                "rubicon",
+                &[("top", "x"), ("side", "y"), ("foot", "z")],
+            )
+        }];
+        let requests = [
+            request(1, Some("rubicon"), 1_003.0, Some(1_100.0), "slot=top"),
+            request(2, Some("rubicon"), 1_004.0, Some(1_600.0), "slot=side"),
+            request(3, Some("rubicon"), 1_005.0, Some(1_120.0), "slot=foot"),
+        ];
+        let links = link(&mut auctions, &announcements, &requests, &[0.0]);
+        for unit in ["top", "side", "foot"] {
+            assert_eq!(exchange_of(&auctions, unit, "rubicon"), None, "{unit}");
+        }
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn two_announcements_that_could_claim_the_same_request_get_neither() {
+        let mut auctions = vec![
+            auction(
+                "auction-0001",
+                vec![("top", vec![bid("ix", BidStatus::Timeout, None)])],
+            ),
+            auction(
+                "auction-0002",
+                vec![("side", vec![bid("ix", BidStatus::Timeout, None)])],
+            ),
+        ];
+        let without_ids = |auction: &str, unit: &str| Announcement {
+            bidder_request_id: None,
+            bids: Vec::new(),
+            ..announced(auction, "ix", &[(unit, "unused")])
+        };
+        let announcements = [
+            without_ids("auction-0001", "top"),
+            without_ids("auction-0002", "side"),
+        ];
+        // One request for two announcements made in the same millisecond.
+        let requests = [request(1, Some("ix"), 1_010.0, Some(1_900.0), "s=1")];
+        let links = link(&mut auctions, &announcements, &requests, &[0.0]);
+        assert_eq!(auctions[0].ad_units[0].bids[0].exchange, None);
+        assert_eq!(auctions[1].ad_units[0].bids[0].exchange, None);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn a_guess_by_timing_that_prebid_contradicts_is_dropped() {
+        // Prebid has the bidder's bid; the only request that could be
+        // guessed never answered. It is not this bid's request.
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![("top", vec![bid("ix", BidStatus::Bid, Some(0.7))])],
+        )];
+        let announcements = [Announcement {
+            bidder_request_id: None,
+            bids: Vec::new(),
+            ..announced("auction-0001", "ix", &[("top", "unused")])
+        }];
+        for answer in [None, Some(1_900.0)] {
+            let requests = [request(1, Some("ix"), 1_010.0, answer, "s=1")];
+            let links = link(&mut auctions, &announcements, &requests, &[0.0]);
+            assert_eq!(exchange_of(&auctions, "top", "ix"), None, "{answer:?}");
+            assert!(links.is_empty());
+        }
+        // With the bid's id in the request the network's word stands.
+        let announcements = [announced("auction-0001", "ix", &[("top", "bid-ix-top")])];
+        let requests = [request(1, Some("ix"), 1_010.0, Some(1_900.0), "bid-ix-top")];
+        link(&mut auctions, &announcements, &requests, &[0.0]);
+        let exchange = exchange_of(&auctions, "top", "ix").unwrap();
+        assert_eq!(exchange.verdict, ExchangeVerdict::LateOnNetwork);
+        assert!(exchange.exact);
+    }
+
+    #[test]
+    fn several_requests_that_name_the_auction_but_no_bid_are_not_split_by_guessing() {
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![
+                ("top", vec![bid("ix", BidStatus::Bid, Some(0.7))]),
+                ("side", vec![bid("ix", BidStatus::Timeout, None)]),
+            ],
+        )];
+        let announcements = [Announcement {
+            bids: Vec::new(),
+            ..announced("auction-0001", "ix", &[("top", "x"), ("side", "y")])
+        }];
+        let requests = [
+            request(
+                1,
+                Some("ix"),
+                1_003.0,
+                Some(1_100.0),
+                "tid=auction-0001&slot=a",
+            ),
+            request(
+                2,
+                Some("ix"),
+                1_004.0,
+                Some(1_700.0),
+                "tid=auction-0001&slot=b",
+            ),
+        ];
+        link(&mut auctions, &announcements, &requests, &[0.0]);
+        assert_eq!(exchange_of(&auctions, "top", "ix"), None);
+        assert_eq!(exchange_of(&auctions, "side", "ix"), None);
+    }
+
+    #[test]
+    fn not_sent_is_not_said_of_a_request_whose_body_was_not_read_whole() {
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![
+                ("top", vec![bid("triplelift", BidStatus::Bid, Some(0.4))]),
+                ("side", vec![bid("triplelift", BidStatus::NoBid, None)]),
+            ],
+        )];
+        let announcements = [announced(
+            "auction-0001",
+            "triplelift",
+            &[("top", "bid-tl-top"), ("side", "bid-tl-side")],
+        )];
+        // The second impression may be in the part that was cut off.
+        let requests = [ExchangeRequest {
+            complete: false,
+            ..request(
+                9,
+                Some("triplelift"),
+                1_010.0,
+                Some(1_120.0),
+                r#"{"imp":[{"id":"bid-tl-top"},"#,
+            )
+        }];
+        link(&mut auctions, &announcements, &requests, &[0.0]);
+        assert_eq!(
+            exchange_of(&auctions, "top", "triplelift").unwrap().verdict,
+            ExchangeVerdict::InTime
+        );
+        assert_eq!(exchange_of(&auctions, "side", "triplelift"), None);
+    }
+
+    #[test]
+    fn not_sent_is_not_said_while_a_request_that_could_be_the_missing_one_is_unexplained() {
+        let announcements = [Announcement {
+            bidder_request_id: None,
+            bids: Vec::new(),
+            ..announced("auction-0001", "ix", &[("top", "unused")])
+        }];
+        for unexplained in [
+            // The bidder's own request, sent later than a guess would allow
+            // (the adapter waited for an id, or Prebid queued it).
+            request(1, Some("ix"), 1_900.0, Some(2_000.0), "s=1"),
+            // An auction endpoint the capture has no adapter for.
+            request(1, None, 1_020.0, Some(1_100.0), "{}"),
+            // A Prebid Server call, which can carry any bidder.
+            ExchangeRequest {
+                via_server: true,
+                ..request(1, None, 1_020.0, Some(1_100.0), "{}")
+            },
+        ] {
+            let mut auctions = vec![auction(
+                "auction-0001",
+                vec![("top", vec![bid("ix", BidStatus::Timeout, None)])],
+            )];
+            // The bidder's endpoint is known from an earlier auction.
+            let requests = [
+                request(0, Some("ix"), 100.0, Some(150.0), "s=1"),
+                unexplained,
+            ];
+            link(&mut auctions, &announcements, &requests, &[0.0]);
+            assert_eq!(exchange_of(&auctions, "top", "ix"), None);
+        }
     }
 }

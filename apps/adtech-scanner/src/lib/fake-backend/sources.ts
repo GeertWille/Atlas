@@ -211,29 +211,37 @@ export function adCallLine(detail: ScanDetail, script: ScriptRecord, name: strin
   return adCalls(builtSource(detail, script).formatted).find((call) => call.name === name)?.line ?? null;
 }
 
+/** A reply carries at most this much text, as the backend's does. */
+const MAX_SOURCE_BYTES = 8 * 1024 * 1024;
+
 export function fakeScriptSource(
   detail: ScanDetail,
   scriptId: string,
   view: SourceView,
   position?: SourcePosition,
+  maxBytes = MAX_SOURCE_BYTES,
 ): ScriptSource {
   const script = detail.scripts.find((candidate) => candidate.id === scriptId);
   if (!script) throw new ApiError("notFound", `Script ${scriptId} does not exist in scan ${detail.summary.id}`);
   const availability = availabilityOf(detail);
   const base = { scanId: detail.summary.id, scriptId, view, availability };
-  if (availability !== "available") {
-    return {
-      ...base,
-      text: null,
-      lineCount: 0,
-      format: "unformatted",
-      anchors: [],
-      regions: [],
-      adCalls: [],
-      focusLine: null,
-    };
-  }
+  const unavailable = (why: SourceAvailability): ScriptSource => ({
+    ...base,
+    availability: why,
+    text: null,
+    lineCount: 0,
+    format: "unformatted",
+    anchors: [],
+    regions: [],
+    adCalls: [],
+    focusLine: null,
+  });
+  if (availability !== "available") return unavailable(availability);
   const source = builtSource(detail, script);
+  // The generated text is ASCII: its length is its size.
+  const size =
+    view === "original" ? source.original.length : source.formatted.reduce((sum, line) => sum + line.length + 1, 0);
+  if (size > maxBytes) return unavailable("tooLarge");
   if (view === "original") {
     const lines = source.original.split("\n");
     return {

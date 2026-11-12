@@ -682,7 +682,7 @@ impl Recorder {
         if ended.is_of_child_target() {
             self.request_counts.in_child_targets += 1;
         }
-        let record = ended.into_record(
+        let mut record = ended.into_record(
             |epoch_ms| self.pages.place_at(epoch_ms),
             |session, frame| {
                 self.inline_scripts
@@ -692,6 +692,12 @@ impl Recorder {
                     .or_else(|| self.scripts.external_url(&frame.url))
             },
         );
+        record.page_host = self
+            .pages
+            .url(record.page)
+            .and_then(|url| Url::parse(url).ok())
+            .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+            .unwrap_or_default();
         sink.record(record);
     }
 

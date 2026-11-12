@@ -11,6 +11,7 @@ import { Skeleton } from "@/shared/ui/skeleton";
 import { CATEGORIES, CATEGORY_META, vendorLabel } from "./labels";
 import { NetworkUnavailable, networkState } from "./NetworkUnavailable";
 import type { NetworkSearch } from "./search";
+import { LifecycleLane } from "./strip/LifecycleLane";
 import { buildAxis, lifecycleMarks } from "./strip/strip-layout";
 import { AdOutcome, StatusMark } from "./table/cells";
 import { splitName } from "./table/columns";
@@ -101,29 +102,8 @@ function VisitStrip({
           </span>
         </Link>
       ))}
-      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-1.5 h-4">
-        {marks.auctions.map((auction) => (
-          <span key={auction.id}>
-            <span
-              className="absolute top-[3px] h-[9px] rounded-[2px] bg-violet"
-              style={{
-                left: percent(auction.startMs),
-                width: `max(3px, calc(${percent(auction.endMs)} - ${percent(auction.startMs)}))`,
-              }}
-            />
-            {auction.timeoutAtMs !== null ? (
-              <span className="absolute top-0 h-[15px] w-0.5 bg-amber" style={{ left: percent(auction.timeoutAtMs) }} />
-            ) : null}
-          </span>
-        ))}
-        {marks.renders.map((render, index) => (
-          <span
-            // biome-ignore lint/suspicious/noArrayIndexKey: renders are positions on the axis
-            key={index}
-            className="absolute top-[4px] size-0 -translate-x-1/2 border-x-[4px] border-t-[7px] border-x-transparent border-t-green"
-            style={{ left: percent(render.atMs) }}
-          />
-        ))}
+      <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-1 h-5">
+        <LifecycleLane marks={marks} percent={percent} className="inset-y-0" />
       </div>
     </div>
   );

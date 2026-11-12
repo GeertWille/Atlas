@@ -37,16 +37,18 @@ export function searchConfigurations(
   });
 }
 
-/** When a configuration was last of interest: its last run, or the last change while it has never run. */
-function lastActivity(configuration: ScanConfiguration): number {
-  return configuration.lastRunAt ?? configuration.updatedAt;
+/** Last run first; configurations that never ran come after all that did, the last changed first. */
+function compareRecent(a: ScanConfiguration, b: ScanConfiguration): number {
+  if (a.lastRunAt !== null && b.lastRunAt !== null) return b.lastRunAt - a.lastRunAt;
+  if (a.lastRunAt === null && b.lastRunAt === null) return b.updatedAt - a.updatedAt;
+  return a.lastRunAt === null ? 1 : -1;
 }
 
 export function sortConfigurations(configurations: ScanConfiguration[], sort: ConfigurationSort): ScanConfiguration[] {
   return [...configurations].sort((a, b) =>
     sort === "name"
       ? a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true })
-      : lastActivity(b) - lastActivity(a),
+      : compareRecent(a, b),
   );
 }
 

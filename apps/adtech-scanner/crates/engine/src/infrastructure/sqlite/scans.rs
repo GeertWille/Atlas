@@ -281,7 +281,11 @@ impl ScanRepository for SqliteStore {
     async fn delete(&self, scan_id: &str) -> RepoResult<bool> {
         let scan_id = scan_id.to_string();
         self.call(move |connection| {
-            Ok(connection.execute("DELETE FROM scans WHERE id = ?1", [scan_id])? > 0)
+            let deleted = connection.execute("DELETE FROM scans WHERE id = ?1", [scan_id])? > 0;
+            // The scan's request rows went with it.
+            super::archive::forget_unused_hosts(connection)?;
+            super::archive::drop_deleted_pages(connection);
+            Ok(deleted)
         })
         .await
     }
@@ -289,6 +293,8 @@ impl ScanRepository for SqliteStore {
     async fn delete_all(&self) -> RepoResult<()> {
         self.call(|connection| {
             connection.execute("DELETE FROM scans", [])?;
+            super::archive::forget_unused_hosts(connection)?;
+            super::archive::drop_deleted_pages(connection);
             Ok(())
         })
         .await

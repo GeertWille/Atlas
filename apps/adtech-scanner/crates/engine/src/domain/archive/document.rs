@@ -8,7 +8,7 @@ use adscan_model::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::redact::stored_headers;
+use super::redact::{stored_headers, stored_request_body, stored_url};
 
 pub const DOCUMENT_VERSION: u32 = 1;
 
@@ -49,6 +49,9 @@ pub struct RequestDocument {
     pub decoded_bytes: u64,
     /// Length of the request body as sent; `post_data` holds at most the cap.
     pub post_bytes: u64,
+    /// `post_data` is the start of a longer body.
+    #[serde(default)]
+    pub post_truncated: bool,
     pub post_missing: bool,
     pub initiator: StoredInitiator,
     pub redirect_from: Option<u32>,
@@ -177,12 +180,11 @@ impl RequestDocument {
         Self {
             version: DOCUMENT_VERSION,
             id: format!("{scan_id}:{}", record.seq),
-            full_url: record.url.clone(),
+            full_url: stored_url(&record.url).into_owned(),
             headers: stored_headers(&record.request_headers, full_headers),
-            post_data: record
-                .post_data
-                .as_ref()
-                .map(|post| String::from_utf8_lossy(&post.bytes).into_owned()),
+            post_data: record.post_data.as_ref().map(|post| {
+                stored_request_body(&String::from_utf8_lossy(&post.bytes)).into_owned()
+            }),
             response_headers: stored_headers(&record.response_headers, full_headers),
             response_content: None,
             seq: record.seq,
@@ -205,10 +207,18 @@ impl RequestDocument {
             encoded_bytes: record.encoded_bytes,
             decoded_bytes: record.decoded_bytes,
             post_bytes: record.post_data.as_ref().map_or(0, |post| post.total_bytes),
+            post_truncated: record
+                .post_data
+                .as_ref()
+                .is_some_and(|post| (post.bytes.len() as u64) < post.total_bytes),
             post_missing: record.post_data_missing,
             initiator: StoredInitiator {
                 kind: record.initiator.kind,
-                url: record.initiator.url.clone(),
+                url: record
+                    .initiator
+                    .url
+                    .as_deref()
+                    .map(|url| stored_url(url).into_owned()),
                 line: record.initiator.line,
                 column: record.initiator.column,
                 stack: record
@@ -217,8 +227,11 @@ impl RequestDocument {
                     .iter()
                     .map(|frame| StoredFrame {
                         function: frame.function.clone(),
-                        url: frame.url.clone(),
-                        script_url: frame.script_url.clone(),
+                        url: stored_url(&frame.url).into_owned(),
+                        script_url: frame
+                            .script_url
+                            .as_deref()
+                            .map(|url| stored_url(url).into_owned()),
                         line: frame.line,
                         column: frame.column,
                     })
@@ -235,13 +248,6 @@ impl RequestDocument {
             body_state,
             body,
         }
-    }
-
-    /// Whether the stored request body is shorter than what was sent.
-    pub fn post_truncated(&self) -> bool {
-        self.post_data
-            .as_ref()
-            .is_some_and(|post| (post.len() as u64) < self.post_bytes)
     }
 }
 
@@ -333,6 +339,7 @@ mod tests {
         NetworkRecord {
             seq,
             page: 0,
+            page_host: String::new(),
             context: RequestContext::Page,
             frame_id: Some("F1".into()),
             target_id: None,
@@ -538,7 +545,7 @@ mod tests {
             total_bytes: 3_000_000,
         });
         let document = RequestDocument::of("s", &long, false, BodyState::Empty, None);
-        assert!(document.post_truncated());
+        assert!(document.post_truncated);
         assert_eq!(document.post_bytes, 3_000_000);
     }
 }

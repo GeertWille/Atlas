@@ -93,8 +93,6 @@ function clearNetworkData(scan: StoredScan) {
   if (!network || network.availability === "notRecorded" || network.availability === "disabled") return;
   scan.detail.network = { ...network, availability: "evicted", requestCount: 0, bodyCount: 0, storedBytes: 0 };
 }
-const latency = (ms = 60) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
 class FakeBackend {
   private readonly storageKey: string;
   /** Keyed by subscription, not by handler: the same function may subscribe twice. */
@@ -109,6 +107,12 @@ class FakeBackend {
   private clearedSeedArchives: string[];
   /** Request lists are derived from the scans on demand and kept while the page lives. */
   private readonly networks = new Map<string, FakeNetwork>();
+
+  /** The time a call takes to answer; none with `instant`, where a test times the interface alone. */
+  private latency(ms = 60): Promise<void> {
+    if (this.config.instant) return Promise.resolve();
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   constructor(private readonly config: FakeConfig) {
     this.storageKey = `adscan.fake.db.${config.profile}`;
@@ -133,6 +137,8 @@ class FakeBackend {
       ...(persisted?.scans ?? []),
       ...seeds.filter((scan) => !this.deletedSeedIds.includes(scan.detail.summary.id)),
     ].sort((a, b) => b.detail.summary.startedAt - a.detail.summary.startedAt);
+    // Padded lists are built up front, so that opening one costs what the interface costs, not what the fake does.
+    if (config.rows) for (const scan of this.scans) this.network(scan);
   }
 
   private load(): Persisted | null {
@@ -358,11 +364,11 @@ class FakeBackend {
 
   readonly port: ApiPort = {
     getSettings: async () => {
-      await latency();
+      await this.latency();
       return clone(this.settings);
     },
     updateSettings: async (patch) => {
-      await latency();
+      await this.latency();
       if (patch.budgetUsd !== undefined && patch.budgetUsd <= 0) {
         throw new ApiError("invalidInput", "The per-scan budget must be greater than zero");
       }
@@ -390,7 +396,7 @@ class FakeBackend {
       return clone(this.settings);
     },
     setApiKey: async (key, provider = "anthropic") => {
-      await latency(500);
+      await this.latency(500);
       if (provider === "typesafe") {
         // TypeSafe documents no key format, so any key passes unless it announces itself as invalid.
         if (key.trim() === "" || key.includes("invalid")) {
@@ -410,7 +416,7 @@ class FakeBackend {
       return { valid: true, message: null };
     },
     clearApiKey: async (provider = "anthropic") => {
-      await latency();
+      await this.latency();
       if (provider === "typesafe") {
         this.settings.hasTypesafeKey = false;
         this.settings.jevEnabled = false;
@@ -420,17 +426,17 @@ class FakeBackend {
       this.persist();
     },
     detectBrowser: async () => {
-      await latency(120);
+      await this.latency(120);
       return this.browser();
     },
     getDemoUrl: async () => DEMO_URL,
     startScan: async (options: ScanOptions) => {
-      await latency();
+      await this.latency();
       const scanId = `scan-${crypto.randomUUID().slice(0, 8)}`;
       return this.start(resolveScanOptions(clone(options), this.settings, scanId), scanId, null);
     },
     runScanConfiguration: async (configurationId) => {
-      await latency();
+      await this.latency();
       const configuration = this.configuration(configurationId);
       const scanId = `scan-${crypto.randomUUID().slice(0, 8)}`;
       let resolved: ResolvedScan;
@@ -461,7 +467,7 @@ class FakeBackend {
       if (capturing) this.manualSessions.get(scanId)?.finish();
     },
     listScans: async (query: ScanListQuery) => {
-      await latency();
+      await this.latency();
       const search = query.search?.trim().toLowerCase();
       const matching = this.scans
         .map((scan) => scan.detail.summary)
@@ -473,7 +479,7 @@ class FakeBackend {
       return { items: clone(matching.slice(offset, offset + (query.limit ?? 50))), total: matching.length };
     },
     getScan: async (scanId) => {
-      await latency();
+      await this.latency();
       return clone(this.find(scanId).detail);
     },
     deleteScan: async (scanId) => {
@@ -494,16 +500,16 @@ class FakeBackend {
       this.persist();
     },
     getLogs: async (scanId, stepId) => {
-      await latency();
+      await this.latency();
       const { logs } = this.find(scanId);
       return clone(stepId ? logs.filter((entry) => entry.stepId === stepId) : logs);
     },
     searchLogs: async (query, limit = 100) => {
-      await latency(90);
+      await this.latency(90);
       return clone(searchLogs(this.scans, query, limit));
     },
     getDashboardStats: async () => {
-      await latency();
+      await this.latency();
       return this.stats();
     },
     exportScan: async (scanId, format, path) => {
@@ -512,11 +518,11 @@ class FakeBackend {
       return content;
     },
     getScanProfile: async () => {
-      await latency();
+      await this.latency();
       return this.profileInfo();
     },
     clearScanProfile: async () => {
-      await latency(200);
+      await this.latency(200);
       if (this.profileInfo().inUse) {
         throw new ApiError(
           "profileBusy",
@@ -528,7 +534,7 @@ class FakeBackend {
       return this.profileInfo();
     },
     saveProxyProfile: async (draft) => {
-      await latency();
+      await this.latency();
       const values = this.proxyDraft(draft);
       if (draft.id === undefined) {
         this.settings.proxies.push({ id: `proxy-${crypto.randomUUID().slice(0, 8)}`, ...values, hasPassword: false });
@@ -540,7 +546,7 @@ class FakeBackend {
       return clone(this.settings);
     },
     deleteProxyProfile: async (id) => {
-      await latency();
+      await this.latency();
       const profile = this.proxy(id);
       const users = this.configurations.filter(
         ({ options }) => options.proxy?.kind === "profile" && options.proxy.id === id,
@@ -559,20 +565,20 @@ class FakeBackend {
       return clone(this.settings);
     },
     setProxyPassword: async (id, password) => {
-      await latency();
+      await this.latency();
       if (password === "") throw new ApiError("invalidInput", "Enter the proxy password.");
       this.proxy(id).hasPassword = true;
       this.persist();
       return clone(this.settings);
     },
     clearProxyPassword: async (id) => {
-      await latency();
+      await this.latency();
       this.proxy(id).hasPassword = false;
       this.persist();
       return clone(this.settings);
     },
     listScanConfigurations: async () => {
-      await latency();
+      await this.latency();
       return clone(
         this.configurations
           .map((configuration) => ({
@@ -586,7 +592,7 @@ class FakeBackend {
       );
     },
     saveScanConfiguration: async (draft: ScanConfigurationDraft) => {
-      await latency();
+      await this.latency();
       const name = draft.name.trim();
       if (name === "" || name.length > CONFIGURATION_NAME_MAX) {
         throw new ApiError(
@@ -625,41 +631,41 @@ class FakeBackend {
       return clone(saved);
     },
     deleteScanConfiguration: async (id) => {
-      await latency();
+      await this.latency();
       this.configuration(id);
       this.configurations = this.configurations.filter((configuration) => configuration.id !== id);
       this.persist();
     },
     getNetworkSummary: async (scanId) => {
-      await latency(20);
+      await this.latency(20);
       const scan = this.find(scanId);
       return clone(summarise(scan.detail, this.network(scan)));
     },
     listNetworkRequests: async (scanId, query) => {
-      await latency(12);
+      await this.latency(12);
       const network = this.network(this.find(scanId));
       return network ? clone(listRows(network, query)) : { rows: [], nextCursor: null, total: 0 };
     },
     getNetworkRequest: async (scanId, requestId) => {
-      await latency(20);
+      await this.latency(20);
       const { scan, network } = this.requireNetwork(scanId);
       return clone(requestDetail(scan.detail, network, requestId));
     },
     getNetworkBody: async (scanId, requestId, query) => {
-      await latency(20);
+      await this.latency(20);
       const { scan, network } = this.requireNetwork(scanId);
       return bodyChunk(scan.detail, network, requestId, query);
     },
     getScriptSource: async (scanId, scriptId, view, original) => {
-      await latency(30);
-      return fakeScriptSource(this.find(scanId).detail, scriptId, view, original);
+      await this.latency(30);
+      return fakeScriptSource(this.find(scanId).detail, scriptId, view, original, this.config.sourceLimitBytes);
     },
     getArchiveStorage: async () => {
-      await latency();
+      await this.latency();
       return this.archiveStorage();
     },
     clearArchive: async () => {
-      await latency();
+      await this.latency();
       for (const scan of this.scans) {
         if (scan.detail.summary.status === "running" || !scan.detail.network) continue;
         clearNetworkData(scan);

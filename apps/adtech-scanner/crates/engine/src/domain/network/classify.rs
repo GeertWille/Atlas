@@ -44,6 +44,9 @@ const AD_SERVER_CALLS: &[(&str, &str)] = &[
 
 /// (host suffix, path prefix): bid endpoints that are told from the ad-server
 /// calls of the same host by their path. Checked before [`AD_SERVER_CALLS`].
+/// Which adapter posts to which host is the capture's table (it names the
+/// bidder on the record); this one only says what a path means on a host
+/// that also serves ads, for every host of that vendor.
 const BID_CALLS: &[(&str, &str)] = &[
     ("adnxs.com", "/ut/v3/prebid"),
     ("smartadserver.com", "/prebid"),
@@ -51,14 +54,19 @@ const BID_CALLS: &[(&str, &str)] = &[
     ("amazon-adsystem.com", "/e/dtb/bid"),
 ];
 
-/// Path fragments of auction endpoints on hosts the tables do not know:
-/// Prebid Server and plain OpenRTB.
-const BID_PATH_MARKS: &[&str] = &[
-    "/openrtb2/auction",
-    "/openrtb2/amp",
-    "/openrtb/",
-    "/openrtbb/",
-];
+/// Where a Prebid Server takes auctions, on whatever host it runs.
+const PREBID_SERVER_PATHS: &[&str] = &["/openrtb2/auction", "/openrtb2/amp"];
+
+/// Path fragments of plain OpenRTB auction endpoints on hosts the tables do
+/// not know.
+const OPENRTB_PATH_MARKS: &[&str] = &["/openrtb/", "/openrtbb/"];
+
+fn has_auction_path(path: &str) -> bool {
+    PREBID_SERVER_PATHS
+        .iter()
+        .chain(OPENRTB_PATH_MARKS)
+        .any(|mark| path.contains(mark))
+}
 
 /// Hosts whose business is user identity: id modules and match tables.
 const IDENTITY_HOSTS: &[&str] = &[
@@ -131,7 +139,7 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
     if matches(AD_SERVER_CALLS, facts) {
         return AdServer;
     }
-    if BID_PATH_MARKS.iter().any(|mark| facts.path.contains(mark)) && method == "POST" {
+    if has_auction_path(facts.path) && method == "POST" {
         return Bid;
     }
     let file = facts
@@ -226,10 +234,7 @@ pub fn is_ad_call(host: &str, path: &str, bidder: Option<&str>) -> bool {
             .iter()
             .any(|(suffix, prefix)| is_suffix(suffix, host) && path.starts_with(prefix))
     };
-    bidder.is_some()
-        || on(BID_CALLS)
-        || on(AD_SERVER_CALLS)
-        || BID_PATH_MARKS.iter().any(|mark| path.contains(mark))
+    bidder.is_some() || on(BID_CALLS) || on(AD_SERVER_CALLS) || has_auction_path(path)
 }
 
 /// Display name of the host's owner, when the knowledge base knows it.
@@ -239,7 +244,7 @@ pub fn vendor(host: &str) -> Option<&'static str> {
 
 /// Whether a bid request goes to a Prebid Server, which asks several bidders.
 pub fn is_prebid_server(path: &str) -> bool {
-    path.contains("/openrtb2/auction") || path.contains("/openrtb2/amp")
+    PREBID_SERVER_PATHS.iter().any(|mark| path.contains(mark))
 }
 
 /// Whether an ad-server ad call carries Prebid's targeting. `query` is the

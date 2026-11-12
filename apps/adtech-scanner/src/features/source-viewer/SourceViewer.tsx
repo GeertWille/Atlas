@@ -36,6 +36,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Skeleton } from "@/shared/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { Hint } from "@/shared/ui/tooltip";
@@ -73,7 +74,12 @@ const COMPACT_BELOW = 900;
 const MIN_CODE_WIDTH = 520;
 const URL_WRITE_DELAY_MS = 200;
 
+/**
+ * What a developer needs to place the file at a glance: what it is, whose it is and how large. How it was
+ * classified, what loaded it and its fingerprint are a click away.
+ */
 function Facts({ script, multiPage }: { script: ScriptRecord; multiPage: boolean }) {
+  const { copy } = useCopy();
   const category = SCRIPT_CATEGORY_META[script.category];
   const byJev = script.classifierModel !== null && isJevModel(script.classifierModel);
   const classifier = script.classifierModel
@@ -82,23 +88,74 @@ function Facts({ script, multiPage }: { script: ScriptRecord; multiPage: boolean
   let score: string | null = null;
   if (script.adProbability !== null) score = `${formatPercent(script.adProbability)} ad`;
   else if (script.classificationConfidence !== null) score = formatPercent(script.classificationConfidence);
-  const facts = [
-    script.vendor,
-    script.inline ? "inline script" : script.firstParty ? "first party" : "third party",
-    formatBytes(script.sizeBytes),
-    multiPage && script.pages.length > 0 ? `page ${script.pages.map((page) => page + 1).join(", ")}` : null,
-    `${byJev ? "Jev" : classifier}${score ? ` ${score}` : ""}`,
-    script.initiator ? `loaded by ${fileNameOf(script.initiator)}` : null,
-    script.sha256 ? `sha-256 ${script.sha256.slice(0, 12)}…` : null,
-  ].filter((fact): fact is string => Boolean(fact));
+  const origin = script.inline ? "inline script" : script.firstParty ? "first party" : "third party";
+  const pages = multiPage && script.pages.length > 0 ? script.pages.map((page) => page + 1).join(", ") : null;
+  const details: [label: string, value: React.ReactNode][] = [
+    [
+      "Address",
+      <span key="url" className="font-mono break-all">
+        {script.url}
+      </span>,
+    ],
+    ["Origin", script.vendor ? `${script.vendor}, ${origin}` : origin],
+    ["Size", `${formatBytes(script.sizeBytes)} as transferred`],
+    ...(pages ? [["Page views", pages] as [string, string]] : []),
+    ["Classified by", `${byJev ? "Jev" : classifier}${score ? `, ${score}` : ""}`],
+    ...(script.classificationReason ? [["Reason", script.classificationReason] as [string, string]] : []),
+    ...(script.initiator
+      ? [
+          [
+            "Loaded by",
+            <span key="initiator" className="font-mono break-all">
+              {script.initiator}
+            </span>,
+          ] as [string, React.ReactNode],
+        ]
+      : []),
+  ];
   return (
-    <div
-      className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground"
-      title={`${script.url}\n${facts.join(" · ")}`}
-    >
+    <div className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
       <Badge tone={category.tone}>{scriptCategoryLabel(script.category, script.adRelated)}</Badge>
       {script.analyzed ? <Badge tone="violet">Analysed by the AI</Badge> : null}
-      <span className="selectable min-w-0 truncate tabular-nums">{facts.join(" · ")}</span>
+      <span className="selectable min-w-0 truncate tabular-nums">
+        {[script.vendor ?? origin, formatBytes(script.sizeBytes)].join(" · ")}
+      </span>
+      <Popover>
+        <Hint label="About this file">
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="icon-sm" aria-label="About this file" className="shrink-0">
+              <InfoIcon />
+            </Button>
+          </PopoverTrigger>
+        </Hint>
+        <PopoverContent aria-label="About this file" className="w-96 max-w-[calc(100vw-2rem)]">
+          <dl className="flex flex-col gap-1.5 text-xs">
+            {details.map(([label, value]) => (
+              <div key={label} className="flex gap-3">
+                <dt className="w-24 shrink-0 text-muted-foreground">{label}</dt>
+                <dd className="selectable min-w-0 flex-1 break-words">{value}</dd>
+              </div>
+            ))}
+            {script.sha256 ? (
+              <div className="flex items-start gap-3">
+                <dt className="w-24 shrink-0 text-muted-foreground">SHA-256</dt>
+                <dd className="flex min-w-0 flex-1 items-start gap-1">
+                  <span className="selectable min-w-0 flex-1 font-mono break-all">{script.sha256}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Copy the SHA-256"
+                    className="-my-1 shrink-0"
+                    onClick={() => void copy(script.sha256 ?? "", "SHA-256 copied")}
+                  >
+                    <ClipboardCopyIcon />
+                  </Button>
+                </dd>
+              </div>
+            ) : null}
+          </dl>
+        </PopoverContent>
+      </Popover>
     </div>
   );
 }
@@ -414,11 +471,11 @@ export function SourceViewer({
             </Hint>
             <DropdownMenuContent align="end">
               <DropdownMenuGroup>
-                <DropdownMenuItem onSelect={() => void copy(script.url)}>
+                <DropdownMenuItem onSelect={() => void copy(script.url, "URL copied")}>
                   <ClipboardCopyIcon />
                   Copy URL
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={!text} onSelect={() => text && void copy(text)}>
+                <DropdownMenuItem disabled={!text} onSelect={() => text && void copy(text, "Source copied")}>
                   <ClipboardCopyIcon />
                   Copy all
                 </DropdownMenuItem>

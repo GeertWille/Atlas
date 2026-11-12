@@ -29,6 +29,9 @@ pub struct Manifest {
     /// Unix epoch ms.
     pub started_at: f64,
     pub headers_redacted: bool,
+    /// Bodies were left out because of the scan cap or back-pressure.
+    #[serde(default)]
+    pub truncated: bool,
     pub request_count: u32,
     pub bodies: Vec<ManifestBody>,
     pub records: Vec<ManifestRecords>,

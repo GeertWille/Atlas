@@ -2,6 +2,7 @@
 //! (independent zstd frames addressed by location) plus an index of request
 //! rows. Pure: the bytes are moved by the application layer.
 
+pub mod codec;
 pub mod document;
 pub mod index;
 pub mod kinds;

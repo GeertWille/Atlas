@@ -10,15 +10,21 @@ type FakeOptions = {
   jev?: "ok" | "fail";
   /** Every scan's request list is padded to this many rows. */
   rows?: number;
+  /** Script sources above this many bytes are too large to show; 0 keeps the backend's own limit. */
+  sourceLimit?: number;
+  /** `off`: the fake answers at once, for the specs that time the interface itself. */
+  latency?: "on" | "off";
 };
 
 /** Opens the app at a hash route with the fake backend configured through its query parameters. */
 export async function openApp(
   page: Page,
   route = "/",
-  { profile = "seeded", speed = 40, jev = "ok", rows = 0 }: FakeOptions = {},
+  { profile = "seeded", speed = 40, jev = "ok", rows = 0, sourceLimit = 0, latency = "on" }: FakeOptions = {},
 ) {
-  await page.goto(`/?fakeProfile=${profile}&fakeSpeed=${speed}&fakeJev=${jev}&fakeRows=${rows}#${route}`);
+  const fake = { fakeProfile: profile, fakeSpeed: speed, fakeJev: jev, fakeRows: rows, fakeSourceLimit: sourceLimit };
+  const query = new URLSearchParams({ ...fake, fakeLatency: latency } as unknown as Record<string, string>);
+  await page.goto(`/?${query}#${route}`);
   // The shell (and with it the global shortcuts) is mounted once the sidebar renders.
   await expect(page.getByRole("button", { name: /New scan/ })).toBeVisible();
 }

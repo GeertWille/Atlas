@@ -109,15 +109,22 @@ pub fn sha256_from_hex(text: &str) -> Option<[u8; 32]> {
 }
 
 impl RequestIndexRow {
-    /// The row of `record`. `page_site` is the registrable domain of the
-    /// scanned page; the frame of the record's document is filled in by the
-    /// writer once it is in the pack.
+    /// The row of `record`. "First party" is the registrable domain of the
+    /// page view the request belongs to; `scan_site`, that of the address the
+    /// scan was started with, stands in where the capture named no page. The
+    /// frame of the record's document is filled in by the writer once it is
+    /// in the pack.
     pub fn of(
         record: &NetworkRecord,
-        page_site: &str,
+        scan_site: &str,
         body_state: BodyState,
         body_no: Option<u32>,
     ) -> Self {
+        let page_site = if record.page_host.is_empty() {
+            scan_site.to_string()
+        } else {
+            site_of(&record.page_host)
+        };
         let parsed = Url::parse(&record.url).ok();
         let host = parsed
             .as_ref()

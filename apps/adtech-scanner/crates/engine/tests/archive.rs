@@ -2043,3 +2043,355 @@ async fn exports_carry_the_links_and_never_a_body_or_a_header() {
     );
     assert_eq!(exported.network.unwrap().request_count, 12);
 }
+
+// ---------------------------------------------------------------------------
+// Review: privacy defaults, deletion, hostile files
+// ---------------------------------------------------------------------------
+
+const URL_TOKEN: &str = "url-token-7c1d9a";
+const LOGIN_PASSWORD: &str = "correct-horse-battery";
+const ISSUED_TOKEN: &str = "issued-token-55aa66bb";
+const SITE_API_KEY: &str = "site-api-key-0f0e0d";
+/// `scanner:pr0xy-secret` as the browser sends it to an HTTP proxy.
+const PROXY_CREDENTIALS: &str = "c2Nhbm5lcjpwcjB4eS1zZWNyZXQ=";
+
+/// What a signed-in person's visit adds to the network: a call with a token
+/// in its URL and an API key header, sent through an HTTP proxy that wants
+/// a password; a login; and a token endpoint's answer.
+fn signed_in_requests() -> Vec<NetworkRecord> {
+    let mut api = net(
+        30,
+        &format!("https://pub.example/api/me?access_token={URL_TOKEN}&fields=id"),
+    );
+    api.request_headers = vec![
+        header("X-Api-Key", SITE_API_KEY),
+        header("Proxy-Authorization", &format!("Basic {PROXY_CREDENTIALS}")),
+        header(
+            "Referer",
+            &format!("https://pub.example/reset?token={URL_TOKEN}"),
+        ),
+    ];
+    api.initiator.url = Some(format!("https://pub.example/app.js?auth={URL_TOKEN}"));
+
+    let mut login = net(31, "https://pub.example/wp-login.php");
+    login.method = "POST".into();
+    login.kind = ResourceKind::Document;
+    let form = format!("log=reader%40example.org&pwd={LOGIN_PASSWORD}&rememberme=forever");
+    login.post_data = Some(CapturedPostData {
+        total_bytes: form.len() as u64,
+        bytes: form.into_bytes(),
+    });
+
+    let mut token = with_body(
+        net(32, "https://id.partner.example/oauth/token"),
+        ResourceKind::Fetch,
+        "application/json",
+        &format!(r#"{{"access_token":"{ISSUED_TOKEN}","token_type":"Bearer","expires_in":3600}}"#),
+    );
+    token.method = "POST".into();
+    let grant =
+        format!(r#"{{"grant_type":"password","username":"reader","password":"{LOGIN_PASSWORD}"}}"#);
+    token.post_data = Some(CapturedPostData {
+        total_bytes: grant.len() as u64,
+        bytes: grant.into_bytes(),
+    });
+    vec![api, login, token]
+}
+
+#[tokio::test]
+async fn what_a_signed_in_visit_sends_is_stored_without_its_credentials_in_either_header_mode() {
+    for full_headers in [false, true] {
+        let harness = harness_on_disk();
+        harness
+            .capture
+            .network
+            .lock()
+            .unwrap()
+            .extend(signed_in_requests());
+        harness
+            .settings
+            .update(SettingsPatch {
+                store_full_headers: Some(full_headers),
+                ..SettingsPatch::default()
+            })
+            .await
+            .unwrap();
+        let detail = recorded_scan(&harness).await;
+        let scan_id = &detail.summary.id;
+        let content = pack_content(&harness, scan_id);
+        let files = everything_on_disk(&harness);
+
+        // Never, whatever the setting: the app's own proxy password, tokens
+        // in URLs (the request's, the referrer's, the initiator's), the
+        // password of a login and the token an identity service issued.
+        for secret in [PROXY_CREDENTIALS, URL_TOKEN, LOGIN_PASSWORD, ISSUED_TOKEN] {
+            assert!(!content.contains(secret), "{secret} is in the pack");
+            for (path, bytes) in &files {
+                assert!(!holds(bytes, secret), "{secret} is in {}", path.display());
+            }
+        }
+        // A header named like a credential follows the setting.
+        assert_eq!(content.contains(SITE_API_KEY), full_headers);
+
+        // What stays says what was there.
+        let api = harness.network.request(scan_id, "r30").await.unwrap();
+        assert_eq!(
+            api.row.url,
+            "https://pub.example/api/me?access_token=[redacted-16-bytes]&fields=id"
+        );
+        let shown = |name: &str| {
+            api.request_headers
+                .iter()
+                .find(|header| header.name == name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(shown("Proxy-Authorization").value, "Basic [28 bytes]");
+        assert_eq!(
+            shown("Proxy-Authorization").redaction,
+            Some(HeaderRedaction::Credential)
+        );
+        assert_eq!(
+            shown("X-Api-Key").redaction,
+            (!full_headers).then_some(HeaderRedaction::Credential)
+        );
+        assert_eq!(
+            shown("Referer").value,
+            "https://pub.example/reset?token=[redacted-16-bytes]"
+        );
+        let login = harness
+            .network
+            .body(scan_id, "r31", BodySide::Request, None, None)
+            .await
+            .unwrap();
+        assert_eq!(login.state, BodyState::Kept);
+        assert_eq!(
+            login.text.as_deref(),
+            Some("log=reader%40example.org&pwd=[21+bytes]&rememberme=forever")
+        );
+        let issued = harness
+            .network
+            .body(scan_id, "r32", BodySide::Response, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            issued.text.as_deref(),
+            Some(r#"{"access_token":"[21 bytes]","token_type":"Bearer","expires_in":3600}"#)
+        );
+        let grant = harness
+            .network
+            .body(scan_id, "r32", BodySide::Request, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            grant.text.as_deref(),
+            Some(r#"{"grant_type":"password","username":"reader","password":"[21 bytes]"}"#)
+        );
+    }
+}
+
+#[tokio::test]
+async fn first_party_is_the_site_of_the_page_view_a_request_belongs_to() {
+    // The scan was started on pub.example, which sent the tab on to
+    // www.newsroom.example: that is the site the visit shows.
+    let harness = recorded_harness();
+    let on_page = |seq: u32, url: &str| {
+        let mut record = net(seq, url);
+        record.page_host = "www.newsroom.example".into();
+        record
+    };
+    harness.capture.network.lock().unwrap().extend([
+        on_page(40, "https://static.newsroom.example/app.css"),
+        on_page(41, "https://pub.example/legacy/logo.gif"),
+        // No page view named: measured against the address the scan began with.
+        net(42, "https://cdn.pub.example/lib.js"),
+    ]);
+    let detail = recorded_scan(&harness).await;
+    let rows = all_rows(&harness, &detail.summary.id).await;
+    let row = |id: &str| rows.iter().find(|row| row.id == id).unwrap();
+    assert!(row("r40").first_party);
+    assert_eq!(row("r40").category, NetworkCategory::Site);
+    assert!(!row("r41").first_party);
+    assert_eq!(row("r41").category, NetworkCategory::OtherThirdParty);
+    assert!(row("r42").first_party);
+}
+
+#[tokio::test]
+async fn a_deleted_scan_leaves_no_host_name_and_no_row_content_in_any_file() {
+    let harness = harness_on_disk();
+    let detail = recorded_scan(&harness).await;
+    let before = everything_on_disk(&harness);
+    for only_this_scan in ["stream.example.net", "tracker.blocked.example"] {
+        assert!(
+            before.iter().any(|(_, bytes)| holds(bytes, only_this_scan)),
+            "{only_this_scan} was stored"
+        );
+    }
+    harness.scans.delete(&detail.summary.id).await.unwrap();
+    for (path, bytes) in everything_on_disk(&harness) {
+        for gone in [
+            "stream.example.net",
+            "tracker.blocked.example",
+            "sync.partner.example",
+            "/openrtbb/prebidjs",
+        ] {
+            assert!(
+                !holds(&bytes, gone),
+                "{gone} is still in {}",
+                path.display()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_index_that_points_outside_what_a_pack_holds_is_an_error_not_an_allocation() {
+    let harness = harness_on_disk();
+    let detail = recorded_scan(&harness).await;
+    let scan_id = detail.summary.id.clone();
+    let database = rusqlite::Connection::open(
+        everything_on_disk(&harness)
+            .into_iter()
+            .map(|(path, _)| path)
+            .find(|path| path.extension().is_some_and(|ext| ext == "sqlite3"))
+            .unwrap(),
+    )
+    .unwrap();
+    let tamper = |sql: &str| {
+        database.execute_batch(sql).unwrap();
+    };
+
+    // A body said to be gigabytes long, at an offset near the end of 64 bits.
+    tamper("UPDATE scan_bodies SET pack_len = 4294967295, raw_len = 9223372036854775807");
+    assert!(
+        harness
+            .network
+            .body(&scan_id, "r0", BodySide::Response, None, None)
+            .await
+            .is_err()
+    );
+    tamper("UPDATE scan_bodies SET pack_off = 9223372036854775807, pack_len = 100");
+    assert!(
+        harness
+            .network
+            .body(&scan_id, "r0", BodySide::Response, None, None)
+            .await
+            .is_err()
+    );
+    // Record frames likewise: the list still answers, from the index alone.
+    tamper("UPDATE requests SET record_off = 9223372036854775800, record_len = 4294967295");
+    let rows = all_rows(&harness, &scan_id).await;
+    assert!(!rows.is_empty());
+    assert_eq!(
+        rows[0].url, "https://pub.example/",
+        "no query without the pack"
+    );
+    // A pack file name that leaves the archive directory is never opened.
+    tamper("UPDATE scan_archives SET pack_file = '../../../etc/passwd'");
+    assert!(
+        harness
+            .network
+            .body(&scan_id, "r0", BodySide::Response, None, None)
+            .await
+            .is_err()
+    );
+    let script = &detail.scripts[0];
+    assert!(
+        harness
+            .sources
+            .get(&scan_id, &script.id, SourceView::Original, None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn a_frame_that_unpacks_to_more_than_it_may_is_refused() {
+    let harness = harness_on_disk();
+    let detail = recorded_scan(&harness).await;
+    let scan_id = detail.summary.id.clone();
+    // 64 MiB of zeros compress to a few kilobytes: put that where the
+    // document's body is said to be, and leave the index as it is.
+    let bomb = zstd::stream::encode_all(vec![0u8; 64 * 1024 * 1024].as_slice(), 3).unwrap();
+    let path = pack_path(&harness, &scan_id);
+    let mut pack = std::fs::read(&path).unwrap();
+    let at = pack.len() as u64;
+    pack.extend_from_slice(&bomb);
+    std::fs::write(&path, pack).unwrap();
+    let database = rusqlite::Connection::open(
+        everything_on_disk(&harness)
+            .into_iter()
+            .map(|(path, _)| path)
+            .find(|path| path.extension().is_some_and(|ext| ext == "sqlite3"))
+            .unwrap(),
+    )
+    .unwrap();
+    database
+        .execute(
+            "UPDATE scan_bodies SET pack_off = ?1, pack_len = ?2",
+            rusqlite::params![at as i64, bomb.len() as i64],
+        )
+        .unwrap();
+    let read = harness
+        .network
+        .body(&scan_id, "r0", BodySide::Response, None, None)
+        .await;
+    assert!(
+        read.is_err(),
+        "the index said {} bytes",
+        DOCUMENT_HTML.len()
+    );
+}
+
+#[tokio::test]
+async fn a_pack_that_was_finished_when_the_app_stopped_is_sealed_at_the_next_start() {
+    let harness = harness_on_disk();
+    let detail = recorded_scan(&harness).await;
+    let scan_id = detail.summary.id.clone();
+    let database = rusqlite::Connection::open(
+        everything_on_disk(&harness)
+            .into_iter()
+            .map(|(path, _)| path)
+            .find(|path| path.extension().is_some_and(|ext| ext == "sqlite3"))
+            .unwrap(),
+    )
+    .unwrap();
+    // The app stopped after the pack was sealed and before the index said so.
+    database
+        .execute_batch("UPDATE scan_archives SET state = 'writing', pack_bytes = 0")
+        .unwrap();
+    let report = harness.archive.sweep().await.unwrap();
+    assert_eq!((report.completed, report.unfinished), (1, 0));
+    let record =
+        adscan_engine::application::ports::ArchiveRepository::record(&harness.store, &scan_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(record.state, ArchiveState::Sealed);
+    assert_eq!(
+        record.pack_bytes,
+        std::fs::metadata(pack_path(&harness, &scan_id))
+            .unwrap()
+            .len()
+    );
+    assert!(
+        harness
+            .network
+            .body(&scan_id, "r0", BodySide::Response, None, None)
+            .await
+            .unwrap()
+            .text
+            .is_some()
+    );
+
+    // The same file cut short is what a crash in the middle leaves: removed.
+    database
+        .execute_batch("UPDATE scan_archives SET state = 'writing'")
+        .unwrap();
+    let path = pack_path(&harness, &scan_id);
+    let pack = std::fs::read(&path).unwrap();
+    std::fs::write(&path, &pack[..pack.len() - 7]).unwrap();
+    let report = harness.archive.sweep().await.unwrap();
+    assert_eq!((report.completed, report.unfinished), (0, 1));
+    assert!(!path.exists());
+}

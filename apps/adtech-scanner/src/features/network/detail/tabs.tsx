@@ -8,6 +8,7 @@ import { pageLabel } from "@/shared/domain/page-views";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatBytes, formatCpm, formatDuration } from "@/shared/lib/format";
+import { revealInvisibles } from "@/shared/lib/invisible";
 import { fileNameOf } from "@/shared/lib/url";
 import { Badge } from "@/shared/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
@@ -191,7 +192,7 @@ function AdContextFacts({
                     search={{ tab: "findings", finding: finding.id }}
                     className={linkClass}
                   >
-                    Finding: {finding.title}
+                    Finding: {revealInvisibles(finding.title)}
                   </Link>
                 </li>
               ))}
@@ -238,7 +239,7 @@ export function SummaryTab({
       <Heading>General</Heading>
       <dl>
         <Fact label="URL">
-          <span className="font-mono break-all">{row.url}</span>
+          <span className="font-mono break-all">{revealInvisibles(row.url)}</span>
         </Fact>
         <Fact label="Method">{row.method}</Fact>
         <Fact label="Status">
@@ -344,9 +345,9 @@ function HeaderTable({ title, headers }: { title: string; headers: Header[] }) {
           {headers.map((header, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: a header name can repeat (Set-Cookie)
             <div key={`${header.name}-${index}`} className="flex gap-3 px-3 py-[3px] text-xs">
-              <dt className="selectable w-40 shrink-0 font-medium break-words">{header.name}</dt>
+              <dt className="selectable w-40 shrink-0 font-medium break-words">{revealInvisibles(header.name)}</dt>
               <dd className="selectable min-w-0 flex-1 font-mono break-all">
-                {header.value}
+                {revealInvisibles(header.value)}
                 {header.redaction ? (
                   <Badge tone="amber" className="ml-2 align-middle font-sans">
                     redacted: {REDACTION_REASON[header.redaction]}
@@ -425,16 +426,20 @@ export function PayloadTab({ scanId, detail }: { scanId: string; detail: Network
             {params.map((param, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: a key can repeat in a query string
               <div key={`${param.key}-${index}`} className="flex flex-wrap gap-x-3 px-3 py-[3px] text-xs">
-                <dt className="selectable w-36 shrink-0 font-medium break-words">{param.key}</dt>
-                <dd className="selectable min-w-0 flex-1 font-mono break-all">{param.value}</dd>
+                <dt className="selectable w-36 shrink-0 font-medium break-words">{revealInvisibles(param.key)}</dt>
+                <dd className="selectable min-w-0 flex-1 font-mono break-all">{revealInvisibles(param.value)}</dd>
                 {param.nested.length > 0 ? (
                   <dd className="mt-0.5 ml-4 basis-full border-l pl-3">
                     <dl>
                       {param.nested.map((nested, nestedIndex) => (
                         // biome-ignore lint/suspicious/noArrayIndexKey: nested keys can repeat too
                         <div key={`${nested.key}-${nestedIndex}`} className="flex gap-3 py-px">
-                          <dt className="selectable w-32 shrink-0 text-muted-foreground break-words">{nested.key}</dt>
-                          <dd className="selectable min-w-0 flex-1 font-mono break-all">{nested.value}</dd>
+                          <dt className="selectable w-32 shrink-0 text-muted-foreground break-words">
+                            {revealInvisibles(nested.key)}
+                          </dt>
+                          <dd className="selectable min-w-0 flex-1 font-mono break-all">
+                            {revealInvisibles(nested.value)}
+                          </dd>
                         </div>
                       ))}
                     </dl>
@@ -630,7 +635,7 @@ export function InitiatorTab({ scanId, detail }: { scanId: string; detail: Netwo
           // biome-ignore lint/suspicious/noArrayIndexKey: a stack can pass through one place twice
           <li key={index} className="flex items-baseline gap-3 py-[3px]">
             <span className="selectable w-40 shrink-0 truncate font-mono" title={frame.function ?? "(anonymous)"}>
-              {frame.function ?? "(anonymous)"}
+              {frame.function ? revealInvisibles(frame.function) : "(anonymous)"}
             </span>
             {frame.scriptId ? (
               <Link

@@ -679,3 +679,32 @@ pub fn request_id(seq: u32) -> String {
 pub fn request_seq(id: &str) -> Option<u32> {
     id.strip_prefix('r')?.parse().ok()
 }
+
+/// The name of an OpenRTB no-bid reason code (`nbr`), from the list OpenRTB
+/// 2.6 refers to (OpenRTB 3.0, "List: No-Bid Reason Codes"), which renamed
+/// codes 3 and 9 of the 2.5 list and added 11 to 17. `None` for any other
+/// code: from 500 on they are an exchange's own and mean nothing without
+/// its documentation.
+pub fn no_bid_reason_name(code: u32) -> Option<&'static str> {
+    Some(match code {
+        0 => "Unknown Error",
+        1 => "Technical Error",
+        2 => "Invalid Request",
+        3 => "Known Web Crawler",
+        4 => "Suspected Non-Human Traffic",
+        5 => "Cloud, Data Center, or Proxy IP",
+        6 => "Unsupported Device",
+        7 => "Blocked Publisher or Site",
+        8 => "Unmatched User",
+        9 => "Daily User Cap Met",
+        10 => "Daily Domain Cap Met",
+        11 => "Ads.txt Authorization Unavailable",
+        12 => "Ads.txt Authorization Violation",
+        13 => "Ads.cert Authentication Unavailable",
+        14 => "Ads.cert Authentication Violation",
+        15 => "Insufficient Auction Time",
+        16 => "Incomplete SupplyChain",
+        17 => "Blocked SupplyChain Node",
+        _ => return None,
+    })
+}

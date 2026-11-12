@@ -65,7 +65,9 @@ test("usage is shown, and clearing asks first and leaves the reports", async () 
   const stored = within(await section());
   const meter = await stored.findByRole("meter", { name: "Storage used by scan data" });
   expect(meter).toHaveAttribute("aria-valuetext", expect.stringMatching(/ MB of 5 GB$/));
-  expect(stored.getByText(/in 3 scans/)).toHaveTextContent("1 older scan already lost its network data to the limit.");
+  expect(stored.getByText(/in 3 scans/)).toHaveTextContent(
+    "1 scan no longer has its network data: it was cleared here, or removed to stay under the limit.",
+  );
 
   await user.click(stored.getByRole("button", { name: "Clear stored scan data…" }));
   const dialog = await screen.findByRole("alertdialog", { name: "Clear stored scan data?" });

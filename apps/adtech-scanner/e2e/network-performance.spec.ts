@@ -6,8 +6,10 @@ const SCAN = "/scans/seed-sportsdesk-browse";
 const OTHER_SCAN = "/scans/seed-sportsdesk-desktop";
 
 /**
- * Milliseconds per action, from the network plan. They are asserted on Chromium against the fake backend and
- * the production build; the fake answers each call after 60 ms, which is inside the figures for opening.
+ * Milliseconds per action, from the network plan. They are asserted on Chromium against the production build
+ * and time the interface alone: the fake backend has built its request lists before the clock starts and
+ * answers without its simulated delay. The spec is a project of its own that runs after every other spec has
+ * finished (see playwright.config.ts), so nothing else is using the processor.
  */
 type Budget = {
   firstRows: number;
@@ -101,8 +103,7 @@ const KEYSTROKES = [
 ];
 
 test.describe("performance", () => {
-  // The other spec files run at the same time on the same processor: a figure missed then is tried again.
-  test.describe.configure({ mode: "serial", retries: 2 });
+  test.describe.configure({ mode: "serial" });
   test.use({ baseURL: `http://localhost:${PRODUCTION_PORT}` });
 
   for (const { rows, label, budget } of SIZES) {
@@ -110,7 +111,7 @@ test.describe("performance", () => {
       page,
     }) => {
       // Another scan's network view first: the code of the route is loaded, the rows of this scan are not.
-      await openApp(page, `${OTHER_SCAN}/network`, { rows });
+      await openApp(page, `${OTHER_SCAN}/network`, { rows, latency: "off" });
       await expect(page.getByTestId("request-count")).toHaveText(`${label} requests`);
       const measured: Record<string, number> = {};
 

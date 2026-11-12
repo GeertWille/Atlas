@@ -130,6 +130,7 @@ pub async fn get_archive_storage(state: State<'_, AppState>) -> CommandResult<Ar
 
 #[tauri::command]
 pub async fn clear_archive(state: State<'_, AppState>) -> CommandResult<ArchiveStorage> {
+    state.sources.forget_formatted();
     state.settings.clear_archive().await.map_err(command_error)
 }
 
@@ -311,11 +312,13 @@ pub async fn get_scan(state: State<'_, AppState>, scan_id: String) -> CommandRes
 
 #[tauri::command]
 pub async fn delete_scan(state: State<'_, AppState>, scan_id: String) -> CommandResult<()> {
+    state.sources.forget_formatted();
     state.scans.delete(&scan_id).await.map_err(command_error)
 }
 
 #[tauri::command]
 pub async fn delete_all_scans(state: State<'_, AppState>) -> CommandResult<()> {
+    state.sources.forget_formatted();
     state.scans.delete_all().await.map_err(command_error)
 }
 

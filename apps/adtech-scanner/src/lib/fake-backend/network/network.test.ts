@@ -245,6 +245,25 @@ describe("the simulated network record", () => {
     }
   });
 
+  it("leaves out the bodies the last page of a long visit fetched once the scan's cap was reached", async () => {
+    const detail = await api.getScan(BROWSE);
+    expect(detail.network).toMatchObject({ availability: "available", truncated: true });
+    const capped: NetworkRow[] = [];
+    for (const row of (await allRows(api, BROWSE)).filter((candidate) => candidate.kind === "fetch")) {
+      const opened = await api.getNetworkRequest(BROWSE, row.id);
+      if (opened.responseBody.state === "scanLimit") capped.push(row);
+    }
+    expect(capped.length).toBeGreaterThan(0);
+    for (const row of capped) {
+      expect(row).toMatchObject({ page: 2, hasResponseBody: false, category: expect.not.stringMatching(/^bid$/) });
+      expect(row.decodedBytes).toBeGreaterThan(0);
+      expect(await api.getNetworkBody(BROWSE, row.id, { side: "response" })).toMatchObject({
+        state: "scanLimit",
+        text: null,
+      });
+    }
+  });
+
   it("reads a large body in stretches", async () => {
     const rows = await allRows(api, DESKTOP);
     const archive = rows.find((row) => row.url.includes("archive.json"));

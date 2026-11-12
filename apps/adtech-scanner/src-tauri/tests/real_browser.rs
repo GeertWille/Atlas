@@ -215,6 +215,34 @@ async fn demo_site_scan_runs_the_whole_pipeline_with_a_real_browser() {
             "missing `{expected}` in {titles:#?}"
         );
     }
+    // The demo's identity call fails on purpose and Chrome logs one console
+    // error per document for it (demo-site README, "On the network"). No
+    // deterministic rule reads the console, so nothing the rules report may
+    // present that line as a fault of the site.
+    for finding in &detail.findings {
+        if finding.source != adscan_model::FindingSource::Heuristic {
+            continue;
+        }
+        let mut text = format!(
+            "{} {} {}",
+            finding.title, finding.description, finding.impact
+        );
+        for evidence in &finding.evidence {
+            text.push_str(&evidence.body);
+        }
+        for console_noise in [
+            "identity/envelope",
+            "ERR_EMPTY_RESPONSE",
+            "Failed to load resource",
+        ] {
+            assert!(
+                !text.contains(console_noise),
+                "`{}` reports the planned console error: {text}",
+                finding.title
+            );
+        }
+    }
+
     // The bidder checks read the demo site's own ads.txt over loopback and
     // name the cause of each planted bidder bug.
     assert_eq!(
@@ -526,6 +554,7 @@ async fn the_demo_scan_is_archived_and_reads_back_for_the_network_view_and_the_s
     };
     let scan = run_demo_scan(|url| ScanOptions {
         observe_seconds: 6,
+        ai_enabled: true,
         ..ScanOptions::for_url(url)
     })
     .await;
@@ -533,7 +562,7 @@ async fn the_demo_scan_is_archived_and_reads_back_for_the_network_view_and_the_s
         state,
         data_dir,
         detail,
-        server: _server,
+        server,
     } = &scan;
     assert_eq!(
         detail.summary.status,
@@ -542,6 +571,39 @@ async fn the_demo_scan_is_archived_and_reads_back_for_the_network_view_and_the_s
         detail.summary.error
     );
     let scan_id = detail.summary.id.as_str();
+
+    // The app's own calls to the model API do not go through the scanned
+    // browser: the scan made them, and neither they nor the key they carry
+    // are anywhere in what the scan stored.
+    let model_calls = server.received_requests().await.unwrap_or_default();
+    assert!(!model_calls.is_empty(), "the scan called the model API");
+    let model_api = format!(":{}/", server.address().port());
+    let mut stored_files = vec![data_dir.path().to_path_buf()];
+    while let Some(path) = stored_files.pop() {
+        if path.is_dir() {
+            stored_files.extend(
+                std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        let text = if path.extension().is_some_and(|ext| ext == "zst") {
+            String::from_utf8_lossy(&zstd::stream::decode_all(bytes.as_slice()).unwrap())
+                .into_owned()
+        } else {
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        assert!(
+            !text.contains("sk-ant-real-browser-test"),
+            "the API key is in {}",
+            path.display()
+        );
+        if path.extension().is_some_and(|ext| ext == "zst") {
+            assert!(!text.contains("/v1/messages") && !text.contains(&model_api));
+        }
+    }
 
     // One sealed pack, and the report says so.
     let network = detail

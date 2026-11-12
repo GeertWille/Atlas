@@ -26,10 +26,10 @@ use tokio::task::JoinHandle;
 
 use super::Archive;
 use super::analysis::RecordAnalysis;
-use super::codec;
 use crate::application::ports::{
     ArchiveRepository, ArchiveTotals, BodyIndexRow, PackWriter, RequestIndexRow,
 };
+use crate::domain::archive::codec;
 use crate::domain::archive::document::{RequestDocument, StoredBody, state_without_bytes};
 use crate::domain::archive::index::{sha256_hex, site_of};
 use crate::domain::archive::kinds::{
@@ -41,6 +41,7 @@ use crate::domain::archive::pack::{
     FORMAT_VERSION, MAX_RECORD_FRAME_BYTES, Manifest, ManifestBody, ManifestRecords,
     RECORDS_PER_FRAME, trailer,
 };
+use crate::domain::archive::redact::{stored_json, stored_url};
 
 /// Rows reach the index at the latest this long after their request ended.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -50,8 +51,9 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 pub struct RecordingStart {
     pub scan_id: String,
     pub url: String,
-    /// Host of the scanned page: what "first party" is measured against.
-    pub page_host: String,
+    /// Host of the address the scan was started with: what "first party" is
+    /// measured against for a request the capture put on no page view.
+    pub scan_host: String,
     /// Unix epoch ms.
     pub started_at: f64,
     pub full_headers: bool,
@@ -73,14 +75,21 @@ enum Item {
     Finish,
 }
 
+/// What an admission set aside until the body's record arrives.
+#[derive(Debug, Clone, Copy)]
+struct Reservation {
+    in_flight: u64,
+    kept: u64,
+    keep: Keep,
+}
+
 #[derive(Default)]
 struct Budget {
     /// Body bytes admitted or queued and not yet dealt with.
     in_flight: u64,
     /// Body bytes this scan stores, before compression.
     kept: u64,
-    /// What an admission set aside until its record arrives, by `seq`.
-    reserved: HashMap<u32, (u64, Keep)>,
+    reserved: HashMap<u32, Reservation>,
     /// A body was not stored for lack of room.
     truncated: bool,
 }
@@ -110,59 +119,87 @@ impl NetworkSink for RecordingSink {
                 BodySkip::NotStored
             });
         }
-        let reservation = match offer.expected_bytes {
+        // The browser hands a body over whole and it is cut to the cap
+        // here, so all of it is in memory on the way: that is what the
+        // in-flight budget counts. The scan's cap counts what is kept.
+        let arriving = match offer.expected_bytes {
             0 => UNKNOWN_BODY_RESERVATION,
-            expected => expected.min(MAX_BODY_BYTES as u64),
+            expected => expected,
         };
+        let kept = arriving.min(MAX_BODY_BYTES as u64);
         let mut budget = self.budget();
         let mut keep = if storable {
             Keep::Store
         } else {
             Keep::AnalyseOnly(BodyState::NotKeptType)
         };
-        if storable && budget.kept + reservation > MAX_SCAN_BODY_BYTES {
+        if storable && budget.kept + kept > MAX_SCAN_BODY_BYTES {
             budget.truncated = true;
             if !analysed {
                 return BodyAdmission::Skip(BodySkip::ScanLimit);
             }
             keep = Keep::AnalyseOnly(BodyState::ScanLimit);
         }
-        if budget.in_flight + reservation > MAX_IN_FLIGHT_BODY_BYTES {
+        if budget.in_flight.saturating_add(arriving) > MAX_IN_FLIGHT_BODY_BYTES {
             budget.truncated |= storable;
             return BodyAdmission::Skip(BodySkip::Backlog);
         }
-        budget.in_flight += reservation;
+        budget.in_flight += arriving;
         if keep == Keep::Store {
-            budget.kept += reservation;
+            budget.kept += kept;
         }
-        budget.reserved.insert(offer.seq, (reservation, keep));
+        budget.reserved.insert(
+            offer.seq,
+            Reservation {
+                in_flight: arriving,
+                kept,
+                keep,
+            },
+        );
         BodyAdmission::Read {
             max_bytes: MAX_BODY_BYTES,
         }
     }
 
-    fn record(&self, record: NetworkRecord) {
-        let actual = match &record.body {
+    fn record(&self, mut record: NetworkRecord) {
+        let body = match &record.body {
             CapturedBody::Read { bytes, .. } => bytes.len() as u64,
             _ => 0,
         };
         let keep = {
             let mut budget = self.budget();
-            let (reserved, keep) = budget
-                .reserved
-                .remove(&record.seq)
-                .unwrap_or((0, Keep::Store));
+            let reserved = budget.reserved.remove(&record.seq).unwrap_or(Reservation {
+                in_flight: 0,
+                kept: 0,
+                keep: Keep::Store,
+            });
             // From here on the body counts with its real size: in the queue
             // until the recorder is done with it, and against the scan's cap.
-            budget.in_flight = budget.in_flight.saturating_sub(reserved) + actual;
-            if keep == Keep::Store {
-                budget.kept = budget.kept.saturating_sub(reserved) + actual;
+            budget.in_flight = budget.in_flight.saturating_sub(reserved.in_flight) + body;
+            if reserved.keep == Keep::Store {
+                budget.kept = budget.kept.saturating_sub(reserved.kept) + body;
             }
-            keep
+            // A request body waits in the same queue. Nobody admitted it,
+            // so when the queue is full it is the part that is let go.
+            let post = queued_post_bytes(&record);
+            if budget.in_flight + post > MAX_IN_FLIGHT_BODY_BYTES {
+                record.post_data = None;
+                record.post_data_missing = true;
+            } else {
+                budget.in_flight += post;
+            }
+            reserved.keep
         };
         // A closed queue means the recorder is gone; the scan goes on.
         let _ = self.queue.send(Item::Record(Box::new(record), keep));
     }
+}
+
+fn queued_post_bytes(record: &NetworkRecord) -> u64 {
+    record
+        .post_data
+        .as_ref()
+        .map_or(0, |post| post.bytes.len() as u64)
 }
 
 /// What a recording leaves behind.
@@ -225,7 +262,7 @@ impl Recording {
             queue,
         });
         let recorder = Recorder {
-            page_site: site_of(&start.page_host),
+            scan_site: site_of(&start.scan_host),
             start,
             sink: Arc::clone(&sink),
             analysis: RecordAnalysis::default(),
@@ -289,7 +326,7 @@ struct Store {
 
 struct Recorder {
     start: RecordingStart,
-    page_site: String,
+    scan_site: String,
     sink: Arc<RecordingSink>,
     analysis: RecordAnalysis,
     /// `None` when the scan stores nothing, and after storing failed.
@@ -335,14 +372,15 @@ impl Recorder {
 
     async fn take(&mut self, mut record: NetworkRecord, keep: Keep) -> Result<(), String> {
         let state = state_without_bytes(&record.body, &record.end);
-        let mut row = RequestIndexRow::of(&record, &self.page_site, state, None);
+        let mut row = RequestIndexRow::of(&record, &self.scan_site, state, None);
         self.analysis.observe(&record, &row);
 
         let captured = std::mem::replace(&mut record.body, CapturedBody::Absent);
-        let queued = match &captured {
-            CapturedBody::Read { bytes, .. } => bytes.len() as u64,
-            _ => 0,
-        };
+        let queued = queued_post_bytes(&record)
+            + match &captured {
+                CapturedBody::Read { bytes, .. } => bytes.len() as u64,
+                _ => 0,
+            };
         let written = match &mut self.store {
             Some(store) => {
                 store
@@ -445,14 +483,20 @@ impl Store {
     ) -> Result<&StoredFrame, String> {
         bytes.truncate(MAX_BODY_BYTES);
         let truncated = (bytes.len() as u64) < total_bytes;
-        let raw_length = bytes.len() as u64;
-        // Hashing and compressing megabytes is not for an async worker.
+        // Searching, hashing and compressing megabytes is not for an async
+        // worker.
         let (sha256, bytes) = tokio::task::spawn_blocking(move || {
+            let bytes = if kind == BodyKind::Json {
+                without_credentials(bytes)
+            } else {
+                bytes
+            };
             let sha256: [u8; 32] = Sha256::digest(&bytes).into();
             (sha256, bytes)
         })
         .await
         .map_err(|error| error.to_string())?;
+        let raw_length = bytes.len() as u64;
         if !self.bodies.contains_key(&sha256) {
             let compressed = tokio::task::spawn_blocking(move || codec::compress(&bytes))
                 .await
@@ -550,9 +594,10 @@ impl Store {
             format: FORMAT_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             scan_id: start.scan_id.clone(),
-            url: start.url.clone(),
+            url: stored_url(&start.url).into_owned(),
             started_at: start.started_at,
             headers_redacted: !start.full_headers,
+            truncated,
             request_count: self.request_count,
             bodies: std::mem::take(&mut self.manifest_bodies),
             records: std::mem::take(&mut self.manifest_records),
@@ -579,6 +624,15 @@ impl Store {
             .map_err(|error| error.0)?;
         Ok(totals)
     }
+}
+
+/// A JSON answer as it is stored: without the tokens a field of it carries.
+fn without_credentials(bytes: Vec<u8>) -> Vec<u8> {
+    let stored = match stored_json(&String::from_utf8_lossy(&bytes)) {
+        std::borrow::Cow::Owned(stored) => Some(stored.into_bytes()),
+        std::borrow::Cow::Borrowed(_) => None,
+    };
+    stored.unwrap_or(bytes)
 }
 
 #[cfg(test)]
@@ -640,7 +694,7 @@ mod tests {
         RecordingStart {
             scan_id: "scan".into(),
             url: "https://pub.example/".into(),
-            page_host: "pub.example".into(),
+            scan_host: "pub.example".into(),
             started_at: 1.0,
             full_headers: false,
         }
@@ -678,6 +732,7 @@ mod tests {
         NetworkRecord {
             seq,
             page: 0,
+            page_host: String::new(),
             context: RequestContext::Page,
             frame_id: None,
             target_id: None,
@@ -756,6 +811,89 @@ mod tests {
             BodyAdmission::Skip(BodySkip::Type)
         );
         recording.abort();
+    }
+
+    #[tokio::test]
+    async fn a_body_far_larger_than_what_is_kept_counts_in_full_while_it_is_on_its_way() {
+        // The browser hands a body over whole before it can be cut to the
+        // first 5 MiB: a page that streams huge answers must not be able to
+        // have them all in memory at once.
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        assert!(matches!(
+            sink.admit_body(&script_offer(0, 30 * MIB)),
+            BodyAdmission::Read { .. }
+        ));
+        assert!(matches!(
+            sink.admit_body(&script_offer(1, 30 * MIB)),
+            BodyAdmission::Read { .. }
+        ));
+        // 60 of the 64 MiB are spoken for.
+        for (seq, bytes) in [(2, 30 * MIB), (3, 5 * MIB), (4, 400 * MIB), (5, u64::MAX)] {
+            assert_eq!(
+                sink.admit_body(&script_offer(seq, bytes)),
+                BodyAdmission::Skip(BodySkip::Backlog),
+                "{bytes}"
+            );
+        }
+        // Against the scan's cap each counts with what is kept of it.
+        let budget = Arc::clone(&recording.sink);
+        assert_eq!(budget.budget().kept, 10 * MIB);
+        for seq in 0..2 {
+            sink.record(record(
+                seq,
+                "https://cdn.example/a.js",
+                CapturedBody::Read {
+                    bytes: vec![b'x'; 16],
+                    total_bytes: 30 * MIB,
+                },
+            ));
+        }
+        recording.finish().await.unwrap();
+        assert_eq!(budget.budget().in_flight, 0);
+    }
+
+    #[tokio::test]
+    async fn request_bodies_that_wait_for_the_writer_are_bounded_too() {
+        // A page that posts megabytes faster than the disk takes them: the
+        // recorder task does not run while this test holds the thread, so
+        // everything handed over waits in the queue.
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        for seq in 0..80 {
+            let mut posted = record(seq, "https://collect.example/batch", CapturedBody::Empty);
+            posted.method = "POST".into();
+            posted.post_data = Some(adscan_model::CapturedPostData {
+                bytes: vec![b'x'; MIB as usize],
+                total_bytes: MIB,
+            });
+            sink.record(posted);
+        }
+        let waiting = Arc::clone(&recording.sink);
+        assert_eq!(waiting.budget().in_flight, 64 * MIB);
+        recording.finish().await.unwrap();
+        assert_eq!(waiting.budget().in_flight, 0);
+
+        // The requests are all recorded; the ones over the budget say that
+        // their body could not be kept.
+        let (rows, total) = fixture
+            .archive
+            .index
+            .rows("scan", &[], 0, 100)
+            .await
+            .unwrap();
+        assert_eq!(total, 80);
+        assert!(
+            rows.iter()
+                .all(|row| row.post_bytes == 0 || row.post_bytes == MIB)
+        );
+        assert_eq!(rows.iter().filter(|row| row.post_bytes == MIB).count(), 64);
     }
 
     #[tokio::test]

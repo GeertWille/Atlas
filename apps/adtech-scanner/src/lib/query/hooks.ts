@@ -152,7 +152,7 @@ export function useNetworkSummary(scanId: string, enabled = true) {
   });
 }
 
-export const NETWORK_CHUNK_ROWS = 2000;
+const NETWORK_CHUNK_ROWS = 2000;
 /** Beyond this many requests the list is cut, and the screen says so. */
 export const NETWORK_ROW_LIMIT = 50_000;
 

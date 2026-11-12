@@ -2,10 +2,9 @@
 //! and reduces their answers to a status and a short reason. No I/O.
 //!
 //! Hosts and paths were read from the adapter sources of Prebid.js 11.49.0
-//! (`modules/<bidder>BidAdapter.js`). The no-bid reason codes are those of
-//! OpenRTB 2.5, list 5.24.
+//! (`modules/<bidder>BidAdapter.js`).
 
-use adscan_model::ObservedBidResponse;
+use adscan_model::{ObservedBidResponse, no_bid_reason_name};
 use serde_json::Value;
 use url::{Host, Url};
 
@@ -162,17 +161,12 @@ fn tag_errors(answer: &Value) -> Option<String> {
 }
 
 fn openrtb_no_bid_reason(code: u64) -> String {
-    let meaning = match code {
-        0 => "unknown error",
-        1 => "technical error",
-        2 => "invalid request",
-        3 => "known web spider",
-        4 => "suspected non-human traffic",
-        5 => "cloud, data center or proxy IP",
-        6 => "unsupported device",
-        7 => "blocked publisher or site",
-        8 => "unmatched user",
-        _ => "exchange-specific code",
+    let name = u32::try_from(code).ok().and_then(no_bid_reason_name);
+    let meaning = match name {
+        Some(name) => name.to_lowercase(),
+        // The list leaves these to each exchange.
+        None if code >= 500 => "exchange-specific code".to_string(),
+        None => "not a listed code".to_string(),
     };
     format!("no-bid reason {code} ({meaning})")
 }
@@ -410,6 +404,23 @@ mod tests {
                 "ix",
                 r#"{"id":"1","nbr":504}"#,
                 Some("no-bid reason 504 (exchange-specific code)"),
+            ),
+            // The codes OpenRTB added after 2.5 are named too, not passed
+            // off as an exchange's own.
+            (
+                "ix",
+                r#"{"id":"1","nbr":15}"#,
+                Some("no-bid reason 15 (insufficient auction time)"),
+            ),
+            (
+                "ix",
+                r#"{"id":"1","nbr":11}"#,
+                Some("no-bid reason 11 (ads.txt authorization unavailable)"),
+            ),
+            (
+                "ix",
+                r#"{"id":"1","nbr":42}"#,
+                Some("no-bid reason 42 (not a listed code)"),
             ),
             (
                 "pubmatic",

@@ -260,6 +260,9 @@ impl SqliteStore {
             .pragma_update(None, "journal_mode", "WAL")
             .and_then(|()| connection.pragma_update(None, "synchronous", "NORMAL"))
             .and_then(|()| connection.pragma_update(None, "foreign_keys", "ON"))
+            // What the user deletes is overwritten in the file, not only
+            // unlinked: a deleted scan's rows must not be readable in it.
+            .and_then(|()| connection.pragma_update(None, "secure_delete", "ON"))
             .and_then(|()| connection.busy_timeout(std::time::Duration::from_secs(5)))
             .and_then(|()| migrate(&mut connection))
             .map_err(storage_error)?;

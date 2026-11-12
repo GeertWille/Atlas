@@ -32,11 +32,14 @@ Rules that came from you and must keep holding:
   the first three kinds through one proxy the user configured (see "Proxies"); the two model APIs never
   use it.
 - Raw scan data is stored locally and only locally (this replaced "no raw payloads stored"): one
-  compressed archive per scan with every request, its headers (cookie and authorization values
-  replaced by their length unless the user turns on "Store full headers"), and the bodies of scripts,
-  documents, JSON, text, CSS and POST requests, bid requests and responses included. Never images,
-  video, audio or fonts. It is deleted with the scan, bounded by a size limit (5 GB by default, oldest
-  scans first), and can be switched off ("Keep network data"). See "Scan archive". ads.txt and
+  compressed archive per scan with every request, its headers, and the bodies of scripts, documents,
+  JSON, text, CSS and POST requests, bid requests and responses included. Never images, video, audio
+  or fonts. Credentials are replaced by their length before anything is written: cookie and
+  authorization values and every header named like a key or token (unless the user turns on "Store
+  full headers"), and, whatever that setting says, the app's own proxy password, credential
+  parameters in URLs, and password and token fields in request bodies and JSON answers. The table
+  under "Scan archive" is the exact list. It is deleted with the scan, bounded by a size limit (5 GB
+  by default, oldest scans first), and can be switched off ("Keep network data"). ads.txt and
   sellers.json are still read in memory and not kept; the audit trail still holds bounded excerpts
   only, never whole scripts.
 - API keys and proxy passwords live in the macOS Keychain, all in one item (service
@@ -154,12 +157,19 @@ without destroying the old ones.
   ranking weight and token estimate on the Jev path is a starting value. They are named constants in
   `crates/engine/src/domain/{triage,guide,chunks,questions}.rs`, each marked as uncalibrated.
 - Everything in "Keychain prompts" that happens on a Mac: the number of prompts, the move of the old
-  items into the vault, what macOS returns when the prompt is denied, and the signing steps.
+  items into the vault, what macOS returns when the prompt is denied, and the signing steps. The
+  status codes `infrastructure/keychain.rs` maps were checked against Apple's published values
+  (`errSecUserCanceled` -128, `errSecAuthFailed` -25293, `errSecDuplicateItem` -25299,
+  `errSecInteractionNotAllowed` -25308) and against what `apple-native-keyring-store` 1.0.2 passes
+  through as a platform failure; which of them a denied prompt really returns was never observed.
+- The scan archive on macOS: nothing of it ran there. On real publisher pages: only the demo site
+  and fixtures were recorded, so the request assembly across sessions was measured on Chromium 1243
+  for Linux only.
 - Proxies of any kind: no scan was run through a real proxy. The browser side (flag mapping, answering
   the proxy's password challenge) and the fetcher side were tested against local stand-ins only, and
   SOCKS5 not at all beyond building the client.
 - Headed browse and manual visits (a visible Chrome window, a person at the keyboard), and what a
-  persistent scan profile does to a real consent platform across scans.
+  persistent browser profile does to a real consent platform across scans.
 - The thresholds of the six visit rules (5 s minimum dwell, 2 slots, the 2 s consent delay) and the
   merge of page findings by rule and bidders are starting values that only the demo site has exercised.
 - The detection-vendor table against real pages.
@@ -183,6 +193,12 @@ without destroying the old ones.
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
 - A cancelled step shows as Failed with summary "Cancelled"; there is no cancelled step status.
 - `delete_all_scans` can race with a scan started at the same moment.
+- A keychain vault that is not valid JSON is never overwritten: every read and every change of a
+  secret fails with "the stored secrets are not in the expected format" until the item `vault` is
+  removed in Keychain Access. There is no button for that.
+- A legacy keychain item whose deletion failed after its secret moved into the vault stays in the
+  keychain; it is never read again while the vault exists, and clearing the key in the app does not
+  remove it.
 - Very small scripts can fit entirely inside one stored excerpt.
 - The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
   Prebid releases.
@@ -212,14 +228,47 @@ crate reports. Bodies of scripts, documents, stylesheets, JSON, XML and text, an
 script source of the capture, inline ones included. Images, video, audio, fonts and other binary
 content: size and type only. Caps: 5 MiB per body and 1 MiB per POST body (cut and flagged), 256 MiB
 of kept bodies per scan (after that metadata only, each request says so), 64 MiB of bodies in flight
-between browser and disk. Every way a body can be missing has its own `BodyState`.
+between browser and disk. Every way a body can be missing has its own `BodyState`. The in-flight
+budget counts a body with its full size, because the browser hands it over whole before it is cut
+to the cap: answers of more than 64 MiB, or more of them at once than fit, are `dropped`. Chrome
+itself keeps at most 32 MiB per response for the scanner (`maxResourceBufferSize`). "First party"
+is the registrable domain of the page view a request belongs to (the page the tab showed after
+redirects), not of the address the scan was started with.
 
-**Redaction.** By default the values of `Cookie`, `Set-Cookie`, `Authorization` and
-`Proxy-Authorization` never reach the disk: cookie names, cookie attributes and the authorization
-scheme stay, each value becomes its length (`_ga=[27 bytes]`). "Store full headers" turns that off
-for new scans; each archive records its mode. Everything else is stored as captured: URLs with their
-query strings, other headers, POST bodies, documents. A manual visit or a persistent profile can
-make that signed-in content, and the Settings copy must say so. No app-level encryption (FileVault).
+**What is stored, replaced, and never stored.** The rules are `domain/archive/redact.rs`; they run
+before a byte reaches the pack, and the request rows in SQLite never hold a query string, a header or
+a body at all. "Credential name" means a name whose words include password, pass, passwd, pwd,
+passphrase, secret, token, jwt, apikey, auth, authorization, signature, csrf, xsrf, otp, cvv or cvc,
+or "key" after api, secret, private, access or subscription (`X-Api-Key`, `access_token`,
+`csrfToken`, `user[password]`), unless the next word says the field only describes one
+(`token_type`, `auth_method`). `:authority`, `Sec-WebSocket-Key`, `gdpr_consent`, `session_id`, `sig`
+and `key` alone are not credential names.
+
+| What | Default | With "Store full headers" |
+|---|---|---|
+| `Cookie`, `Set-Cookie` values | replaced: `_ga=[27 bytes]`; cookie names and attributes stay | stored |
+| `Authorization` value | replaced: `Bearer [212 bytes]`; the scheme stays when it is a known one, otherwise the whole value goes | stored |
+| Values of other headers with a credential name (`X-Api-Key`, `X-Auth-Token`, `X-CSRF-Token`, `X-Amz-Security-Token`, ...) | replaced: `[40 bytes]` | stored |
+| `Proxy-Authorization` (the app's own proxy password) | replaced | **replaced** |
+| URL parameters with a credential name, in the request URL, a fragment, `Referer`, `Location`, `Content-Location`, initiator and stack-frame URLs; a password before the host | replaced: `access_token=[redacted-16-bytes]` | **replaced** |
+| Fields with a credential name in request bodies: form fields, JSON string and number values (also in JSON nested in a string), multipart parts, `name=value` pairs anywhere in the text | replaced: `pwd=[7+bytes]`, `"password":"[7 bytes]"`; everything else in the body stays byte for byte | **replaced** |
+| Fields with a credential name in JSON responses (`access_token`, `refresh_token`, ...) | replaced | **replaced** |
+| All other headers, the rest of every URL (ad-server calls with their targeting, `gdpr_consent`, cookie-sync ids), bid requests and responses, HTML, scripts, CSS, text | stored as captured | stored as captured |
+| Bodies of images, video, audio, fonts, other binary content, WebSocket and EventSource traffic | never stored (size and type only) | never stored |
+| API keys (Anthropic, TypeSafe), proxy passwords, the keychain vault | never stored: the app's own HTTP calls do not go through the scanned browser, and the one place a proxy password can surface in it is the header above | never stored |
+
+Why this line and not another: the archive exists for ad debugging, which needs the URLs, the
+targeting, the consent strings and the bid payloads exactly as sent, so those stay. What a request
+carries to prove who the visitor is has no such use and is replaced wherever it is recognisable by
+name, on every host: a rule tied to "the site's login path" would miss GraphQL endpoints, localised
+paths and third-party identity providers, and promise more than it keeps. A login therefore keeps
+its user name and loses its password. Known gaps, on purpose or by nature: a secret in a URL *path*
+(`/reset/<token>`), in a field with an unusual name, in a response that is not JSON, or printed
+into a page (a signed-in page's HTML is stored as received, personal data included) is stored. A
+manual visit or a kept browser profile can make that signed-in content; the Settings copy must say
+so. `ScanDetail` data outside the archive (page-view URLs, script URLs in the script list) is stored
+as before and does not pass these rules. No app-level encryption (FileVault). The archive directory
+is created with mode 0700 and packs with 0600.
 
 **While the capture runs.** The engine hands the browser crate a `NetworkSink` for every scan
 (`application/archive/recording.rs`). Reading a body and storing it are separate decisions: the sink
@@ -230,20 +279,59 @@ bid exchanges and the list of ad-server calls; decoding ad-server calls belongs 
 network data" off that analysis still runs, and nothing is written. Rows are added to SQLite only
 after the bytes they point at are synced.
 
-**After the capture.** Telemetry ties bids to requests (`domain/network/exchange.rs`): by an id of
-Prebid's found in the request (exact), else by bidder and timing (labelled), with a verdict per bid:
-in time, at the deadline (within 10 ms, `VERDICT_TOLERANCE_MS`, not calibrated), late, in time but
-timed out in Prebid, never answered, failed, not sent. The deadline is the auction's start plus its
-timeout. Slot requests are tied to the nearest ad-server call. Bid exchanges are decoded as OpenRTB
-2.x with Prebid Server's `ext` when a request is opened (`domain/network/openrtb.rs`); other
-protocols (Rubicon fastlane, AppNexus `ut/v3`) are shown raw.
+**After the capture.** Telemetry ties bids to requests (`domain/network/exchange.rs`) and gives each
+bid a verdict: in time, at the deadline (within 10 ms, `VERDICT_TOLERANCE_MS`, not calibrated), late,
+in time but timed out in Prebid, never answered, failed, not sent. These read as statements about a
+bidder, so the matching says nothing where it cannot be sure:
+
+- A request that contains one of Prebid's ids for the bidder request is that request ("exact").
+- Without an id, a request is matched by timing only when it is the one request of that bidder that
+  started within -30/+300 ms of the announcement and no other id-less announcement could claim it.
+  A bidder that sends one request per ad unit without ids, or two auctions in the same moment, stay
+  unmatched. A timing match that Prebid's own record contradicts (Prebid has the answer, the
+  request is late or unanswered) is dropped.
+- Several exact matches without bid ids in them (the auction id in every per-unit request) are not
+  split over the ad units by guessing.
+- "Not sent" is said in two cases only: the bidder's request is there, was read whole and holds
+  the bid ids of the other ad units but not this one; or the capture knows the bidder's endpoint
+  and no bid request that could be the missing one (the bidder's own, a Prebid Server call, an
+  endpoint without a known adapter) started on that page view since the announcement. A request body
+  that was cut off, could not be read, or is not text (compressed by the adapter) is never grounds
+  for it.
+- A bidder running under an alias is not matched to the endpoint of its adapter's main code, so it
+  gets no verdict.
+
+The deadline is the auction's start plus its timeout, which is when Prebid's timer is due; a busy
+main thread fires it later, so an answer that the network says came late can still have been
+accepted, and one that came in time can still have been timed out (that is the "in time but timed
+out" verdict). Network times come from each request's own wall-clock stamp, tracker times from the
+page's `performance.timeOrigin + now()`; they agree to about a millisecond as long as the system
+clock is not stepped during the visit. Slot requests are tied to the nearest ad-server call. Bid
+exchanges are decoded as OpenRTB 2.x with Prebid Server's `ext` when a request is opened
+(`domain/network/openrtb.rs`); other protocols (Rubicon fastlane, AppNexus `ut/v3`) are shown raw.
+No-bid reason names are the published list OpenRTB 2.6 refers to (OpenRTB 3.0 "List: No-Bid Reason
+Codes", checked against the IAB repository), one table in `crates/model` for the bidder checks and
+the decoder; codes from 500 on are left as numbers.
 
 **Limit and lifetime.** After each scan the oldest sealed archives lose their pack until the total
 is under `Settings.archiveLimitBytes`; their request rows stay, so the request list still reads, with
-URLs cut to host and path. Deleting a scan deletes its rows, then its pack. A cancelled scan and a
-failed capture leave no archive. "Clear stored scan data" removes packs and rows of every finished
-scan. At start-up (`Archive::sweep`) archives that were still being written, packs without rows and
-rows without packs are cleaned up. Exports (Markdown, JSON) never contain bodies.
+URLs cut to host and path. Deleting a scan deletes its rows, then its pack, the host names only it
+used, and the formatted sources held in memory. SQLite runs with `secure_delete` and the write-ahead
+log is folded in and emptied after every deletion, so deleted rows are not left readable in the
+database files (the file system may still hold freed blocks). A cancelled scan and a failed capture
+leave no archive. "Clear stored scan data" removes packs and rows of every finished scan. At
+start-up (`Archive::sweep`) an archive that was still marked as being written is sealed if its pack
+ends with the trailer and the manifest of exactly the rows the index has (the app stopped between
+the two), and removed otherwise; packs without rows are removed and rows without packs marked
+evicted. Only the first app on a data directory does that, and marks interrupted scans failed: it
+holds a lock on `<data dir>/instance.lock`, and a second instance leaves running scans and their
+packs alone. Exports (Markdown, JSON) never contain bodies.
+
+**Hostile or damaged files.** Pack names from the index must be plain relative `.pack.zst` names
+under the archive directory. A byte range is checked against the file's length before memory is
+reserved for it, a frame may not be larger than its kind can be, and unpacking stops at the size
+the kind allows (a body at twice the 5 MiB cap, a record frame and a manifest at 64 MiB), so a wrong
+index row or a zstd bomb is an error, not an allocation. Every frame carries a checksum.
 
 **Script viewer.** `get_script_source` reads the source from the archive by the script's sha-256,
 formats it on demand with the same oxc formatter the analysis uses (cached in memory, never on
@@ -251,11 +339,12 @@ disk), finds each finding's code evidence again by its text (`domain/source.rs::
 the citation check, which now also stores `Evidence.scriptId` and `endLine`), and reads the "read by
 the AI" ranges from the stored audit trail. Phase 2 itself still reads the in-memory sources.
 
-Known limits: "first party" is measured against the host the scan was started with, so a start URL
-that redirects to another registrable domain makes the whole site third party in the network view;
-the host and path tables of `domain/network/classify.rs` and every threshold of the exchange
-matching have only seen the demo site and test fixtures; the OpenRTB no-bid reason names 11 to 17
-were written from memory of the 2.6 specification; nothing here ran on macOS.
+Known limits: the host and path tables of `domain/network/classify.rs`, the timing windows of the
+exchange matching and the 10 ms verdict tolerance have only seen the demo site and test fixtures;
+bidder aliases get no network verdict; a script source longer than 5 MiB is not in the archive whole
+and reads as not retained; the columns of initiator positions are UTF-16 units in Chrome and are
+used as characters; nothing here ran on macOS (file modes, the instance lock and `fsync` behave as
+on Linux there in principle, unverified).
 
 ## Keychain prompts
 
@@ -382,7 +471,7 @@ never run. The mapping of a denied prompt assumes macOS answers with `errSecAuth
 inside a write. If a denial shows up as "The keychain operation failed: ..." instead of "Keychain
 access was denied", the status code in that message is the one to add in `platform_failure`.
 
-## Visits: visitor behaviour, page views, the scan profile
+## Visits: visitor behaviour, page views, the browser profile
 
 A scan is a visit of one or more page views. The options of a scan choose its visitor
 (`ScanOptions.visitor`; older callers' `autoScroll` still works and means scroll or none):
@@ -474,7 +563,7 @@ What the backend guarantees about it:
   of loading it, that is a new page view (`userNavigation`, no `loadMs`) of the old document: what the
   document reports from then on is on the new page view, timed from the restore. Console lines and bid
   responses of the first few milliseconds after a restore can still land on the page view before.
-- **Scan profile.** With "keep a scan profile" (`Settings.persistentProfile`, or per scan) Chrome runs
+- **Browser profile.** With "keep a browser profile" (`Settings.persistentProfile`, or per scan) Chrome runs
   in `<data dir>/scan-profile/{desktop,mobile}` and cookies, consent and cache survive between scans.
   One scan at a time uses it; a second waits at its Capture step. `get_scan_profile` /
   `clear_scan_profile` report and remove it (`profileBusy` while a scan uses it). Throwaway profiles

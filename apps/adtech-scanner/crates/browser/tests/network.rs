@@ -738,6 +738,16 @@ async fn nothing_of_another_site_is_recorded_once_the_tab_has_left() {
 
     assert!(body_text(the(&records, "/network-leaves.html")).is_some());
     assert!(body_text(the(&records, "/status/200?before-leaving")).is_some());
+    // Every record names the host of the page view it belongs to, which is
+    // what the engine measures "first party" against.
+    assert!(
+        records.iter().all(|record| record.page_host == "127.0.0.1"),
+        "{:?}",
+        records
+            .iter()
+            .map(|record| &record.page_host)
+            .collect::<Vec<_>>()
+    );
     // The navigation away is a request the page made; what it loaded is not kept.
     let leaving = the(&records, "/network-elsewhere.html");
     assert!(leaving.url.starts_with("http://localhost:"));

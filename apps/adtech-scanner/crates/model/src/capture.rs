@@ -772,6 +772,10 @@ pub struct NetworkRecord {
     pub seq: u32,
     /// Page view the request started on.
     pub page: u32,
+    /// Host of that page view's document, the one the tab ended up showing
+    /// after redirects: what "first party" is measured against. Empty when
+    /// the request belongs to no page view the capture knows.
+    pub page_host: String,
     pub context: RequestContext,
     /// CDP frame id, when the request belongs to a frame.
     pub frame_id: Option<String>,

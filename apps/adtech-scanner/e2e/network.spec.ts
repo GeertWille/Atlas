@@ -537,6 +537,15 @@ test("every way a body can be missing has its own sentence, and a large one load
     .click();
   await details(page).getByRole("tab", { name: "Summary" }).click();
   await expect(details(page)).toContainText("Frames are not recorded");
+
+  // A long visit reaches the scan's cap for stored bodies: what came after is listed without its body.
+  await page.goto(`/#${BROWSE}/network?page=2&q=offline.json`);
+  await open(/offline\.json/);
+  await expect(details(page).getByRole("note")).toContainText("Body not kept (was ");
+  await expect(details(page).getByRole("note")).toContainText(
+    "The scan had reached its cap for stored bodies when this one arrived.",
+  );
+  await expect(details(page).getByTestId("body-editor")).toBeHidden();
 });
 
 test("summary, timing and the redirect chain of a request", async ({ page }) => {

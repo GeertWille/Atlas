@@ -3,7 +3,7 @@
 
 use std::io::{Read, Write};
 
-use crate::domain::archive::pack::ZSTD_LEVEL;
+use super::pack::ZSTD_LEVEL;
 
 /// One complete zstd frame of `bytes`, with the content checksum on so a
 /// damaged range is noticed when it is read.

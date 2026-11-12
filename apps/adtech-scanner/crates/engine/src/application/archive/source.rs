@@ -8,7 +8,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 use adscan_model::{ScriptRecord, ScriptSource, SourceAvailability, SourceFormat, SourceView};
 
 use super::Archive;
-use super::network::read_body;
 use crate::application::AppError;
 use crate::application::ports::{
     ArchiveState, FormatMethod, FormattedSource, LogRepository, ScanRepository, SourceFormatter,
@@ -128,6 +127,12 @@ impl ScriptSources {
         })
     }
 
+    /// Drops the formatted sources held in memory. Called when scan data is
+    /// deleted: text of a deleted scan must not outlive it, not even here.
+    pub fn forget_formatted(&self) {
+        *self.cache() = FormatCache::default();
+    }
+
     /// The script's source as captured, or why there is none.
     async fn raw(
         &self,
@@ -150,14 +155,7 @@ impl ScriptSources {
         let Some(body) = self.archive.index.body_by_sha(scan_id, sha256).await? else {
             return Ok(Err(SourceAvailability::NotRetained));
         };
-        let bytes = read_body(
-            &self.archive,
-            file,
-            body.pack_offset,
-            body.pack_length,
-            body.raw_len,
-        )
-        .await?;
+        let bytes = self.archive.body(file, &body).await?;
         Ok(Ok(String::from_utf8_lossy(&bytes).into_owned()))
     }
 

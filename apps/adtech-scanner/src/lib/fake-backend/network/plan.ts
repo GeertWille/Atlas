@@ -1019,6 +1019,24 @@ function gamUrl(slot: AdSlot, request: SlotRequest, page: PageView, rng: Rng): s
   return `https://securepubads.g.doubleclick.net/gampad/ads?${params}`;
 }
 
+/** A visit of this many page views reaches the scan's cap for stored bodies on its last one. */
+const CAPPED_FROM_PAGES = 3;
+
+/**
+ * A long visit fills the scan's allowance for bodies: what the last page view fetched after it was
+ * reached is listed with its size and without its body. The scripts of that page view were stored
+ * with the first page that loaded them.
+ */
+function capBodies(drafts: RequestDraft[], pages: PageView[]) {
+  const last = pages[pages.length - 1];
+  if (pages.length < CAPPED_FROM_PAGES || !last) return;
+  for (const draft of drafts) {
+    const data = draft.kind === "fetch" || draft.kind === "xhr";
+    if (draft.page !== last.index || !data || draft.response.state !== "kept" || draft.exchange) continue;
+    draft.response = { state: "scanLimit", bytes: draft.response.bytes ?? draft.size, mime: draft.response.mime };
+  }
+}
+
 /**
  * Every request of a simulated visit, derived from the scan's own auctions, slots, scripts and page
  * views so that each of them can name its request. Depends on nothing but those records: planning
@@ -1038,5 +1056,6 @@ export function planNetwork(detail: ScanDetail, padTo = 0): NetworkPlan {
     draft.seq = own + index;
   });
   for (const draft of planner.drafts) draft.id = `r${draft.seq}`;
+  capBodies(planner.drafts.slice(0, own), detail.pages);
   return { drafts: [...planner.drafts].sort(byStart), links: planner.links };
 }
