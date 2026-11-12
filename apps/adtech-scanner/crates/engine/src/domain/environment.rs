@@ -13,7 +13,11 @@ use DetectorKind::{BotProtection, InvalidTrafficMeasurement};
 /// against the DuckDuckGo Tracker Radar entity list (2026-11); vendors whose
 /// hosts could not be confirmed there are left out rather than guessed.
 const DETECTORS: &[(&str, &str, DetectorKind)] = &[
-    ("doubleverify.com", "DoubleVerify", InvalidTrafficMeasurement),
+    (
+        "doubleverify.com",
+        "DoubleVerify",
+        InvalidTrafficMeasurement,
+    ),
     (
         "adsafeprotected.com",
         "Integral Ad Science",

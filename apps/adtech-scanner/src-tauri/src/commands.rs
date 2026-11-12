@@ -3,8 +3,9 @@
 use adscan_engine::application::AppError;
 use adscan_model::{
     ApiKeyStatus, ApiProvider, BrowserInfo, CommandError, DashboardStats, ErrorCode, ExportFormat,
-    LogEntry, LogSearchHit, ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanSummary,
-    Settings, SettingsPatch,
+    LogEntry, LogSearchHit, ProxyProfileDraft, ScanConfiguration, ScanConfigurationDraft,
+    ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo, ScanSummary, Settings,
+    SettingsPatch,
 };
 use std::path::Path;
 
@@ -71,12 +72,126 @@ pub async fn get_demo_url(state: State<'_, AppState>) -> CommandResult<String> {
     Ok(state.demo_site.url.clone())
 }
 
+/// Starts a scan from `options`, or from the saved configuration named by
+/// `configuration_id`: exactly one of the two.
 #[tauri::command]
 pub async fn start_scan(
     state: State<'_, AppState>,
-    options: ScanOptions,
+    options: Option<ScanOptions>,
+    configuration_id: Option<String>,
 ) -> CommandResult<ScanSummary> {
-    state.scans.start(options).await.map_err(command_error)
+    match (options, configuration_id) {
+        (Some(options), None) => state.scans.start(options).await,
+        (None, Some(configuration_id)) => state.scans.start_configuration(&configuration_id).await,
+        (Some(_), Some(_)) | (None, None) => Err(AppError::InvalidInput(
+            "Start a scan with either options or a saved configuration, not both.".into(),
+        )),
+    }
+    .map_err(command_error)
+}
+
+/// Ends a manual visit and lets the scan go on with what was recorded.
+#[tauri::command]
+pub async fn finish_capture(state: State<'_, AppState>, scan_id: String) -> CommandResult<()> {
+    state
+        .scans
+        .finish_capture(&scan_id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_scan_profile(state: State<'_, AppState>) -> CommandResult<ScanProfileInfo> {
+    Ok(state.scans.scan_profile().await)
+}
+
+#[tauri::command]
+pub async fn clear_scan_profile(state: State<'_, AppState>) -> CommandResult<ScanProfileInfo> {
+    state
+        .scans
+        .clear_scan_profile()
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn save_proxy_profile(
+    state: State<'_, AppState>,
+    profile: ProxyProfileDraft,
+) -> CommandResult<Settings> {
+    state
+        .settings
+        .save_proxy_profile(profile)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn delete_proxy_profile(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Settings> {
+    state
+        .settings
+        .delete_proxy_profile(&id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn set_proxy_password(
+    state: State<'_, AppState>,
+    id: String,
+    password: String,
+) -> CommandResult<Settings> {
+    state
+        .settings
+        .set_proxy_password(&id, &password)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn clear_proxy_password(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<Settings> {
+    state
+        .settings
+        .clear_proxy_password(&id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn list_scan_configurations(
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<ScanConfiguration>> {
+    state.configurations.list().await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn save_scan_configuration(
+    state: State<'_, AppState>,
+    configuration: ScanConfigurationDraft,
+) -> CommandResult<ScanConfiguration> {
+    state
+        .configurations
+        .save(configuration)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn delete_scan_configuration(
+    state: State<'_, AppState>,
+    id: String,
+) -> CommandResult<()> {
+    state
+        .configurations
+        .delete(&id)
+        .await
+        .map_err(command_error)
 }
 
 #[tauri::command]

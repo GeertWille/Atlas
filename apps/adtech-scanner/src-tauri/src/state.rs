@@ -5,8 +5,11 @@ use std::sync::Arc;
 
 use adscan_browser::DemoSite;
 use adscan_engine::application::AppError;
+use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
-use adscan_engine::application::ports::{CaptureSource, EventSink, SecretStore};
+use adscan_engine::application::ports::{
+    CaptureSource, Clock, EventSink, IdGenerator, SecretStore,
+};
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, DEFAULT_BASE_URL, RetryPolicy};
@@ -22,16 +25,19 @@ const BASE_URL_ENV: &str = "ADSCAN_ANTHROPIC_BASE_URL";
 const API_KEY_ENV: &str = "ADSCAN_API_KEY";
 const TYPESAFE_BASE_URL_ENV: &str = "ADSCAN_TYPESAFE_BASE_URL";
 const TYPESAFE_API_KEY_ENV: &str = "ADSCAN_TYPESAFE_API_KEY";
+const PROXY_PASSWORD_ENV: &str = "ADSCAN_PROXY_PASSWORD";
 
 pub struct AppConfig {
     /// Directory of the SQLite file.
     pub data_dir: PathBuf,
     pub anthropic_base_url: String,
     pub typesafe_base_url: String,
-    /// When either key override is set, keys live in memory for both
-    /// providers and the keychain is never touched.
+    /// When any secret override is set, every secret lives in memory and the
+    /// keychain is never touched.
     pub api_key_override: Option<String>,
     pub typesafe_api_key_override: Option<String>,
+    /// Stands in for the password of every proxy profile.
+    pub proxy_password_override: Option<String>,
 }
 
 impl AppConfig {
@@ -51,6 +57,7 @@ impl AppConfig {
                 .unwrap_or_else(|| typesafe::DEFAULT_BASE_URL.to_string()),
             api_key_override: non_empty(API_KEY_ENV),
             typesafe_api_key_override: non_empty(TYPESAFE_API_KEY_ENV),
+            proxy_password_override: non_empty(PROXY_PASSWORD_ENV),
         }
     }
 }
@@ -58,6 +65,7 @@ impl AppConfig {
 pub struct AppState {
     pub scans: Arc<ScanService>,
     pub settings: Arc<SettingsService>,
+    pub configurations: Arc<ConfigurationService>,
     /// The built-in demo publisher page; it is served for as long as the app runs.
     pub demo_site: DemoSite,
 }
@@ -77,33 +85,48 @@ impl AppState {
             &config.typesafe_base_url,
             typesafe::default_retry(),
         )?);
-        let secrets: Arc<dyn SecretStore> =
-            match (config.api_key_override, config.typesafe_api_key_override) {
-                (None, None) => Arc::new(KeychainSecretStore),
-                (anthropic, typesafe) => {
-                    Arc::new(MemorySecretStore::with_keys(anthropic, typesafe))
-                }
-            };
+        let secrets: Arc<dyn SecretStore> = match (
+            config.api_key_override,
+            config.typesafe_api_key_override,
+            config.proxy_password_override,
+        ) {
+            (None, None, None) => Arc::new(KeychainSecretStore),
+            (anthropic, typesafe, proxy_password) => Arc::new(
+                MemorySecretStore::with_keys(anthropic, typesafe)
+                    .with_proxy_password(proxy_password),
+            ),
+        };
+        let clock: Arc<dyn Clock> = Arc::new(SystemClock);
+        let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
         let settings = Arc::new(SettingsService::new(
             Arc::new(store.clone()),
             secrets,
             llm.clone(),
             judge.clone(),
+            Arc::new(store.clone()),
+            Arc::clone(&ids),
+        ));
+        let configurations = Arc::new(ConfigurationService::new(
+            Arc::new(store.clone()),
+            Arc::clone(&settings),
+            Arc::clone(&clock),
+            Arc::clone(&ids),
         ));
         let scans = Arc::new(ScanService::new(
             PipelineDeps {
                 scans: Arc::new(store.clone()),
-                logs: Arc::new(store),
+                logs: Arc::new(store.clone()),
                 llm,
                 judge,
                 capture,
                 files: Arc::new(HttpPublicFileFetcher),
                 formatter: Arc::new(OxcFormatter::default()),
                 events,
-                clock: Arc::new(SystemClock),
-                ids: Arc::new(UuidGenerator),
+                clock,
+                ids,
             },
             Arc::clone(&settings),
+            Arc::new(store),
         ));
         scans.recover_interrupted().await?;
         let demo_site = adscan_browser::start_demo_site().await.map_err(|error| {
@@ -112,6 +135,7 @@ impl AppState {
         Ok(Self {
             scans,
             settings,
+            configurations,
             demo_site,
         })
     }

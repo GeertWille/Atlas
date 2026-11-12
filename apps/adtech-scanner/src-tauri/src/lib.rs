@@ -35,6 +35,16 @@ pub fn register_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Build
             commands::search_logs,
             commands::get_dashboard_stats,
             commands::export_scan,
+            commands::finish_capture,
+            commands::get_scan_profile,
+            commands::clear_scan_profile,
+            commands::save_proxy_profile,
+            commands::delete_proxy_profile,
+            commands::set_proxy_password,
+            commands::clear_proxy_password,
+            commands::list_scan_configurations,
+            commands::save_scan_configuration,
+            commands::delete_scan_configuration,
         ])
 }
 
@@ -47,11 +57,11 @@ pub fn run() {
             let events = Arc::new(TauriEventSink {
                 app: app.handle().clone(),
             });
-            let state = tauri::async_runtime::block_on(AppState::build(
-                config,
-                Arc::new(ChromeCaptureSource),
-                events,
-            ))?;
+            // Throwaway profiles that a crashed run left behind. Off the
+            // startup path: it only frees disk space.
+            tauri::async_runtime::spawn_blocking(adscan_browser::sweep_stale_profiles);
+            let capture = Arc::new(ChromeCaptureSource::new(&config.data_dir));
+            let state = tauri::async_runtime::block_on(AppState::build(config, capture, events))?;
             app.manage(state);
             #[cfg(unix)]
             exit_on_termination_signals(app.handle().clone());

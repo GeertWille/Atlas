@@ -44,13 +44,6 @@ impl ConfigurationService {
         Ok(self.configurations.list().await?)
     }
 
-    pub async fn get(&self, id: &str) -> Result<ScanConfiguration, AppError> {
-        self.configurations
-            .get(id)
-            .await?
-            .ok_or_else(|| not_found(id))
-    }
-
     /// Creates the configuration, or with an id replaces the name and options
     /// of the one stored under it.
     pub async fn save(&self, draft: ScanConfigurationDraft) -> Result<ScanConfiguration, AppError> {

@@ -501,7 +501,9 @@ impl Toolbox {
         for number in &args.pages {
             match self.page_index(*number) {
                 Some(index) => pages.push(index as u32),
-                None => corrections.push(format!("page view {number} does not exist and was left out")),
+                None => corrections.push(format!(
+                    "page view {number} does not exist and was left out"
+                )),
             }
         }
         pages.sort_unstable();

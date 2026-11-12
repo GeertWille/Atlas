@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use adscan_model::{
-    ActivityKind, CaptureActivity, CaptureProxy, CaptureRequest, LogKind, LogLevel,
-    VisitorBehavior,
+    ActivityKind, CaptureActivity, CaptureProxy, CaptureRequest, LogKind, LogLevel, VisitorBehavior,
 };
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -83,7 +82,9 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
 
 fn start_line(request: &CaptureRequest, proxy_name: Option<String>) -> String {
     let visit = match request.visitor {
-        VisitorBehavior::None => format!("observing for {} s without input", request.observe_seconds),
+        VisitorBehavior::None => {
+            format!("observing for {} s without input", request.observe_seconds)
+        }
         VisitorBehavior::Scroll => format!("scrolling for {} s", request.observe_seconds),
         VisitorBehavior::Browse => format!(
             "browsing like a visitor, {} s per page and up to {} further page{}",
@@ -106,8 +107,16 @@ fn start_line(request: &CaptureRequest, proxy_name: Option<String>) -> String {
         request.url,
         request.device,
         request.seed,
-        if request.headless { "headless" } else { "browser shown" },
-        if request.persistent_profile { "persistent" } else { "throwaway" },
+        if request.headless {
+            "headless"
+        } else {
+            "browser shown"
+        },
+        if request.persistent_profile {
+            "persistent"
+        } else {
+            "throwaway"
+        },
         request.accept_consent,
     )
 }

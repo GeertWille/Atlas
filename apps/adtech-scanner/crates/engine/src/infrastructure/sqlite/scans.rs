@@ -180,8 +180,8 @@ impl ScanRepository for SqliteStore {
             };
             type Json = Option<String>;
             type Columns = (String, Json, Option<String>, Json, Json, Json);
-            let (options, metrics, overview, diagnostics, pages, environment): Columns =
-                connection.query_row(
+            let (options, metrics, overview, diagnostics, pages, environment): Columns = connection
+                .query_row(
                     "SELECT options, metrics, overview, diagnostics, pages, environment
                      FROM scans WHERE id = ?1",
                     [&scan_id],

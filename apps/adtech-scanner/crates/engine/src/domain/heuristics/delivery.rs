@@ -5,11 +5,11 @@ use adscan_model::{
     DiagnosticStatus, FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
 };
 
+use super::visit::{automation_indicators, unbid_after_navigation};
 use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
     RuleContext, RuleScope, bidders, estimate_impact, heuristic, ms, pct, share,
 };
-use super::visit::{automation_indicators, unbid_after_navigation};
 use crate::domain::diagnostics::capitalized;
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
 use crate::domain::telemetry::{auction_covers, slot_matches_code};

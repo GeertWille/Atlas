@@ -264,7 +264,7 @@ impl Page {
             Some(session_id) if self.tabs.is_recorded(&session_id) => {
                 self.on_recorded_tab_event(&session_id, &event)
             }
-            Some(session_id) if self.tabs.by_session(&session_id).is_some() => {
+            Some(session_id) if self.tabs.contains(&session_id) => {
                 self.on_other_tab_event(&session_id, &event)
             }
             // Iframes and workers: set up when they attached, then left alone.
@@ -314,7 +314,6 @@ impl Page {
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
                 let url = self.note_tab_address(session_id, &event.params);
                 let person_went_there = self.setup.visitor == VisitorBehavior::Manual
-                    && Site::of_address(&url).is_some()
                     && self.recorder.is_on_site(&url);
                 if person_went_there {
                     self.record_tab(session_id);

@@ -362,19 +362,17 @@ impl<'a> RuleContext<'a> {
     }
 
     pub(crate) fn prebid_config(&self) -> Option<PrebidConfig> {
-        self.events
-            .iter()
-            .find_map(|event| match &event.kind {
-                Ev::PrebidConfig {
-                    has_floors,
-                    has_consent_management,
-                    ..
-                } => Some(PrebidConfig {
-                    has_floors: *has_floors,
-                    has_consent_management: *has_consent_management,
-                }),
-                _ => None,
-            })
+        self.events.iter().find_map(|event| match &event.kind {
+            Ev::PrebidConfig {
+                has_floors,
+                has_consent_management,
+                ..
+            } => Some(PrebidConfig {
+                has_floors: *has_floors,
+                has_consent_management: *has_consent_management,
+            }),
+            _ => None,
+        })
     }
 
     /// Finds an auction that was waiting for the first interaction: it starts

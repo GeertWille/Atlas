@@ -383,12 +383,8 @@ mod tests {
         let report = timeline.report(&[auction(500.0)], started, None, &BTreeSet::new());
         assert_eq!(report.auctions_before_consent, 1);
         // Prebid passed a consent string in this auction, so it knew the choice.
-        let with_string = timeline.report(
-            &[auction(500.0)],
-            started,
-            None,
-            &BTreeSet::from(["a-500"]),
-        );
+        let with_string =
+            timeline.report(&[auction(500.0)], started, None, &BTreeSet::from(["a-500"]));
         assert_eq!(with_string.auctions_before_consent, 0);
         assert_eq!(report.resolved_at_ms, None);
         assert_eq!(report.consented_purposes, Vec::<u32>::new());

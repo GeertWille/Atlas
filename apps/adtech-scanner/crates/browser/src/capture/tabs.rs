@@ -61,6 +61,10 @@ impl Tabs {
         self.recorded == session_id && self.recorded().is_some()
     }
 
+    pub(crate) fn contains(&self, session_id: &str) -> bool {
+        self.open.iter().any(|tab| tab.session_id == session_id)
+    }
+
     pub(crate) fn by_session(&mut self, session_id: &str) -> Option<&mut Tab> {
         self.open
             .iter_mut()

@@ -88,9 +88,7 @@ pub(super) fn unbid_after_navigation(ctx: &RuleContext, page: u32) -> Vec<String
         return Vec::new();
     };
     let loaded_a_document = page > 0 && view.reached_by != PageReach::RouteChange;
-    if !loaded_a_document
-        || view.dwell_ms < MIN_DWELL_MS
-        || consent_undecided(events_on(ctx, page))
+    if !loaded_a_document || view.dwell_ms < MIN_DWELL_MS || consent_undecided(events_on(ctx, page))
     {
         return Vec::new();
     }
@@ -260,7 +258,10 @@ impl Rule for SpaSlotsNotReset {
                 .into();
         for route in &stale {
             finding.evidence.push(timeline(
-                format!("Route change to {}", page_label(&ctx.scan.pages, route.page)),
+                format!(
+                    "Route change to {}",
+                    page_label(&ctx.scan.pages, route.page)
+                ),
                 if route.rejected {
                     format!("defineSlot rejected for: {}", route.slots.join(", "))
                 } else {
@@ -578,7 +579,11 @@ impl Rule for ConsentAskedAgain {
                     format!(
                         "{}: prompt {}, first auction {}",
                         page_label(&ctx.scan.pages, page),
-                        if status_on(page, "cmpuishown") { "shown" } else { "not shown" },
+                        if status_on(page, "cmpuishown") {
+                            "shown"
+                        } else {
+                            "not shown"
+                        },
                         view.metrics
                             .time_to_first_auction_ms
                             .map_or("never".to_string(), ms),
@@ -660,9 +665,10 @@ impl Rule for ScanIdentifiableAsAutomated {
              with the browser shown before concluding a bidder is broken.",
             reasons.join(", "),
         );
-        finding.recommendation = "Nothing to fix on the site. Treat missing bids in this scan with caution and \
+        finding.recommendation =
+            "Nothing to fix on the site. Treat missing bids in this scan with caution and \
              confirm them with a visit a person drives."
-            .into();
+                .into();
         finding.impact =
             "Bid counts and fill in this scan may be lower than what real visitors get".into();
         finding

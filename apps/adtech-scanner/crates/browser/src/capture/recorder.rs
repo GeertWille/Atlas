@@ -125,12 +125,20 @@ impl Recorder {
         }
     }
 
-    /// Recording moves to another tab: its main frame is the one to watch.
-    pub(crate) fn switch_tab(&mut self, main_frame_id: String) {
+    /// Recording moves to another tab: its main frame is the one to watch,
+    /// and `url` is what it shows.
+    pub(crate) fn switch_tab(&mut self, main_frame_id: String, url: &str) {
         self.main_frame_id = main_frame_id;
+        self.document_url = url.to_string();
+        self.on_site = self.site.is_some() && self.is_on_site(url);
         // Request ids are only unique within a tab.
         self.requests.clear();
         self.load_fired = false;
+    }
+
+    /// Whether the recorded tab shows a page of the scanned site.
+    pub(crate) fn is_recording(&self) -> bool {
+        self.on_site
     }
 
     pub(crate) fn site(&self) -> Option<&Site> {

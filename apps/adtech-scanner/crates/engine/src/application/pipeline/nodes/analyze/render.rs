@@ -47,8 +47,16 @@ pub fn visit(environment: Option<&ScanEnvironment>, pages: &[PageView]) -> Strin
             "visitor: {:?} (seed {}), browser {}, {} profile, proxy {:?}",
             environment.visitor,
             environment.seed,
-            if environment.headless { "headless" } else { "shown" },
-            if environment.persistent_profile { "persistent" } else { "throwaway" },
+            if environment.headless {
+                "headless"
+            } else {
+                "shown"
+            },
+            if environment.persistent_profile {
+                "persistent"
+            } else {
+                "throwaway"
+            },
             environment.proxy.kind,
         ));
         out.push(format!(
@@ -128,10 +136,7 @@ pub fn auctions_overview(auctions: &[Auction], scope: Scope) -> String {
 
 pub fn auctions_detail(auctions: &[Auction], scope: Scope) -> String {
     let mut out = Vec::new();
-    for auction in auctions
-        .iter()
-        .filter(|auction| scope.covers(auction.page))
-    {
+    for auction in auctions.iter().filter(|auction| scope.covers(auction.page)) {
         out.push(format!(
             "{}auction {} start={} end={} timeout={}",
             scope.label(auction.page),
@@ -325,7 +330,9 @@ pub fn page_events(capture: &Capture, page: u32) -> String {
                 format!("gpt destroySlots [{}]", element_ids.join(", "))
             }
             Ev::SlotDefinitionRejected { element_id } => {
-                format!("gpt defineSlot rejected for {element_id}: the container already has a slot")
+                format!(
+                    "gpt defineSlot rejected for {element_id}: the container already has a slot"
+                )
             }
             Ev::ApsFetchBids { slot_ids, .. } => {
                 format!("apstag.fetchBids [{}]", slot_ids.join(", "))

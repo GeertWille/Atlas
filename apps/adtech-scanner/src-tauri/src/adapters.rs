@@ -1,14 +1,30 @@
 //! Adapters from the outside world to the engine's ports: the real browser
 //! and the Tauri event bus.
 
+use std::path::PathBuf;
+
 use adscan_browser::{BrowserError, CaptureHooks};
-use adscan_engine::application::ports::{CaptureError, CaptureSource, EventSink, ProgressFn};
-use adscan_model::{BrowserInfo, Capture, CaptureRequest, SCAN_EVENT, ScanEvent};
+use adscan_engine::application::ports::{CaptureError, CaptureSession, CaptureSource, EventSink};
+use adscan_model::{BrowserInfo, Capture, CaptureRequest, SCAN_EVENT, ScanEvent, ScanProfileInfo};
 use async_trait::async_trait;
 use tauri::{AppHandle, Emitter, Runtime};
-use tokio_util::sync::CancellationToken;
 
-pub struct ChromeCaptureSource;
+/// Directory under the app's data directory that holds the browser profile
+/// persistent-profile scans share. The location is fixed here and never
+/// taken from the user or the webview.
+const SCAN_PROFILE_DIR: &str = "scan-profile";
+
+pub struct ChromeCaptureSource {
+    scan_profile_dir: PathBuf,
+}
+
+impl ChromeCaptureSource {
+    pub fn new(data_dir: &std::path::Path) -> Self {
+        Self {
+            scan_profile_dir: data_dir.join(SCAN_PROFILE_DIR),
+        }
+    }
+}
 
 #[async_trait]
 impl CaptureSource for ChromeCaptureSource {
@@ -23,22 +39,52 @@ impl CaptureSource for ChromeCaptureSource {
     async fn capture(
         &self,
         request: CaptureRequest,
-        cancel: CancellationToken,
-        on_progress: ProgressFn,
+        session: CaptureSession,
     ) -> Result<Capture, CaptureError> {
         let hooks = CaptureHooks {
-            cancel,
-            on_progress,
+            cancel: session.cancel,
+            finish: session.finish,
+            on_activity: session.on_activity,
+            scan_profile_dir: Some(self.scan_profile_dir.clone()),
+            proxy_password: session.proxy_password,
         };
         adscan_browser::capture(request, hooks)
             .await
-            .map_err(|error| match error {
-                BrowserError::NotFound => CaptureError::BrowserNotFound,
-                BrowserError::Launch(reason) => CaptureError::Launch(reason),
-                BrowserError::Navigation(reason) => CaptureError::Navigation(reason),
-                BrowserError::Cancelled => CaptureError::Cancelled,
-                BrowserError::Other(reason) => CaptureError::Other(reason),
+            .map_err(capture_error)
+    }
+
+    async fn scan_profile_info(&self) -> ScanProfileInfo {
+        let dir = self.scan_profile_dir.clone();
+        // Walks the profile directory to add up its size.
+        tokio::task::spawn_blocking(move || adscan_browser::scan_profile_info(&dir))
+            .await
+            .unwrap_or(ScanProfileInfo {
+                exists: false,
+                size_bytes: 0.0,
+                last_used_at: None,
+                in_use: false,
             })
+    }
+
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError> {
+        let dir = self.scan_profile_dir.clone();
+        tokio::task::spawn_blocking(move || adscan_browser::clear_scan_profile(&dir))
+            .await
+            .map_err(|error| {
+                CaptureError::Other(format!("clearing the scan profile failed: {error}"))
+            })?
+            .map_err(capture_error)
+    }
+}
+
+fn capture_error(error: BrowserError) -> CaptureError {
+    match error {
+        BrowserError::NotFound => CaptureError::BrowserNotFound,
+        BrowserError::Launch(reason) => CaptureError::Launch(reason),
+        BrowserError::Navigation(reason) => CaptureError::Navigation(reason),
+        BrowserError::Cancelled => CaptureError::Cancelled,
+        BrowserError::ProfileBusy => CaptureError::ProfileBusy,
+        BrowserError::Other(reason) => CaptureError::Other(reason),
     }
 }
 

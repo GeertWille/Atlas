@@ -1,8 +1,8 @@
 use adscan_model::{FindingCategory, Severity, TrackerEventKind as Ev};
 
 use super::{
-    HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule, RuleContext, RuleScope,
-    estimate_impact, heuristic, median, ms, pct,
+    HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule, RuleContext,
+    RuleScope, estimate_impact, heuristic, median, ms, pct,
 };
 use crate::domain::finding::{FindingDraft, metric, timeline};
 
@@ -199,11 +199,10 @@ impl Rule for LateFirstAuction {
             "The first Prebid auction began {} after navigation start{}. Until it completes no slot can carry \
              header bidding demand, so early impressions are lost to short sessions and viewability suffers.",
             ms(started_at),
-            ctx.page_load_ms()
-                .map_or(String::new(), |load| format!(
-                    " (page load event at {})",
-                    ms(load)
-                )),
+            ctx.page_load_ms().map_or(String::new(), |load| format!(
+                " (page load event at {})",
+                ms(load)
+            )),
         );
         finding.recommendation = "Load Prebid and the wrapper with high priority (async in the head, not behind a \
              tag manager or consent callback chain that waits for unrelated work) and call `requestBids` as soon as \

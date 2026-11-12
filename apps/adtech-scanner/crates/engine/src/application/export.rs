@@ -88,9 +88,21 @@ fn visit_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(
             out,
             "- **Browser:** {}, {} profile{}",
-            if environment.headless { "headless" } else { "shown" },
-            if environment.persistent_profile { "persistent scan" } else { "throwaway" },
-            if environment.emulated_mobile { ", mobile emulation" } else { "" },
+            if environment.headless {
+                "headless"
+            } else {
+                "shown"
+            },
+            if environment.persistent_profile {
+                "persistent scan"
+            } else {
+                "throwaway"
+            },
+            if environment.emulated_mobile {
+                ", mobile emulation"
+            } else {
+                ""
+            },
         );
         let proxy = match environment.proxy.kind {
             ProxyKind::None => "none (direct connection)".to_string(),
@@ -110,8 +122,16 @@ fn visit_section(out: &mut String, detail: &ScanDetail) {
                 Some(false) => "false",
                 None => "not read",
             },
-            if environment.user_agent_overridden { "overridden" } else { "the browser's own" },
-            if environment.viewport_overridden { "overridden" } else { "the window's own" },
+            if environment.user_agent_overridden {
+                "overridden"
+            } else {
+                "the browser's own"
+            },
+            if environment.viewport_overridden {
+                "overridden"
+            } else {
+                "the window's own"
+            },
         );
         if !environment.detectors.is_empty() {
             let _ = writeln!(
@@ -317,7 +337,9 @@ fn by_page<'a, T>(
     (0u32..)
         .zip(pages)
         .map(|(page, _)| {
-            let on_page: Vec<_> = numbered().filter(|(_, item)| page_of(item) == page).collect();
+            let on_page: Vec<_> = numbered()
+                .filter(|(_, item)| page_of(item) == page)
+                .collect();
             (Some(capitalized(&page_name(pages, page))), on_page)
         })
         .filter(|(_, on_page)| !on_page.is_empty())

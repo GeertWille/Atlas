@@ -406,7 +406,10 @@ mod tests {
             proxy: Some(ProxyChoice::None),
             ..ScanOptions::for_url("pub.example")
         };
-        assert_eq!(resolved(direct, &settings).proxy.capture, CaptureProxy::None);
+        assert_eq!(
+            resolved(direct, &settings).proxy.capture,
+            CaptureProxy::None
+        );
 
         let gone = ScanOptions {
             proxy: Some(choice),
