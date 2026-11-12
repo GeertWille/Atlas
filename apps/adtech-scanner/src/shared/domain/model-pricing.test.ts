@@ -1,7 +1,23 @@
 import { expect, test } from "vitest";
+import prices from "./model-prices.json";
 import { costOf, isJevModel, JEV_MODEL, modelLabel, PRICED_MODELS } from "./model-pricing";
 
 // The expected values are the ones asserted by the backend's own tests in crates/engine/src/domain/pricing.rs.
+
+test("every call the backend priced into the price file costs the same here", () => {
+  // Three calls per priced model and three for a model without a price.
+  expect(prices.checks).toHaveLength((Object.keys(prices.models).length + 1) * 3);
+  for (const { model, input, output, usd, knownModel } of prices.checks) {
+    const cost = costOf(model, { input, output });
+    expect(cost.knownModel, model).toBe(knownModel);
+    expect(cost.usd, `${model} with ${input} prompt tokens`).toBeCloseTo(usd, 12);
+  }
+});
+
+test("the suggested models are the Anthropic models of the backend's table", () => {
+  expect(PRICED_MODELS).toEqual(["claude-haiku-5-5", "claude-sonnet-5-5"]);
+  expect(JEV_MODEL).toBe("jev-1.14.0");
+});
 
 test("sonnet is $2 in and $10 out per million tokens", () => {
   expect(costOf("claude-sonnet-5-5", { input: 1_000_000, output: 100_000 })).toEqual({ usd: 3, knownModel: true });

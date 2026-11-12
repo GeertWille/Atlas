@@ -267,6 +267,47 @@ test("settings are saved by the backend and survive a reload", async () => {
   await browser.waitUntil(() => browser.execute(() => !document.documentElement.classList.contains("dark")));
 });
 
+test("a control that scripts focus shows a focus ring after the keyboard, not after a click", async () => {
+  const { browser } = app;
+  // WebKit rings a scripted focus when nothing had focus before, as on a page that has just loaded.
+  await goTo(browser, "/settings");
+  await reloadApp();
+  const visitor = browser.$('//button[@aria-label="Default visitor"]');
+  await visitor.waitForDisplayed();
+  const focused = () =>
+    browser.execute(() => {
+      const element = document.activeElement as HTMLElement;
+      const style = getComputedStyle(element);
+      return {
+        name: element.getAttribute("aria-label") ?? element.textContent?.trim(),
+        ring: style.outlineStyle !== "none" || / 0px 0px 0px 3px/.test(style.boxShadow),
+      };
+    });
+
+  // A select hands focus back to its trigger when the list closes.
+  await visitor.click();
+  await browser.$(withRole("option", "Observe only")).click();
+  await expect.poll(focused).toEqual({ name: "Default visitor", ring: false });
+  // Opened and answered from the keyboard, the same hand-back is ringed.
+  await browser.keys("Enter");
+  await browser.$(withRole("option", "Scroll")).waitForDisplayed();
+  await browser.keys("s");
+  await browser.keys("Enter");
+  await expect.poll(focused).toEqual({ name: "Default visitor", ring: true });
+  await expect
+    .poll(() => invokeOk<Settings>(browser, "get_settings"), { timeout: 10_000 })
+    .toMatchObject({ defaultVisitor: "scroll" });
+
+  // A dialog focuses its first button as it opens.
+  await browser.$(button("Delete all scans")).click();
+  await browser.$('//*[@role="alertdialog"]').waitForDisplayed();
+  await expect.poll(focused).toEqual({ name: "Cancel", ring: false });
+  await browser.keys("Tab");
+  await expect.poll(focused).toEqual({ name: "Delete all", ring: true });
+  await browser.keys("Escape");
+  await browser.$('//*[@role="alertdialog"]').waitForExist({ reverse: true, timeout: 15_000 });
+});
+
 test.skipIf(!canDriveNativeDialogs)("export writes the report where the native save dialog says", async () => {
   const { browser } = app;
   const exportDir = mkdtempSync(join(tmpdir(), "adscan-export-"));

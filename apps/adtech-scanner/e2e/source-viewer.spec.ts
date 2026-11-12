@@ -70,6 +70,25 @@ test("F8 and Shift+F8 step through the findings of a file and wrap round", async
   // Each stop opens that finding's summary; the selection is in the URL.
   await expect(code(page).getByRole("note", { name: /800 ms failsafe/ })).toBeVisible();
   await expect(page).toHaveURL(/line=318&to=332$/);
+
+  // F8 is a media key on Mac laptops: Alt with the vertical arrows does the same.
+  await page.keyboard.press("Alt+ArrowUp");
+  await expect(caret(page)).toHaveText("Ln 231, Col 1");
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(caret(page)).toHaveText("Ln 318, Col 1");
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(caret(page)).toHaveText("Ln 208, Col 1");
+  await expect(page).toHaveURL(/line=208&to=215$/);
+  await expect(code(page).getByRole("button", { name: "Next (F8)" }).first()).toHaveAttribute(
+    "title",
+    "Next finding: F8 or Alt+↓. Previous: Shift+F8 or Alt+↑",
+  );
+  // With the caret in the find field the arrows are the field's.
+  await page.keyboard.press(`${MOD}+f`);
+  await expect(page.getByRole("textbox", { name: "Find" })).toBeFocused();
+  await page.keyboard.press("Alt+ArrowDown");
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(caret(page)).toHaveText("Ln 208, Col 1");
 });
 
 test("find shows how many matches there are and which one the caret is on", async ({ page }) => {

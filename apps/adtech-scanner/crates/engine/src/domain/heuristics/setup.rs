@@ -8,9 +8,16 @@ use super::{Rule, RuleContext, heuristic, ms};
 use crate::domain::diagnostics::codes;
 use crate::domain::finding::{FindingDraft, log_line, metric};
 
-/// Prebid majors at or below this are several yearly releases behind (v7 dates
-/// from 2022) and miss adapter and privacy-module updates.
-const OUTDATED_PREBID_MAJOR: u32 = 7;
+/// The newest Prebid.js major. Checked on 2026-11-12 with
+/// `npm view prebid.js version`: 11.49.0. Raise it when Prebid releases a
+/// new major.
+const CURRENT_PREBID_MAJOR: u32 = 11;
+/// A build more than this many majors behind the current one is reported.
+/// Prebid has released about one major a year (8.0 in June 2023, 9.0 in June
+/// 2024, 10.0 in July 2025, 11.0 in March 2026, by the npm release dates), so
+/// the newest build that is reported today, 7.x, was replaced in June 2023
+/// and has missed three rounds of adapter and privacy-module changes.
+const MAX_PREBID_MAJORS_BEHIND: u32 = 3;
 
 pub struct NoPriceFloors;
 
@@ -203,11 +210,11 @@ impl Rule for OutdatedPrebid {
                     version: Some(version),
                     ..
                 } => major_version(version)
-                    .filter(|major| *major <= OUTDATED_PREBID_MAJOR)
-                    .map(|major| (version.clone(), major)),
+                    .map(|major| (version.clone(), major, majors_behind(major)))
+                    .filter(|(_, _, behind)| *behind > MAX_PREBID_MAJORS_BEHIND),
                 _ => None,
             });
-        let Some((version, major)) = outdated else {
+        let Some((version, major, behind)) = outdated else {
             return Vec::new();
         };
         let mut finding = heuristic(
@@ -217,9 +224,11 @@ impl Rule for OutdatedPrebid {
             format!("Prebid.js {version} is several major versions old"),
         );
         finding.description = format!(
-            "The page runs Prebid.js {version} (major {major}). Bidder adapters, consent and identity modules are \
-             only maintained for recent majors; partners gradually stop supporting old adapter versions, which \
-             shows up as lower bid rates and CPMs rather than as errors."
+            "The page runs Prebid.js {version} (major {major}), {behind} major versions behind Prebid.js \
+             {CURRENT_PREBID_MAJOR}, the current major when this version of the scanner was released. Bidder \
+             adapters, consent and identity modules are only maintained for recent majors; partners gradually \
+             stop supporting old adapter versions, which shows up as lower bid rates and CPMs rather than as \
+             errors."
         );
         finding.recommendation =
             "Plan an upgrade to a current Prebid.js major, following the release notes for \
@@ -227,8 +236,18 @@ impl Rule for OutdatedPrebid {
                 .into();
         finding.impact = "Outdated adapters bid less often and lack newer demand features".into();
         finding.evidence.push(metric("Prebid version", version));
+        finding.evidence.push(metric(
+            "Current Prebid major",
+            CURRENT_PREBID_MAJOR.to_string(),
+        ));
         vec![finding]
     }
+}
+
+/// How many majors `major` is behind the current one; 0 for a build newer
+/// than this table knows.
+fn majors_behind(major: u32) -> u32 {
+    CURRENT_PREBID_MAJOR.saturating_sub(major)
 }
 
 fn major_version(version: &str) -> Option<u32> {

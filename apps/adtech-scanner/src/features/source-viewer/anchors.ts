@@ -1,6 +1,7 @@
 import type { Finding, Severity, SourceAnchor, SourceRegion } from "@/bindings";
 import { SEVERITIES } from "@/shared/domain/vocabulary";
 import { revealInvisibles } from "@/shared/lib/invisible";
+import { IS_MAC } from "@/shared/lib/platform";
 
 /** A finding's code evidence placed in the file: where it is, and what to say about it. */
 export type FindingMark = {
@@ -105,8 +106,28 @@ export function gutterMarks(marks: FindingMark[]): GutterMark[] {
     });
 }
 
+/** How the two ways to step through a file's findings are written on a button. */
+export const FINDING_STEP_KEYS = IS_MAC
+  ? "Next finding: F8 or ⌥↓. Previous: ⇧F8 or ⌥↑"
+  : "Next finding: F8 or Alt+↓. Previous: Shift+F8 or Alt+↑";
+
 /**
- * The finding to go to from `line` with F8 (forward) or Shift+F8: the next one that starts after the
+ * Which way a key press steps through the findings, or `null` when it does not: F8 and Shift+F8, and
+ * Alt+ArrowDown and Alt+ArrowUp, because F8 is a media key on Mac laptops. Neither the editor's keymap nor
+ * the app's other shortcuts use Alt with the vertical arrows.
+ */
+export function findingStep(
+  event: Pick<KeyboardEvent, "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey">,
+): 1 | -1 | null {
+  if (event.key === "F8") return event.shiftKey ? -1 : 1;
+  if (!event.altKey || event.shiftKey || event.ctrlKey || event.metaKey) return null;
+  if (event.key === "ArrowDown") return 1;
+  if (event.key === "ArrowUp") return -1;
+  return null;
+}
+
+/**
+ * The finding to go to from `line` when stepping forward or back: the next one that starts after the
  * caret, wrapping round at the ends. `null` when the file has none.
  */
 export function adjacentMark(marks: FindingMark[], line: number, direction: 1 | -1): FindingMark | null {

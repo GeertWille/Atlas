@@ -28,7 +28,9 @@ struct Rates {
     cache_write: f64,
 }
 
-const HAIKU_LONG_PROMPT_TOKENS: u64 = 100_000;
+/// Prompts longer than this are billed at a model's long-prompt rates, where
+/// it has them.
+const LONG_PROMPT_TOKENS: u64 = 100_000;
 
 const HAIKU_5_5: Rates = Rates {
     input: 0.10,
@@ -69,16 +71,54 @@ const CONSERVATIVE: Rates = Rates {
     cache_write: 18.75,
 };
 
+struct Price {
+    model: &'static str,
+    rates: Rates,
+    long_prompt: Option<Rates>,
+}
+
+/// Every model with a price. The frontend estimates a scan's cost from
+/// `src/shared/domain/model-prices.json`, which a test below writes from
+/// this table.
+const PRICE_TABLE: &[Price] = &[
+    Price {
+        model: "claude-haiku-5-5",
+        rates: HAIKU_5_5,
+        long_prompt: Some(HAIKU_5_5_LONG_PROMPT),
+    },
+    Price {
+        model: "claude-sonnet-5-5",
+        rates: SONNET_5_5,
+        long_prompt: None,
+    },
+    Price {
+        model: JEV_SYSTEM_ONE,
+        rates: JEV,
+        long_prompt: None,
+    },
+    Price {
+        model: "jev-1.13.0",
+        rates: JEV,
+        long_prompt: None,
+    },
+    Price {
+        model: "jev-latest",
+        rates: JEV,
+        long_prompt: None,
+    },
+    Price {
+        model: "jev-preview",
+        rates: JEV,
+        long_prompt: None,
+    },
+];
+
 fn rates_for(model: &str, usage: TokenUsage) -> Option<Rates> {
-    match model {
-        "claude-haiku-5-5" if usage.prompt_tokens() > HAIKU_LONG_PROMPT_TOKENS => {
-            Some(HAIKU_5_5_LONG_PROMPT)
-        }
-        "claude-haiku-5-5" => Some(HAIKU_5_5),
-        "claude-sonnet-5-5" => Some(SONNET_5_5),
-        JEV_SYSTEM_ONE | "jev-1.13.0" | "jev-latest" | "jev-preview" => Some(JEV),
-        _ => None,
-    }
+    let price = PRICE_TABLE.iter().find(|price| price.model == model)?;
+    Some(match price.long_prompt {
+        Some(long_prompt) if usage.prompt_tokens() > LONG_PROMPT_TOKENS => long_prompt,
+        _ => price.rates,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -222,6 +262,62 @@ mod tests {
             assert!((cost.usd - 0.042).abs() < 1e-12, "{model}: {}", cost.usd);
         }
         assert!(!cost_of("jev-9.0.0", usage(1, 0, 0, 0)).known_model);
+    }
+
+    /// The frontend's copy of the prices is this file and nothing else. When
+    /// the table changed, the file is written again and the test fails once,
+    /// so that the change is seen and committed.
+    #[test]
+    fn the_frontend_price_file_is_this_table() {
+        use serde_json::{Map, Value, json};
+
+        const FILE: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../src/shared/domain/model-prices.json"
+        );
+        let shown = |rates: Rates| json!({ "input": rates.input, "output": rates.output });
+        let models: Map<String, Value> = PRICE_TABLE
+            .iter()
+            .map(|price| {
+                let mut entry = shown(price.rates);
+                entry["longPrompt"] = price.long_prompt.map_or(Value::Null, shown);
+                (price.model.to_string(), entry)
+            })
+            .collect();
+        // What this table charges for a few calls, for the frontend's own
+        // arithmetic to be checked against: at and just above the long-prompt
+        // limit, and for a model without a price.
+        let checks: Vec<Value> = PRICE_TABLE
+            .iter()
+            .map(|price| price.model)
+            .chain(["a-model-without-a-price"])
+            .flat_map(|model| {
+                [LONG_PROMPT_TOKENS, LONG_PROMPT_TOKENS + 1, 1_000_000].map(move |input| {
+                    let cost = cost_of(model, usage(input, 7_000, 0, 0));
+                    json!({
+                        "model": model,
+                        "input": input,
+                        "output": 7_000,
+                        "usd": cost.usd,
+                        "knownModel": cost.known_model,
+                    })
+                })
+            })
+            .collect();
+        let document = json!({
+            "jevModel": JEV_SYSTEM_ONE,
+            "longPromptTokens": LONG_PROMPT_TOKENS,
+            "models": models,
+            "unknownModel": shown(CONSERVATIVE),
+            "checks": checks,
+        });
+        let expected = format!("{}\n", serde_json::to_string_pretty(&document).unwrap());
+
+        let on_disk = std::fs::read_to_string(FILE).unwrap_or_default();
+        if on_disk != expected {
+            std::fs::write(FILE, &expected).unwrap();
+            panic!("{FILE} did not match the price table and was written again; commit it");
+        }
     }
 
     #[test]

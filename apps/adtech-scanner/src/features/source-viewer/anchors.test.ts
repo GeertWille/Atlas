@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SourceAnchor, SourceRegion } from "@/bindings";
 import { makeFinding } from "@/test/fixtures";
-import { adjacentMark, findingMarks, gutterMarks, lineTints, readRanges, readShare } from "./anchors";
+import { adjacentMark, findingMarks, findingStep, gutterMarks, lineTints, readRanges, readShare } from "./anchors";
 
 const anchor = (overrides: Partial<SourceAnchor>): SourceAnchor => ({
   findingId: "f1",
@@ -146,5 +146,28 @@ describe("what the AI read", () => {
     expect(readShare([region(1, 50), region(26, 75)], 100)).toBe(0.75);
     expect(readShare([], 100)).toBe(0);
     expect(readShare([region(1, 5)], 0)).toBe(0);
+  });
+});
+
+describe("findingStep", () => {
+  const press = (key: string, held: Partial<Record<"shiftKey" | "altKey" | "ctrlKey" | "metaKey", boolean>> = {}) =>
+    findingStep({ key, shiftKey: false, altKey: false, ctrlKey: false, metaKey: false, ...held });
+
+  it("steps with F8 and Shift+F8, and with Alt and the vertical arrows", () => {
+    expect(press("F8")).toBe(1);
+    expect(press("F8", { shiftKey: true })).toBe(-1);
+    expect(press("ArrowDown", { altKey: true })).toBe(1);
+    expect(press("ArrowUp", { altKey: true })).toBe(-1);
+  });
+
+  it("leaves the arrows alone without Alt, and with a second modifier that means something else", () => {
+    expect(press("ArrowDown")).toBeNull();
+    expect(press("ArrowUp")).toBeNull();
+    // Selecting by paragraph, and the editor's own document start and end.
+    expect(press("ArrowDown", { altKey: true, shiftKey: true })).toBeNull();
+    expect(press("ArrowDown", { altKey: true, metaKey: true })).toBeNull();
+    expect(press("ArrowUp", { altKey: true, ctrlKey: true })).toBeNull();
+    expect(press("ArrowLeft", { altKey: true })).toBeNull();
+    expect(press("j", { altKey: true })).toBeNull();
   });
 });

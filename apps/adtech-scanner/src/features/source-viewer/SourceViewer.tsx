@@ -40,7 +40,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/shared/ui/popover";
 import { Skeleton } from "@/shared/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { Hint } from "@/shared/ui/tooltip";
-import { adjacentMark, findingMarks, readRanges } from "./anchors";
+import { adjacentMark, findingMarks, findingStep, readRanges } from "./anchors";
 import { CodePane } from "./CodePane";
 import { FileList, FileRail } from "./FileList";
 import { type FindingActions, findingExtension, lensKey } from "./finding-extension";
@@ -370,9 +370,11 @@ export function SourceViewer({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "F8") {
+      const step = findingStep(event);
+      // In a text field (find, go to line) Alt with an arrow belongs to the field.
+      if (step !== null && (event.key === "F8" || !(event.target instanceof HTMLInputElement))) {
         event.preventDefault();
-        goToAdjacentFinding(event.shiftKey ? -1 : 1);
+        goToAdjacentFinding(step);
         return;
       }
       if (!hasModifier(event) || event.shiftKey) return;

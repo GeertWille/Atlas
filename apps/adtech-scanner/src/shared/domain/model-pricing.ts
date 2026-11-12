@@ -1,30 +1,23 @@
-/**
- * Mirror of the backend price table (`crates/engine/src/domain/pricing.rs`),
- * in USD per million tokens. The backend charges scans against their budget;
- * this copy only feeds the estimate shown before a scan, and has to be changed
- * together with the backend table.
- */
-type Rates = { input: number; output: number };
+import prices from "./model-prices.json";
 
-const HAIKU_LONG_PROMPT_TOKENS = 100_000;
-const HAIKU_5_5: Rates = { input: 0.1, output: 0.5 };
-const HAIKU_5_5_LONG_PROMPT: Rates = { input: 0.5, output: 2.5 };
-const SONNET_5_5: Rates = { input: 2, output: 10 };
-const JEV: Rates = { input: 0.042, output: 0 };
-/** What the backend charges for a model it has no price for, so it can never under-count. */
-const CONSERVATIVE: Rates = { input: 15, output: 75 };
+/** USD per million tokens. */
+type Rates = { input: number; output: number };
+type Price = Rates & { longPrompt: Rates | null };
+
+/**
+ * The backend's price table. `model-prices.json` is written from `crates/engine/src/domain/pricing.rs` by that
+ * file's own test, never by hand. The backend charges scans against their budget; here the prices only feed the
+ * estimate shown before a scan.
+ */
+const PRICE_TABLE: Record<string, Price> = prices.models;
 
 /** The pinned TypeSafe Jev System One version the backend sends script triage to. */
-export const JEV_MODEL = "jev-1.14.0";
-/** Every id a Jev response may report (the previous version and the aliases); all priced alike. */
-const JEV_PRICED_MODELS = [JEV_MODEL, "jev-1.13.0", "jev-latest", "jev-preview"];
+export const JEV_MODEL = prices.jevModel;
 
 function ratesFor(model: string, promptTokens: number): Rates | null {
-  if (model === "claude-haiku-5-5") {
-    return promptTokens > HAIKU_LONG_PROMPT_TOKENS ? HAIKU_5_5_LONG_PROMPT : HAIKU_5_5;
-  }
-  if (JEV_PRICED_MODELS.includes(model)) return JEV;
-  return model === "claude-sonnet-5-5" ? SONNET_5_5 : null;
+  const price = PRICE_TABLE[model];
+  if (!price) return null;
+  return price.longPrompt && promptTokens > prices.longPromptTokens ? price.longPrompt : price;
 }
 
 export type CallCost = {
@@ -36,19 +29,20 @@ export type CallCost = {
 /** Price of one model call with uncached prompt tokens, as the backend would charge it. */
 export function costOf(model: string, tokens: { input: number; output: number }): CallCost {
   const rates = ratesFor(model, tokens.input);
-  const applied = rates ?? CONSERVATIVE;
+  // What the backend charges for a model it has no price for, so it can never under-count.
+  const applied = rates ?? prices.unknownModel;
   return {
     usd: (tokens.input * applied.input + tokens.output * applied.output) / 1_000_000,
     knownModel: rates !== null,
   };
 }
 
-/** The Anthropic models the backend has prices for; suggested wherever a Claude model id is typed. */
-export const PRICED_MODELS = ["claude-haiku-5-5", "claude-sonnet-5-5"] as const;
-
 export function isJevModel(model: string): boolean {
   return model.startsWith("jev-");
 }
+
+/** The Anthropic models the backend has prices for; suggested wherever a Claude model id is typed. */
+export const PRICED_MODELS = Object.keys(PRICE_TABLE).filter((model) => !isJevModel(model));
 
 /** `claude-haiku-5-5` → `Claude Haiku 5.5`, any Jev version → `Jev System One`; unknown ids are shown as they are. */
 export function modelLabel(model: string): string {

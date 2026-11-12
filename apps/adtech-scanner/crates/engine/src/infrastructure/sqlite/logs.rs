@@ -120,12 +120,18 @@ fn read_entry(row: &Row<'_>) -> rusqlite::Result<LogEntry> {
 }
 
 /// Turns free text into an FTS5 expression that cannot be a syntax error:
-/// every alphanumeric run becomes a quoted term (implicit AND) and the last
-/// one a prefix match, so results appear while the user is still typing.
-/// `None` when the text has nothing searchable.
+/// every run of letters, digits and underscores becomes a quoted term
+/// (implicit AND) and the last one a prefix match, so results appear while
+/// the user is still typing. `None` when the text has nothing searchable.
+///
+/// The index splits words at underscores, so a quoted `report_finding` is
+/// the phrase "report" directly followed by "finding": an identifier matches
+/// where it is written out and is marked as one match, and each of its words
+/// is still found alone.
 fn fts_query(input: &str) -> Option<String> {
     let terms: Vec<&str> = input
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .map(|term| term.trim_matches('_'))
         .filter(|term| !term.is_empty())
         .collect();
     let (last, complete) = terms.split_last()?;
@@ -186,6 +192,11 @@ mod tests {
         );
         assert_eq!(fts_query("  isMobile( ").as_deref(), Some("\"isMobile\"*"));
         assert_eq!(fts_query("a-b").as_deref(), Some("\"a\" \"b\"*"));
+        assert_eq!(
+            fts_query("tool report_finding").as_deref(),
+            Some("\"tool\" \"report_finding\"*")
+        );
+        assert_eq!(fts_query("__ _ga_ _").as_deref(), Some("\"ga\"*"));
         assert_eq!(
             fts_query("\"OR\" NEAR(").as_deref(),
             Some("\"OR\" \"NEAR\"*")

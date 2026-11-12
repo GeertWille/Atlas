@@ -9,7 +9,7 @@ use adscan_model::{
     ScanConfiguration, ScanConfigurationRef, ScanDetail, ScanEvent, ScanList, ScanListQuery,
     ScanOptions, ScanProfileInfo, ScanStatus, ScanSummary, SeverityCounts, StepStatus,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::AppError;
@@ -42,6 +42,12 @@ pub struct ScanService {
     settings: Arc<SettingsService>,
     configurations: Arc<dyn ScanConfigurationRepository>,
     active: ActiveScans,
+    /// Held shared while a scan is being created and registered as active,
+    /// and exclusively while every scan is deleted: a scan that starts in
+    /// that moment is either stopped and deleted with the rest, or created
+    /// after the deletion. Without it the deletion could remove the row of a
+    /// scan it never stopped.
+    registration: RwLock<()>,
     capacity: Arc<Semaphore>,
     /// One browser at a time in the persistent browser profile: Chrome refuses
     /// to share a profile directory, so a second scan waits its turn.
@@ -59,6 +65,7 @@ impl ScanService {
             settings,
             configurations,
             active: ActiveScans::default(),
+            registration: RwLock::new(()),
             capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_SCANS)),
             scan_profile: Arc::new(Semaphore::new(1)),
         }
@@ -130,6 +137,7 @@ impl ScanService {
         } else {
             None
         };
+        let registering = self.registration.read().await;
         let permit = Arc::clone(&self.capacity).try_acquire_owned().ok();
         let summary = ScanSummary {
             id,
@@ -176,6 +184,7 @@ impl ScanService {
                 finished: finished.clone(),
             },
         );
+        drop(registering);
         self.deps.events.emit(ScanEvent::ScanUpdated {
             summary: summary.clone(),
         });
@@ -267,6 +276,7 @@ impl ScanService {
     }
 
     pub async fn delete_all(&self) -> Result<(), AppError> {
+        let _no_scan_starts = self.registration.write().await;
         self.stop_and_wait(None).await;
         self.deps.scans.delete_all().await?;
         self.deps.archive.remove_unreferenced_packs().await?;

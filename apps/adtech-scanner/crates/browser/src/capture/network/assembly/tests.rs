@@ -661,17 +661,17 @@ fn a_preflight_announced_after_it_was_sent_starts_when_the_network_sent_it() {
         "Network.requestWillBeSent",
         &preflight("P1", 1_020.004),
     );
-    let mut answer = response("P1", 204, 1_020.0045);
+    let mut answer = response("P1", 204, 1_020.004_5);
     answer["type"] = json!("Preflight");
     answer["hasExtraInfo"] = json!(false);
-    answer["response"]["timing"]["requestTime"] = json!(1_020.0005);
+    answer["response"]["timing"]["requestTime"] = json!(1_020.000_5);
     answer["response"]["timing"]["receiveHeadersStart"] = json!(1.4);
     answer["response"]["timing"]["receiveHeadersEnd"] = json!(1.5);
     assembler.observe(&tab(now), "Network.responseReceived", &answer);
     let outputs = assembler.observe(
         &tab(now),
         "Network.loadingFinished",
-        &finished("P1", 1_020.0021, 0),
+        &finished("P1", 1_020.002_1, 0),
     );
     let seq = finished_of(&outputs).unwrap().seq;
     let record = placed(

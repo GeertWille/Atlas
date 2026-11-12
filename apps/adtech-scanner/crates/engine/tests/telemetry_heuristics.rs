@@ -929,6 +929,38 @@ fn very_old_prebid_version() {
         finding.title,
         "Prebid.js v6.29.0 is several major versions old"
     );
+    // The finding states what it was measured against.
+    assert!(
+        finding.description.contains(
+            "runs Prebid.js v6.29.0 (major 6), 5 major versions behind Prebid.js 11, the current major"
+        ),
+        "{}",
+        finding.description
+    );
+    assert_eq!(
+        finding
+            .evidence
+            .iter()
+            .map(|evidence| (evidence.label.as_str(), evidence.body.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("Prebid version", "v6.29.0"),
+            ("Current Prebid major", "11")
+        ]
+    );
+
+    // More than three majors behind is reported; three behind, the current
+    // major and a major newer than the scanner knows are not.
+    let with_version = |version: &'static str| {
+        healthy_with(move |events| {
+            events.retain(|event| !matches!(event.kind, Ev::PrebidDetected { .. }));
+            events.push(prebid_detected(120.0, "pbjs", version));
+        })
+    };
+    assert_eq!(fired(&with_version("7.54.4")), ["outdated-prebid"]);
+    for recent in ["8.0.0", "11.49.0", "12.0.0"] {
+        assert_eq!(fired(&with_version(recent)), Vec::<&str>::new(), "{recent}");
+    }
 }
 
 #[test]

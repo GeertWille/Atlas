@@ -1779,6 +1779,69 @@ async fn deleting_a_running_scan_stops_it_first() {
     );
 }
 
+/// A scan started while every scan is being deleted either was stopped and
+/// deleted with the rest, or starts after the deletion and is whole. It is
+/// never left running without its row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleting_every_scan_never_leaves_a_scan_that_starts_meanwhile_half_deleted() {
+    let harness = harness(
+        CaptureBehavior::BlockUntilCancelled,
+        "http://127.0.0.1:1",
+        None,
+    );
+    let (mut deleted_with_the_rest, mut started_afterwards) = (0, 0);
+    for round in 0..40 {
+        // A running scan gives the deletion something to wait for.
+        harness.scans.start(scan_options(false)).await.unwrap();
+        // Either of the two gets a head start of up to 2 ms.
+        let head_start = || tokio::time::sleep(Duration::from_micros(250 * (round / 2 % 10)));
+        let delete_first = round % 2 == 0;
+        let (deleted, started) = tokio::join!(
+            async {
+                if !delete_first {
+                    head_start().await;
+                }
+                harness.scans.delete_all().await
+            },
+            async {
+                if delete_first {
+                    head_start().await;
+                }
+                harness.scans.start(scan_options(false)).await.unwrap()
+            }
+        );
+        deleted.unwrap();
+
+        match harness.scans.get(&started.id).await {
+            Ok(detail) => {
+                started_afterwards += 1;
+                assert_eq!(detail.summary.url, "https://pub.example/");
+                assert_eq!(harness.scans.list(all_scans()).await.unwrap().total, 1);
+                harness.scans.cancel(&started.id).await.unwrap();
+                let ended = wait_for_end(&harness, &started.id).await;
+                assert_eq!(ended.summary.status, ScanStatus::Cancelled);
+            }
+            Err(error) => {
+                deleted_with_the_rest += 1;
+                assert_eq!(error, AppError::NotFound(format!("Scan {}", started.id)));
+                assert_eq!(harness.scans.list(all_scans()).await.unwrap().total, 0);
+                // Not running any more either: a cancel finds nothing to stop.
+                assert_eq!(
+                    harness.scans.cancel(&started.id).await,
+                    Err(AppError::NotFound(format!("Scan {}", started.id))),
+                    "round {round}: the scan is still running without its row"
+                );
+            }
+        }
+        harness.scans.delete_all().await.unwrap();
+        assert!(
+            harness.archive.packs.list().await.unwrap().is_empty(),
+            "round {round}"
+        );
+    }
+    assert_eq!(deleted_with_the_rest + started_afterwards, 40);
+}
+
 #[tokio::test]
 async fn interrupted_scans_from_a_previous_run_are_failed_on_startup() {
     use adscan_engine::application::ports::ScanRepository;

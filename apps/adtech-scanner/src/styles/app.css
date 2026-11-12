@@ -5,6 +5,8 @@
 @import "./editor.css";
 
 @custom-variant dark (&:is(.dark *));
+/* The person last used the pointer, not the keyboard: see shared/lib/input-modality.ts. */
+@custom-variant pointer-input (:root[data-input="pointer"] &);
 
 @theme inline {
   --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;

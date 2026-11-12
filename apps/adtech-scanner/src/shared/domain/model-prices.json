@@ -1,0 +1,192 @@
+{
+  "checks": [
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "claude-haiku-5-5",
+      "output": 7000,
+      "usd": 0.0135
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "claude-haiku-5-5",
+      "output": 7000,
+      "usd": 0.0675005
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "claude-haiku-5-5",
+      "output": 7000,
+      "usd": 0.5175
+    },
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "claude-sonnet-5-5",
+      "output": 7000,
+      "usd": 0.27
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "claude-sonnet-5-5",
+      "output": 7000,
+      "usd": 0.270002
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "claude-sonnet-5-5",
+      "output": 7000,
+      "usd": 2.07
+    },
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "jev-1.14.0",
+      "output": 7000,
+      "usd": 0.0042
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "jev-1.14.0",
+      "output": 7000,
+      "usd": 0.004200042
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "jev-1.14.0",
+      "output": 7000,
+      "usd": 0.042
+    },
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "jev-1.13.0",
+      "output": 7000,
+      "usd": 0.0042
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "jev-1.13.0",
+      "output": 7000,
+      "usd": 0.004200042
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "jev-1.13.0",
+      "output": 7000,
+      "usd": 0.042
+    },
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "jev-latest",
+      "output": 7000,
+      "usd": 0.0042
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "jev-latest",
+      "output": 7000,
+      "usd": 0.004200042
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "jev-latest",
+      "output": 7000,
+      "usd": 0.042
+    },
+    {
+      "input": 100000,
+      "knownModel": true,
+      "model": "jev-preview",
+      "output": 7000,
+      "usd": 0.0042
+    },
+    {
+      "input": 100001,
+      "knownModel": true,
+      "model": "jev-preview",
+      "output": 7000,
+      "usd": 0.004200042
+    },
+    {
+      "input": 1000000,
+      "knownModel": true,
+      "model": "jev-preview",
+      "output": 7000,
+      "usd": 0.042
+    },
+    {
+      "input": 100000,
+      "knownModel": false,
+      "model": "a-model-without-a-price",
+      "output": 7000,
+      "usd": 2.025
+    },
+    {
+      "input": 100001,
+      "knownModel": false,
+      "model": "a-model-without-a-price",
+      "output": 7000,
+      "usd": 2.025015
+    },
+    {
+      "input": 1000000,
+      "knownModel": false,
+      "model": "a-model-without-a-price",
+      "output": 7000,
+      "usd": 15.525
+    }
+  ],
+  "jevModel": "jev-1.14.0",
+  "longPromptTokens": 100000,
+  "models": {
+    "claude-haiku-5-5": {
+      "input": 0.1,
+      "longPrompt": {
+        "input": 0.5,
+        "output": 2.5
+      },
+      "output": 0.5
+    },
+    "claude-sonnet-5-5": {
+      "input": 2.0,
+      "longPrompt": null,
+      "output": 10.0
+    },
+    "jev-1.13.0": {
+      "input": 0.042,
+      "longPrompt": null,
+      "output": 0.0
+    },
+    "jev-1.14.0": {
+      "input": 0.042,
+      "longPrompt": null,
+      "output": 0.0
+    },
+    "jev-latest": {
+      "input": 0.042,
+      "longPrompt": null,
+      "output": 0.0
+    },
+    "jev-preview": {
+      "input": 0.042,
+      "longPrompt": null,
+      "output": 0.0
+    }
+  },
+  "unknownModel": {
+    "input": 15.0,
+    "output": 75.0
+  }
+}

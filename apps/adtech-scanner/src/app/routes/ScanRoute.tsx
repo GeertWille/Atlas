@@ -1,5 +1,6 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronRightIcon, FileQuestionIcon } from "lucide-react";
+import { ChevronRightIcon, FileQuestionIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import type { ReactNode } from "react";
 import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
 import { ActivityFeed, LiveScanView } from "@/features/live-scan";
@@ -24,6 +25,7 @@ import { useScan, useScanLogs, useSettings } from "@/lib/query/hooks";
 import { Page, PageContent } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
 import { isActive } from "@/shared/domain/vocabulary";
+import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -47,7 +49,27 @@ function TabCount({ value }: { value: number }) {
   );
 }
 
-function Report({ detail }: { detail: ScanDetail }) {
+/** A scan that is on screen stays there when fetching it again fails. */
+function RefreshFailedNotice({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <Alert tone="warning">
+      <TriangleAlertIcon />
+      <AlertTitle>Could not refresh this scan</AlertTitle>
+      <AlertDescription className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <span className="flex flex-col">
+          <span>{toApiError(error).message}</span>
+          <span>What you see was loaded earlier.</span>
+        </span>
+        <Button variant="outline" size="sm" onClick={onRetry}>
+          <RotateCwIcon />
+          Try again
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
+}
+
+function Report({ detail, notice }: { detail: ScanDetail; notice: ReactNode }) {
   const navigate = useNavigate({ from: scanRoute.fullPath });
   const search = scanRoute.useSearch();
   const logs = useScanLogs(detail.summary.id);
@@ -86,6 +108,7 @@ function Report({ detail }: { detail: ScanDetail }) {
   return (
     <ReportLinksProvider value={links}>
       <PageContent className="animate-enter">
+        {notice}
         <ReportHeader detail={detail} />
         {completed ? <ReportOverview detail={detail} /> : <ScanOutcomeNotice summary={detail.summary} />}
         {completed ? (
@@ -154,10 +177,10 @@ function Report({ detail }: { detail: ScanDetail }) {
   );
 }
 
-function LiveScan({ detail }: { detail: ScanDetail }) {
+function LiveScan({ detail, notice }: { detail: ScanDetail; notice: ReactNode }) {
   const settings = useSettings();
   const logs = useScanLogs(detail.summary.id);
-  return (
+  const view = (
     <LiveScanView
       detail={detail}
       logs={logs.data}
@@ -171,6 +194,13 @@ function LiveScan({ detail }: { detail: ScanDetail }) {
         )
       }
     />
+  );
+  if (!notice) return view;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="mx-auto w-full max-w-[1180px] px-6 pt-5">{notice}</div>
+      <div className="min-h-0 flex-1">{view}</div>
+    </div>
   );
 }
 
@@ -192,25 +222,27 @@ function ReportSkeleton() {
 }
 
 function ScanBody({ scan }: { scan: ReturnType<typeof useScan> }) {
-  if (scan.isPending) return <ReportSkeleton />;
-  if (scan.isError) {
-    if (toApiError(scan.error).code === "notFound") {
-      return (
-        <Empty
-          icon={FileQuestionIcon}
-          title="This scan no longer exists"
-          description="It may have been deleted from history."
-        >
-          <Button asChild variant="outline" size="sm">
-            <Link to="/history">Go to history</Link>
-          </Button>
-        </Empty>
-      );
-    }
-    return <QueryError title="Could not load this scan" error={scan.error} onRetry={() => void scan.refetch()} />;
+  if (scan.isError && toApiError(scan.error).code === "notFound") {
+    return (
+      <Empty
+        icon={FileQuestionIcon}
+        title="This scan no longer exists"
+        description="It may have been deleted from history."
+      >
+        <Button asChild variant="outline" size="sm">
+          <Link to="/history">Go to history</Link>
+        </Button>
+      </Empty>
+    );
   }
-  if (isActive(scan.data.summary.status)) return <LiveScan detail={scan.data} />;
-  return <Report key={scan.data.summary.id} detail={scan.data} />;
+  const retry = () => void scan.refetch();
+  if (scan.data === undefined) {
+    if (scan.isError) return <QueryError title="Could not load this scan" error={scan.error} onRetry={retry} />;
+    return <ReportSkeleton />;
+  }
+  const notice = scan.isError ? <RefreshFailedNotice error={scan.error} onRetry={retry} /> : null;
+  if (isActive(scan.data.summary.status)) return <LiveScan detail={scan.data} notice={notice} />;
+  return <Report key={scan.data.summary.id} detail={scan.data} notice={notice} />;
 }
 
 export function ScanRoute() {

@@ -587,6 +587,61 @@ async fn search_finds_message_and_data_with_escaped_marked_snippets() {
 }
 
 #[tokio::test]
+async fn an_identifier_with_underscores_is_searched_and_marked_as_one_term() {
+    let store = store_with_scan("scan-1").await;
+    for (id, message, data) in [
+        (
+            "l1",
+            "Tool call report_finding accepted",
+            Some(json!({ "tool": "report_finding", "input": { "start_line": 10 } })),
+        ),
+        ("l2", "The report lists every finding of the scan", None),
+        ("l3", "Wrote the finding, then the report", None),
+        (
+            "l4",
+            "Tool call read_script",
+            Some(json!({ "tool": "read_script" })),
+        ),
+    ] {
+        store
+            .append(&log(id, "scan-1", message, data))
+            .await
+            .unwrap();
+    }
+    let ids = |hits: Vec<adscan_model::LogSearchHit>| {
+        let mut ids: Vec<String> = hits.into_iter().map(|hit| hit.entry.id).collect();
+        ids.sort();
+        ids
+    };
+
+    // Only where the identifier is written out, not where both words occur.
+    let hits = store.search("report_finding", 10).await.unwrap();
+    assert!(
+        hits.iter()
+            .all(|hit| hit.snippet.contains("<mark>report_finding</mark>")),
+        "{hits:?}"
+    );
+    assert_eq!(ids(hits), ["l1"]);
+    // While it is still being typed.
+    assert_eq!(ids(store.search("report_fi", 10).await.unwrap()), ["l1"]);
+    assert_eq!(ids(store.search("start_line", 10).await.unwrap()), ["l1"]);
+    assert_eq!(
+        ids(store.search("tool read_script", 10).await.unwrap()),
+        ["l4"]
+    );
+    // The words of an identifier are still found alone, as before.
+    assert_eq!(
+        ids(store.search("finding", 10).await.unwrap()),
+        ["l1", "l2", "l3"]
+    );
+    assert_eq!(
+        ids(store.search("report finding", 10).await.unwrap()),
+        ["l1", "l2", "l3"]
+    );
+    assert_eq!(ids(store.search("script", 10).await.unwrap()), ["l4"]);
+}
+
+#[tokio::test]
 async fn hostile_search_input_never_fails() {
     let store = store_with_scan("scan-1").await;
     store

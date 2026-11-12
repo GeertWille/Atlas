@@ -3,7 +3,15 @@ import { Decoration, EditorView, GutterMarker, gutter, WidgetType } from "@codem
 import type { Severity } from "@/bindings";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
 import { jumpToLine, svgIcon } from "@/shared/editor";
-import { adjacentMark, type FindingMark, type GutterMark, gutterMarks, type LineRange, lineTints } from "./anchors";
+import {
+  adjacentMark,
+  FINDING_STEP_KEYS,
+  type FindingMark,
+  type GutterMark,
+  gutterMarks,
+  type LineRange,
+  lineTints,
+} from "./anchors";
 
 /** One shape per severity, so a marker reads without its colour. The same shapes as the severity badges. */
 const SEVERITY_SHAPE: Record<Severity, readonly string[]> = {
@@ -99,12 +107,12 @@ class LensWidget extends WidgetType {
       button("Open finding", () => actions.openFinding(mark.findingId)),
     );
     if (next) {
-      lens.append(
-        button("Next (F8)", () => {
-          jumpToLine(view, next.startLine, next.endLine);
-          actions.showLens(lensKey(next));
-        }),
-      );
+      const toNext = button("Next (F8)", () => {
+        jumpToLine(view, next.startLine, next.endLine);
+        actions.showLens(lensKey(next));
+      });
+      toNext.title = FINDING_STEP_KEYS;
+      lens.append(toNext);
     }
     return lens;
   }
