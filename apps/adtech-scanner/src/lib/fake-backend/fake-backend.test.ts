@@ -153,6 +153,8 @@ test("cancelling stops the scan and no further events arrive", async () => {
   const detail = await api.getScan(summary.id);
   expect(detail.summary.status).toBe("cancelled");
   expect(detail.steps.some((step) => step.status === "running")).toBe(false);
+  expect(detail.steps.filter((step) => step.status === "cancelled")).toMatchObject([{ summary: "Cancelled" }]);
+  expect(detail.steps.some((step) => step.status === "failed")).toBe(false);
   expect((await api.listScans({ status: "running" })).total).toBe(0);
 });
 

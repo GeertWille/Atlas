@@ -19,6 +19,10 @@ test("cancel a running scan, after confirming", async ({ page }) => {
   await expect(page.getByRole("region", { name: "Running", exact: true })).toHaveCount(0);
   await expect(reportTab(page, "Audit trail")).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Log entries" }).getByText("Scan cancelled by user")).toBeVisible();
+  // The step that was interrupted is marked as cancelled, not as failed.
+  const steps = page.getByRole("navigation", { name: "Pipeline steps" });
+  await expect(steps.getByRole("img", { name: "Cancelled" })).toHaveCount(1);
+  await expect(steps.getByRole("img", { name: "Failed" })).toHaveCount(0);
   await expect(reportTab(page, "Auctions")).toHaveCount(0);
 });
 

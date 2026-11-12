@@ -283,3 +283,18 @@ test("a fallback warning stands out and is found by the level filter", async () 
   expect(entries()).toBe(1);
   expect(screen.getByText(/Jev failed/)).toBeInTheDocument();
 });
+
+test("a step interrupted by a cancel reads as cancelled, apart from a failed one", async () => {
+  const interrupted = [
+    makeStep({ id: "step-capture", node: "capture", status: "cancelled", summary: "Cancelled" }),
+    makeStep({ id: "step-analyze", node: "analyzeLogic", status: "failed", summary: "The model API refused the key" }),
+  ];
+  await renderWithApp(<AuditTrail steps={interrupted} logs={[]} onOpenFinding={() => {}} />);
+
+  const nav = screen.getByRole("navigation", { name: "Pipeline steps" });
+  const cancelled = within(nav).getByRole("img", { name: "Cancelled" });
+  const failed = within(nav).getByRole("img", { name: "Failed" });
+  expect(failed).toHaveClass("text-red-fg");
+  expect(cancelled).not.toHaveClass("text-red-fg");
+  expect(cancelled.innerHTML).not.toBe(failed.innerHTML);
+});

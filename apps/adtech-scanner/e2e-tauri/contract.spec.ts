@@ -228,6 +228,10 @@ test("a scan can be cancelled and exported, and export only writes where a save 
 
   const json = JSON.parse(await invokeOk<string>(browser, "export_scan", { scanId: started.id, format: "json" }));
   expect(json.summary).toMatchObject({ id: started.id, status: "cancelled" });
+  // Cancelling is not a failure of the step it interrupted.
+  const stepStatuses: string[] = json.steps.map((step: { status: string }) => step.status);
+  expect(stepStatuses).not.toContain("failed");
+  expect(stepStatuses).not.toContain("running");
   const markdown = await invokeOk<string>(browser, "export_scan", { scanId: started.id, format: "markdown" });
   expect(markdown).toContain("127.0.0.1");
 
