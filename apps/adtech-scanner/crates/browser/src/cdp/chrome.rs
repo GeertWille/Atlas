@@ -103,10 +103,10 @@ impl Chrome {
         drop(profile);
         // Killed processes need a moment to go and release their files.
         for _ in 0..20 {
-            let processes_left =
-                kill_helpers(&path) | group.is_some_and(|group| group_is_running(group));
+            let helpers_left = kill_helpers(&path);
+            let group_left = group.is_some_and(group_is_running);
             let profile_gone = !path.exists() || std::fs::remove_dir_all(&path).is_ok();
-            if profile_gone && !processes_left {
+            if profile_gone && !helpers_left && !group_left {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
