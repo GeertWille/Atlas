@@ -22,7 +22,13 @@ function ConnectedSettings() {
 beforeEach(async () => {
   await api.clearApiKey();
   await api.clearApiKey("typesafe");
-  await api.updateSettings({ budgetUsd: 0.5, theme: "system", filterModel: "claude-haiku-5-5", chromePath: null });
+  await api.updateSettings({
+    budgetUsd: 0.5,
+    theme: "system",
+    filterModel: "claude-haiku-5-5",
+    chromePath: null,
+    checkSellersJson: false,
+  });
 });
 
 const keyInput = () => screen.findByLabelText("Anthropic API key");
@@ -128,10 +134,28 @@ test("the Jev switch decides who triages scripts, and removing the TypeSafe key 
   expect(await api.getSettings()).toMatchObject({ hasTypesafeKey: false, jevEnabled: false });
 });
 
+test("the sellers.json check is off until switched on, and says whom it contacts", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ConnectedSettings />);
+  const sellersJson = () => screen.findByRole("switch", { name: "Check sellers.json at ad exchanges" });
+
+  expect(await sellersJson()).not.toBeChecked();
+  expect(await sellersJson()).toHaveAccessibleDescription(
+    /Requests sellers\.json from the ad exchanges the scanned site's ads\.txt names .* Off: only the scanned site is contacted\.$/,
+  );
+
+  await user.click(await sellersJson());
+  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(true));
+  expect(await sellersJson()).toBeChecked();
+
+  await user.click(await sellersJson());
+  await waitFor(async () => expect((await api.getSettings()).checkSellersJson).toBe(false));
+});
+
 test("About names every host the app talks to", async () => {
   await renderWithApp(<ConnectedSettings />);
   expect(await screen.findByText(/Outbound traffic goes only to/)).toHaveTextContent(
-    "the page being scanned, api.anthropic.com and, when Jev is enabled, api.typesafe.ai.",
+    "the page being scanned and its site's ads.txt, api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names.",
   );
 });
 

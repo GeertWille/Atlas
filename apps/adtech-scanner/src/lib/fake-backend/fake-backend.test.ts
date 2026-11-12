@@ -45,7 +45,7 @@ describe("a full AI scan of the reference-bug site", () => {
     expect(status).toBe("completed");
 
     const detail = await api.getScan(scanId);
-    expect(detail.steps.map((step) => step.status)).toEqual(Array(8).fill("completed"));
+    expect(detail.steps.map((step) => step.status)).toEqual(Array(9).fill("completed"));
     expect(detail.summary).toMatchObject({ aiUsed: true, healthScore: 32, prebidVersion: "8.52.0", error: null });
     expect(detail.summary.costUsd).toBeGreaterThan(0.2);
     expect(detail.summary.costUsd).toBeLessThanOrEqual(0.5);

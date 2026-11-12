@@ -86,7 +86,9 @@ export function BidderChecks({ diagnostics }: { diagnostics: BidderDiagnostics }
       />
       <dl className="flex flex-col gap-1.5 border-b px-4 py-3">
         <Fact term="ads.txt">
-          {diagnostics.adsTxt.url ? `${diagnostics.adsTxt.url}: ${describeAdsTxt(diagnostics.adsTxt)}` : describeAdsTxt(diagnostics.adsTxt)}
+          {diagnostics.adsTxt.url
+            ? `${diagnostics.adsTxt.url}: ${describeAdsTxt(diagnostics.adsTxt)}`
+            : describeAdsTxt(diagnostics.adsTxt)}
         </Fact>
         <Fact term="sellers.json">{describeSellersJson(diagnostics)}</Fact>
         <Fact term="Consent">{describeConsent(diagnostics.consent)}</Fact>
