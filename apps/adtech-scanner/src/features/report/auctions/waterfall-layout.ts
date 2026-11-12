@@ -1,4 +1,5 @@
 import type { Auction, Bid, BidStatus } from "@/bindings";
+import { BID_STATUSES } from "@/shared/domain/vocabulary";
 import { createTimeScale, type TimeScale } from "@/shared/lib/time-scale";
 
 export type WaterfallBar = {
@@ -28,14 +29,12 @@ export type WaterfallLayout = {
   groups: WaterfallGroup[];
 };
 
-/** Winners first, then live bids by price, then the ways a bidder can fail. */
-const STATUS_ORDER: readonly BidStatus[] = ["rendered", "won", "bid", "noBid", "timeout", "error", "pending"];
 const MIN_BAR_PERCENT = 0.75;
 const AXIS_HEADROOM = 1.06;
 
 function compareBids(a: Bid, b: Bid): number {
   return (
-    STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
+    BID_STATUSES.indexOf(a.status) - BID_STATUSES.indexOf(b.status) ||
     (b.cpm ?? 0) - (a.cpm ?? 0) ||
     (a.responseTimeMs ?? Number.POSITIVE_INFINITY) - (b.responseTimeMs ?? Number.POSITIVE_INFINITY)
   );

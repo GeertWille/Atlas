@@ -1,13 +1,14 @@
 import { FilterXIcon, ScrollTextIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { LogEntry, PipelineStep } from "@/bindings";
 import { CopyButton } from "@/shared/components/copy-button";
 import { FilterMenu } from "@/shared/components/filter-menu";
-import { LOG_KIND_ICON, LogEntryRow } from "@/shared/components/log-entry-row";
+import { LOG_KIND_ICON } from "@/shared/components/log-entry-row";
+import { LogList } from "@/shared/components/log-list";
 import { Panel } from "@/shared/components/panel";
 import { SearchInput } from "@/shared/components/search-input";
 import { LOG_KIND_LABEL, LOG_KINDS, LOG_LEVEL_LABEL, LOG_LEVELS } from "@/shared/domain/vocabulary";
-import { pluralize } from "@/shared/lib/format";
+import { countOf } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -41,22 +42,10 @@ export function AuditTrail({
   onOpenFinding: (findingId: string) => void;
 }) {
   const [filters, setFilters] = useState<LogFilters>(NO_LOG_FILTERS);
-  const focusedLoaded = Boolean(focusedLogId && logs?.some((entry) => entry.id === focusedLogId));
-
-  useEffect(() => {
-    if (!focusedLoaded || !focusedLogId) return;
-    setFilters(NO_LOG_FILTERS);
-    // Wait a frame so the row exists even if filters were hiding it.
-    const frame = requestAnimationFrame(() => {
-      document.getElementById(`log-${focusedLogId}`)?.scrollIntoView({ block: "center" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [focusedLogId, focusedLoaded]);
 
   const all = logs ?? [];
   const visible = filterLogs(all, filters);
   const kindsPresent = LOG_KINDS.filter((kind) => all.some((entry) => entry.kind === kind));
-  const filtered = visible.length !== all.length;
 
   return (
     <div className="grid grid-cols-[264px_minmax(0,1fr)] items-start gap-4">
@@ -104,9 +93,7 @@ export function AuditTrail({
             }))}
           />
           <span className="ml-auto text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
-            {filtered
-              ? `${visible.length} of ${pluralize(all.length, "entry", "entries")}`
-              : pluralize(all.length, "entry", "entries")}
+            {countOf(visible.length, all.length, "entry", "entries")}
           </span>
           <CopyButton text={() => logsAsText(visible)} label="Copy visible entries" />
         </div>
@@ -129,16 +116,13 @@ export function AuditTrail({
               </Empty>
             )
           ) : (
-            visible.map((entry) => (
-              <LogEntryRow
-                key={entry.id}
-                entry={entry}
-                showNode={filters.stepId === null}
-                highlighted={entry.id === focusedLogId}
-                defaultExpanded={entry.id === focusedLogId}
-                onOpenFinding={onOpenFinding}
-              />
-            ))
+            <LogList
+              entries={visible}
+              showNode={filters.stepId === null}
+              focusedId={focusedLogId}
+              onOpenFinding={onOpenFinding}
+              className="max-h-[min(728px,70vh)]"
+            />
           )}
         </Panel>
       </div>

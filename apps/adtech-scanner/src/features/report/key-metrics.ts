@@ -1,4 +1,4 @@
-import type { ScanMetrics } from "@/bindings";
+import type { AdSlot, ScanMetrics } from "@/bindings";
 import {
   EMPTY,
   formatBytes,
@@ -12,13 +12,20 @@ import {
 export type KeyMetric = { label: string; value: string; hint: string };
 
 /** The eight headline numbers of a report, each with one line of context. */
-export function buildKeyMetrics(metrics: ScanMetrics): KeyMetric[] {
-  const requestedSlots = metrics.slotCount > 0;
+export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[]): KeyMetric[] {
+  const requestedSlots = slots.filter((slot) => slot.requestedAtMs !== null).length;
+  const neverRequested = slots.length - requestedSlots;
+  // The backend reports the mean and the sum of the winning CPMs; their ratio is the number of winners.
+  const winningBids = metrics.avgWinningCpm ? Math.round(metrics.totalWinningCpm / metrics.avgWinningCpm) : 0;
   return [
     {
       label: "Requested slots filled",
-      value: requestedSlots ? formatPercent(metrics.fillRate) : EMPTY,
-      hint: `${metrics.emptySlotCount} of ${pluralize(metrics.slotCount, "slot")} empty`,
+      value: requestedSlots > 0 ? formatPercent(metrics.fillRate) : EMPTY,
+      // Slots that never made an ad request are outside this rate, and usually the bigger leak: name them first.
+      hint:
+        neverRequested > 0
+          ? `${neverRequested} of ${slots.length} never requested`
+          : `${metrics.emptySlotCount} of ${pluralize(slots.length, "slot")} empty`,
     },
     {
       label: "Bid timeout rate",
@@ -28,7 +35,7 @@ export function buildKeyMetrics(metrics: ScanMetrics): KeyMetric[] {
     {
       label: "Avg winning CPM",
       value: formatCpm(metrics.avgWinningCpm),
-      hint: `${formatCpm(metrics.totalWinningCpm)} across all winners`,
+      hint: `across ${pluralize(winningBids, "winning bid")}`,
     },
     {
       label: "Auctions",

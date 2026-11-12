@@ -11,7 +11,7 @@ import {
 import type { ScanSummary } from "@/bindings";
 import { HealthRing } from "@/shared/components/health-ring";
 import { DeviceIcon } from "@/shared/components/status";
-import { DEVICE_LABEL, SCAN_STATUS_META } from "@/shared/domain/vocabulary";
+import { DEVICE_LABEL, isActive, SCAN_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import { Kbd } from "@/shared/ui/kbd";
@@ -40,12 +40,12 @@ function NavLink({
 }
 
 function ScanLink({ scan }: { scan: ScanSummary }) {
-  const running = scan.status === "running" || scan.status === "queued";
+  const active = isActive(scan.status);
   return (
     <li>
       <Link to="/scans/$scanId" params={{ scanId: scan.id }} className={cn(NAV_ITEM, "font-normal")}>
-        {running ? (
-          <span className="flex size-4 items-center justify-center" role="img" aria-label="Running">
+        {active ? (
+          <span className="flex size-4 items-center justify-center" aria-hidden="true">
             <span className="size-2 animate-pulse-dot rounded-full bg-violet" />
           </span>
         ) : (
@@ -76,12 +76,12 @@ function ScanGroup({ title, scans }: { title: string; scans: ScanSummary[] }) {
 }
 
 export function Sidebar({
-  runningScans,
+  activeScans,
   recentScans,
   onNewScan,
   onOpenPalette,
 }: {
-  runningScans: ScanSummary[];
+  activeScans: ScanSummary[];
   recentScans: ScanSummary[];
   onNewScan: () => void;
   onOpenPalette: () => void;
@@ -90,10 +90,10 @@ export function Sidebar({
     <aside className="flex w-60 shrink-0 flex-col border-r bg-sidebar">
       {/* Title strip: draggable, with room for the macOS traffic lights on the left. */}
       <div
-        data-tauri-drag-region
+        data-tauri-drag-region="deep"
         className={cn("drag-region flex h-12 shrink-0 items-center px-3", IS_MAC && "justify-end pl-[76px]")}
       >
-        <span data-tauri-drag-region className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
+        <span className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">
               <path
@@ -135,7 +135,7 @@ export function Sidebar({
       </nav>
 
       <div className="mt-5 flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-3 pb-3">
-        <ScanGroup title="Running" scans={runningScans} />
+        <ScanGroup title="Running" scans={activeScans} />
         <ScanGroup title="Recent" scans={recentScans} />
       </div>
 

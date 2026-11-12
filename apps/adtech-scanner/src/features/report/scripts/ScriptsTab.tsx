@@ -5,7 +5,7 @@ import { FilterMenu } from "@/shared/components/filter-menu";
 import { Panel } from "@/shared/components/panel";
 import { SearchInput } from "@/shared/components/search-input";
 import { SCRIPT_CATEGORIES, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
-import { pluralize } from "@/shared/lib/format";
+import { countOf } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { ScriptDetails } from "./ScriptDetails";
@@ -74,9 +74,7 @@ export function ScriptsTab({
           }))}
         />
         <span className="ml-auto text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
-          {visible.length === scripts.length
-            ? pluralize(scripts.length, "script")
-            : `${visible.length} of ${pluralize(scripts.length, "script")}`}
+          {countOf(visible.length, scripts.length, "script")}
         </span>
       </div>
       <Panel className="flex flex-col overflow-hidden">

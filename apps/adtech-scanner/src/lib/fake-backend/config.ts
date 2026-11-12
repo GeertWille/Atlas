@@ -26,7 +26,7 @@ export function readFakeConfig(): FakeConfig {
   if (isProfile(profileParam)) localStorage.setItem(PROFILE_KEY, profileParam);
   if (speedParam && Number(speedParam) > 0) localStorage.setItem(SPEED_KEY, speedParam);
   if (profileParam !== null || speedParam !== null) {
-    // Hash routing owns the URL from here on; a lingering query string would shadow route search params.
+    // One-shot switches: once stored they have no business staying in the address bar.
     params.delete("fakeProfile");
     params.delete("fakeSpeed");
     const query = params.size > 0 ? `?${params}` : "";

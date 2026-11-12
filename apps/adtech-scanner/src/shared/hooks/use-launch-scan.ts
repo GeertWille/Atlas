@@ -14,7 +14,7 @@ export function useLaunchScan() {
       onSuccess: (summary) => navigate({ to: "/scans/$scanId", params: { scanId: summary.id } }),
       onError: (reason) => {
         const error = toApiError(reason);
-        const needsSettings = error.code === "browserNotFound" || error.code === "apiKeyMissing";
+        const needsSettings = ["browserNotFound", "apiKeyMissing", "apiKeyInvalid"].includes(error.code);
         toast.error(error.code === "browserNotFound" ? "No browser found" : "Could not start the scan", {
           description: error.message,
           action: needsSettings ? { label: "Open settings", onClick: () => navigate({ to: "/settings" }) } : undefined,

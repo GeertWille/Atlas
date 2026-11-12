@@ -7,20 +7,17 @@ import {
   PlayIcon,
   TriangleAlertIcon,
 } from "lucide-react";
-import { type FormEvent, type ReactNode, useState } from "react";
-import { toast } from "sonner";
+import type { ReactNode } from "react";
 import type { BrowserInfo, Settings } from "@/bindings";
-import { api } from "@/lib/api";
-import { useDemoUrl, useSetApiKey, useUpdateSettings } from "@/lib/query/hooks";
+import { useDemoUrl, useUpdateSettings } from "@/lib/query/hooks";
+import { ApiKeyForm } from "@/shared/components/api-key-form";
 import { defaultScanOptions } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
 import { notifyError } from "@/shared/lib/notify-error";
+import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
 import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
 import { dismissOnboarding } from "./onboarding-state";
-
-const API_KEYS_URL = "https://console.anthropic.com/settings/keys";
 
 type StepState = "done" | "optional" | "required";
 
@@ -52,7 +49,7 @@ function Step({ state, title, children }: { state: StepState; title: string; chi
 function BrowserStep({ browser }: { browser: BrowserInfo | null }) {
   const updateSettings = useUpdateSettings();
   const choose = async () => {
-    const path = await api.pickBrowserExecutable();
+    const path = await chooseBrowserExecutable();
     if (path) {
       updateSettings.mutate(
         { chromePath: path },
@@ -86,26 +83,6 @@ function BrowserStep({ browser }: { browser: BrowserInfo | null }) {
 }
 
 function ApiKeyStep({ hasApiKey }: { hasApiKey: boolean }) {
-  const setApiKey = useSetApiKey();
-  const [key, setKey] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const save = (event: FormEvent) => {
-    event.preventDefault();
-    setError(null);
-    setApiKey.mutate(key.trim(), {
-      onSuccess: (status) => {
-        if (status.valid) {
-          setKey("");
-          toast.success("API key saved to your keychain");
-        } else {
-          setError(status.message ?? "That key was not accepted.");
-        }
-      },
-      onError: (reason) => notifyError("Could not save the API key", reason),
-    });
-  };
-
   if (hasApiKey) {
     return (
       <Step state="done" title="Anthropic API key saved">
@@ -121,33 +98,9 @@ function ApiKeyStep({ hasApiKey }: { hasApiKey: boolean }) {
         Scans work without a key: auctions, slots and deterministic revenue-leak checks need no AI. With a key, the
         scanner also reads your wrapper code to find logic bugs, for about $0.50 per scan.
       </p>
-      <form onSubmit={save} className="flex items-start gap-2">
-        <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <Input
-            type="password"
-            autoComplete="off"
-            aria-label="Anthropic API key"
-            aria-invalid={error ? true : undefined}
-            placeholder="sk-ant-…"
-            value={key}
-            onChange={(event) => {
-              setKey(event.target.value);
-              setError(null);
-            }}
-            className="font-mono"
-          />
-          {error ? (
-            <p role="alert" className="text-[13px] text-red-fg">
-              {error}
-            </p>
-          ) : null}
-        </div>
-        <Button type="submit" variant="outline" disabled={key.trim().length === 0 || setApiKey.isPending}>
-          {setApiKey.isPending ? "Checking…" : "Save key"}
-        </Button>
-      </form>
+      <ApiKeyForm submitLabel="Save key" submitVariant="outline" />
       <div>
-        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void api.openExternal(API_KEYS_URL)}>
+        <Button variant="link" size="sm" className="h-auto p-0" onClick={openApiKeysPage}>
           Get a key from the Anthropic Console
           <ExternalLinkIcon />
         </Button>

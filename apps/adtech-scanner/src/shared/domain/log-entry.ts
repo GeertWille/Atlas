@@ -1,6 +1,8 @@
 import type { LogEntry, Severity } from "@/bindings";
+import { SEVERITIES } from "./vocabulary";
 
-const LONG_MESSAGE = 140;
+/** Longer messages are cut off in the one-line summary, so the row has to open to show them. */
+const HEADLINE_FITS = 80;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -32,16 +34,18 @@ export function logPayload(entry: LogEntry): LogPayload {
   return { text: null, json: JSON.stringify(data, null, 2) };
 }
 
-export function isExpandable(entry: LogEntry): boolean {
-  return entry.data != null || entry.message.length > LONG_MESSAGE || entry.message.includes("\n");
+export function messageExceedsHeadline(entry: LogEntry): boolean {
+  return entry.message.length > HEADLINE_FITS || entry.message.includes("\n");
 }
 
-const SEVERITY_VALUES: readonly string[] = ["critical", "high", "medium", "low", "info"];
+export function isExpandable(entry: LogEntry): boolean {
+  return entry.data != null || messageExceedsHeadline(entry);
+}
 
 /** Severity carried in the data of a `finding` log entry, when present. */
 export function findingSeverity(entry: LogEntry): Severity | null {
   const severity = isRecord(entry.data) ? entry.data.severity : null;
-  return typeof severity === "string" && SEVERITY_VALUES.includes(severity) ? (severity as Severity) : null;
+  return SEVERITIES.find((known) => known === severity) ?? null;
 }
 
 export function logEntryAsText(entry: LogEntry): string {

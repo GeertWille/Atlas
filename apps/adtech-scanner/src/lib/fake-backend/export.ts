@@ -27,7 +27,7 @@ function scanMarkdown(detail: ScanDetail): string {
     `# Ad stack scan: ${summary.hostname}`,
     `- URL: ${summary.url}\n- Device: ${summary.device}\n- Scanned: ${new Date(summary.startedAt).toISOString()}\n- Health score: ${summary.healthScore ?? "n/a"}/100\n- LLM cost: $${summary.costUsd.toFixed(3)}`,
     detail.overview ?? "",
-    `## Key metrics\n\n| Metric | Value |\n|---|---|\n| Fill rate | ${Math.round(metrics.fillRate * 100)}% |\n| Bid timeout rate | ${Math.round(metrics.timeoutRate * 100)}% |\n| Auctions | ${metrics.auctionCount} |\n| Bidders | ${metrics.bidderCount} |\n| Slots | ${metrics.slotCount} (${metrics.emptySlotCount} not filled) |\n| Scripts | ${metrics.scriptCount} (${metrics.adScriptCount} ad-related) |`,
+    `## Key metrics\n\n| Metric | Value |\n|---|---|\n| Fill rate | ${Math.round(metrics.fillRate * 100)}% |\n| Bid timeout rate | ${Math.round(metrics.timeoutRate * 100)}% |\n| Auctions | ${metrics.auctionCount} |\n| Bidders | ${metrics.bidderCount} |\n| Slots | ${metrics.slotCount} (${metrics.emptySlotCount} empty) |\n| Scripts | ${metrics.scriptCount} (${metrics.adScriptCount} ad-related) |`,
     `## Findings (${detail.findings.length})`,
     ...detail.findings.map(findingMarkdown),
   ]

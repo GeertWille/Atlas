@@ -95,3 +95,13 @@ test("the cost line reflects the settings and the AI switch", async () => {
   await user.click(screen.getByRole("switch", { name: "AI logic analysis" }));
   expect(screen.getByText("Deterministic checks only. No LLM cost.")).toBeInTheDocument();
 });
+
+test("pressing Enter twice starts one scan, not two", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+
+  await user.type(urlInput(), "example.com{Enter}{Enter}");
+
+  await screen.findByText("scan screen");
+  expect((await api.listScans({})).total).toBe(1);
+});

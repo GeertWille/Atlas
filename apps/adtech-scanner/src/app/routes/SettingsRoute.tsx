@@ -13,7 +13,7 @@ export function SettingsRoute() {
         {settings.isError ? (
           <QueryError title="Could not load settings" error={settings.error} onRetry={() => void settings.refetch()} />
         ) : settings.data ? (
-          <SettingsScreen settings={settings.data} browser={browser.data} />
+          <SettingsScreen settings={settings.data} browser={browser.isError ? null : browser.data} />
         ) : (
           <>
             <Skeleton className="h-72 rounded-xl" />

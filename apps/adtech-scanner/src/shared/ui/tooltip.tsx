@@ -30,24 +30,11 @@ function TooltipContent({
 }
 
 /** One-line tooltip for icon-only controls. */
-function Hint({
-  label,
-  shortcut,
-  side,
-  children,
-}: {
-  label: string;
-  shortcut?: string;
-  side?: ComponentProps<typeof TooltipPrimitive.Content>["side"];
-  children: ReactNode;
-}) {
+function Hint({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent side={side} className="flex items-center gap-2">
-        {label}
-        {shortcut ? <kbd className="font-sans text-subtle-foreground">{shortcut}</kbd> : null}
-      </TooltipContent>
+      <TooltipContent>{label}</TooltipContent>
     </Tooltip>
   );
 }

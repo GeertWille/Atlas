@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { api } from "@/lib/api";
 import { createQueryClient } from "@/lib/query/client";
 import { applyScanEvent } from "@/lib/query/scan-events";
+import { notifyError } from "@/shared/lib/notify-error";
 import { TooltipProvider } from "@/shared/ui/tooltip";
 import { router } from "./router";
 import { announceScanOutcome } from "./scan-notifications";
@@ -25,8 +26,12 @@ function useScanEventSubscription() {
       applyScanEvent(queryClient, event);
       announceScanOutcome(event, isViewingScan, openScan);
     });
+    subscription.catch((reason) => notifyError("Live updates are unavailable", reason));
     return () => {
-      void subscription.then((unsubscribe) => unsubscribe());
+      void subscription.then(
+        (unsubscribe) => unsubscribe(),
+        () => {},
+      );
     };
   }, []);
 }

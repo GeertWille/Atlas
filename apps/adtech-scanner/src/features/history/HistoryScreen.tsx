@@ -29,7 +29,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { HistoryTable, HistoryTableSkeleton } from "./HistoryTable";
 import { HISTORY_SORT_LABEL, type HistorySort, sortScans } from "./history-sort";
 
-const STATUS_FILTERS: readonly ScanStatus[] = ["completed", "running", "failed", "cancelled"];
+const STATUS_FILTERS: readonly ScanStatus[] = ["completed", "running", "queued", "failed", "cancelled"];
 
 type Confirmation = { kind: "one"; scan: ScanSummary } | { kind: "all" } | null;
 
@@ -173,7 +173,7 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
         <div className="flex items-center justify-between text-[13px] text-muted-foreground">
           <span className="tabular-nums" aria-live="polite">
             Showing {scans.length} of {pluralize(total, "scan")}
-            {sort !== "newest" && sort !== "oldest" && hasNextPage ? ". Sorting applies to the loaded scans." : ""}
+            {sort !== "newest" && hasNextPage ? ". Sorting applies to the loaded scans." : ""}
           </span>
           {hasNextPage ? (
             <Button variant="outline" size="sm" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
@@ -206,7 +206,7 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
           <AlertDialogHeader>
             <AlertDialogTitle>
               {confirmation?.kind === "all"
-                ? `Delete all ${total} scans?`
+                ? `Delete all ${pluralize(total, "scan")}?`
                 : `Delete the scan of ${confirmation?.kind === "one" ? confirmation.scan.hostname : ""}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>

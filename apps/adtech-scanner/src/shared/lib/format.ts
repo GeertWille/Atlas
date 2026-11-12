@@ -54,17 +54,22 @@ export function formatPercent(ratio: number): string {
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${Math.round(bytes)} B`;
-  if (bytes < 1_048_576) return `${(bytes / 1024).toFixed(bytes < 10_240 ? 1 : 0)} KB`;
+  // Checked on the rounded value, so 1,048,575 bytes reads "1.0 MB" and never "1024 KB".
+  const kilobytes = bytes / 1024;
+  if (Math.round(kilobytes) < 1024) return `${kilobytes.toFixed(kilobytes < 10 ? 1 : 0)} KB`;
   return `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
 /** A span of time: "840 ms", "1.24 s", "2m 05s". */
 export function formatDuration(ms: number | null): string {
   if (ms === null) return EMPTY;
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
-  const minutes = Math.floor(ms / 60_000);
-  const seconds = Math.floor((ms % 60_000) / 1000);
+  // Each unit is chosen from the rounded value, so a boundary never prints as "1000 ms" or "60.0 s".
+  if (Math.round(ms) < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 9995) return `${(ms / 1000).toFixed(2)} s`;
+  if (ms < 59_950) return `${(ms / 1000).toFixed(1)} s`;
+  const totalSeconds = Math.round(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
@@ -97,4 +102,10 @@ export function formatRelativeTime(epochMs: number, now: number = Date.now()): s
 
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {
   return `${formatInteger(count)} ${count === 1 ? singular : plural}`;
+}
+
+/** Size of a filtered list: "12 scripts", or "3 of 12 scripts" while a filter hides some. */
+export function countOf(shown: number, total: number, singular: string, plural?: string): string {
+  const all = pluralize(total, singular, plural);
+  return shown === total ? all : `${formatInteger(shown)} of ${all}`;
 }

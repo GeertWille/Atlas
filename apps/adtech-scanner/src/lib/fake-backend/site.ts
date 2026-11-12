@@ -468,7 +468,7 @@ export function computeMetrics(site: CapturedSite, scripts: ScriptRecord[]): Sca
     noBidCount: count("noBid"),
     timeoutRate: bids.length ? timeouts / bids.length : 0,
     slotCount: site.slots.length,
-    emptySlotCount: site.slots.length - filled.length,
+    emptySlotCount: site.slots.filter((slot) => slot.outcome === "empty").length,
     fillRate: requested.length ? filled.length / requested.length : 0,
     avgWinningCpm: winners.length ? CPM(totalWinningCpm / winners.length) : null,
     totalWinningCpm,

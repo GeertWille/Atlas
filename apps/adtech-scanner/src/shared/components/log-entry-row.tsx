@@ -10,13 +10,13 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
-import { useState } from "react";
 import type { LogEntry, LogKind } from "@/bindings";
 import {
   findingSeverity,
   isExpandable,
   logEntryAsText,
   logPayload,
+  messageExceedsHeadline,
   reportedFindingId,
   summarizeToolInput,
 } from "@/shared/domain/log-entry";
@@ -49,7 +49,6 @@ const KIND_ICON_TONE: Record<LogKind, string> = {
   finding: "text-red-fg",
 };
 
-const HEADLINE_FITS = 80;
 const ROW_BODY = "flex h-full min-w-0 flex-1 items-center gap-2 text-left";
 
 function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
@@ -89,9 +88,8 @@ function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
 function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (findingId: string) => void }) {
   const { text, json } = logPayload(entry);
   const findingId = reportedFindingId(entry);
-  // The headline already shows short one-line messages in full.
-  const showMessage =
-    entry.kind !== "toolCall" && (entry.message.length > HEADLINE_FITS || entry.message.includes("\n"));
+  // The headline already shows short one-line messages in full, and a tool call's name is never long.
+  const showMessage = entry.kind !== "toolCall" && messageExceedsHeadline(entry);
   return (
     <div className="flex flex-col gap-2 pr-3 pb-3 pl-[7.25rem]">
       {showMessage ? (
@@ -128,25 +126,25 @@ function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (f
   );
 }
 
-/** One audit-trail entry. Shared by the live activity feed and the audit trail tab. */
+/** One audit-trail entry: a one-line summary that opens into the full message and payload. */
 export function LogEntryRow({
   entry,
-  live = false,
-  highlighted = false,
-  showNode = false,
-  defaultExpanded = false,
+  live,
+  highlighted,
+  showNode,
+  expanded,
+  onToggle,
   onOpenFinding,
 }: {
   entry: LogEntry;
-  /** The newest line of a running scan shimmers. */
-  live?: boolean;
-  highlighted?: boolean;
-  showNode?: boolean;
-  defaultExpanded?: boolean;
+  live: boolean;
+  highlighted: boolean;
+  showNode: boolean;
+  expanded: boolean;
+  onToggle: () => void;
   /** Enables the link from a `finding` entry to the finding it reported. */
   onOpenFinding?: (findingId: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
   const expandable = isExpandable(entry);
   const Icon = LOG_KIND_ICON[entry.kind];
 
@@ -176,16 +174,11 @@ export function LogEntryRow({
       id={`log-${entry.id}`}
       data-kind={entry.kind}
       data-level={entry.level}
-      className={cn("group/log offscreen-auto border-b last:border-b-0", highlighted && "bg-primary-soft/60")}
+      className={cn("group/log border-b", highlighted && "bg-primary-soft/60")}
     >
       <div className="flex h-9 items-center gap-2 pr-2 pl-3 text-[13px]">
         {expandable ? (
-          <button
-            type="button"
-            aria-expanded={expanded}
-            onClick={() => setExpanded((current) => !current)}
-            className={ROW_BODY}
-          >
+          <button type="button" aria-expanded={expanded} onClick={onToggle} className={ROW_BODY}>
             {summary}
           </button>
         ) : (

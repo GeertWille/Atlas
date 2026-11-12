@@ -99,6 +99,16 @@ export function ScanStatusBadge({ status }: { status: ScanStatus }) {
   );
 }
 
+/** Pulsing marker for something that is happening right now. */
+export function LiveDot() {
+  return (
+    <span aria-hidden="true" className="relative flex size-2.5 shrink-0">
+      <span className="absolute inline-flex size-full animate-ping rounded-full bg-violet opacity-60" />
+      <span className="relative inline-flex size-2.5 rounded-full bg-violet" />
+    </span>
+  );
+}
+
 export function DeviceIcon({ device, className }: { device: DeviceProfile; className?: string }) {
   const Icon = device === "desktop" ? MonitorIcon : SmartphoneIcon;
   return <Icon className={className} aria-hidden="true" />;

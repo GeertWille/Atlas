@@ -4,15 +4,14 @@ import { useState } from "react";
 import { DashboardStats, RecentScans, RunningScans } from "@/features/dashboard";
 import { isOnboardingDismissed, needsOnboarding, OnboardingScreen } from "@/features/onboarding";
 import { ScanComposer } from "@/features/scan-composer";
-import { useBrowser, useDashboardStats, useScanList, useSettings } from "@/lib/query/hooks";
+import { useActiveScans, useBrowser, useDashboardStats, useRecentScans, useSettings } from "@/lib/query/hooks";
 import { Page, PageContent } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
+import { isActive } from "@/shared/domain/vocabulary";
 import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
 
-/** Same query as the sidebar, so both share one cache entry; the dashboard shows the first six. */
-const RECENT_QUERY = { limit: 8 };
 const RECENT_SHOWN = 6;
 
 export function HomeRoute() {
@@ -20,8 +19,8 @@ export function HomeRoute() {
   const settings = useSettings();
   const browser = useBrowser();
   const stats = useDashboardStats();
-  const running = useScanList({ status: "running" });
-  const recent = useScanList(RECENT_QUERY);
+  const activeScans = useActiveScans();
+  const recent = useRecentScans();
   const [dismissed, setDismissed] = useState(isOnboardingDismissed);
 
   if (settings.isError) {
@@ -75,9 +74,13 @@ export function HomeRoute() {
           ) : null}
           <ScanComposer settings={settings.data} />
         </div>
-        <RunningScans scans={running.data?.items ?? []} />
-        <DashboardStats stats={stats.data} />
-        <RecentScans scans={recent.data?.items.filter((scan) => scan.status !== "running").slice(0, RECENT_SHOWN)} />
+        <RunningScans scans={activeScans} />
+        {stats.isError ? null : <DashboardStats stats={stats.data} />}
+        {recent.isError ? (
+          <QueryError title="Could not load recent scans" error={recent.error} onRetry={() => void recent.refetch()} />
+        ) : (
+          <RecentScans scans={recent.data?.items.filter((scan) => !isActive(scan.status)).slice(0, RECENT_SHOWN)} />
+        )}
       </PageContent>
     </Page>
   );

@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="plate" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7f61ff" />
+      <stop offset="1" stop-color="#5200ff" />
+    </linearGradient>
+    <clipPath id="shape">
+      <rect x="100" y="100" width="824" height="824" rx="186" />
+    </clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#plate)" />
+  <g clip-path="url(#shape)">
+    <!-- Radar range rings, centred on the plate's bottom-left corner. -->
+    <g fill="none" stroke="#ffffff" stroke-opacity="0.17" stroke-width="14">
+      <circle cx="100" cy="924" r="330" />
+      <circle cx="100" cy="924" r="560" />
+      <circle cx="100" cy="924" r="790" />
+      <circle cx="100" cy="924" r="1020" />
+    </g>
+  </g>
+  <!-- Bid bars, the mark the app shows in its sidebar. -->
+  <g fill="none" stroke="#ffffff" stroke-width="84" stroke-linecap="round">
+    <path d="M310 714 V566" />
+    <path d="M444 714 V402" />
+    <path d="M578 714 V510" />
+    <path d="M712 714 V310" />
+  </g>
+</svg>

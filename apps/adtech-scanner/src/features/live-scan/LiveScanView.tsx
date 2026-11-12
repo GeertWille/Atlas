@@ -1,9 +1,10 @@
 import { SquareIcon } from "lucide-react";
-import type { LogEntry, ScanDetail } from "@/bindings";
+import type { ReactNode } from "react";
+import type { ScanDetail } from "@/bindings";
 import { useCancelScan } from "@/lib/query/hooks";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { ScanIdentity } from "@/shared/components/scan-identity";
-import { DeviceLabel, SEVERITY_ICON, SeverityCountPills } from "@/shared/components/status";
+import { DeviceLabel, LiveDot, SEVERITY_ICON, SeverityCountPills } from "@/shared/components/status";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
 import { useNow } from "@/shared/hooks/use-now";
@@ -22,7 +23,6 @@ import {
   AlertDialogTrigger,
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
-import { ActivityFeed } from "./ActivityFeed";
 import { BudgetMeter } from "./BudgetMeter";
 import { PipelineStepper } from "./PipelineStepper";
 import { pipelineProgress, runningStep, tokenTotals } from "./progress";
@@ -103,12 +103,14 @@ function FindingsSoFar({ detail }: { detail: ScanDetail }) {
 
 export function LiveScanView({
   detail,
-  logs,
   budgetUsd,
+  activity,
 }: {
   detail: ScanDetail;
-  logs: LogEntry[] | undefined;
-  budgetUsd: number;
+  /** The per-scan cap from settings; the meter waits for it. */
+  budgetUsd: number | undefined;
+  /** The streaming audit trail, or what stands in for it when it cannot be loaded. */
+  activity: ReactNode;
 }) {
   const now = useNow(true);
   const { summary, steps } = detail;
@@ -121,10 +123,7 @@ export function LiveScanView({
       <header className="flex items-center justify-between gap-6">
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex items-center gap-2.5">
-            <span className="relative flex size-2.5 shrink-0">
-              <span className="absolute inline-flex size-full animate-ping rounded-full bg-violet opacity-60" />
-              <span className="relative inline-flex size-2.5 rounded-full bg-violet" />
-            </span>
+            <LiveDot />
             <ScanIdentity scan={summary} className="text-lg font-semibold tracking-tight" />
           </div>
           <p
@@ -145,7 +144,7 @@ export function LiveScanView({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-5">
-          <BudgetMeter costUsd={summary.costUsd} budgetUsd={budgetUsd} />
+          {budgetUsd === undefined ? null : <BudgetMeter costUsd={summary.costUsd} budgetUsd={budgetUsd} />}
           <CancelScanButton scanId={summary.id} />
         </div>
       </header>
@@ -159,7 +158,7 @@ export function LiveScanView({
         </div>
         <Panel className="flex min-h-0 flex-col overflow-hidden">
           <PanelHeader title="Activity" description="Live audit trail: progress, model calls, tool use and findings" />
-          <ActivityFeed logs={logs} live />
+          {activity}
         </Panel>
       </div>
     </div>

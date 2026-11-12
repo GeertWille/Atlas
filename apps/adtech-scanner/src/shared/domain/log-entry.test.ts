@@ -29,7 +29,9 @@ test("logPayload returns pretty JSON for structured data and nothing for none", 
 test("an entry is expandable when it has data or a long or multi-line message", () => {
   expect(isExpandable(makeLog())).toBe(false);
   expect(isExpandable(makeLog({ data: {} }))).toBe(true);
-  expect(isExpandable(makeLog({ message: "x".repeat(141) }))).toBe(true);
+  // Anything the one-line summary would cut off must be reachable by opening the row.
+  expect(isExpandable(makeLog({ message: "x".repeat(80) }))).toBe(false);
+  expect(isExpandable(makeLog({ message: "x".repeat(81) }))).toBe(true);
   expect(isExpandable(makeLog({ message: "a\nb" }))).toBe(true);
 });
 

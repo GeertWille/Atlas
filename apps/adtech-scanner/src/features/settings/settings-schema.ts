@@ -1,7 +1,7 @@
 import { z } from "zod";
+import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 
 export const BUDGET_USD = { min: 0.05, max: 20 } as const;
-export const OBSERVE_SECONDS = { min: 5, max: 60 } as const;
 
 const modelId = z
   .string()
@@ -20,12 +20,6 @@ const observeSeconds = z.coerce
   .min(OBSERVE_SECONDS.min, `Observe for at least ${OBSERVE_SECONDS.min} seconds.`)
   .max(OBSERVE_SECONDS.max, `Observe for at most ${OBSERVE_SECONDS.max} seconds.`);
 
-const apiKey = z
-  .string()
-  .trim()
-  .min(1, "Paste your API key.")
-  .refine((value) => !/\s/.test(value), "An API key cannot contain spaces.");
-
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
 function parseWith<T>(schema: z.ZodType<T>, input: string): Parsed<T> {
@@ -38,4 +32,3 @@ function parseWith<T>(schema: z.ZodType<T>, input: string): Parsed<T> {
 export const parseModelId = (input: string) => parseWith(modelId, input);
 export const parseBudgetUsd = (input: string) => parseWith(budgetUsd, input);
 export const parseObserveSeconds = (input: string) => parseWith(observeSeconds, input);
-export const parseApiKey = (input: string) => parseWith(apiKey, input);

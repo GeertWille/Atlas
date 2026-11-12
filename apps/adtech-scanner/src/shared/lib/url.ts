@@ -9,6 +9,15 @@ export function pathOf(url: string): string {
   }
 }
 
+/** Hostname of a URL; the input itself when it cannot be parsed, so a malformed value still shows. */
+export function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}
+
 /** Last path segment of a script URL, for compact display. */
 export function fileNameOf(url: string): string {
   try {

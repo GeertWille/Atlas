@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, GlobeIcon, MonitorIcon, ScanSearchIcon, SmartphoneIcon, SparklesIcon } from "lucide-react";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import type { Settings } from "@/bindings";
+import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
 import { formatUsd } from "@/shared/lib/format";
@@ -13,7 +14,7 @@ import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { SCAN_URL_INPUT_ID, takePendingComposerFocus } from "./composer-focus";
 import { estimateScanCost } from "./cost-estimate";
-import { OBSERVE_SECONDS, type ScanForm, validateScanForm } from "./scan-form";
+import { type ScanForm, validateScanForm } from "./scan-form";
 
 function OptionSwitch({
   label,
@@ -62,6 +63,7 @@ function AiSummary({ settings, aiEnabled }: { settings: Settings; aiEnabled: boo
       Estimated <span className="font-medium text-foreground tabular-nums">{formatUsd(estimate.expectedUsd)}</span> with{" "}
       {settings.analysisModel}, hard cap {formatUsd(settings.budgetUsd)} per scan
       {estimate.cappedByBudget ? ". Analysis may stop early at the cap." : "."}
+      {estimate.fallbackPricing ? " No list price is known for this model, so a conservative rate applies." : ""}
     </p>
   );
 }

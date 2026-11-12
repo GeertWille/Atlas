@@ -1,8 +1,8 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExportFormat, ScanListQuery, ScanOptions, Settings, SettingsPatch } from "@/bindings";
+import type { ExportFormat, ScanListQuery, ScanOptions, ScanSummary, Settings, SettingsPatch } from "@/bindings";
 import { api } from "@/lib/api";
 import { queryKeys } from "./keys";
-import { withLogsMissedWhileLoading } from "./scan-events";
+import { fetchScanDetail, fetchScanLogs } from "./scan-events";
 
 export function useSettings() {
   return useQuery({ queryKey: queryKeys.settings, queryFn: api.getSettings, staleTime: Number.POSITIVE_INFINITY });
@@ -65,8 +65,20 @@ export function useDashboardStats() {
   return useQuery({ queryKey: queryKeys.stats, queryFn: api.getDashboardStats });
 }
 
-export function useScanList(query: ScanListQuery) {
+function useScanList(query: ScanListQuery) {
   return useQuery({ queryKey: queryKeys.scanList(query), queryFn: () => api.listScans(query) });
+}
+
+/** The newest scans, shared by the sidebar, the dashboard and the command palette. */
+export function useRecentScans() {
+  return useScanList({ limit: 8 });
+}
+
+/** Scans that are running or waiting for a free slot, running ones first. */
+export function useActiveScans(): ScanSummary[] {
+  const running = useScanList({ status: "running" });
+  const queued = useScanList({ status: "queued" });
+  return [...(running.data?.items ?? []), ...(queued.data?.items ?? [])];
 }
 
 const HISTORY_PAGE_SIZE = 20;
@@ -85,13 +97,16 @@ export function useScanHistory(filters: Omit<ScanListQuery, "limit" | "offset">)
 }
 
 export function useScan(scanId: string) {
-  return useQuery({ queryKey: queryKeys.scanDetail(scanId), queryFn: () => api.getScan(scanId) });
+  return useQuery({
+    queryKey: queryKeys.scanDetail(scanId),
+    queryFn: ({ signal }) => fetchScanDetail(scanId, () => api.getScan(scanId), signal),
+  });
 }
 
 export function useScanLogs(scanId: string) {
   return useQuery({
     queryKey: queryKeys.scanLogs(scanId),
-    queryFn: async () => withLogsMissedWhileLoading(scanId, await api.getLogs(scanId)),
+    queryFn: () => fetchScanLogs(scanId, () => api.getLogs(scanId)),
   });
 }
 
@@ -128,6 +143,7 @@ export function useDeleteScan() {
       client.removeQueries({ queryKey: queryKeys.scanLogs(scanId) });
       void client.invalidateQueries({ queryKey: queryKeys.scanLists });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
+      void client.invalidateQueries({ queryKey: queryKeys.logSearches });
     },
   });
 }
@@ -140,6 +156,7 @@ export function useDeleteAllScans() {
       client.removeQueries({ queryKey: queryKeys.scans, type: "inactive" });
       void client.invalidateQueries({ queryKey: queryKeys.scans });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
+      void client.invalidateQueries({ queryKey: queryKeys.logSearches });
     },
   });
 }

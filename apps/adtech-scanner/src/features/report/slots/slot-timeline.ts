@@ -31,7 +31,14 @@ export type SlotRow = {
   flags: SlotFlag[];
 };
 
-export type PageMarker = { label: string; atMs: number; percent: number; labelRow: 0 | 1 };
+export type PageMarker = {
+  label: string;
+  atMs: number;
+  percent: number;
+  /** Which side of its line the label is written on, and on which of the two label rows. */
+  labelSide: "before" | "after";
+  labelRow: 0 | 1;
+};
 
 export type SlotTimeline = { scale: TimeScale; markers: PageMarker[]; rows: SlotRow[] };
 
@@ -43,8 +50,6 @@ const PHASE_TIME: Record<SlotPhase, (slot: AdSlot) => number | null> = {
   viewable: (slot) => slot.viewableAtMs,
 };
 
-/** Minimum horizontal distance, in percent of the axis, before two marker labels collide. */
-const LABEL_CLEARANCE_PERCENT = 13;
 const AXIS_HEADROOM = 1.05;
 
 export function slotFlags(slot: AdSlot): SlotFlag[] {
@@ -89,16 +94,16 @@ function pageMarkers(metrics: ScanMetrics, scale: TimeScale): PageMarker[] {
     ["Page load", metrics.pageLoadMs],
     ["First ad", metrics.timeToFirstAdMs],
   ];
-  const sorted = candidates
+  // The three labels can never overlap, however close the lines are and however narrow the plot:
+  // the earliest is written before its line, the other two after theirs on separate rows.
+  return candidates
     .flatMap(([label, atMs]) => (atMs === null ? [] : [{ label, atMs, percent: scale.toPercent(atMs) }]))
-    .sort((a, b) => a.atMs - b.atMs);
-  let previous: PageMarker | null = null;
-  return sorted.map((marker) => {
-    const collides = previous !== null && marker.percent - previous.percent < LABEL_CLEARANCE_PERCENT;
-    const labelRow: 0 | 1 = collides && previous?.labelRow === 0 ? 1 : 0;
-    previous = { ...marker, labelRow };
-    return previous;
-  });
+    .sort((a, b) => a.atMs - b.atMs)
+    .map((marker, index) => ({
+      ...marker,
+      labelSide: index === 0 ? "before" : "after",
+      labelRow: index === 2 ? 1 : 0,
+    }));
 }
 
 /** Puts every slot's lifecycle and the page lifecycle markers on one axis (ms since navigation start). */

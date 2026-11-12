@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  countOf,
   formatBytes,
   formatCompact,
   formatCpm,
@@ -10,6 +11,12 @@ import {
   formatUsd,
   pluralize,
 } from "./format";
+
+test("countOf names the hidden part only while a filter hides something", () => {
+  expect(countOf(12, 12, "script")).toBe("12 scripts");
+  expect(countOf(3, 1200, "entry", "entries")).toBe("3 of 1,200 entries");
+  expect(countOf(1, 1, "finding")).toBe("1 finding");
+});
 
 describe("formatUsd", () => {
   test.each([
@@ -32,6 +39,11 @@ describe("formatDuration", () => {
     [1240, "1.24 s"],
     [12_400, "12.4 s"],
     [125_000, "2m 05s"],
+    // Unit boundaries: the rounded value picks the unit.
+    [999.6, "1.00 s"],
+    [9_996, "10.0 s"],
+    [59_980, "1m 00s"],
+    [119_600, "2m 00s"],
   ])("%s → %s", (ms, expected) => {
     expect(formatDuration(ms)).toBe(expected);
   });
@@ -47,6 +59,7 @@ describe("formatBytes", () => {
     [512, "512 B"],
     [1536, "1.5 KB"],
     [49_357, "48 KB"],
+    [1_048_300, "1.0 MB"],
     [3_565_158, "3.4 MB"],
   ])("%d → %s", (bytes, expected) => {
     expect(formatBytes(bytes)).toBe(expected);

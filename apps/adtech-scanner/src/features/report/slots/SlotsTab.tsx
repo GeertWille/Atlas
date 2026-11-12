@@ -153,7 +153,8 @@ function Axis({ timeline }: { timeline: SlotTimeline }) {
           <span className="absolute top-14 bottom-0 w-px bg-border" />
           <span
             className={cn(
-              "absolute top-9 text-[11px] whitespace-nowrap text-subtle-foreground tabular-nums",
+              // Above the page-lifecycle lines, which would otherwise strike through the tick labels.
+              "absolute top-9 z-10 bg-card px-0.5 text-[11px] whitespace-nowrap text-subtle-foreground tabular-nums",
               index === timeline.scale.ticks.length - 1 ? "-translate-x-full" : "-translate-x-1/2",
             )}
           >
@@ -166,7 +167,8 @@ function Axis({ timeline }: { timeline: SlotTimeline }) {
           <span className="absolute top-1 bottom-0 w-px bg-violet/60" />
           <span
             className={cn(
-              "absolute left-1 rounded-sm bg-card px-1 text-[11px] font-medium whitespace-nowrap text-violet-fg",
+              "absolute z-10 rounded-sm bg-card px-1 text-[11px] font-medium whitespace-nowrap text-violet-fg",
+              marker.labelSide === "before" ? "right-1" : "left-1",
               marker.labelRow === 0 ? "top-1" : "top-[18px]",
             )}
           >

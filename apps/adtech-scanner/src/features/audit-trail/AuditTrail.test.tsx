@@ -123,6 +123,23 @@ test("a deep-linked entry is highlighted and already expanded", async () => {
   expect(screen.getByText(/requestBids\(lazy\)/)).toBeInTheDocument();
 });
 
+test("a long trail mounts only the rows near the viewport and stays searchable", async () => {
+  const user = userEvent.setup();
+  const long = Array.from({ length: 600 }, (_, index) =>
+    makeLog({ id: `m${index}`, stepId: "step-capture", node: "capture", ts: index, message: `Request ${index} seen` }),
+  );
+  await renderWithApp(<AuditTrail steps={steps} logs={long} onOpenFinding={() => {}} />);
+
+  expect(screen.getByText("600 entries")).toBeInTheDocument();
+  expect(entries()).toBeGreaterThan(10);
+  expect(entries()).toBeLessThan(60);
+  expect(screen.queryByText("Request 571 seen")).toBeNull();
+
+  await user.type(screen.getByRole("searchbox", { name: "Search this audit trail" }), "request 571");
+  expect(screen.getByText("Request 571 seen")).toBeInTheDocument();
+  expect(entries()).toBe(1);
+});
+
 test("loading and empty trails have their own states", async () => {
   const loading = await renderWithApp(<AuditTrail steps={steps} logs={undefined} onOpenFinding={() => {}} />);
   expect(entries()).toBe(0);

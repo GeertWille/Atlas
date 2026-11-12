@@ -37,3 +37,8 @@ Element.prototype.scrollIntoView ??= () => {};
 Element.prototype.hasPointerCapture ??= () => false;
 Element.prototype.setPointerCapture ??= () => {};
 Element.prototype.releasePointerCapture ??= () => {};
+
+// jsdom has no layout, and virtualised lists mount rows from measured sizes:
+// give scrollers a viewport and rows their collapsed height.
+Object.defineProperty(Element.prototype, "clientHeight", { configurable: true, get: () => 720 });
+Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => 36 });

@@ -8,7 +8,7 @@ import type {
   Settings,
   StepStatus,
 } from "@/bindings";
-import { pricingFor } from "@/shared/domain/model-pricing";
+import { costOf } from "@/shared/domain/model-pricing";
 import { aiInvestigations, healthScore, heuristicFindings, overviewFor } from "./findings";
 import { buildScripts, captureSite, computeMetrics } from "./site";
 
@@ -33,11 +33,6 @@ export type Scenario = {
   /** `null` when the scenario ends in a failure. */
   result: ScanResult | null;
 };
-
-function costOf(model: string, inputTokens: number, outputTokens: number): number {
-  const { inputPerMTok, outputPerMTok } = pricingFor(model);
-  return (inputTokens * inputPerMTok + outputTokens * outputPerMTok) / 1_000_000;
-}
 
 class Timeline {
   readonly beats: Beat[] = [];
@@ -77,7 +72,7 @@ class Timeline {
   }
 
   usage(model: string, inputTokens: number, outputTokens: number): number {
-    const costUsd = costOf(model, inputTokens, outputTokens);
+    const costUsd = costOf(model, { input: inputTokens, output: outputTokens }).usd;
     this.beats.push({ at: this.now, type: "usage", node: this.node, inputTokens, outputTokens, costUsd });
     return costUsd;
   }
@@ -343,7 +338,7 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
         ],
         context: {
           scripts: analyzed.map((script) => script.url),
-          telemetrySummary: `${metrics.slotCount} slots, ${metrics.emptySlotCount} not filled, timeout rate ${Math.round(metrics.timeoutRate * 100)}%`,
+          telemetrySummary: `${metrics.slotCount} slots, ${metrics.emptySlotCount} empty, timeout rate ${Math.round(metrics.timeoutRate * 100)}%`,
         },
       },
     });

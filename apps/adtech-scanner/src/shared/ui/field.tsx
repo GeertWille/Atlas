@@ -11,7 +11,6 @@ function Field({
   label,
   htmlFor,
   description,
-  error,
   children,
   className,
   stacked = false,
@@ -19,7 +18,6 @@ function Field({
   label: string;
   htmlFor?: string;
   description?: ReactNode;
-  error?: string | null;
   children: ReactNode;
   className?: string;
   stacked?: boolean;
@@ -27,7 +25,6 @@ function Field({
   return (
     <div
       data-slot="field"
-      data-invalid={error ? true : undefined}
       className={cn(
         "flex gap-x-8 gap-y-2 border-b py-4 first:pt-0 last:border-b-0 last:pb-0",
         stacked ? "flex-col" : "items-start justify-between",
@@ -37,11 +34,6 @@ function Field({
       <div className="flex min-w-0 flex-col gap-1">
         <Label htmlFor={htmlFor}>{label}</Label>
         {description ? <div className="text-[13px] text-pretty text-muted-foreground">{description}</div> : null}
-        {error ? (
-          <p role="alert" className="text-[13px] text-red-fg">
-            {error}
-          </p>
-        ) : null}
       </div>
       <div className={cn("flex shrink-0 items-center gap-2", stacked && "w-full")}>{children}</div>
     </div>

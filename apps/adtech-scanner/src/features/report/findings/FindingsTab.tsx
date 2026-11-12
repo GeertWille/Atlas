@@ -4,7 +4,7 @@ import type { Finding, FindingSource } from "@/bindings";
 import { FilterMenu } from "@/shared/components/filter-menu";
 import { SEVERITY_ICON } from "@/shared/components/status";
 import { FINDING_CATEGORIES, FINDING_CATEGORY_LABEL, SEVERITIES, SEVERITY_META } from "@/shared/domain/vocabulary";
-import { pluralize } from "@/shared/lib/format";
+import { countOf } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
@@ -98,9 +98,7 @@ export function FindingsTab({
           <ToggleGroupItem value="heuristic">Rules</ToggleGroupItem>
         </ToggleGroup>
         <span className="ml-auto text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
-          {visible.length === findings.length
-            ? pluralize(findings.length, "finding")
-            : `${visible.length} of ${pluralize(findings.length, "finding")}`}
+          {countOf(visible.length, findings.length, "finding")}
         </span>
       </div>
 

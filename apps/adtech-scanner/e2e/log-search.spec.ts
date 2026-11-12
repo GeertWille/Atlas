@@ -53,6 +53,8 @@ test("short queries, no results and example chips", async ({ page }) => {
 test("a finding in the audit trail links to its finding card", async ({ page }) => {
   await openApp(page, "/scans/seed-sportsdesk-desktop?tab=audit");
   const entries = page.getByRole("region", { name: "Log entries" });
+  // The trail is virtualised: an entry far down the list is reached by searching, not by being in the DOM.
+  await page.getByRole("searchbox", { name: "Search this audit trail" }).fill("800 ms failsafe");
   await entries.getByRole("button", { name: /Finding, Warning.*800 ms failsafe fires the ad server/ }).click();
   await entries.getByRole("button", { name: "Open finding" }).click();
 

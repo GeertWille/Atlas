@@ -1,16 +1,11 @@
-import {
-  createHashHistory,
-  createRootRoute,
-  createRoute,
-  createRouter,
-  Link,
-  lazyRouteComponent,
-} from "@tanstack/react-router";
+import { createRootRoute, createRoute, createRouter, Link, lazyRouteComponent } from "@tanstack/react-router";
 import { CompassIcon } from "lucide-react";
 import { z } from "zod";
 import { Page } from "@/shared/components/page";
+import { QueryError } from "@/shared/components/query-error";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
+import { createFragmentHistory } from "./hash-history";
 import { HomeRoute } from "./routes/HomeRoute";
 import { AppShell } from "./shell/AppShell";
 
@@ -35,6 +30,15 @@ function NotFound() {
           <Link to="/">Go home</Link>
         </Button>
       </Empty>
+    </Page>
+  );
+}
+
+/** Keeps the shell usable when a screen throws while rendering, instead of leaving a blank window. */
+function ScreenError({ error, reset }: { error: unknown; reset: () => void }) {
+  return (
+    <Page title="Something went wrong">
+      <QueryError title="This screen could not be shown" error={error} onRetry={reset} />
     </Page>
   );
 }
@@ -72,7 +76,12 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([homeRoute, scanRoute, historyRoute, logSearchRoute, settingsRoute]);
 
 /** Hash history: the packaged app is served from a custom protocol with no server-side routing. */
-export const router = createRouter({ routeTree, history: createHashHistory(), defaultPreload: false });
+export const router = createRouter({
+  routeTree,
+  history: createFragmentHistory(),
+  defaultPreload: false,
+  defaultErrorComponent: ScreenError,
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

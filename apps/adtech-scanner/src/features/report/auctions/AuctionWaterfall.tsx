@@ -106,8 +106,9 @@ function AdUnitGroup({ group, auction }: { group: WaterfallGroup; auction: Aucti
         </span>
       </div>
       <ul aria-label={`Bids for ${group.code}`} className="flex flex-col gap-px">
-        {group.bars.map((bar) => (
-          <BidRow key={bar.bid.bidder} bar={bar} auction={auction} />
+        {group.bars.map((bar, index) => (
+          // biome-ignore lint/suspicious/noArrayIndexKey: a bidder can answer one ad unit with several bids
+          <BidRow key={`${bar.bid.bidder}-${index}`} bar={bar} auction={auction} />
         ))}
       </ul>
     </div>

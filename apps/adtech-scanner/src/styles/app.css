@@ -325,11 +325,6 @@
   background-image: repeating-linear-gradient(135deg, transparent 0 3px, oklch(1 0 0 / 0.45) 3px 5px);
 }
 
-@utility offscreen-auto {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 44px;
-}
-
 @keyframes shimmer-text {
   0% {
     background-position: 200% 0;

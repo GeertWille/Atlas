@@ -2,11 +2,12 @@ import { ExternalLinkIcon, FolderOpenIcon, MonitorIcon, MoonIcon, SmartphoneIcon
 import { type ReactNode, useId } from "react";
 import { toast } from "sonner";
 import type { BrowserInfo, Settings, SettingsPatch } from "@/bindings";
-import { api } from "@/lib/api";
 import { useDeleteAllScans, useUpdateSettings } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
-import { SUGGESTED_MODELS } from "@/shared/domain/model-pricing";
+import { PRICED_MODELS } from "@/shared/domain/model-pricing";
+import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { notifyError } from "@/shared/lib/notify-error";
+import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,9 +26,8 @@ import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { ApiKeyField } from "./ApiKeyField";
 import { CommitInput } from "./CommitInput";
-import { BUDGET_USD, OBSERVE_SECONDS, parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
+import { BUDGET_USD, parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
 
-const API_KEYS_URL = "https://console.anthropic.com/settings/keys";
 const MODEL_SUGGESTIONS_ID = "model-suggestions";
 
 declare const __APP_VERSION__: string;
@@ -59,12 +59,8 @@ function BrowserField({
   save: (patch: SettingsPatch) => void;
 }) {
   const choose = async () => {
-    try {
-      const path = await api.pickBrowserExecutable();
-      if (path) save({ chromePath: path });
-    } catch (reason) {
-      notifyError("Could not open the file picker", reason);
-    }
+    const path = await chooseBrowserExecutable();
+    if (path) save({ chromePath: path });
   };
   return (
     <Field
@@ -150,7 +146,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
   return (
     <>
       <datalist id={MODEL_SUGGESTIONS_ID}>
-        {SUGGESTED_MODELS.map((model) => (
+        {PRICED_MODELS.map((model) => (
           <option key={model} value={model} />
         ))}
       </datalist>
@@ -168,7 +164,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
               <button
                 type="button"
                 className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline"
-                onClick={() => void api.openExternal(API_KEYS_URL)}
+                onClick={openApiKeysPage}
               >
                 Get a key
                 <ExternalLinkIcon className="size-3" />

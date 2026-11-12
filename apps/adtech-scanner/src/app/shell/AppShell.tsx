@@ -2,8 +2,9 @@ import { Outlet, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import type { ThemePreference } from "@/bindings";
 import { requestComposerFocus } from "@/features/scan-composer";
-import { useDemoUrl, useScanList, useSettings, useUpdateSettings } from "@/lib/query/hooks";
+import { useActiveScans, useDemoUrl, useRecentScans, useSettings, useUpdateSettings } from "@/lib/query/hooks";
 import { defaultScanOptions } from "@/shared/domain/scan-options";
+import { isActive } from "@/shared/domain/vocabulary";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { notifyError } from "@/shared/lib/notify-error";
 import { Toaster } from "@/shared/ui/sonner";
@@ -12,16 +13,14 @@ import { CommandPalette, type PaletteActions } from "./CommandPalette";
 import { Sidebar } from "./Sidebar";
 import { useGlobalShortcuts } from "./shortcuts";
 
-const RECENT_LIMIT = 8;
-
 export function AppShell() {
   const navigate = useNavigate();
   const settings = useSettings();
   const updateSettings = useUpdateSettings();
   const demoUrl = useDemoUrl();
   const { launch } = useLaunchScan();
-  const running = useScanList({ status: "running" });
-  const recent = useScanList({ limit: RECENT_LIMIT });
+  const activeScans = useActiveScans();
+  const recent = useRecentScans();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const theme = useAppliedTheme(settings.data?.theme);
 
@@ -51,13 +50,12 @@ export function AppShell() {
     onSettings: () => navigate({ to: "/settings" }),
   });
 
-  const runningScans = running.data?.items ?? [];
-  const recentScans = (recent.data?.items ?? []).filter((scan) => scan.status !== "running");
+  const recentScans = (recent.data?.items ?? []).filter((scan) => !isActive(scan.status));
 
   return (
     <div className="flex h-full">
       <Sidebar
-        runningScans={runningScans}
+        activeScans={activeScans}
         recentScans={recentScans}
         onNewScan={newScan}
         onOpenPalette={() => setPaletteOpen(true)}

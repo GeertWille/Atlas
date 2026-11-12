@@ -49,6 +49,16 @@ test("page markers are ordered by time and colliding labels drop to a second row
   ]);
 });
 
+test("the earliest marker is labelled before its line, so labels cannot overlap on a narrow plot", () => {
+  const close = { ...metrics, timeToFirstAuctionMs: 1900, pageLoadMs: 1950, timeToFirstAdMs: 2000 };
+  const { markers } = layoutSlotTimeline([filled], close);
+  expect(markers.map((marker) => [marker.label, marker.labelSide, marker.labelRow])).toEqual([
+    ["First auction", "before", 0],
+    ["Page load", "after", 0],
+    ["First ad", "after", 1],
+  ]);
+});
+
 test("missing page timings produce no markers", () => {
   const bare = { ...metrics, pageLoadMs: null, timeToFirstAuctionMs: null, timeToFirstAdMs: null };
   expect(layoutSlotTimeline([filled], bare).markers).toEqual([]);

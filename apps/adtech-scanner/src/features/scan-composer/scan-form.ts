@@ -1,8 +1,7 @@
 import { z } from "zod";
 import type { ScanOptions } from "@/bindings";
+import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { normalizeScanUrl } from "./scan-url";
-
-export const OBSERVE_SECONDS = { min: 5, max: 60, step: 5 } as const;
 
 const scanFormSchema = z.object({
   url: z.string().transform((value, context) => {

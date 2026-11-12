@@ -90,9 +90,10 @@ export function FindingCard({
           {finding.evidence.length > 0 ? (
             <div className="flex flex-col gap-2.5">
               <h3 className="text-xs font-semibold tracking-wide text-subtle-foreground uppercase">Evidence</h3>
-              {finding.evidence.map((evidence) => (
+              {finding.evidence.map((evidence, index) => (
                 <EvidenceBlock
-                  key={`${evidence.kind}-${evidence.label}`}
+                  // biome-ignore lint/suspicious/noArrayIndexKey: evidence of a stored finding never reorders, and labels can repeat
+                  key={index}
                   evidence={evidence}
                   onOpenScript={onOpenScript}
                 />

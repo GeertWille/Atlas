@@ -5,10 +5,14 @@ test("keyboard shortcuts: palette, new scan, settings", async ({ page }) => {
   await openApp(page, "/history");
   const palette = page.getByRole("dialog", { name: "Command palette" });
 
+  const search = page.getByRole("searchbox", { name: "Search scans" });
+  await search.focus();
   await page.keyboard.press("Control+k");
   await expect(palette).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
+  // Closing the palette puts the keyboard back where it was.
+  await expect(search).toBeFocused();
 
   await page.keyboard.press("Control+Comma");
   await expect(page).toHaveURL(/#\/settings/);
@@ -17,11 +21,41 @@ test("keyboard shortcuts: palette, new scan, settings", async ({ page }) => {
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.getByRole("textbox", { name: "Page URL" })).toBeFocused();
 
-  // The palette toggles with the same shortcut.
+  // The palette toggles with the same shortcut, and every opening starts empty.
   await page.keyboard.press("Control+k");
   await expect(palette).toBeVisible();
+  await page.keyboard.type("hist");
   await page.keyboard.press("Control+k");
   await expect(palette).toBeHidden();
+  await page.keyboard.press("Control+k");
+  await expect(palette.getByRole("combobox")).toHaveValue("");
+});
+
+test("deep links keep their search params when the page URL has its own query string", async ({ page }) => {
+  await page.goto("/?fakeProfile=seeded&fakeSpeed=40&ref=mail#/scans/seed-techpulse-desktop?tab=auctions");
+  await expect(page.getByRole("tab", { name: /^Auctions/ })).toHaveAttribute("aria-selected", "true");
+
+  await page.getByRole("tab", { name: /^Ad slots/ }).click();
+  await expect(page).toHaveURL(/\?ref=mail#\/scans\/seed-techpulse-desktop\?tab=slots$/);
+  await page.reload();
+  await expect(page.getByRole("tab", { name: /^Ad slots/ })).toHaveAttribute("aria-selected", "true");
+});
+
+test("searching the audit trails from the palette replaces the query already on screen", async ({ page }) => {
+  await openApp(page, "/logs?q=failsafe");
+  const input = page.getByRole("searchbox", { name: "Search all audit trails" });
+  await expect(input).toHaveValue("failsafe");
+
+  await page.keyboard.press("Control+k");
+  await page.keyboard.type("IS_MOBILE");
+  await page.getByRole("option", { name: "Search audit trails for “IS_MOBILE”" }).click();
+
+  await expect(input).toHaveValue("IS_MOBILE");
+  await expect(page).toHaveURL(/#\/logs\?q=IS_MOBILE/);
+  // The old draft must not win the URL back once its debounce fires.
+  await page.waitForTimeout(600);
+  await expect(page).toHaveURL(/#\/logs\?q=IS_MOBILE/);
+  await expect(input).toHaveValue("IS_MOBILE");
 });
 
 test("command palette: navigate, open a scan, search logs, switch theme, start the demo", async ({ page }) => {

@@ -2,7 +2,7 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import { ChevronRightIcon, FileQuestionIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
-import { LiveScanView } from "@/features/live-scan";
+import { ActivityFeed, LiveScanView } from "@/features/live-scan";
 import { ReportHeader, ReportOverview, ScanOutcomeNotice } from "@/features/report";
 import { AuctionsTab } from "@/features/report/auctions";
 import { FindingsTab } from "@/features/report/findings";
@@ -85,12 +85,18 @@ function Report({ detail }: { detail: ScanDetail }) {
           <ScriptsTab scripts={detail.scripts} focusedScriptUrl={search.script} />
         </TabsContent>
         <TabsContent value="audit">
-          <AuditTrail
-            steps={detail.steps}
-            logs={logs.data}
-            focusedLogId={search.log}
-            onOpenFinding={(finding) => navigate({ search: { tab: "findings", finding } })}
-          />
+          {logs.isError ? (
+            <QueryError title="Could not load the audit trail" error={logs.error} onRetry={() => void logs.refetch()} />
+          ) : (
+            <AuditTrail
+              // A new deep link starts from an unfiltered trail, so its entry is never hidden.
+              key={search.log}
+              steps={detail.steps}
+              logs={logs.data}
+              focusedLogId={search.log}
+              onOpenFinding={(finding) => navigate({ search: { tab: "findings", finding } })}
+            />
+          )}
         </TabsContent>
       </Tabs>
     </PageContent>
@@ -100,7 +106,19 @@ function Report({ detail }: { detail: ScanDetail }) {
 function LiveScan({ detail }: { detail: ScanDetail }) {
   const settings = useSettings();
   const logs = useScanLogs(detail.summary.id);
-  return <LiveScanView detail={detail} logs={logs.data} budgetUsd={settings.data?.budgetUsd ?? 0} />;
+  return (
+    <LiveScanView
+      detail={detail}
+      budgetUsd={settings.data?.budgetUsd}
+      activity={
+        logs.isError ? (
+          <QueryError title="Could not load the activity" error={logs.error} onRetry={() => void logs.refetch()} />
+        ) : (
+          <ActivityFeed logs={logs.data} />
+        )
+      }
+    />
+  );
 }
 
 function ReportSkeleton() {
@@ -118,6 +136,28 @@ function ReportSkeleton() {
       <Skeleton className="h-64 rounded-xl" />
     </PageContent>
   );
+}
+
+function ScanBody({ scan }: { scan: ReturnType<typeof useScan> }) {
+  if (scan.isPending) return <ReportSkeleton />;
+  if (scan.isError) {
+    if (toApiError(scan.error).code === "notFound") {
+      return (
+        <Empty
+          icon={FileQuestionIcon}
+          title="This scan no longer exists"
+          description="It may have been deleted from history."
+        >
+          <Button asChild variant="outline" size="sm">
+            <Link to="/history">Go to history</Link>
+          </Button>
+        </Empty>
+      );
+    }
+    return <QueryError title="Could not load this scan" error={scan.error} onRetry={() => void scan.refetch()} />;
+  }
+  if (isActive(scan.data.summary.status)) return <LiveScan detail={scan.data} />;
+  return <Report key={scan.data.summary.id} detail={scan.data} />;
 }
 
 export function ScanRoute() {
@@ -140,27 +180,7 @@ export function ScanRoute() {
         </>
       }
     >
-      {scan.isPending ? (
-        <ReportSkeleton />
-      ) : scan.isError ? (
-        toApiError(scan.error).code === "notFound" ? (
-          <Empty
-            icon={FileQuestionIcon}
-            title="This scan no longer exists"
-            description="It may have been deleted from history."
-          >
-            <Button asChild variant="outline" size="sm">
-              <Link to="/history">Go to history</Link>
-            </Button>
-          </Empty>
-        ) : (
-          <QueryError title="Could not load this scan" error={scan.error} onRetry={() => void scan.refetch()} />
-        )
-      ) : live ? (
-        <LiveScan detail={scan.data} />
-      ) : (
-        <Report key={scan.data.summary.id} detail={scan.data} />
-      )}
+      <ScanBody scan={scan} />
     </Page>
   );
 }

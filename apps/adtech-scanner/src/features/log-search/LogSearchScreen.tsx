@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRightIcon, SearchIcon, SearchXIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 import type { LogSearchHit } from "@/bindings";
 import { useLogSearch } from "@/lib/query/hooks";
 import { LOG_KIND_ICON } from "@/shared/components/log-entry-row";
@@ -11,7 +11,7 @@ import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { LOG_KIND_LABEL } from "@/shared/domain/vocabulary";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
 import { formatClock, formatDateTime, pluralize } from "@/shared/lib/format";
-import { pathOf } from "@/shared/lib/url";
+import { hostnameOf, pathOf } from "@/shared/lib/url";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -64,7 +64,7 @@ function HitRow({ hit }: { hit: LogSearchHit }) {
 }
 
 function GroupPanel({ group }: { group: HitGroup }) {
-  const hostname = new URL(group.scanUrl).hostname;
+  const hostname = hostnameOf(group.scanUrl);
   return (
     <Panel aria-label={`Matches in ${hostname}`} className="overflow-hidden">
       <header className="flex items-center justify-between gap-4 px-4 py-2.5">
@@ -117,10 +117,22 @@ export function LogSearchScreen({
   const [draft, setDraft] = useState(query);
   const debounced = useDebouncedValue(draft.trim(), 250);
   const search = useLogSearch(query);
+  // The query this field last agreed on with the route, whichever side changed it.
+  const settled = useRef(query);
 
+  const commit = useEffectEvent((next: string) => {
+    if (next === settled.current) return;
+    settled.current = next;
+    onQueryChange(next);
+  });
+  useEffect(() => commit(debounced), [debounced]);
+
+  // The route changed the query itself (palette search, back/forward): show it instead of committing the old draft.
   useEffect(() => {
-    if (debounced !== query) onQueryChange(debounced);
-  }, [debounced, query, onQueryChange]);
+    if (query === settled.current) return;
+    settled.current = query;
+    setDraft(query);
+  }, [query]);
 
   const tooShort = query.length < MIN_QUERY_LENGTH;
   const groups = groupHitsByScan(search.data ?? []);

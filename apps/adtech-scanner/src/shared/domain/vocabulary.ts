@@ -87,6 +87,7 @@ export const FINDING_SOURCE_LABEL: Record<FindingSource, string> = {
   heuristic: "Deterministic rule",
 };
 
+/** Best outcome first: winners, then live bids, then the ways a bidder can fail. Legends and bid rows use this order. */
 export const BID_STATUSES: readonly BidStatus[] = ["rendered", "won", "bid", "noBid", "timeout", "error", "pending"];
 
 export const BID_STATUS_META: Record<BidStatus, Meta & { description: string }> = {
