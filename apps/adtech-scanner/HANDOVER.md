@@ -159,23 +159,32 @@ every check passed or could not be made.
    type, the adapter documentation's test id, and one placement id shared by three or more
    differently sized ad units. Prebid announces such a bid in `bidRequested`, sends nothing and
    reports `noBid`, so a rejected bid looks like a bidder that declined. A bidder code that is not
-   a built-in code or alias is not checked against the table; for those, and for rules the table
-   does not model, Prebid's own "Invalid bid sent to bidder" warning is used.
+   a built-in code or alias is not checked against the table, and neither is a bidder that
+   `s2sConfig.bidders` hands to Prebid Server, whose param rules differ; for those, and for rules the
+   table does not model, Prebid's own "Invalid bid sent to bidder" warning is used. A wrongly typed
+   param is not held against a bid that another complete alternative of the adapter makes valid.
 2. **Bid responses.** The browser crate recognises bid requests by endpoint host and path (same
    Prebid release) and keeps status, failure and a reason of at most 200 characters: a top-level
-   `error` or `message`, AppNexus per-tag `error`, or the OpenRTB `nbr` code. Bodies are read in
-   memory and dropped. Prebid's own `bidderError` events are used too.
+   `error` or `message`, AppNexus per-tag `error`, or the OpenRTB `nbr` code; an answer that carries
+   bids (`seatbid`) has no reason. Bodies are read in memory and dropped. A path alone identifies an
+   endpoint only at the own origin of a page served from this machine, which is how the demo site
+   stands in for an exchange; on every real host the adapter's own host must match. Prebid's own
+   `bidderError` events are used too.
 3. **ads.txt.** One GET of `https://<registrable domain>/ads.txt` (public suffix list), parsed per
    the IAB ads.txt 1.1 specification. Each bidder's ad system domain must be listed; where the params
    carry the account id (appnexus `member`, rubicon `accountId`, pubmatic `publisherId`, medianet
    `cid`) or the request carries a supply chain, the id must be listed too. Only 404 and 410 count as
-   "no ads.txt"; any other failure, a web page or binary data is "could not be read" and raises
-   nothing. A `SUBDOMAIN=` declaration for the scanned host is followed to that host's own file.
+   "no ads.txt"; any other failure, a web page, binary data or an answer without a single seller
+   record (an empty file, a soft 404) is "could not be read" and raises nothing. A repeated record
+   counts once. A `SUBDOMAIN=` declaration for the scanned host is followed to that host's own file.
+   A page served from this machine never gets the "site has no ads.txt" finding.
 4. **sellers.json.** Off by default (Settings, "Check sellers.json at ad exchanges"). When on, the app
    requests `https://<ad system domain>/sellers.json` for the ad systems of the page's bidders that
    ads.txt lists, and looks up the account in use, or else the DIRECT records (at most ten per
    exchange): unknown seller id, confidential seller, seller type against DIRECT/RESELLER, seller
-   domain against the site, OWNERDOMAIN and MANAGERDOMAIN. It is never done for a page served from
+   domain against the site, OWNERDOMAIN and MANAGERDOMAIN. Only ad system domains of the adapter
+   table are ever asked, never a name that is merely written in ads.txt, each must be a host name
+   under a public suffix, and one scan asks at most twelve. It is never done for a page served from
    this machine, so the demo site cannot send the app to a real exchange.
 5. **Consent.** The tracker listens to `__tcfapi` and records, per state change, whether GDPR
    applies, whether there is a TC string, and the consented purposes and vendor ids. The string
@@ -184,11 +193,13 @@ every check passed or could not be made.
    without a consent string, and a bidder whose IAB vendor id (adapter `gvlid`, cross-checked against
    GVL v184) lacks consent.
 
-The fetcher (`infrastructure/public_files.rs`, port `PublicFileFetcher`) reads https only, refuses
-loopback, private and link-local addresses, credentials in the address and non-http schemes, pins
-the connection to the addresses it checked, follows redirects by hand (any number within the root
-domain, one outside it, five in total), sends no cookies, and stops at 1 MiB and 10 s for ads.txt
-and 24 MiB and 20 s for sellers.json. The one exception is the scanned page's own origin when that
+The fetcher (`infrastructure/public_files.rs`, port `PublicFileFetcher`) reads https on port 443
+only, refuses loopback (by address or by name), private, link-local, shared and IPv4-in-IPv6
+addresses, credentials in the address and non-http schemes, pins the connection to the addresses
+it checked on every hop (a name that did not resolve is never resolved a second time), follows
+redirects by hand (any number within the root domain, one outside it, five in total), sends no
+cookies, and stops at 1 MiB and 10 s for ads.txt and 24 MiB and 20 s for sellers.json, counted on
+the decompressed bytes. The one exception is the scanned page's own origin when that
 is on loopback, which is how the demo site's `/ads.txt` is read, over http and never through a proxy.
 
 Known limits:

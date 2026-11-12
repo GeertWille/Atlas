@@ -62,9 +62,7 @@ function BidderBlock({ bidder }: { bidder: FlaggedBidder }) {
     <li className="flex flex-col gap-2 px-4 py-3" aria-label={bidder.bidder}>
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="font-medium">{bidder.bidder}</h3>
-        <span className="text-xs text-muted-foreground tabular-nums">
-          {describeBids(bidder)}
-        </span>
+        <span className="text-xs text-muted-foreground tabular-nums">{describeBids(bidder)}</span>
       </div>
       <ul className="flex flex-col gap-2">
         {bidder.flagged.map((check) => (

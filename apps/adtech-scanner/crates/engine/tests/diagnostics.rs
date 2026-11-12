@@ -1317,3 +1317,29 @@ fn a_page_served_from_this_machine_is_not_told_that_its_site_has_no_ads_txt() {
         assert_eq!(fired(&capture, &missing), Vec::<&str>::new(), "{local}");
     }
 }
+
+#[test]
+fn a_bidder_code_the_publisher_made_up_with_alias_bidder_raises_nothing() {
+    // `pbjs.aliasBidder('rubicon', 'rubicon_east')`: the scanner cannot know
+    // which adapter is behind the name, so nothing is held against its params.
+    let capture = page(
+        &[
+            bidder("rubicon_east", json!({})),
+            bidder("appnexus-video", json!({ "member": 1 })),
+        ],
+        vec![],
+    );
+    let diagnosed = diagnose(
+        &capture,
+        &found("rubiconproject.com, 1001, DIRECT\nappnexus.com, 958, DIRECT\n"),
+    );
+    for diagnosis in &diagnosed.bidders {
+        let flagged: Vec<_> = diagnosis
+            .checks
+            .iter()
+            .filter(|check| check.status != DiagnosticStatus::NotChecked)
+            .collect();
+        assert!(flagged.is_empty(), "{}: {flagged:#?}", diagnosis.bidder);
+    }
+    assert_eq!(fired(&capture, &diagnosed), Vec::<&str>::new());
+}

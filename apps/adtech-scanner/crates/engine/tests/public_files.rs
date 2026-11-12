@@ -334,6 +334,20 @@ async fn loopback_is_only_read_as_the_scanned_origin() {
 }
 
 #[tokio::test]
+async fn a_scanned_page_on_localhost_is_read_at_this_machine_by_name() {
+    let server = MockServer::start().await;
+    serve(&server, "/ads.txt", text(ADS_TXT)).await;
+    let origin = format!("http://localhost:{}", server.address().port());
+
+    let by_name = PublicFileRequest {
+        url: format!("{origin}/ads.txt"),
+        loopback_origin: Some(origin),
+        ..request(&server, "/ads.txt")
+    };
+    assert_eq!(fetch(&by_name).await.unwrap().body, ADS_TXT.as_bytes());
+}
+
+#[tokio::test]
 async fn an_oversized_file_is_an_error_not_a_truncated_file() {
     let server = MockServer::start().await;
     let line = "appnexus.com, 958, DIRECT\n";

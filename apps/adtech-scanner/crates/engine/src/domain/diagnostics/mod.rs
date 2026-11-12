@@ -15,6 +15,7 @@ use adscan_model::{
     AdsTxtLineProblem, AdsTxtReport, AdsTxtStatus, BidStatus, BidderDiagnosis, BidderDiagnostics,
     Capture, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, SchainNode, TrackerEventKind as Ev,
 };
+use serde_json::Value;
 
 use self::adapters::{AdapterSpec, adapter_for};
 use self::ads_txt::{AdsTxt, AdsTxtOutcome, Record, Relationship};
@@ -426,9 +427,9 @@ fn ads_txt_report(files: &SiteFiles) -> AdsTxtReport {
 /// The bidders Prebid hands to a Prebid Server (`s2sConfig.bidders`). The
 /// server validates their params by its own rules, which differ from the
 /// adapter's: several accept fewer or other params.
-fn server_side_bidders(prebid_config: Option<&serde_json::Value>) -> BTreeSet<&str> {
+fn server_side_bidders(prebid_config: Option<&Value>) -> BTreeSet<&str> {
     let configs = match prebid_config.map(|raw| &raw["s2sConfig"]) {
-        Some(serde_json::Value::Array(configs)) => configs.iter().collect(),
+        Some(Value::Array(configs)) => configs.iter().collect(),
         Some(config) => vec![config],
         None => Vec::new(),
     };
@@ -437,7 +438,7 @@ fn server_side_bidders(prebid_config: Option<&serde_json::Value>) -> BTreeSet<&s
         .filter(|config| config["enabled"] != false)
         .filter_map(|config| config["bidders"].as_array())
         .flatten()
-        .filter_map(serde_json::Value::as_str)
+        .filter_map(Value::as_str)
         .collect()
 }
 

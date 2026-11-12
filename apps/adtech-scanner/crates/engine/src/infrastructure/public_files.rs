@@ -169,14 +169,20 @@ fn client(url: &Url, route: &Route) -> Result<reqwest::Client, FetchError> {
     let builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(CONNECT_TIMEOUT);
+    let host = url.host_str().unwrap_or_default();
     let builder = match route {
-        Route::ScannedOrigin => builder.no_proxy(),
+        // `localhost` is this machine whatever a resolver says.
+        Route::ScannedOrigin => builder.no_proxy().resolve_to_addrs(
+            host,
+            &[
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 0)),
+            ],
+        ),
         Route::PublicAddress => builder,
         // Pinned even when nothing was resolved: the client then has no
         // address of its own to connect to, instead of asking DNS again.
-        Route::PublicName(pinned) => {
-            builder.resolve_to_addrs(url.host_str().unwrap_or_default(), pinned)
-        }
+        Route::PublicName(pinned) => builder.resolve_to_addrs(host, pinned),
     };
     builder.build().map_err(network)
 }
