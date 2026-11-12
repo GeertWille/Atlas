@@ -144,7 +144,7 @@ fn without_password(location: &str) -> Cow<'_, str> {
 fn stored_parameters(parameters: &str) -> Cow<'_, str> {
     let carries_one = |pair: &str| {
         pair.split_once('=')
-            .is_some_and(|(name, value)| !value.is_empty() && names_a_credential(name))
+            .is_some_and(|(name, value)| credential_field(name, value))
     };
     if !parameters.split('&').any(carries_one) {
         return Cow::Borrowed(parameters);
@@ -186,15 +186,50 @@ pub fn stored_json(text: &str) -> Cow<'_, str> {
     if !MENTIONS_A_CREDENTIAL.is_match(text) {
         return Cow::Borrowed(text);
     }
-    replace_all(Cow::Borrowed(text), &JSON_PAIR, |found| {
-        let value = found.get(3).or(found.get(4))?.as_str();
-        credential_field(&found[2], value)
-            .then(|| format!("{}\"{}\"", &found[1], length_of(value)))
-    })
+    let field = |quote: &'static str| {
+        move |found: &Captures| {
+            let value = found.get(3).or(found.get(4))?.as_str();
+            credential_field(&found[2], value)
+                .then(|| format!("{}{quote}{}{quote}", &found[1], length_of(value)))
+        }
+    };
+    let stored = replace_all(Cow::Borrowed(text), &JSON_PAIR, field("\""));
+    replace_all(stored, &NESTED_JSON_PAIR, field("\\\""))
 }
 
 fn credential_field(name: &str, value: &str) -> bool {
-    !value.is_empty() && names_a_credential(name)
+    !value.is_empty() && names_a_credential(&percent_decoded(name))
+}
+
+/// `user%5Bpassword%5D` as `user[password]`. Only what a name is made of
+/// matters here, so bytes that are not ASCII are left as they are.
+fn percent_decoded(name: &str) -> Cow<'_, str> {
+    if !name.contains('%') {
+        return Cow::Borrowed(name);
+    }
+    let bytes = name.as_bytes();
+    let mut decoded = String::with_capacity(name.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let escaped = (bytes[at] == b'%')
+            .then(|| name.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            .filter(u8::is_ascii);
+        match escaped {
+            Some(byte) => {
+                decoded.push(char::from(byte));
+                at += 3;
+            }
+            None => {
+                let rest = &name[at..];
+                let character = rest.chars().next().unwrap_or_default();
+                decoded.push(character);
+                at += character.len_utf8().max(1);
+            }
+        }
+    }
+    Cow::Owned(decoded)
 }
 
 /// `text` with every match for which `replacement` has one replaced.
@@ -223,22 +258,32 @@ fn replace_all<'a>(
 /// A cheap first look: nearly every body mentions none of these and is
 /// stored without being searched field by field.
 static MENTIONS_A_CREDENTIAL: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)passw|pwd|passphrase|secret|token|jwt|api.?key|auth|signature|csrf|xsrf|otp|cvv|cvc|cookie|private.?key|access.?key")
+    Regex::new(r"(?i)pass|pwd|secret|token|jwt|api.?key|auth|signature|csrf|xsrf|otp|cvv|cvc|private.?key|access.?key|subscription.?key")
         .expect("a valid pattern")
 });
 
-/// `"name": "value"` or `"name": 123`, also inside JSON that is itself a
-/// string (`\"name\":\"value\"`).
+const JSON_NAME: &str = r"[A-Za-z0-9_.\-\[\] ]{1,64}";
+const JSON_NUMBER: &str = r"-?[0-9][0-9.eE+\-]*";
+
+/// `"name": "value"` or `"name": 123`.
 static JSON_PAIR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"(\\?"([A-Za-z0-9_.\-\[\] ]{1,64})\\?"\s*:\s*)(?:\\?"((?:[^"\\]|\\[^"])*)\\?"|(-?[0-9][0-9.eE+\-]*))"#,
-    )
+    Regex::new(&format!(
+        r#"("({JSON_NAME})"\s*:\s*)(?:"((?:[^"\\]|\\.)*)"|({JSON_NUMBER}))"#
+    ))
+    .expect("a valid pattern")
+});
+
+/// The same inside JSON that is itself a string value: `\"name\":\"value\"`.
+static NESTED_JSON_PAIR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(&format!(
+        r#"(\\"({JSON_NAME})\\"\s*:\s*)(?:\\"((?:[^"\\]|\\\\(?:\\\\|\\"|[^"\\]))*)\\"|({JSON_NUMBER}))"#
+    ))
     .expect("a valid pattern")
 });
 
 /// `name=value` as forms and query strings write it, wherever it stands.
 static FORM_PAIR: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(^|[?&;\s"'])([A-Za-z0-9_.\-\[\]%]{1,64})=([^&\s"'<>]*)"#)
+    Regex::new(r#"(^|[?&;\s"'])([A-Za-z0-9_.\-\[\]%]{1,64})=([^&\s"'<>\\]*)"#)
         .expect("a valid pattern")
 });
 
@@ -254,6 +299,7 @@ static MULTIPART_FIELD: LazyLock<Regex> = LazyLock::new(|| {
 pub fn names_a_credential(name: &str) -> bool {
     const WORDS: &[&str] = &[
         "password",
+        "pass",
         "passwd",
         "pwd",
         "passphrase",
@@ -451,7 +497,11 @@ mod tests {
         for (name, value) in [
             ("User-Agent", "Mozilla/5.0"),
             ("Referer", "https://pub.example/a?b=c"),
-            ("x-api-key", "k-123"),
+            (":authority", "pub.example"),
+            ("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
+            ("Access-Control-Allow-Credentials", "true"),
+            ("Access-Control-Allow-Headers", "authorization, x-api-key"),
+            ("WWW-Authenticate", "Basic realm=\"pub\""),
             ("Content-Type", "application/json"),
         ] {
             assert_eq!(stored(name, value), value);
@@ -486,5 +536,190 @@ mod tests {
                 .iter()
                 .all(|header| header.redaction.is_none())
         );
+    }
+
+    #[test]
+    fn headers_named_like_a_credential_lose_their_value() {
+        for (name, value) in [
+            ("x-api-key", "k-123-secret"),
+            ("X-Auth-Token", "tok-secret"),
+            ("X-CSRF-Token", "csrf-secret"),
+            ("x-amz-security-token", "FQoGZXIvYXdzE-secret"),
+            ("Ocp-Apim-Subscription-Key", "0123456789-secret"),
+            ("X-Goog-Api-Key", "AIza-secret"),
+            ("X-Hub-Signature", "sha1=secret"),
+        ] {
+            assert_eq!(redaction_of(name), Some(HeaderRedaction::Credential), "{name}");
+            assert_eq!(stored(name, value), format!("[{} bytes]", value.len()), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_first_word_that_is_no_scheme_is_part_of_the_credential() {
+        assert_eq!(stored("Authorization", "s3cr3t-part more"), "[16 bytes]");
+        assert_eq!(
+            stored("Authorization", "AWS4-HMAC-SHA256 Credential=AKIA/x, Signature=abc"),
+            "AWS4-HMAC-SHA256 [32 bytes]"
+        );
+    }
+
+    #[test]
+    fn the_proxy_password_is_never_stored_whatever_the_mode() {
+        for full in [false, true] {
+            let headers = stored_headers(
+                &[
+                    raw("Proxy-Authorization", "Basic dXNlcjpodW50ZXIy"),
+                    raw("Cookie", "a=1"),
+                ],
+                full,
+            );
+            assert_eq!(headers[0].1, "Basic [16 bytes]", "full = {full}");
+            let shown = displayed_headers(&headers, !full);
+            assert_eq!(shown[0].redaction, Some(HeaderRedaction::Credential));
+            assert_eq!(shown[1].redaction.is_some(), !full);
+        }
+    }
+
+    #[test]
+    fn credentials_in_url_parameters_are_replaced_and_the_rest_of_the_url_stays() {
+        for (url, expected) in [
+            (
+                "https://api.example/v1/me?access_token=ya29.secret&fields=id",
+                "https://api.example/v1/me?access_token=[redacted-11-bytes]&fields=id",
+            ),
+            (
+                "https://pub.example/login?user=jo&password=hunter2",
+                "https://pub.example/login?user=jo&password=[redacted-7-bytes]",
+            ),
+            (
+                "https://x.example/cb#id_token=eyJ.secret&state=1",
+                "https://x.example/cb#id_token=[redacted-10-bytes]&state=1",
+            ),
+            (
+                "https://x.example/a?apiKey=k1&api_key=k22&X-Amz-Signature=abc",
+                "https://x.example/a?apiKey=[redacted-2-bytes]&api_key=[redacted-3-bytes]&X-Amz-Signature=[redacted-3-bytes]",
+            ),
+            (
+                "https://x.example/a?user%5Bpassword%5D=pw",
+                "https://x.example/a?user%5Bpassword%5D=[redacted-2-bytes]",
+            ),
+            (
+                "https://jo:hunter2@x.example/a?b=1",
+                "https://jo:[redacted-7-bytes]@x.example/a?b=1",
+            ),
+        ] {
+            assert_eq!(stored_url(url), expected);
+        }
+    }
+
+    #[test]
+    fn ad_tech_urls_are_stored_as_they_were_requested() {
+        for url in [
+            "https://securepubads.g.doubleclick.net/gampad/ads?iu_parts=1234%2Cnews&prev_scp=hb_pb%3D1.20%7Chb_bidder%3Drubicon&gdpr_consent=CPc8xAAPc8xAA&cust_params=key%3Dvalue&sig=abc",
+            "https://ib.adnxs.com/getuid?https://sync.example/match?uid=$UID",
+            "https://fastlane.rubiconproject.com/a/api/fastlane.json?account_id=1001&site_id=2&keywords=a,b&tk_user_key=u1",
+            "https://pub.example/article?author=jo&session=3&key=public",
+            "https://pub.example/",
+            "data:",
+        ] {
+            assert!(matches!(stored_url(url), Cow::Borrowed(_)), "{url}");
+        }
+    }
+
+    #[test]
+    fn urls_in_referer_and_location_headers_lose_their_credentials_in_every_mode() {
+        for full in [false, true] {
+            let headers = stored_headers(
+                &[
+                    raw("Referer", "https://pub.example/reset?token=abcdef"),
+                    raw("location", "/cb?code=1&access_token=xyz"),
+                ],
+                full,
+            );
+            assert_eq!(
+                headers[0].1,
+                "https://pub.example/reset?token=[redacted-6-bytes]"
+            );
+            assert_eq!(headers[1].1, "/cb?code=1&access_token=[redacted-3-bytes]");
+        }
+    }
+
+    #[test]
+    fn a_login_form_keeps_its_user_name_and_loses_its_password() {
+        assert_eq!(
+            stored_request_body("log=jo%40pub.example&pwd=hunter2&rememberme=forever"),
+            "log=jo%40pub.example&pwd=[7 bytes]&rememberme=forever"
+        );
+        assert_eq!(
+            stored_request_body("user%5Bemail%5D=jo&user%5Bpassword%5D=hunter2&authenticity_token=abc"),
+            "user%5Bemail%5D=jo&user%5Bpassword%5D=[7 bytes]&authenticity_token=[3 bytes]"
+        );
+        assert_eq!(
+            stored_request_body(r#"{"username":"jo","password":"hun\"ter2","otp":123456,"remember":true}"#),
+            r#"{"username":"jo","password":"[9 bytes]","otp":"[6 bytes]","remember":true}"#
+        );
+        let multipart = "--b\r\nContent-Disposition: form-data; name=\"user\"\r\n\r\njo\r\n--b\r\n\
+            Content-Disposition: form-data; name=\"password\"\r\n\r\nhunter2\r\n--b--\r\n";
+        assert_eq!(
+            stored_request_body(multipart),
+            multipart.replace("hunter2", "[7 bytes]")
+        );
+    }
+
+    #[test]
+    fn credentials_inside_nested_json_and_cut_off_bodies_are_found_too() {
+        assert_eq!(
+            stored_request_body(r#"{"body":"{\"user\":\"jo\",\"passwd\":\"a\\\"b\"}","n":1}"#),
+            r#"{"body":"{\"user\":\"jo\",\"passwd\":\"[4 bytes]\"}","n":1}"#
+        );
+        // Cut off after the first megabyte: no closing brace.
+        assert_eq!(
+            stored_request_body(r#"{"client_secret":"s3cr3t","scope":"a b","blob":"AAAA"#),
+            r#"{"client_secret":"[6 bytes]","scope":"a b","blob":"AAAA"#
+        );
+        assert_eq!(
+            stored_request_body(r#"{"page":"https://pub.example/?token=abc&x=1"}"#),
+            r#"{"page":"https://pub.example/?token=[3 bytes]&x=1"}"#
+        );
+    }
+
+    #[test]
+    fn bid_requests_and_other_bodies_without_credentials_are_stored_byte_for_byte() {
+        for body in [
+            r#"{"id":"2f5a","imp":[{"id":"1","banner":{"format":[{"w":300,"h":250}]},"ext":{"gpid":"/1/top"}}],"user":{"buyeruid":"u-1","ext":{"consent":"CPc8xAA","eids":[{"source":"id5-sync.com","uids":[{"id":"ID5*abc"}]}]}},"regs":{"ext":{"gdpr":1}},"tmax":1000}"#,
+            "v=2&tid=G-1&cid=555.666&sid=1699&en=page_view&dl=https%3A%2F%2Fpub.example%2F",
+            "plain text with the word authority and a keyword",
+            "",
+        ] {
+            assert!(matches!(stored_request_body(body), Cow::Borrowed(_)), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_token_endpoints_answer_keeps_its_shape_and_loses_its_tokens() {
+        assert_eq!(
+            stored_json(r#"{"access_token":"ya29.a0","expires_in":3599,"refresh_token":"1//0g","token_type":"Bearer","scope":"openid"}"#),
+            r#"{"access_token":"[7 bytes]","expires_in":3599,"refresh_token":"[5 bytes]","token_type":"[6 bytes]","scope":"openid"}"#
+        );
+        let bid_answer = r#"{"id":"1","seatbid":[{"bid":[{"impid":"1","price":1.2,"adm":"<div>","crid":"c1"}],"seat":"x"}],"cur":"USD"}"#;
+        assert!(matches!(stored_json(bid_answer), Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn names_are_read_word_by_word() {
+        for name in [
+            "password", "Password", "user_pass", "pwd", "client_secret", "accessToken",
+            "access_token", "id-token", "csrfToken", "X-XSRF-TOKEN", "api_key", "apiKey",
+            "apikey", "x-api-key", "auth", "Authorization", "secretKey", "private_key", "cvv",
+        ] {
+            assert!(names_a_credential(name), "{name}");
+        }
+        for name in [
+            ":authority", "author", "authority", "key", "keywords", "cache-key", "sec-websocket-key",
+            "tokens_per_minute_limit_reached", "passive", "bypass", "compass", "hb_pb", "gdpr_consent",
+            "session_id", "sid", "sig", "buyeruid", "us_privacy", "secretary", "", "x-request-id",
+        ] {
+            assert!(!names_a_credential(name), "{name}");
+        }
     }
 }
