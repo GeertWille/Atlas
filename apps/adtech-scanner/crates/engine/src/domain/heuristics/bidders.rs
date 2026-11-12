@@ -7,6 +7,7 @@ use adscan_model::{
 
 use super::delivery::silent_bidders;
 use super::{Rule, RuleContext, heuristic};
+use crate::domain::diagnostics::site::ads_txt_location;
 use crate::domain::diagnostics::{capitalized, codes};
 use crate::domain::finding::{FindingDraft, log_line, metric};
 
@@ -301,25 +302,28 @@ impl Rule for AdsTxtMissing {
             return Vec::new();
         };
         let report = &diagnostics.ads_txt;
-        if report.status != AdsTxtStatus::Missing {
+        // A page served from this machine is a build under development; its
+        // server says nothing about the ads.txt of the published site.
+        let page_is_local = ads_txt_location(&ctx.capture.final_url)
+            .is_some_and(|location| location.loopback_origin.is_some());
+        if report.status != AdsTxtStatus::Missing || page_is_local {
             return Vec::new();
         }
         let mut finding = heuristic(
-            Severity::High,
+            Severity::Medium,
             FindingCategory::Configuration,
             0.85,
             "The site has no ads.txt",
         );
         finding.description = format!(
-            "`{}` answered that there is no such file. Without ads.txt no seller is authorised for this \
-             site: most demand-side platforms then lower their bids or do not bid at all, whichever exchange the \
-             request comes through.",
+            "`{}` answered that there is no such file. Without ads.txt buyers cannot verify who may sell              this site's inventory. The specification lets them buy it anyway, but many demand-side platforms              are set to buy only from authorised sellers and then bid less or not at all, whichever exchange              the request comes through.",
             report.url
         );
         finding.recommendation = "Publish an ads.txt at the root of the domain with the line each partner provides \
              (`<ad system domain>, <account id>, DIRECT|RESELLER[, <certification id>]`), served as `text/plain`."
             .into();
-        finding.impact = "Every header bidding partner sells this inventory as unauthorised".into();
+        finding.impact =
+            "No header bidding partner can show buyers that it is authorised to sell this inventory".into();
         finding.evidence.push(metric(
             "ads.txt request",
             format!("{}: not found", report.url),

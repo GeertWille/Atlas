@@ -174,7 +174,35 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
             ad_units: vec![]
         }
     );
-    assert_eq!(auctions.len(), 2);
+    // Params are copied whole or not at all, and never at the page's expense.
+    let self_reference = json!({ "placementId": 7, "self": "[…]" });
+    let mut circular = self_reference;
+    for _ in 0..3 {
+        circular = json!({ "placementId": 7, "self": circular });
+    }
+    assert_eq!(
+        auctions[2],
+        &Kind::AuctionInit {
+            auction_id: "auction-3".into(),
+            timeout: None,
+            ad_units: vec![TrackedAdUnit {
+                code: "unit-h".into(),
+                sizes: strings(&["300x250"]),
+                bidders: strings(&["loop", "wide", "trap", "ice", "list", "nil"]),
+                bids: vec![
+                    TrackedBid {
+                        bidder: "loop".into(),
+                        params: circular,
+                    },
+                    TrackedBid {
+                        bidder: "ice".into(),
+                        params: json!({ "zoneId": 3, "nested": { "a": [1] } }),
+                    },
+                ],
+            }],
+        }
+    );
+    assert_eq!(auctions.len(), 3);
     assert_eq!(
         kinds(&capture, "bidRequested"),
         [
@@ -600,6 +628,10 @@ async fn the_tracker_stays_out_of_the_pages_way() {
     assert_eq!(
         state["pbjsCreated"], false,
         "no globals are created for libraries the page does not use"
+    );
+    assert_eq!(
+        state["hostileParamsUntouched"], true,
+        "reading params leaves them as the page made them"
     );
     assert_eq!(
         state["consentListeners"], 1,

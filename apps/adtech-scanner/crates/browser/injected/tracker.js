@@ -33,6 +33,7 @@
   var MAX_EVENTS = 40000;
   var MAX_TEXT = 1000;
   var MAX_LIST = 200;
+  var MAX_OBJECT_KEYS = 60;
   var FAST_POLL_MS = 50;
   var SLOW_POLL_MS = 1000;
   var FAST_POLL_WINDOW_MS = 30000;
@@ -167,7 +168,7 @@
     }
     copy = {};
     var keys = Object.keys(value);
-    for (var k = 0; k < keys.length && k < 60; k++) {
+    for (var k = 0; k < keys.length && k < MAX_OBJECT_KEYS; k++) {
       var entry = plain(value[keys[k]], depth - 1);
       if (entry !== undefined) copy[keys[k]] = entry;
     }
@@ -508,9 +509,16 @@
   // The adapter params as configured. Params too large to copy whole are
   // left out rather than cut: half an object would read as missing keys.
   function paramsOf(params) {
-    var copy = plain(params === undefined ? {} : params, 4);
-    if (!copy || typeof copy !== 'object' || isArray(copy)) return null;
-    return stringify(copy).length <= MAX_PARAMS_CHARS ? copy : null;
+    if (params === undefined) return {};
+    if (!params || typeof params !== 'object' || isArray(params)) return null;
+    try {
+      if (Object.keys(params).length > MAX_OBJECT_KEYS) return null;
+      var copy = plain(params, 4);
+      return stringify(copy).length <= MAX_PARAMS_CHARS ? copy : null;
+    } catch (unreadable) {
+      // A getter or proxy that throws costs this bid's params, not the event.
+      return null;
+    }
   }
 
   function flag(value) {

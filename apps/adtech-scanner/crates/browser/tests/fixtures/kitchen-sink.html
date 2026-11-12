@@ -233,6 +233,36 @@ setTimeout(function () {
   hb.emit('bidWon', null);
   hb.emit('bidTimeout', { bidder: 'lonely' });
   hb.emit('auctionInit', { auctionId: 'auction-2', adUnits: 'nonsense' });
+  // Params no copy can be taken of for granted: circular, very wide, throwing, frozen, not an object.
+  var circular = { placementId: 7 };
+  circular.self = circular;
+  var wide = {};
+  for (var w = 0; w < 61; w++) wide['k' + w] = w;
+  var trap = { get siteId() { throw new Error('params getter'); } };
+  var frozen = Object.freeze({ zoneId: 3, nested: Object.freeze({ a: [1] }) });
+  hb.emit('auctionInit', {
+    auctionId: 'auction-3',
+    adUnits: [
+      {
+        code: 'unit-h',
+        sizes: [[300, 250]],
+        bids: [
+          { bidder: 'loop', params: circular },
+          { bidder: 'wide', params: wide },
+          { bidder: 'trap', params: trap },
+          { bidder: 'ice', params: frozen },
+          { bidder: 'list', params: [1, 2] },
+          { bidder: 'nil', params: null },
+        ],
+      },
+    ],
+  });
+  window.hostileParamsUntouched =
+    circular.self === circular &&
+    Object.keys(circular).length === 2 &&
+    Object.keys(wide).length === 61 &&
+    Object.isFrozen(frozen) &&
+    frozen.nested.a.length === 1;
   hb.emit('setTargeting', undefined);
 
   var decided = {
@@ -266,6 +296,7 @@ setTimeout(function () {
     consoleLooksNative: /\[native code\]/.test(String(console.log)),
     pbjsCreated: 'pbjs' in window,
     consentListeners: window.consentListenerCount(),
+    hostileParamsUntouched: window.hostileParamsUntouched,
   }));
 }, 500);
 </script>

@@ -120,11 +120,11 @@ pub(crate) fn brief(text: &str) -> String {
 }
 
 /// At most `max` characters, the last one an ellipsis when text was cut.
-/// The text is the site's or an exchange's: control characters and the
-/// invisible ones that reorder or hide text are not passed on.
+/// The text is the site's or an exchange's: control characters (a tab
+/// aside) and the invisible ones that reorder or hide text are not passed on.
 fn clipped(text: &str, max: usize) -> String {
     let is_invisible = |c: char| {
-        c.is_control()
+        (c.is_control() && c != '\t')
             || matches!(c, '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
     };
     let printable: String = text

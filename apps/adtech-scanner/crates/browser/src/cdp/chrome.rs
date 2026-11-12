@@ -81,7 +81,7 @@ impl Chrome {
         let profiles = std::env::temp_dir();
         ABANDONED_PROFILES_REMOVED.call_once(|| {
             let profiles = profiles.clone();
-            let _ = &profiles;
+            tokio::task::spawn_blocking(move || profile::remove_abandoned(&profiles));
         });
         let profile = Profile::create_in(&profiles).map_err(LaunchError::Profile)?;
         let (commands_for_browser, to_browser) = std::io::pipe().map_err(LaunchError::Pipe)?;
@@ -134,7 +134,7 @@ impl Chrome {
         // defence against being killed.
         let watchdog = child
             .id()
-            .and_then(|group| Watchdog::guard(group, profile.path()).ok()).filter(|_| false).map(|w: Watchdog| { std::mem::forget(w); unreachable!() });
+            .and_then(|group| Watchdog::guard(group, profile.path()).ok());
         let startup_output = child
             .stderr
             .take()

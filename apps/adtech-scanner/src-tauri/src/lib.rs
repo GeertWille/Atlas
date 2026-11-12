@@ -53,6 +53,8 @@ pub fn run() {
                 events,
             ))?;
             app.manage(state);
+            #[cfg(unix)]
+            exit_on_termination_signals(app.handle().clone());
             Ok(())
         });
     register_commands(builder)
@@ -66,4 +68,32 @@ pub fn run() {
                 tauri::async_runtime::block_on(state.scans.shutdown());
             }
         });
+}
+
+/// Ctrl+C in a terminal and `kill` would end the process on the spot. Going
+/// through the event loop's exit instead cancels the running scans, so they
+/// are recorded as cancelled and their browsers are closed in the usual way.
+/// A second signal ends the process at once, should that exit ever hang.
+#[cfg(unix)]
+fn exit_on_termination_signals<R: Runtime>(app: tauri::AppHandle<R>) {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    tauri::async_runtime::spawn(async move {
+        let (Ok(mut interrupt), Ok(mut terminate)) = (
+            signal(SignalKind::interrupt()),
+            signal(SignalKind::terminate()),
+        ) else {
+            return;
+        };
+        let mut signalled = async || {
+            tokio::select! {
+                _ = interrupt.recv() => {}
+                _ = terminate.recv() => {}
+            }
+        };
+        signalled().await;
+        app.exit(0);
+        signalled().await;
+        std::process::exit(1);
+    });
 }
