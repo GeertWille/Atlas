@@ -38,7 +38,7 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
             </div>
           ) : null}
           {visit ? (
-            <>
+            <div className="flex flex-col gap-1.5">
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="text-xs text-subtle-foreground">Visit</span>
                 {visit.map((fact) => (
@@ -48,7 +48,7 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
                 ))}
               </div>
               <EnvironmentNotice detail={detail} />
-            </>
+            </div>
           ) : null}
         </div>
       ) : null}
