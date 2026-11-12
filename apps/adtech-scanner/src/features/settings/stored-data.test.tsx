@@ -39,13 +39,17 @@ test("the text says what is stored and what the redaction does not cover", async
   expect(stored).toHaveTextContent("bid requests and responses included");
   expect(stored).toHaveTextContent("Images, video, audio and fonts are listed but their content is not stored");
   expect(stored).toHaveTextContent("can contain details of that account");
-  // The redaction is four headers, and the text does not let it pass for more.
-  expect(stored).toHaveTextContent("Cookie, Set-Cookie, Authorization and Proxy-Authorization");
-  expect(stored).toHaveTextContent("Only those four headers are treated this way");
-  expect(stored).toHaveTextContent("every stored body are kept exactly as captured, and can hold ids and tokens too");
-  expect(stored).toHaveTextContent("Nothing here is encrypted by the app");
-  expect(await screen.findByText(/Scan data never leaves this Mac unless you export a report/)).toBeInTheDocument();
-  expect(screen.queryByText(/held in memory during a scan and then discarded/)).toBeNull();
+  // What the switch changes, what is replaced whatever it says, and what is never touched.
+  expect(stored).toHaveTextContent(
+    "Cookie, Set-Cookie and Authorization headers, and of every other header with a credential name",
+  );
+  expect(stored).toHaveTextContent("On, new scans keep those headers as sent");
+  expect(stored).toHaveTextContent(
+    "Replaced whatever this switch says: the Proxy-Authorization header, parameters with a credential name in every stored address",
+  );
+  expect(stored).toHaveTextContent("fields with such a name in request bodies and JSON responses");
+  expect(stored).toHaveTextContent("Everything else is kept exactly as captured and can hold ids and tokens too");
+  expect(stored).toHaveTextContent("consent strings such as gdpr_consent");
 });
 
 test("switching recording off also disables the header choice; both are saved", async () => {

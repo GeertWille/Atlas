@@ -166,9 +166,11 @@ describe("summariseCell", () => {
     expect(summariseCell(cellOf("criteo"), true)).toEqual({ primary: "server timeout", secondary: null });
   });
 
-  it("falls back to Prebid's status without a network record", () => {
-    const timedOut = { ...cellOf("rubicon"), verdict: null, networkMs: null };
-    expect(summariseCell(timedOut, false)).toEqual({ primary: "timeout", secondary: null });
+  it("gives Prebid's own record and calls the request unknown when none could be tied to the bid", () => {
+    const timedOut = { ...cellOf("rubicon"), requestId: null, verdict: null, lateByMs: null, networkMs: null };
+    expect(summariseCell(timedOut, false)).toEqual({ primary: "timeout", secondary: "request unknown" });
+    const priced = { ...cellOf("appnexus"), requestId: null, verdict: null, lateByMs: null, networkMs: null };
+    expect(summariseCell(priced, false)).toEqual({ primary: "$1.42", secondary: "request unknown" });
   });
 });
 

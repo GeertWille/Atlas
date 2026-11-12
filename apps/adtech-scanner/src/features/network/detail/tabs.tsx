@@ -383,7 +383,7 @@ export function HeadersTab({ detail }: { detail: NetworkRequestDetail }) {
       </div>
       {redacted ? (
         <p role="note" className="border-b bg-muted/50 px-3 py-2 text-xs text-pretty text-muted-foreground">
-          Cookie and authorization values were replaced by their length when this scan was stored. What stands in their
+          Cookie values and credentials were replaced by their length when this scan was stored. What stands in their
           place below is not what was sent.
         </p>
       ) : null}

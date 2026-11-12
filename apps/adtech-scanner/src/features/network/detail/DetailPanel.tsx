@@ -107,10 +107,15 @@ export function DetailPanel({
     );
     built.catch((reason) => notifyError("Could not build the command", reason));
     if (!(await copy(built.then(({ command }) => command)))) return;
-    const { redactedHeaders, bodyIncomplete } = await built;
+    const { redactedHeaders, placeholders, bodyIncomplete } = await built;
     if (redactedHeaders.length > 0) {
       toast.warning("Copied, with placeholders", {
         description: `${redactedHeaders.join(" and ")} ${redactedHeaders.length === 1 ? "was" : "were"} not stored, so the command will not reproduce a signed-in request.`,
+      });
+    } else if (placeholders) {
+      toast.warning("Copied, with placeholders", {
+        description:
+          "A credential in the address, a header or the body was replaced when the scan was stored, so the command does not send what the page sent.",
       });
     } else if (bodyIncomplete) {
       toast.warning("Copied without the full request body", { description: "The body is not stored whole." });

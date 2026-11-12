@@ -15,7 +15,18 @@ import { layoutAuction, type WaterfallBar, type WaterfallGroup } from "./waterfa
 const GRID = "grid grid-cols-[168px_minmax(0,1fr)_76px]";
 const PLOT_INSET = "left-[168px] right-[76px]";
 
-function BidTooltip({ bar, auction, opensExchange }: { bar: WaterfallBar; auction: Auction; opensExchange: boolean }) {
+function BidTooltip({
+  bar,
+  auction,
+  opensExchange,
+  networkRecorded,
+}: {
+  bar: WaterfallBar;
+  auction: Auction;
+  opensExchange: boolean;
+  /** The scan has a request list: a bid without an exchange is then one whose request could not be told. */
+  networkRecorded: boolean;
+}) {
   const { bid } = bar;
   const rows: [string, string][] = [
     ["Status", BID_STATUS_META[bid.status].label],
@@ -46,6 +57,10 @@ function BidTooltip({ bar, auction, opensExchange }: { bar: WaterfallBar; auctio
         <p className="border-t pt-1.5">
           <span className="text-muted-foreground">On the network: </span>
           {verdictSentence({ ...bid.exchange })}.{opensExchange ? " Click to open the exchange." : ""}
+        </p>
+      ) : networkRecorded ? (
+        <p className="border-t pt-1.5 text-muted-foreground">
+          On the network: unknown. Which request carried this bid could not be told.
         </p>
       ) : null}
     </div>
@@ -105,7 +120,12 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
         </li>
       </TooltipTrigger>
       <TooltipContent side="top" align="center">
-        <BidTooltip bar={bar} auction={auction} opensExchange={open !== undefined} />
+        <BidTooltip
+          bar={bar}
+          auction={auction}
+          opensExchange={open !== undefined}
+          networkRecorded={openRequest !== undefined}
+        />
       </TooltipContent>
     </Tooltip>
   );

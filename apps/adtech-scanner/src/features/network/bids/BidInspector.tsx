@@ -1,4 +1,4 @@
-import { ChevronRightIcon, CircleOffIcon, GavelIcon, ServerIcon } from "lucide-react";
+import { ChevronRightIcon, CircleHelpIcon, CircleOffIcon, GavelIcon, ServerIcon } from "lucide-react";
 import type { Auction, BidStatus, DecodedBidResponse, ExchangeVerdict, NetworkRow, ScanDetail } from "@/bindings";
 import { useNetworkRequests } from "@/lib/query/hooks";
 import { verdictSentence } from "@/shared/domain/exchange-verdict";
@@ -12,6 +12,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import type { IndexedRow } from "../query/match";
 import { OUTCOME_STYLE } from "../table/cells";
 import { buildBidMatrix, type MatrixBidder, type MatrixCell, summariseCell, summariseRequests } from "./bid-matrix";
+
+const UNKNOWN_STYLE = { icon: CircleHelpIcon, tone: "text-muted-foreground", label: "Request unknown" };
 
 /** The icon of a cell: the network's verdict where it says more than Prebid's status does. */
 function cellStyle(cell: MatrixCell) {
@@ -32,6 +34,9 @@ function cellStyle(cell: MatrixCell) {
     pending: "noAnswer",
   };
   if (cell.verdict === "notSent") return { icon: CircleOffIcon, tone: "text-orange-fg", label: "Not sent" };
+  // Without a request there is nothing the network says: a timeout or an error is Prebid's word alone, and no warning.
+  const priced = byStatus[cell.bid.status] === "bid" || byStatus[cell.bid.status] === "noBid";
+  if (cell.verdict === null && !priced) return UNKNOWN_STYLE;
   return OUTCOME_STYLE[(cell.verdict && byVerdict[cell.verdict]) ?? byStatus[cell.bid.status]];
 }
 
@@ -58,7 +63,7 @@ function Cell({
   const won = cell.bid.status === "won" || cell.bid.status === "rendered";
   const sentence = cell.verdict
     ? verdictSentence({ verdict: cell.verdict, lateByMs: cell.lateByMs, networkMs: cell.networkMs, error: row?.error })
-    : BID_STATUS_META[cell.bid.status].description;
+    : `${BID_STATUS_META[cell.bid.status].description}. Which request carried this bid could not be told, so what the network did with it is unknown`;
   const content = (
     <span className="flex min-w-0 flex-1 items-center gap-1.5">
       <span className="sr-only">
@@ -345,6 +350,10 @@ export function BidInspector({
         <li className="flex items-center gap-1">
           <CircleOffIcon aria-hidden="true" className="size-3.5 text-orange-fg" />
           Not sent
+        </li>
+        <li className="flex items-center gap-1">
+          <CircleHelpIcon aria-hidden="true" className="size-3.5 text-muted-foreground" />
+          Request unknown
         </li>
         <li className="ml-auto">A cell opens its exchange. Cells with the same request open the same one.</li>
       </ul>

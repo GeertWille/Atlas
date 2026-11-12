@@ -175,7 +175,7 @@ export function NetworkDigest({ detail, page }: { detail: ScanDetail; page: numb
           description={
             state === "listOnly"
               ? "The network data of this scan was removed to stay under the storage limit. The request list remains, without query strings, headers and bodies."
-              : `Every request of the visit, with headers and the text it received${data.archive.headersRedacted ? "; cookie and authorization values are replaced by their length" : ""}.`
+              : `Every request of the visit, with headers and the text it received${data.archive.headersRedacted ? "; cookie values and credentials are replaced by their length" : ""}.`
           }
           actions={
             <Button asChild size="sm">

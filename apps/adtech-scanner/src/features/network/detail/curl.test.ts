@@ -40,6 +40,7 @@ describe("toCurl", () => {
     });
     expect(toCurl(detail, null)).toEqual({
       command: "curl 'https://x.example/a?b=1' \\\n  -H 'Accept: */*' \\\n  -H 'Referer: https://www.example.com/'",
+      placeholders: false,
       redactedHeaders: [],
       bodyIncomplete: false,
     });
@@ -142,6 +143,22 @@ describe("toCurl", () => {
     const argument = command.slice(command.indexOf("--data-raw ") + "--data-raw ".length);
     // Read back the way a POSIX shell reads it, the argument is the body, byte for byte.
     expect(readShellWord(argument)).toBe(body);
+  });
+
+  it("says when the address, a header or the body carries a placeholder the archive wrote for a credential", () => {
+    const post = (url: string) => makeRow({ url, method: "POST" });
+    const inUrl = makeRequestDetail({ row: makeRow({ url: "https://x.example/cb?access_token=[redacted-16-bytes]" }) });
+    expect(toCurl(inUrl, null)).toMatchObject({ placeholders: true, redactedHeaders: [] });
+    const inBody = makeRequestDetail({ row: post("https://x.example/login"), requestBody: makeBodyRef({ bytes: 30 }) });
+    expect(toCurl(inBody, '{"user":"ann","password":"[7 bytes]"}').placeholders).toBe(true);
+    expect(toCurl(inBody, "user=ann&pwd=[7+bytes]").placeholders).toBe(true);
+    const inReferer = makeRequestDetail({
+      requestHeaders: [header("Referer", "https://x.example/?token=[redacted-40-bytes]")],
+    });
+    expect(toCurl(inReferer, null).placeholders).toBe(true);
+    // Brackets and the word alone are not a placeholder.
+    const plain = makeRequestDetail({ row: makeRow({ url: "https://x.example/a?sizes=[300,250]&unit=bytes" }) });
+    expect(toCurl(plain, null).placeholders).toBe(false);
   });
 
   it("says when the body is missing or cut short", () => {

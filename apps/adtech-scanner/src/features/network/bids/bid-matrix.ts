@@ -125,6 +125,8 @@ export type CellSummary = {
 
 /** The two things a cell says. The network's verdict wins over Prebid's status where they differ. */
 export function summariseCell(cell: MatrixCell, viaServer: boolean): CellSummary {
+  // No request could be tied to the bid: Prebid's own record stands, and the network's side is unknown.
+  if (cell.verdict === null) return { primary: prebidOutcome(cell), secondary: UNKNOWN_REQUEST };
   const time = viaServer
     ? cell.serverMs === null
       ? null
@@ -147,10 +149,18 @@ export function summariseCell(cell: MatrixCell, viaServer: boolean): CellSummary
     default:
       break;
   }
-  if (cell.bid.cpm !== null) return { primary: formatCpm(cell.bid.cpm, cell.bid.currency), secondary: time };
-  if (cell.bid.status === "timeout") return { primary: "timeout", secondary: time };
-  if (cell.bid.status === "error") return { primary: "error", secondary: time };
-  return { primary: cell.nbr === null ? "no bid" : `no-bid ${cell.nbr}`, secondary: time };
+  return { primary: prebidOutcome(cell), secondary: time };
+}
+
+/** What stands in a cell in place of a time when the bid's request is not known. */
+export const UNKNOWN_REQUEST = "request unknown";
+
+/** What Prebid recorded for the bid: a price, a timeout, an error or no bid. */
+function prebidOutcome(cell: MatrixCell): string {
+  if (cell.bid.cpm !== null) return formatCpm(cell.bid.cpm, cell.bid.currency);
+  if (cell.bid.status === "timeout") return "timeout";
+  if (cell.bid.status === "error") return "error";
+  return cell.nbr === null ? "no bid" : `no-bid ${cell.nbr}`;
 }
 
 /** The Request column of a bidder's row: how its cells were asked for. */

@@ -6,8 +6,13 @@ const SKIPPED_HEADERS = new Set(["host", "content-length", "accept-encoding", "c
 const REDACTED_PLACEHOLDER = "<redacted: not stored>";
 const MISSING_BODY_PLACEHOLDER = "<request body not stored>";
 
+/** What the archive writes in place of a credential in an address, a header value or a body. */
+const STORED_PLACEHOLDER = /\[redacted-\d+-bytes\]|\[\d+\+?[ -]?bytes\]/;
+
 export type CurlCommand = {
   command: string;
+  /** The address, a header value or the body holds a placeholder where a credential was: it is not what was sent. */
+  placeholders: boolean;
   /** Names of the headers whose values were not stored: the copy carries a placeholder for each. */
   redactedHeaders: string[];
   /** The request had a body that is not, or not wholly, in the copy. */
@@ -50,7 +55,8 @@ export function toCurl(detail: NetworkRequestDetail, requestBody: string | null)
   const bodyIncomplete = expectsBody && (requestBody === null || detail.requestBody.state === "truncated");
   if (expectsBody) parts.push(`--data-raw ${quote(requestBody ?? MISSING_BODY_PLACEHOLDER)}`);
   if (compressed) parts.push("--compressed");
-  return { command: parts.join(" \\\n  "), redactedHeaders, bodyIncomplete };
+  const command = parts.join(" \\\n  ");
+  return { command, placeholders: STORED_PLACEHOLDER.test(command), redactedHeaders, bodyIncomplete };
 }
 
 /**

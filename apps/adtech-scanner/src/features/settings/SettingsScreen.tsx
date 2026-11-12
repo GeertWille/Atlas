@@ -234,7 +234,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       >
         <Field
           label="What is stored"
-          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan. ads.txt and sellers.json files are read in memory and not kept. API keys and proxy passwords are in the Keychain, never in these files."
+          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan; passwords, tokens and other values with a credential name in addresses, request bodies and JSON responses are replaced before it is written, and so are cookie and credential headers unless “Store full headers” is on. ads.txt and sellers.json files are read in memory and not kept. API keys and proxy passwords are in the Keychain, never in these files."
         >
           <DeleteAllScansButton />
         </Field>

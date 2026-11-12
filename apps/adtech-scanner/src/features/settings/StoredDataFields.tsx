@@ -130,10 +130,14 @@ export function StoredDataFields({ settings, save }: { settings: Settings; save:
         htmlFor={ids.headers}
         description={
           <span id={ids.headersNote}>
-            Off, the values of the Cookie, Set-Cookie, Authorization and Proxy-Authorization headers are replaced by
-            their length before anything is written; cookie names are kept. Only those four headers are treated this
-            way: addresses with their query strings, all other headers and every stored body are kept exactly as
-            captured, and can hold ids and tokens too. On, new scans keep those four headers as sent.
+            Off, the values of the Cookie, Set-Cookie and Authorization headers, and of every other header with a
+            credential name (X-Api-Key, X-Auth-Token, X-CSRF-Token and the like), are replaced by their length before
+            anything is written; cookie names are kept. On, new scans keep those headers as sent. Replaced whatever this
+            switch says: the Proxy-Authorization header, parameters with a credential name in every stored address
+            (access_token, password and the like), and fields with such a name in request bodies and JSON responses.
+            Everything else is kept exactly as captured and can hold ids and tokens too: the rest of every address,
+            consent strings such as gdpr_consent, all other headers, bid requests and responses, and the pages
+            themselves.
           </span>
         }
       >
