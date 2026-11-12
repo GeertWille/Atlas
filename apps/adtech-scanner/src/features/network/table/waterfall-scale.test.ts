@@ -25,37 +25,61 @@ const bid = indexRow(
 );
 const context = buildMatchContext({ auctions });
 
-function scaleFor(page: number | undefined, window: { fromMs: number; toMs: number } | null) {
-  const axis = buildAxis(pages, page, [bid]);
+const beacon = indexRow(makeRow({ id: "beacon", page: 1, startedAtMs: 8000, durationMs: 40 }));
+const pending = indexRow(makeRow({ id: "poll", page: 1, startedAtMs: 3000, durationMs: null, outcome: "pending" }));
+
+function scaleFor(page: number | undefined, window: { fromMs: number; toMs: number } | null, rows = [bid, beacon]) {
+  const axis = buildAxis(pages, page, [bid, beacon]);
   return buildWaterfallScale({
     axis,
     context,
     marks: lifecycleMarks({ auctions, slots: [], pages }, null, axis),
     window,
+    rows,
   });
 }
 
 describe("buildWaterfallScale", () => {
-  it("draws each request of a multi-page visit on its own page view's clock, as long as the longest page view", () => {
+  it("draws each request of a multi-page visit on its own page view's clock", () => {
     const scale = scaleFor(undefined, null);
-    expect([scale.startMs, scale.endMs]).toEqual([0, 23_000]);
-    expect(scale.label).toBe("each page view, 0 ms to 23.0 s");
+    expect([scale.startMs, scale.endMs]).toEqual([273, 8267]);
+    expect(scale.label).toBe("each page view, 273 ms to 8.27 s");
     expect(scale.startOf(bid)).toBe(500);
     expect(scale.closeOf(bid)).toBe(1900);
     // The auctions of different page views would lie on top of each other.
     expect(scale.bands).toEqual([]);
   });
 
-  it("uses the selected page view as the scale, with its auctions behind the rows", () => {
+  it("uses the selected page view's clock, with its auctions behind the rows", () => {
     const scale = scaleFor(1, null);
-    expect([scale.startMs, scale.endMs]).toEqual([0, 12_000]);
-    expect(scale.label).toBe("0 ms to 12.0 s");
+    expect([scale.startMs, scale.endMs]).toEqual([273, 8267]);
+    expect(scale.label).toBe("273 ms to 8.27 s");
     expect(scale.startOf(bid)).toBe(500);
     expect(scale.bands.map((band) => [band.id, band.startMs, band.timeoutAtMs])).toEqual([["a2", 400, 1900]]);
   });
 
-  it("follows a window on the visit's axis", () => {
-    const scale = scaleFor(undefined, { fromMs: 23_200, toMs: 25_400 });
+  it("fits the requests that are listed: a filter down to one bid call shows it wide", () => {
+    const scale = scaleFor(1, null, [bid]);
+    expect([scale.startMs, scale.endMs]).toEqual([452, 2148]);
+    // The bar of the 1.6 s call takes most of the column instead of a seventh of it.
+    expect((1600 / (scale.endMs - scale.startMs)) * 100).toBeGreaterThan(90);
+  });
+
+  it("keeps the whole page view for a request that never finished, and for an empty list", () => {
+    expect(scaleFor(1, null, [pending])).toMatchObject({ startMs: 2730, endMs: 12_000 });
+    expect(scaleFor(1, null, [])).toMatchObject({ startMs: 0, endMs: 12_000 });
+    expect(scaleFor(undefined, null, [])).toMatchObject({ startMs: 0, endMs: 23_000 });
+  });
+
+  it("does not stretch a single short request across the column", () => {
+    const scale = scaleFor(1, null, [beacon]);
+    expect(scale.endMs - scale.startMs).toBeGreaterThanOrEqual(200);
+    expect(scale.startMs).toBeLessThanOrEqual(8000);
+    expect(scale.endMs).toBeGreaterThanOrEqual(8040);
+  });
+
+  it("follows a window on the visit's axis, whatever is listed", () => {
+    const scale = scaleFor(undefined, { fromMs: 23_200, toMs: 25_400 }, [bid]);
     expect([scale.startMs, scale.endMs]).toEqual([23_200, 25_400]);
     expect(scale.label).toBe("23.2 s to 25.4 s");
     expect(scale.startOf(bid)).toBe(23_500);

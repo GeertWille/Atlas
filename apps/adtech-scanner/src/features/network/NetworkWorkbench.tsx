@@ -186,8 +186,9 @@ export function NetworkWorkbench({
         context,
         marks,
         window: windowFrom === undefined || windowTo === undefined ? null : { fromMs: windowFrom, toMs: windowTo },
+        rows: shown,
       }),
-    [axis, context, marks, windowFrom, windowTo],
+    [axis, context, marks, windowFrom, windowTo, shown],
   );
 
   const openRequest = (requestId: string | undefined, dt?: DetailTab) => {
