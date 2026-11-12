@@ -56,6 +56,8 @@
       // Params too large to carry are left out whole; the bidder is still listed.
       { code: 'unit-b', mediaTypes: { banner: { sizes: [728, 90] }, video: { playerSize: [640, 480] } }, bids: [{ bidder: 'bar', params: { blob: new Array(3000).join('x') } }] },
       { code: 'unit-c', sizes: [[160, 600]], bids: [{ module: 'pubCommonId' }] },
+      // A "twin": the code of the first ad unit again, with other sizes and another bidder.
+      { code: 'unit-a', mediaTypes: { banner: { sizes: [[970, 250], [300, 250]] } }, bids: [{ bidder: 'baz', params: { zone: 7 } }] },
     ],
   });
   emit('bidRequested', {

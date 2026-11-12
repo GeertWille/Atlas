@@ -1,4 +1,5 @@
-import type { AdSlot, ScanMetrics } from "@/bindings";
+import type { AdSlot, Auction, ScanMetrics } from "@/bindings";
+import { currenciesOf, currencyList } from "@/shared/domain/prices";
 import {
   EMPTY,
   formatBytes,
@@ -15,12 +16,24 @@ export type KeyMetric = { label: string; value: string; hint: string };
  * The eight headline numbers of a report, each with one line of context. The counts cover every page
  * view of the visit; with more than one (`multiPage`) the three timings say that they are the entry page's.
  */
-export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[], multiPage = false): KeyMetric[] {
+export function buildKeyMetrics(
+  metrics: ScanMetrics,
+  slots: AdSlot[],
+  multiPage = false,
+  /** For the currency of the winning bids; without them the average reads as dollars. */
+  auctions: Auction[] = [],
+): KeyMetric[] {
   const sinceStart = multiPage ? "on the entry page" : "after navigation start";
   const requestedSlots = slots.filter((slot) => slot.requestedAtMs !== null).length;
   const neverRequested = slots.length - requestedSlots;
   // The backend reports the mean and the sum of the winning CPMs; their ratio is the number of winners.
   const winningBids = metrics.avgWinningCpm ? Math.round(metrics.totalWinningCpm / metrics.avgWinningCpm) : 0;
+  // The backend gives no average when the winners are in more than one currency: say which, instead of a number.
+  const winningCurrencies = currenciesOf(
+    auctions.flatMap((auction) =>
+      auction.adUnits.flatMap((unit) => unit.bids.filter((bid) => bid.bidder === unit.winningBidder)),
+    ),
+  );
   return [
     {
       label: "Requested slots filled",
@@ -38,8 +51,11 @@ export function buildKeyMetrics(metrics: ScanMetrics, slots: AdSlot[], multiPage
     },
     {
       label: "Avg winning CPM",
-      value: formatCpm(metrics.avgWinningCpm),
-      hint: `across ${pluralize(winningBids, "winning bid")}`,
+      value: formatCpm(metrics.avgWinningCpm, winningCurrencies[0] ?? "USD"),
+      hint:
+        winningCurrencies.length > 1
+          ? `winning bids in ${currencyList(winningCurrencies)}: not averaged`
+          : `across ${pluralize(winningBids, "winning bid")}`,
     },
     {
       label: "Auctions",

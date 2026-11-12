@@ -9,6 +9,7 @@ import type {
   ScriptRecord,
   SlotOutcome,
 } from "@/bindings";
+import { hasMixedCurrencies } from "@/shared/domain/prices";
 import { BIDDERS, PREBID_VERSIONS, SCRIPT_TEMPLATES, type ScriptTemplate } from "./catalog";
 import { createRng, hashString, hexId, type Rng } from "./rng";
 
@@ -138,7 +139,28 @@ function archetypeFor(hostname: string): Archetype {
   if (/sportsdesk|localhost|127\.0\.0\.1/.test(hostname)) return "leak";
   if (/ledger/.test(hostname)) return "healthy";
   if (/techpulse/.test(hostname)) return "slow";
+  if (TWIN_SITE.test(hostname)) return "healthy";
   return (["healthy", "leak", "slow"] as const)[hashString(hostname) % 3] ?? "healthy";
+}
+
+/**
+ * A site whose wrapper registers "twin" ad units: one ad unit per bidder under the same code, each with the
+ * sizes that bidder is offered, and whose rubicon account is paid in euros. The backend makes one ad unit
+ * of the entries that share a code, with the sizes of all of them, and that is what the fake hands out.
+ */
+const TWIN_SITE = /regiokrant/;
+/** What the twin entries of the bidders offer beyond the placement's own sizes, in the order they register. */
+const TWIN_SIZES = ["980x150", "840x150", "840x250"];
+const EURO_BIDDER = "rubicon";
+
+function registerAsTwins(auctions: Auction[]) {
+  for (const unit of auctions.flatMap((auction) => auction.adUnits)) {
+    const offered = unit.bids.flatMap((_, index) => TWIN_SIZES[index % TWIN_SIZES.length] ?? []);
+    unit.sizes = [...new Set([...unit.sizes, ...offered])];
+    for (const bid of unit.bids) {
+      if (bid.bidder === EURO_BIDDER && bid.cpm !== null) bid.currency = "EUR";
+    }
+  }
 }
 
 function siteSlug(hostname: string): string {
@@ -397,6 +419,7 @@ export function captureSite(hostname: string, device: DeviceProfile, salt = ""):
   return finish(PREBID_VERSIONS.current, timeoutMs);
 
   function finish(prebidVersion: string, siteTimeoutMs: number): CapturedSite {
+    if (TWIN_SITE.test(hostname)) registerAsTwins(auctions);
     const slots = slotPlans.map((plan) => {
       const entry = fates.get(plan.elementId) ?? { fate: { outcome: "neverRequested" as const } };
       return buildSlot(rng, site, plan, entry.auction, entry.fate);
@@ -593,9 +616,11 @@ function jevProbability(rng: Rng, category: ScriptCategory): number {
 export function computeMetrics(site: CapturedSite, scripts: ScriptRecord[]): ScanMetrics {
   const bids = site.auctions.flatMap((auction) => auction.adUnits.flatMap((unit) => unit.bids));
   const count = (...statuses: Bid["status"][]) => bids.filter((bid) => statuses.includes(bid.status)).length;
-  const winners = site.auctions.flatMap((auction) =>
-    auction.adUnits.flatMap((unit) => (unit.winningCpm === null ? [] : [unit.winningCpm])),
+  const winningBids = site.auctions.flatMap((auction) =>
+    auction.adUnits.flatMap((unit) => unit.bids.filter((bid) => bid.bidder === unit.winningBidder)),
   );
+  // As the backend: winning prices in more than one currency are not added up.
+  const winners = hasMixedCurrencies(winningBids) ? [] : winningBids.flatMap((bid) => bid.cpm ?? []);
   const requested = site.slots.filter((slot) => slot.requestedAtMs !== null);
   const filled = site.slots.filter((slot) => slot.outcome === "filled");
   const rendered = filled.flatMap((slot) => (slot.renderedAtMs === null ? [] : [slot.renderedAtMs]));

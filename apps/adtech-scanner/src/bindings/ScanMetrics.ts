@@ -13,7 +13,16 @@ timeoutRate: number, slotCount: number, emptySlotCount: number,
 /**
  * Slots that rendered a creative / slots that requested one, 0-1.
  */
-fillRate: number, avgWinningCpm: number | null, totalWinningCpm: number, 
+fillRate: number, 
+/**
+ * `None` without a winning bid, and when the winning bids are in
+ * more than one currency: such prices cannot be averaged.
+ */
+avgWinningCpm: number | null, 
+/**
+ * 0 where `avg_winning_cpm` is `None`.
+ */
+totalWinningCpm: number, 
 /**
  * ms from navigation start to the first auction init.
  */

@@ -217,3 +217,62 @@ describe("rowOutcome", () => {
     });
   });
 });
+
+const serverResponses = new Map([["r-pbs", serverResponse]]);
+
+describe("columns", () => {
+  // As a scan stored before ad units were merged by code holds them: one entry per registered ad unit.
+  const twins = makeAuction([], {
+    adUnits: [
+      { code: "banner", sizes: ["980x150", "970x250"], bids: top, winningBidder: "appnexus", winningCpm: 1.42 },
+      { code: "banner", sizes: ["970x250", "840x150"], bids: [], winningBidder: null, winningCpm: null },
+      { code: "rect", sizes: ["300x600"], bids: side, winningBidder: null, winningCpm: null },
+      { code: "banner", sizes: ["728x90"], bids: [], winningBidder: null, winningCpm: null },
+    ],
+  });
+
+  it("gives every bidder one cell per column, whatever the ad unit list holds", () => {
+    for (const subject of [auction, twins]) {
+      const matrix = buildBidMatrix(subject, { rows, preflights, serverResponses });
+      expect(matrix.adUnits.map((unit) => unit.code)).toEqual(subject.adUnits.map((unit) => unit.code));
+      const bidders = matrix.sections.flatMap((section) => section.bidders);
+      expect(bidders.length).toBeGreaterThan(0);
+      for (const bidder of bidders) expect(bidder.cells, bidder.bidder).toHaveLength(matrix.adUnits.length);
+    }
+  });
+});
+
+describe("currencies", () => {
+  const priced = makeAuction([], {
+    adUnits: [
+      {
+        code: "banner",
+        sizes: ["970x250"],
+        bids: [
+          bid("gumgum", { status: "won", cpm: 10.01, currency: "EUR", exchange: exchange({ requestId: "r-gg" }) }),
+          bid("rubicon", { status: "bid", cpm: 2.05, currency: "USD", exchange: exchange({ requestId: "r-rub" }) }),
+          bid("appnexus", { exchange: exchange({ requestId: "r-apn" }) }),
+        ],
+        winningBidder: "gumgum",
+        winningCpm: 10.01,
+      },
+    ],
+  });
+  const primaryOf = (subject: typeof priced, bidder: string) => {
+    const matrix = buildBidMatrix(subject, { rows, preflights, serverResponses });
+    const cell = matrix.sections.flatMap((section) => section.bidders).find((row) => row.bidder === bidder)?.cells[0];
+    return summariseCell(cell as MatrixCell, false, matrix.currencies.length > 1).primary;
+  };
+
+  it("names the currency of every price once an auction has bids in two", () => {
+    expect(buildBidMatrix(priced, { rows, preflights, serverResponses }).currencies).toEqual(["EUR", "USD"]);
+    expect(primaryOf(priced, "gumgum")).toBe("10.01 EUR");
+    expect(primaryOf(priced, "rubicon")).toBe("2.05 USD");
+    expect(primaryOf(priced, "appnexus")).toBe("no bid");
+  });
+
+  it("keeps the short form while all prices are in one currency", () => {
+    expect(buildBidMatrix(auction, { rows, preflights, serverResponses }).currencies).toEqual(["USD"]);
+    expect(primaryOf(auction, "appnexus")).toBe("$1.42");
+  });
+});

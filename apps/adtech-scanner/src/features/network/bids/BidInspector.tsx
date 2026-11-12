@@ -2,6 +2,7 @@ import { ChevronRightIcon, CircleHelpIcon, CircleOffIcon, GavelIcon, ServerIcon 
 import type { Auction, BidStatus, DecodedBidResponse, ExchangeVerdict, NetworkRow, ScanDetail } from "@/bindings";
 import { useNetworkRequests } from "@/lib/query/hooks";
 import { verdictSentence } from "@/shared/domain/exchange-verdict";
+import { currencyList } from "@/shared/domain/prices";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
 import { useScrollEdges } from "@/shared/hooks/use-scroll-edges";
 import { cn } from "@/shared/lib/cn";
@@ -45,6 +46,7 @@ function Cell({
   bidder,
   unit,
   viaServer,
+  withCurrencyCode,
   row,
   selected,
   onOpen,
@@ -53,13 +55,14 @@ function Cell({
   bidder: string;
   unit: string;
   viaServer: boolean;
+  withCurrencyCode: boolean;
   row: NetworkRow | undefined;
   selected: boolean;
   onOpen: (requestId: string) => void;
 }) {
   const style = cellStyle(cell);
   const Icon = style.icon;
-  const summary = summariseCell(cell, viaServer);
+  const summary = summariseCell(cell, viaServer, withCurrencyCode);
   const won = cell.bid.status === "won" || cell.bid.status === "rendered";
   const sentence = cell.verdict
     ? verdictSentence({ verdict: cell.verdict, lateByMs: cell.lateByMs, networkMs: cell.networkMs, error: row?.error })
@@ -120,13 +123,16 @@ function BidderRow({
   bidder,
   units,
   viaServer,
+  withCurrencyCode,
   rows,
   selectedId,
   onOpen,
 }: {
   bidder: MatrixBidder;
+  /** The columns of the table; the row has one cell for each, in this order. */
   units: { code: string }[];
   viaServer: boolean;
+  withCurrencyCode: boolean;
   rows: ReadonlyMap<string, IndexedRow>;
   selectedId: string | undefined;
   onOpen: (requestId: string) => void;
@@ -142,22 +148,26 @@ function BidderRow({
       >
         {bidder.bidder}
       </th>
-      {bidder.cells.map((cell, index) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: cells follow the fixed ad unit columns
-        <td key={index} className="px-1 py-0.5">
-          {cell ? (
-            <Cell
-              cell={cell}
-              bidder={bidder.bidder}
-              unit={units[index]?.code ?? ""}
-              viaServer={viaServer}
-              row={cell.requestId ? rows.get(cell.requestId)?.row : undefined}
-              selected={cell.requestId !== null && cell.requestId === selectedId}
-              onOpen={onOpen}
-            />
-          ) : null}
-        </td>
-      ))}
+      {units.map((unit, index) => {
+        const cell = bidder.cells[index];
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: the columns are a fixed list, and a code is not always unique in it
+          <td key={index} className="px-1 py-0.5">
+            {cell ? (
+              <Cell
+                cell={cell}
+                bidder={bidder.bidder}
+                unit={unit.code}
+                viaServer={viaServer}
+                withCurrencyCode={withCurrencyCode}
+                row={cell.requestId ? rows.get(cell.requestId)?.row : undefined}
+                selected={cell.requestId !== null && cell.requestId === selectedId}
+                onOpen={onOpen}
+              />
+            ) : null}
+          </td>
+        );
+      })}
       <td className="px-3 py-0.5 whitespace-nowrap text-muted-foreground tabular-nums">
         {summariseRequests(bidder, viaServer)}
       </td>
@@ -225,6 +235,7 @@ export function BidInspector({
   const matrix = buildBidMatrix(auction, { rows: plainRows, preflights, serverResponses });
   const number = scan.auctions.findIndex((candidate) => candidate.id === auction.id) + 1;
   const bidderCount = matrix.sections.reduce((sum, section) => sum + section.bidders.length, 0);
+  const mixedCurrencies = matrix.currencies.length > 1;
   const end = auction.endedAtMs ?? auction.startedAtMs + (auction.durationMs ?? 0);
 
   return (
@@ -247,6 +258,9 @@ export function BidInspector({
           started {formatDuration(auction.startedAtMs)} · timeout{" "}
           {auction.timeoutMs === null ? "not set" : formatDuration(auction.timeoutMs)} · ended {formatDuration(end)} ·{" "}
           {pluralize(bidderCount, "bidder")} · {pluralize(matrix.adUnits.length, "ad unit")}
+          {mixedCurrencies
+            ? ` · bids in ${currencyList(matrix.currencies)}, shown as they were bid: prices in different currencies are not comparable as numbers`
+            : ""}
         </p>
       </div>
       <div className="relative min-h-0 flex-1">
@@ -271,9 +285,10 @@ export function BidInspector({
                 >
                   Bidder
                 </th>
-                {matrix.adUnits.map((unit) => (
+                {matrix.adUnits.map((unit, index) => (
                   <th
-                    key={unit.code}
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the columns are a fixed list, and a code is not always unique in it
+                    key={index}
                     scope="col"
                     className="sticky top-0 z-10 min-w-40 border-b bg-background px-3 py-1.5 text-left font-medium"
                   >
@@ -324,6 +339,7 @@ export function BidInspector({
                     bidder={bidder}
                     units={matrix.adUnits}
                     viaServer={section.kind === "server"}
+                    withCurrencyCode={mixedCurrencies}
                     rows={rows}
                     selectedId={selectedId}
                     onOpen={onOpen}

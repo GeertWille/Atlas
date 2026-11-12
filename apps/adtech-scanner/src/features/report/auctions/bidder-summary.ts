@@ -1,4 +1,5 @@
-import type { Auction } from "@/bindings";
+import type { Auction, Bid } from "@/bindings";
+import { currenciesOf } from "@/shared/domain/prices";
 
 export type BidderSummary = {
   bidder: string;
@@ -7,12 +8,20 @@ export type BidderSummary = {
   wins: number;
   timeouts: number;
   avgLatencyMs: number | null;
+  /** `null` without a priced bid, and when the bidder's bids are in more than one currency. */
   avgCpm: number | null;
+  /** What `avgCpm` is in. */
+  currency: string | null;
+  /** The bidder bid in more than one currency: its prices have no average. */
+  mixedCurrencies: boolean;
   /** wins / requests, 0-1. */
   winRate: number;
 };
 
-type Tally = Omit<BidderSummary, "avgLatencyMs" | "avgCpm" | "winRate"> & { latencies: number[]; cpms: number[] };
+type Tally = Omit<BidderSummary, "avgLatencyMs" | "avgCpm" | "currency" | "mixedCurrencies" | "winRate"> & {
+  latencies: number[];
+  priced: Bid[];
+};
 
 const average = (values: number[]) =>
   values.length === 0 ? null : values.reduce((sum, value) => sum + value, 0) / values.length;
@@ -30,24 +39,30 @@ export function summarizeBidders(auctions: Auction[]): BidderSummary[] {
           wins: 0,
           timeouts: 0,
           latencies: [],
-          cpms: [],
+          priced: [],
         };
         tally.requests += 1;
         if (bid.status === "bid" || bid.status === "won" || bid.status === "rendered") tally.bids += 1;
         if (bid.status === "won" || bid.status === "rendered") tally.wins += 1;
         if (bid.status === "timeout") tally.timeouts += 1;
         if (bid.responseTimeMs !== null) tally.latencies.push(bid.responseTimeMs);
-        if (bid.cpm !== null) tally.cpms.push(bid.cpm);
+        if (bid.cpm !== null) tally.priced.push(bid);
         tallies.set(bid.bidder, tally);
       }
     }
   }
   return [...tallies.values()]
-    .map(({ latencies, cpms, ...tally }) => ({
-      ...tally,
-      avgLatencyMs: average(latencies),
-      avgCpm: average(cpms),
-      winRate: tally.requests === 0 ? 0 : tally.wins / tally.requests,
-    }))
+    .map(({ latencies, priced, ...tally }) => {
+      const currencies = currenciesOf(priced);
+      const mixedCurrencies = currencies.length > 1;
+      return {
+        ...tally,
+        avgLatencyMs: average(latencies),
+        avgCpm: mixedCurrencies ? null : average(priced.flatMap((bid) => bid.cpm ?? [])),
+        currency: currencies[0] ?? null,
+        mixedCurrencies,
+        winRate: tally.requests === 0 ? 0 : tally.wins / tally.requests,
+      };
+    })
     .sort((a, b) => b.wins - a.wins || b.bids - a.bids || a.bidder.localeCompare(b.bidder));
 }

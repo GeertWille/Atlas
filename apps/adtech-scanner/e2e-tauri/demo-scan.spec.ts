@@ -287,16 +287,28 @@ test("a control that scripts focus shows a focus ring after the keyboard, not af
         ring: style.outlineStyle !== "none" || / 0px 0px 0px 3px/.test(style.boxShadow),
       };
     });
+  const chooseByKeyboard = async (option: string) => {
+    await browser.keys("Enter");
+    await browser.$(withRole("option", option)).waitForDisplayed();
+    await browser.keys(option.charAt(0).toLowerCase());
+    await browser.keys("Enter");
+    await browser.$(withRole("option", option)).waitForExist({ reverse: true });
+  };
 
-  // A select hands focus back to its trigger when the list closes.
+  // A select hands focus back to its trigger when the list closes. Opened by a click and closed on the
+  // option it already had, WebKit itself would ring the trigger: the app does not, while the pointer is in use.
   await visitor.click();
-  await browser.$(withRole("option", "Observe only")).click();
+  await browser.$(withRole("option", "Scroll")).click();
   await expect.poll(focused).toEqual({ name: "Default visitor", ring: false });
-  // Opened and answered from the keyboard, the same hand-back is ringed.
-  await browser.keys("Enter");
-  await browser.$(withRole("option", "Scroll")).waitForDisplayed();
-  await browser.keys("s");
-  await browser.keys("Enter");
+  expect(await browser.execute(() => document.activeElement?.matches(":focus-visible"))).toBe(true);
+
+  // Reached and operated from the keyboard, the trigger is ringed, also after its list has closed.
+  await browser.keys("Tab");
+  await browser.keys(["Shift", "Tab"]);
+  await expect.poll(focused).toEqual({ name: "Default visitor", ring: true });
+  await chooseByKeyboard("Observe only");
+  await expect.poll(focused).toEqual({ name: "Default visitor", ring: true });
+  await chooseByKeyboard("Scroll");
   await expect.poll(focused).toEqual({ name: "Default visitor", ring: true });
   await expect
     .poll(() => invokeOk<Settings>(browser, "get_settings"), { timeout: 10_000 })

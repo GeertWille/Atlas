@@ -119,11 +119,14 @@ test("the audit trail keeps the model conversation and full-text search finds it
   await browser.$('//nav//a[normalize-space(.)="Log search"]').click();
   await browser.$(button("report_finding")).click();
   await seeText(browser, /\d+ match(es)? in 1 scan/, { within: MAIN });
-  // The index splits identifiers at the underscore, so each half is a match of its own.
+  // An identifier is searched for, and marked, as the one term it is.
   const group = labelled("Matches in 127.0.0.1");
   expect(await textOf(browser, group)).toContain("report_finding");
-  expect(await textOf(browser, `${group}//mark[1]`)).toBe("report");
-  expect(await textOf(browser, `${group}//mark[2]`)).toBe("finding");
+  const marked = await browser.execute(() =>
+    [...document.querySelectorAll('[aria-label="Matches in 127.0.0.1"] mark')].map((mark) => mark.textContent),
+  );
+  expect(marked.length).toBeGreaterThan(0);
+  expect(new Set(marked)).toEqual(new Set(["report_finding"]));
 
   const hits = await invokeOk<LogSearchHit[]>(browser, "search_logs", { query: "min-width", limit: 5 });
   expect(hits.length).toBeGreaterThan(0);

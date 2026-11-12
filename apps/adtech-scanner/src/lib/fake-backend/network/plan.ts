@@ -629,7 +629,10 @@ class Planner {
       failed,
       timedOutInPage: fate === "timeout",
     });
-    const prices = units.flatMap((unit) => (answered && unit.bid.cpm !== null ? [unit.bid.cpm] : []));
+    // The request's price is the best of its bids in the currency of the first: nothing converts between two.
+    const priced = units.flatMap((unit) => (answered && unit.bid.cpm !== null ? [unit.bid] : []));
+    const currency = priced[0]?.currency ?? null;
+    const prices = priced.flatMap((bid) => (bid.currency === currency ? (bid.cpm ?? []) : []));
     const reason = answered && prices.length === 0 && bidder !== null ? noBidReason(bidder) : null;
     const requestText = decoded?.request
       ? () => openRtbRequestBody(decoded.request as NonNullable<typeof decoded.request>, bidder === null)
@@ -671,6 +674,7 @@ class Planner {
         verdict,
         lateByMs,
         cpm: prices.length > 0 ? Math.max(...prices) : null,
+        currency: prices.length > 0 ? currency : null,
         nbr: reason,
       },
       exchange: spec,

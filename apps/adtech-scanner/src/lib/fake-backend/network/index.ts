@@ -421,6 +421,7 @@ function adContext(detail: ScanDetail, draft: RequestDraft): AdContext | null {
       adUnit: unit.code,
       status: unit.bid.status,
       cpm: unit.bid.cpm,
+      currency: unit.bid.currency,
       verdict: draft.ad?.verdict ?? "inTime",
     })),
     auctionStartedAtMs: auction?.startedAtMs ?? null,

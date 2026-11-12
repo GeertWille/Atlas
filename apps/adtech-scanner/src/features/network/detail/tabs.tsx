@@ -160,7 +160,7 @@ function AdContextFacts({
                 // biome-ignore lint/suspicious/noArrayIndexKey: Prebid Server lists one ad unit once per bidder
                 <li key={`${unit.adUnit}-${index}`}>
                   <span className="font-mono">{unit.adUnit}</span>: {BID_STATUS_META[unit.status].label}
-                  {unit.cpm === null ? "" : `, ${formatCpm(unit.cpm)}`}
+                  {unit.cpm === null ? "" : `, ${formatCpm(unit.cpm, unit.currency)}`}
                 </li>
               ))}
             </ul>

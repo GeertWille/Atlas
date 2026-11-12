@@ -775,3 +775,62 @@ test.describe("at the minimum window size", () => {
     await expectWindowDoesNotScroll(page);
   });
 });
+
+test("a site with twin ad units and bids in two currencies: one column per ad unit, and prices that say their currency", async ({
+  page,
+}) => {
+  // regiokrant.example registers one ad unit per bidder under the same code, and its rubicon bids are in euros.
+  await openApp(page, "/", { speed: 200 });
+  await page.getByRole("textbox", { name: "Page URL" }).fill("regiokrant.example");
+  await page.getByRole("button", { name: "Scan", exact: true }).click();
+  await expect(reportTab(page, "Auctions")).toBeVisible({ timeout: 20_000 });
+  await reportTab(page, "Auctions").click();
+
+  // The waterfall draws each ad unit once, with the sizes of all its registrations.
+  const first = page.getByRole("region", { name: "Auction 1" });
+  await expect(first).toContainText("3 ad units");
+  const leaderboard = first.getByText("div-gpt-top-leaderboard", { exact: true });
+  await expect(leaderboard).toHaveCount(1);
+  await expect(first).toContainText("970x250, 728x90, 980x150, 840x150, 840x250");
+  // Dollars are written like euros where both stand in one auction.
+  await expect(first.getByText(/^\d+\.\d\d EUR$/).first()).toBeVisible();
+  await expect(first.getByText(/^\d+\.\d\d USD$/).first()).toBeVisible();
+  await expect(first.getByText(/^\$/)).toHaveCount(0);
+
+  await first.getByRole("button", { name: "Inspect exchanges" }).click();
+  const matrix = page.getByRole("table", { name: "Bid exchanges of auction 1" });
+  await expect(matrix).toBeVisible();
+  await expect(page.getByText(/3 ad units · bids in EUR and USD, shown as they were bid/)).toBeVisible();
+  const shape = await matrix.evaluate((table) => ({
+    codes: [...table.querySelectorAll("thead th")].slice(1, -1).map((cell) => cell.firstElementChild?.textContent),
+    columns: table.querySelectorAll("thead th").length,
+    rowCells: [...table.querySelectorAll("tbody tr")]
+      .filter((row) => row.querySelector("td"))
+      .map((row) => row.children.length),
+  }));
+  expect(shape.codes).toEqual(["div-gpt-top-leaderboard", "div-gpt-incontent-1", "div-gpt-incontent-2"]);
+  expect(shape.rowCells.length).toBeGreaterThan(3);
+  expect(shape.rowCells.every((cells) => cells === shape.columns)).toBe(true);
+  await expect(
+    matrix
+      .getByRole("row", { name: /^rubicon/ })
+      .getByText(/EUR$/)
+      .first(),
+  ).toBeVisible();
+  await expect(matrix.getByText(/^\$/)).toHaveCount(0);
+
+  // Going to another auction and back leaves the columns as they are.
+  await page.getByRole("combobox", { name: "Auction" }).click();
+  await page.getByRole("option", { name: "Auction 2" }).click();
+  const second = page.getByRole("table", { name: "Bid exchanges of auction 2" });
+  const secondShape = await second.evaluate((table) => ({
+    columns: table.querySelectorAll("thead th").length,
+    rowCells: [...table.querySelectorAll("tbody tr")]
+      .filter((row) => row.querySelector("td"))
+      .map((row) => row.children.length),
+  }));
+  expect(secondShape.rowCells.every((cells) => cells === secondShape.columns)).toBe(true);
+  await page.getByRole("combobox", { name: "Auction" }).click();
+  await page.getByRole("option", { name: "Auction 1" }).click();
+  await expect(matrix.getByRole("columnheader")).toHaveCount(shape.columns);
+});

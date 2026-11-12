@@ -9,4 +9,8 @@ export type AdContextUnit = { adUnit: string,
 /**
  * What Prebid recorded for the bid.
  */
-status: BidStatus, cpm: number | null, verdict: ExchangeVerdict, };
+status: BidStatus, cpm: number | null, 
+/**
+ * The currency Prebid recorded for the bid.
+ */
+currency: string | null, verdict: ExchangeVerdict, };

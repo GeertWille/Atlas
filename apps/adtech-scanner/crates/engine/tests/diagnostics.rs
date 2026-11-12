@@ -1479,3 +1479,57 @@ fn endpoint_answers_name_the_page_views_they_failed_on() {
         "The bidder's endpoint answered HTTP 503 on 1 of 2 bid requests"
     );
 }
+
+/// Twin ad units: one code registered once per bidder, or twice for one
+/// bidder with other params. Each registered bid is checked; the ad unit is
+/// named once.
+#[test]
+fn bids_of_ad_units_that_share_a_code_are_each_checked_and_the_code_is_named_once() {
+    let twin = |sizes: &[&str], bidder: &str, params: serde_json::Value| TrackedAdUnit {
+        code: "banner".into(),
+        sizes: strings(sizes),
+        bidders: strings(&[bidder]),
+        bids: vec![TrackedBid {
+            bidder: bidder.into(),
+            params,
+        }],
+    };
+    let mut capture = healthy_capture(DeviceProfile::Desktop);
+    capture.events.push(ev(
+        900.0,
+        Ev::AuctionInit {
+            auction_id: "twins".into(),
+            timeout: Some(1500.0),
+            ad_units: vec![
+                twin(
+                    &["970x250"],
+                    "triplelift",
+                    json!({ "inventoryCode": "banner_wide" }),
+                ),
+                twin(&["728x90"], "triplelift", json!({})),
+                twin(&["728x90"], "triplelift", json!({})),
+                twin(&["970x250"], "pubmatic", json!({ "publisherId": 160262 })),
+            ],
+        },
+    ));
+    capture.events.sort_by(|a, b| a.t.total_cmp(&b.t));
+    let diagnosed = diagnose(&capture, &found(""));
+
+    // The entry without the param is found although its twin has it, and is
+    // counted once although it was registered twice.
+    let missing = check_of(&diagnosed, "triplelift", "params-missing");
+    assert_eq!(
+        missing.summary,
+        "`inventoryCode` missing on 1 of 2 ad units"
+    );
+    assert_eq!(missing.ad_units, ["banner"]);
+    // The auction itself has the one ad unit.
+    let telemetry = telemetry::derive(&capture).total;
+    let auction = telemetry
+        .auctions
+        .iter()
+        .find(|auction| auction.id == "twins")
+        .unwrap();
+    assert_eq!(auction.ad_units.len(), 1);
+    assert_eq!(auction.ad_units[0].sizes, ["970x250", "728x90"]);
+}

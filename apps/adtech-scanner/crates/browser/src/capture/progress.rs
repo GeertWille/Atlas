@@ -31,10 +31,13 @@ impl Milestones {
                     .iter()
                     .flat_map(|unit| unit.bidders.iter().map(String::as_str))
                     .collect();
+                // Ad units registered under one code are one ad unit.
+                let codes: BTreeSet<&str> =
+                    ad_units.iter().map(|unit| unit.code.as_str()).collect();
                 Some(format!(
                     "Auction {} started with {} and {}",
                     self.auctions,
-                    count(ad_units.len(), "ad unit"),
+                    count(codes.len(), "ad unit"),
                     count(bidders.len(), "bidder"),
                 ))
             }
@@ -91,7 +94,7 @@ mod tests {
         let second = TrackerEventKind::AuctionInit {
             auction_id: "b".into(),
             timeout: None,
-            ad_units: vec![unit("top", &["ix"])],
+            ad_units: vec![unit("top", &["ix"]), unit("top", &["ix", "openx"])],
         };
         assert_eq!(
             milestones.announce(&first).unwrap(),
@@ -99,7 +102,8 @@ mod tests {
         );
         assert_eq!(
             milestones.announce(&second).unwrap(),
-            "Auction 2 started with 1 ad unit and 1 bidder"
+            "Auction 2 started with 1 ad unit and 2 bidders",
+            "two ad units registered under one code are one"
         );
     }
 

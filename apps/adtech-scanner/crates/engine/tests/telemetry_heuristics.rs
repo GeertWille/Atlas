@@ -85,6 +85,163 @@ fn healthy_with(edit: impl FnOnce(&mut Vec<adscan_model::TrackerEvent>)) -> Capt
 
 // -- telemetry -----------------------------------------------------------------
 
+/// Prebid "twin" ad units: one code registered several times, here once per
+/// bidder with the sizes that bidder is offered.
+fn twin_capture() -> Capture {
+    let twin = |code: &str, sizes: &[&str], bidder: &str| TrackedAdUnit {
+        code: code.into(),
+        sizes: strings(sizes),
+        bidders: strings(&[bidder]),
+        bids: vec![],
+    };
+    let requested = |t: f64, bidder: &str, codes: &[&str]| {
+        ev(
+            t,
+            Ev::BidRequested {
+                auction_id: "a1".into(),
+                bidder: bidder.into(),
+                ad_unit_codes: strings(codes),
+                gdpr_applies: None,
+                has_consent_string: None,
+                schain: vec![],
+                bidder_request_id: None,
+                bids: Vec::new(),
+            },
+        )
+    };
+    let in_currency = |mut response: adscan_model::TrackerEvent, code: &str| {
+        if let Ev::BidResponse { currency, .. } = &mut response.kind {
+            *currency = Some(code.into());
+        }
+        response
+    };
+    let won = |t: f64, bidder: &str, code: &str, cpm: f64| {
+        ev(
+            t,
+            Ev::BidWon {
+                auction_id: Some("a1".into()),
+                bidder: bidder.into(),
+                ad_unit_code: code.into(),
+                cpm,
+            },
+        )
+    };
+    capture_with(
+        DeviceProfile::Desktop,
+        vec![
+            prebid_detected(100.0, "pbjs", "10.2.0"),
+            ev(
+                300.0,
+                Ev::AuctionInit {
+                    auction_id: "a1".into(),
+                    timeout: Some(1500.0),
+                    ad_units: vec![
+                        twin("banner", &["980x150", "970x250", "728x90"], "gumgum"),
+                        twin("banner", &["970x250", "840x150", "728x90"], "rubicon"),
+                        twin("rect", &["300x600", "300x250"], "gumgum"),
+                        twin("banner", &["970x250", "728x90"], "appnexus"),
+                        twin("rect", &["300x250"], "rubicon"),
+                    ],
+                },
+            ),
+            requested(305.0, "gumgum", &["banner", "rect"]),
+            requested(305.0, "rubicon", &["banner", "rect"]),
+            requested(305.0, "appnexus", &["banner"]),
+            in_currency(bid_response(576.0, "a1", "gumgum", "banner", 10.01), "EUR"),
+            bid_response(492.0, "a1", "rubicon", "banner", 2.05),
+            bid_response(500.0, "a1", "rubicon", "rect", 0.6),
+            ev(
+                510.0,
+                Ev::NoBid {
+                    auction_id: "a1".into(),
+                    bidder: "appnexus".into(),
+                    ad_unit_code: "banner".into(),
+                },
+            ),
+            ev(
+                600.0,
+                Ev::AuctionEnd {
+                    auction_id: "a1".into(),
+                },
+            ),
+            won(620.0, "gumgum", "banner", 10.01),
+            won(625.0, "rubicon", "rect", 0.6),
+        ],
+        0.0,
+    )
+}
+
+#[test]
+fn ad_units_registered_twice_under_one_code_are_one_ad_unit_of_the_auction() {
+    let telemetry = derived(&twin_capture());
+    let auction = &telemetry.auctions[0];
+    // One entry per code, where the code was first named, with every size once.
+    assert_eq!(
+        auction
+            .ad_units
+            .iter()
+            .map(|unit| (unit.code.as_str(), unit.sizes.join(" ")))
+            .collect::<Vec<_>>(),
+        [
+            ("banner", "980x150 970x250 728x90 840x150".to_string()),
+            ("rect", "300x600 300x250".to_string()),
+        ]
+    );
+    // And the bids of every twin.
+    let bidders = |code: &str| -> Vec<(&str, BidStatus)> {
+        auction
+            .ad_units
+            .iter()
+            .find(|unit| unit.code == code)
+            .unwrap()
+            .bids
+            .iter()
+            .map(|bid| (bid.bidder.as_str(), bid.status))
+            .collect()
+    };
+    assert_eq!(
+        bidders("banner"),
+        [
+            ("gumgum", BidStatus::Won),
+            ("rubicon", BidStatus::Bid),
+            ("appnexus", BidStatus::NoBid),
+        ]
+    );
+    assert_eq!(
+        bidders("rect"),
+        [("gumgum", BidStatus::Pending), ("rubicon", BidStatus::Won)]
+    );
+    assert_eq!(
+        (
+            telemetry.metrics.ad_unit_count,
+            telemetry.metrics.bidder_count,
+            telemetry.metrics.bid_request_count
+        ),
+        (2, 3, 5)
+    );
+}
+
+#[test]
+fn winning_prices_in_two_currencies_are_not_averaged() {
+    // gumgum won in EUR, rubicon in USD.
+    let mixed = derived(&twin_capture()).metrics;
+    assert_eq!(
+        (mixed.avg_winning_cpm, mixed.total_winning_cpm),
+        (None, 0.0)
+    );
+
+    // The same visit with every price in one currency has its average.
+    let mut capture = twin_capture();
+    for event in &mut capture.events {
+        if let Ev::BidResponse { currency, .. } = &mut event.kind {
+            *currency = Some("EUR".into());
+        }
+    }
+    let single = derived(&capture).metrics;
+    assert_eq!(single.total_winning_cpm, 10.61);
+    assert_eq!(single.avg_winning_cpm, Some(10.61 / 2.0));
+}
+
 #[test]
 fn healthy_page_derives_auction_bids_and_statuses() {
     let telemetry = derived(&healthy_capture(DeviceProfile::Desktop));

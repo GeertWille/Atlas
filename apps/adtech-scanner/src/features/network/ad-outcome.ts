@@ -39,7 +39,7 @@ export function rowOutcome(row: Pick<NetworkRow, "category" | "ad" | "noHbTarget
     case "notSent":
       return null;
     case "inTime":
-      if (ad.cpm !== null) return { kind: "bid", text: formatCpm(ad.cpm) };
+      if (ad.cpm !== null) return { kind: "bid", text: formatCpm(ad.cpm, ad.currency) };
       return { kind: "noBid", text: ad.nbr === null ? "no bid" : `no-bid ${ad.nbr}` };
   }
 }

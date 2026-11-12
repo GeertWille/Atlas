@@ -20,6 +20,7 @@ use super::ports::ScanConfigurationRepository;
 use super::settings::SettingsService;
 use crate::domain::DomainError;
 use crate::domain::scan::{ValidatedScan, seed_from_id};
+use crate::domain::telemetry::merge_ad_units_by_code;
 
 /// Each scan drives its own browser; more than two at once starve each other.
 pub const MAX_CONCURRENT_SCANS: usize = 2;
@@ -249,11 +250,18 @@ impl ScanService {
     }
 
     pub async fn get(&self, scan_id: &str) -> Result<ScanDetail, AppError> {
-        self.deps
+        let mut detail = self
+            .deps
             .scans
             .detail(scan_id)
             .await?
-            .ok_or_else(|| not_found(scan_id))
+            .ok_or_else(|| not_found(scan_id))?;
+        // Scans stored before ad units were merged by code hold one entry
+        // per registered ad unit; every reader gets them merged.
+        for auction in &mut detail.auctions {
+            auction.ad_units = merge_ad_units_by_code(std::mem::take(&mut auction.ad_units));
+        }
+        Ok(detail)
     }
 
     pub async fn delete(&self, scan_id: &str) -> Result<(), AppError> {

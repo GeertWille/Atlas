@@ -40,9 +40,14 @@ export function formatUsd(amount: number): string {
   return amount > 0 && amount < 0.1 ? usd3.format(amount) : usd2.format(amount);
 }
 
-export function formatCpm(cpm: number | null, currency: string | null = "USD"): string {
+/**
+ * A price. `withCode`: the currency is written out as its code whatever it is, for where prices in different
+ * currencies stand side by side ("2.05 USD" next to "10.01 EUR"); a price that names none is the bare number.
+ */
+export function formatCpm(cpm: number | null, currency: string | null = "USD", withCode = false): string {
   if (cpm === null) return EMPTY;
   const value = cpm.toFixed(2);
+  if (withCode) return currency ? `${value} ${currency}` : value;
   return !currency || currency === "USD" ? `$${value}` : `${value} ${currency}`;
 }
 

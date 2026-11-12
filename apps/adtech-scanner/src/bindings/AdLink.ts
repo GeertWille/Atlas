@@ -29,6 +29,11 @@ lateByMs: number | null,
  */
 cpm: number | null, 
 /**
+ * The currency `cpm` is in, as the answer or Prebid stated it. `None`
+ * when neither did, and on scans stored before this was kept.
+ */
+currency: string | null, 
+/**
  * OpenRTB no-bid reason of the answer.
  */
 nbr: number | null, };

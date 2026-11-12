@@ -96,6 +96,7 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
         haystack,
         complete,
         best_cpm: response.and_then(openrtb::best_price),
+        currency: response.and_then(|response| response.currency.clone()),
         nbr: response.and_then(|response| response.nbr),
     }
 }

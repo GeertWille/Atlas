@@ -56,7 +56,13 @@ export function BidderSummaryTable({ auctions }: { auctions: Auction[] }) {
                 )}
               </td>
               <td className={NUMERIC}>{row.avgLatencyMs === null ? EMPTY : formatDuration(row.avgLatencyMs)}</td>
-              <td className={NUMERIC}>{formatCpm(row.avgCpm)}</td>
+              <td className={NUMERIC}>
+                {row.mixedCurrencies ? (
+                  <span title="This bidder's bids are in more than one currency; they are not averaged">mixed</span>
+                ) : (
+                  formatCpm(row.avgCpm, row.currency)
+                )}
+              </td>
               <td className={`${NUMERIC} pr-4`}>{formatPercent(row.winRate)}</td>
             </tr>
           ))}

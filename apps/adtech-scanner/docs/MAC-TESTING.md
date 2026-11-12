@@ -123,6 +123,8 @@ This is the site that exposed most of the real-world problems.
 - [ ] Network view on a real scan (often 1,000–4,000 requests): scrolling and typing a filter feel instant; opening a request's details is quick
 - [ ] Bid requests chip: each bid shows a price, a no-bid reason, "late" or "request unknown"; open one and check the decoded request and response make sense
 - [ ] Bid exchanges view: compare "late +N ms" cells with what Prebid itself reported as timeouts
+- [ ] Bid exchanges view on knack.be (3-page browse), every auction: each ad unit code is one column with all its sizes, every bidder row has its cells under the right ad unit and its request summary under "Request", also after switching between auctions in the menu; "N ad units" matches the number of columns
+- [ ] Same view: where an auction has bids in EUR and USD, every price shows its currency code and the line above the table says the prices are not comparable; the "Bidder" heading starts where the bidder names start
 - [ ] Headers tab: cookie and authorization values are blanked; with "Store full headers" on and a new scan they are shown
 - [ ] Sign in to a site during a manual session, then look at the stored login request: the password field must be blanked
 - [ ] Copy as cURL pastes a working command (with a placeholder where something was blanked)

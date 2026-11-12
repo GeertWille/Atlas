@@ -235,10 +235,12 @@ fn derive_auctions(timeline: &[Timed]) -> Vec<Auction> {
                 ended_at_ms: None,
                 duration_ms: None,
                 timeout_ms: *timeout,
-                ad_units: ad_units
-                    .iter()
-                    .map(|unit| new_ad_unit(&unit.code, unit.sizes.clone()))
-                    .collect(),
+                ad_units: merge_ad_units_by_code(
+                    ad_units
+                        .iter()
+                        .map(|unit| new_ad_unit(&unit.code, unit.sizes.clone()))
+                        .collect(),
+                ),
             }),
             Ev::BidRequested {
                 auction_id,
@@ -330,6 +332,38 @@ fn derive_auctions(timeline: &[Timed]) -> Vec<Auction> {
         }
     }
     auctions
+}
+
+/// Within one auction an ad unit is its code. Prebid lets a page register
+/// several ad units under one code ("twin" ad units, typically one per bidder
+/// with the sizes that bidder is offered); Prebid itself then runs one
+/// auction per code, and so does every reader of an [`Auction`]. Entries
+/// with the same code become one: at the place of the first, with the sizes
+/// of all in the order they were first named, each once, and the bids of
+/// all, one per bidder.
+pub fn merge_ad_units_by_code(units: Vec<AuctionAdUnit>) -> Vec<AuctionAdUnit> {
+    let mut merged: Vec<AuctionAdUnit> = Vec::with_capacity(units.len());
+    for unit in units {
+        let Some(known) = merged.iter_mut().find(|known| known.code == unit.code) else {
+            merged.push(unit);
+            continue;
+        };
+        for size in unit.sizes {
+            if !known.sizes.contains(&size) {
+                known.sizes.push(size);
+            }
+        }
+        for bid in unit.bids {
+            if !known.bids.iter().any(|other| other.bidder == bid.bidder) {
+                known.bids.push(bid);
+            }
+        }
+        if known.winning_bidder.is_none() {
+            known.winning_bidder = unit.winning_bidder;
+            known.winning_cpm = unit.winning_cpm;
+        }
+    }
+    merged
 }
 
 fn new_ad_unit(code: &str, sizes: Vec<String>) -> AuctionAdUnit {
@@ -645,7 +679,28 @@ fn derive_metrics<'a>(
 
     let bid_request_count = bids().count() as u32;
     let bid_timeout_count = count_bids(&[BidStatus::Timeout]);
-    let winning_cpms: Vec<f64> = ad_units().filter_map(|unit| unit.winning_cpm).collect();
+    // Prices in different currencies cannot be added up or averaged, and
+    // nothing here converts them: with more than one, there is no figure.
+    let winners = || {
+        ad_units().filter_map(|unit| {
+            let winner = unit.winning_bidder.as_deref()?;
+            let currency = unit
+                .bids
+                .iter()
+                .find(|bid| bid.bidder == winner)
+                .and_then(|bid| bid.currency.as_deref());
+            Some((unit.winning_cpm?, currency))
+        })
+    };
+    let one_currency = winners()
+        .map(|(_, currency)| currency)
+        .collect::<BTreeSet<_>>()
+        .len()
+        <= 1;
+    let winning_cpms: Vec<f64> = winners()
+        .filter(|_| one_currency)
+        .map(|(cpm, _)| cpm)
+        .collect();
     let total_winning_cpm: f64 = winning_cpms.iter().sum();
 
     let requested_slots = slots

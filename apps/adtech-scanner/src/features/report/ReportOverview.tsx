@@ -53,7 +53,7 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
         </div>
       ) : null}
       <StatGrid className="grid-cols-4">
-        {buildKeyMetrics(detail.metrics, detail.slots, isMultiPage(detail)).map((metric) => (
+        {buildKeyMetrics(detail.metrics, detail.slots, isMultiPage(detail), detail.auctions).map((metric) => (
           <Stat key={metric.label} label={metric.label} value={metric.value} hint={metric.hint} />
         ))}
       </StatGrid>

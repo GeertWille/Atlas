@@ -1,5 +1,6 @@
 import type { Auction, Bid, DecodedBidResponse, ExchangeVerdict, NetworkRow } from "@/bindings";
 import { verdictShort } from "@/shared/domain/exchange-verdict";
+import { currenciesOf } from "@/shared/domain/prices";
 import { BID_STATUSES } from "@/shared/domain/vocabulary";
 import { formatCpm, formatDuration, pluralize } from "@/shared/lib/format";
 
@@ -39,8 +40,11 @@ export type MatrixSection =
   | { kind: "server"; request: MatrixRequest; bidders: MatrixBidder[] };
 
 export type BidMatrix = {
+  /** The columns. Every bidder's `cells` has one entry per column, in this order. */
   adUnits: { code: string; sizes: string[] }[];
   sections: MatrixSection[];
+  /** The currencies the bids are priced in. With more than one, every price says which it is in. */
+  currencies: (string | null)[];
 };
 
 const rank = (bid: Bid) => BID_STATUSES.indexOf(bid.status);
@@ -113,7 +117,7 @@ export function buildBidMatrix(auction: Auction, sources: MatrixSources): BidMat
       bidders: members,
     });
   }
-  return { adUnits, sections };
+  return { adUnits, sections, currencies: currenciesOf(auction.adUnits.flatMap((unit) => unit.bids)) };
 }
 
 export type CellSummary = {
@@ -124,9 +128,9 @@ export type CellSummary = {
 };
 
 /** The two things a cell says. The network's verdict wins over Prebid's status where they differ. */
-export function summariseCell(cell: MatrixCell, viaServer: boolean): CellSummary {
+export function summariseCell(cell: MatrixCell, viaServer: boolean, withCurrencyCode = false): CellSummary {
   // No request could be tied to the bid: Prebid's own record stands, and the network's side is unknown.
-  if (cell.verdict === null) return { primary: prebidOutcome(cell), secondary: UNKNOWN_REQUEST };
+  if (cell.verdict === null) return { primary: prebidOutcome(cell, withCurrencyCode), secondary: UNKNOWN_REQUEST };
   const time = viaServer
     ? cell.serverMs === null
       ? null
@@ -149,15 +153,15 @@ export function summariseCell(cell: MatrixCell, viaServer: boolean): CellSummary
     default:
       break;
   }
-  return { primary: prebidOutcome(cell), secondary: time };
+  return { primary: prebidOutcome(cell, withCurrencyCode), secondary: time };
 }
 
 /** What stands in a cell in place of a time when the bid's request is not known. */
 export const UNKNOWN_REQUEST = "request unknown";
 
 /** What Prebid recorded for the bid: a price, a timeout, an error or no bid. */
-function prebidOutcome(cell: MatrixCell): string {
-  if (cell.bid.cpm !== null) return formatCpm(cell.bid.cpm, cell.bid.currency);
+function prebidOutcome(cell: MatrixCell, withCurrencyCode: boolean): string {
+  if (cell.bid.cpm !== null) return formatCpm(cell.bid.cpm, cell.bid.currency, withCurrencyCode);
   if (cell.bid.status === "timeout") return "timeout";
   if (cell.bid.status === "error") return "error";
   return cell.nbr === null ? "no bid" : `no-bid ${cell.nbr}`;

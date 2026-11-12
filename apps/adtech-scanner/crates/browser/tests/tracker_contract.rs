@@ -172,6 +172,17 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                     bidders: vec![],
                     bids: vec![],
                 },
+                // Reported as registered; the engine makes one ad unit of
+                // the entries that share a code.
+                TrackedAdUnit {
+                    code: "unit-a".into(),
+                    sizes: strings(&["970x250", "300x250"]),
+                    bidders: strings(&["baz"]),
+                    bids: vec![TrackedBid {
+                        bidder: "baz".into(),
+                        params: json!({ "zone": 7 }),
+                    }],
+                },
             ],
         }
     );

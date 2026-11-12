@@ -1,9 +1,13 @@
 import type { Auction, Bid, BidStatus } from "@/bindings";
+import { byPriceDescending, hasMixedCurrencies } from "@/shared/domain/prices";
 import { BID_STATUSES } from "@/shared/domain/vocabulary";
+import { formatCpm } from "@/shared/lib/format";
 import { createTimeScale, type TimeScale } from "@/shared/lib/time-scale";
 
 export type WaterfallBar = {
   bid: Bid;
+  /** The bid's price as it is written; with its currency code when the auction has bids in more than one. */
+  price: string | null;
   isWinner: boolean;
   /** ms after the auction started when the request went out. */
   offsetMs: number;
@@ -35,7 +39,7 @@ const AXIS_HEADROOM = 1.06;
 function compareBids(a: Bid, b: Bid): number {
   return (
     BID_STATUSES.indexOf(a.status) - BID_STATUSES.indexOf(b.status) ||
-    (b.cpm ?? 0) - (a.cpm ?? 0) ||
+    byPriceDescending(a, b) ||
     (a.responseTimeMs ?? Number.POSITIVE_INFINITY) - (b.responseTimeMs ?? Number.POSITIVE_INFINITY)
   );
 }
@@ -58,6 +62,7 @@ export function layoutAuction(auction: Auction): WaterfallLayout {
   );
   const deadlineMs = auction.timeoutMs ?? scale.domainMs;
 
+  const withCurrencyCode = hasMixedCurrencies(bids);
   const groups = auction.adUnits.map((unit) => ({
     code: unit.code,
     sizes: unit.sizes,
@@ -70,6 +75,7 @@ export function layoutAuction(auction: Auction): WaterfallLayout {
       const startPercent = scale.toPercent(offsetMs);
       return {
         bid,
+        price: bid.cpm === null ? null : formatCpm(bid.cpm, bid.currency, withCurrencyCode),
         isWinner: isWinningStatus(bid.status),
         offsetMs,
         startPercent,

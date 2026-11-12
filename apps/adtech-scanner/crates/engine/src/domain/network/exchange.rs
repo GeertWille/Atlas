@@ -56,8 +56,10 @@ pub struct ExchangeRequest {
     /// read or was longer than what is searched: an id that is not found
     /// may then have been sent all the same.
     pub complete: bool,
-    /// From the decoded answer.
+    /// From the decoded answer: its highest price and the currency it
+    /// states for its prices.
     pub best_cpm: Option<f64>,
+    pub currency: Option<String>,
     pub nbr: Option<u32>,
 }
 
@@ -340,6 +342,7 @@ pub fn link(
                     verdict,
                     late_by_ms,
                     cpm: request.best_cpm,
+                    currency: request.best_cpm.and(request.currency.clone()),
                     nbr: request.nbr,
                 },
                 bid_units: Vec::new(),
@@ -356,11 +359,20 @@ pub fn link(
             if verdict == ExchangeVerdict::InTimeButTimedOut {
                 link.verdict = verdict;
             }
-            if request.best_cpm.is_none() {
-                link.cpm = match (link.cpm, bid.cpm) {
-                    (Some(best), Some(cpm)) => Some(best.max(cpm)),
-                    (best, cpm) => best.or(cpm),
-                };
+            // Without a decoded answer the best of Prebid's own prices
+            // stands in, as long as they are in one currency: a price in
+            // another one is not compared with it.
+            if request.best_cpm.is_none()
+                && let Some(cpm) = bid.cpm
+            {
+                match link.cpm {
+                    None => {
+                        link.cpm = Some(cpm);
+                        link.currency = bid.currency.clone();
+                    }
+                    Some(best) if link.currency == bid.currency => link.cpm = Some(best.max(cpm)),
+                    Some(_) => {}
+                }
             }
         }
     }
@@ -527,6 +539,7 @@ mod tests {
             haystack: body.into(),
             complete: true,
             best_cpm: None,
+            currency: None,
             nbr: None,
         }
     }
@@ -597,6 +610,7 @@ mod tests {
                     verdict: ExchangeVerdict::InTime,
                     late_by_ms: Some(-38.0),
                     cpm: None,
+                    currency: None,
                     nbr: Some(7),
                 },
                 bid_units: vec![("bid-openx-top".into(), "top".into())],
@@ -752,6 +766,65 @@ mod tests {
         assert!(link.via_server);
         assert_eq!(link.verdict, ExchangeVerdict::InTimeButTimedOut);
         assert_eq!(link.cpm, Some(0.88));
+    }
+
+    #[test]
+    fn the_price_of_a_request_names_its_currency_and_is_never_the_best_of_two_currencies() {
+        let priced = |cpm: f64, currency: &str| Bid {
+            currency: Some(currency.into()),
+            ..bid("gumgum", BidStatus::Bid, Some(cpm))
+        };
+        let announcements = [announced(
+            "auction-0001",
+            "gumgum",
+            &[("top", "bid-gg-top"), ("side", "bid-gg-side")],
+        )];
+        let sent = r#"{"imp":[{"id":"bid-gg-top"},{"id":"bid-gg-side"}]}"#;
+
+        // The answer was decoded: its price and its currency stand.
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![("top", vec![priced(10.01, "EUR")])],
+        )];
+        let decoded = [ExchangeRequest {
+            best_cpm: Some(10.01),
+            currency: Some("EUR".into()),
+            ..request(1, Some("gumgum"), 1_004.0, Some(1_200.0), sent)
+        }];
+        let links = link(&mut auctions, &announcements[..1], &decoded, &[0.0]);
+        assert_eq!(
+            (links[0].link.cpm, links[0].link.currency.as_deref()),
+            (Some(10.01), Some("EUR"))
+        );
+
+        // Not decoded: Prebid's own prices stand in. 2.05 USD is not "less
+        // than" 10.01 EUR; the first price keeps its place and its currency.
+        let undecoded = [request(1, Some("gumgum"), 1_004.0, Some(1_200.0), sent)];
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![
+                ("top", vec![priced(2.05, "USD")]),
+                ("side", vec![priced(10.01, "EUR")]),
+            ],
+        )];
+        let links = link(&mut auctions, &announcements, &undecoded, &[0.0]);
+        assert_eq!(
+            (links[0].link.cpm, links[0].link.currency.as_deref()),
+            (Some(2.05), Some("USD"))
+        );
+        // In one currency the higher price is the request's.
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![
+                ("top", vec![priced(2.05, "EUR")]),
+                ("side", vec![priced(10.01, "EUR")]),
+            ],
+        )];
+        let links = link(&mut auctions, &announcements, &undecoded, &[0.0]);
+        assert_eq!(
+            (links[0].link.cpm, links[0].link.currency.as_deref()),
+            (Some(10.01), Some("EUR"))
+        );
     }
 
     #[test]

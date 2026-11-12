@@ -1842,6 +1842,61 @@ async fn deleting_every_scan_never_leaves_a_scan_that_starts_meanwhile_half_dele
     assert_eq!(deleted_with_the_rest + started_afterwards, 40);
 }
 
+/// Scans stored before ad units were merged by code hold one entry per
+/// registered ad unit, with every bid under the first: read back, they are
+/// merged, for the report, the network view and the exports alike.
+#[tokio::test]
+async fn a_stored_scan_with_ad_units_that_share_a_code_reads_back_with_one_per_code() {
+    use adscan_engine::application::ports::ScanRepository;
+    let harness = harness(gated_desktop(), "http://127.0.0.1:1", None);
+    let mut detail = run_scan(&harness, scan_options(false)).await;
+    let auction = &mut detail.auctions[0];
+    let first = auction.ad_units[0].clone();
+    let twin = |sizes: &[&str]| adscan_model::AuctionAdUnit {
+        sizes: sizes.iter().map(|size| size.to_string()).collect(),
+        bids: Vec::new(),
+        winning_bidder: None,
+        winning_cpm: None,
+        ..first.clone()
+    };
+    let units_before = auction.ad_units.len();
+    auction.ad_units.insert(1, twin(&["970x250", "300x250"]));
+    auction.ad_units.push(twin(&["970x250", "728x90"]));
+    harness
+        .store
+        .save_telemetry(
+            &detail.summary.id,
+            &detail.metrics,
+            &detail.pages,
+            &detail.auctions,
+            &detail.slots,
+        )
+        .await
+        .unwrap();
+
+    let read = harness.scans.get(&detail.summary.id).await.unwrap();
+    let units = &read.auctions[0].ad_units;
+    assert_eq!(units.len(), units_before);
+    assert_eq!(units[0].code, first.code);
+    let mut sizes = first.sizes.clone();
+    for size in ["970x250", "300x250", "728x90"] {
+        if !sizes.iter().any(|known| known == size) {
+            sizes.push(size.to_string());
+        }
+    }
+    assert_eq!(units[0].sizes, sizes);
+    assert_eq!(units[0].bids, first.bids);
+    assert_eq!(units[0].winning_bidder, first.winning_bidder);
+
+    let json = harness
+        .scans
+        .export(&detail.summary.id, adscan_model::ExportFormat::Json)
+        .await
+        .unwrap();
+    let exported: adscan_model::ScanDetail = serde_json::from_str(&json).unwrap();
+    assert_eq!(exported.auctions, read.auctions);
+}
+
 #[tokio::test]
 async fn interrupted_scans_from_a_previous_run_are_failed_on_startup() {
     use adscan_engine::application::ports::ScanRepository;

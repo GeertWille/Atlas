@@ -4,7 +4,7 @@ import { Panel } from "@/shared/components/panel";
 import { verdictSentence } from "@/shared/domain/exchange-verdict";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
-import { formatCpm, formatDuration, formatOffset, pluralize } from "@/shared/lib/format";
+import { formatDuration, formatOffset, pluralize } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import { useReportLinks } from "../report-links";
@@ -38,7 +38,7 @@ function BidTooltip({
         : formatDuration(bid.responseTimeMs),
     ],
   ];
-  if (bid.cpm !== null) rows.push(["CPM", formatCpm(bid.cpm, bid.currency)]);
+  if (bar.price !== null) rows.push(["CPM", bar.price]);
   if (bid.size) rows.push(["Size", bid.size]);
   if (bid.dealId) rows.push(["Deal", bid.dealId]);
   return (
@@ -82,7 +82,7 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
         <li
           // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact values on focus
           tabIndex={0}
-          aria-label={`${bid.bidder}: ${meta.label}${bid.cpm === null ? "" : `, ${formatCpm(bid.cpm, bid.currency)}`}${bid.responseTimeMs === null ? "" : `, ${formatDuration(bid.responseTimeMs)}`}${open ? ". Opens its exchange" : ""}`}
+          aria-label={`${bid.bidder}: ${meta.label}${bar.price === null ? "" : `, ${bar.price}`}${bid.responseTimeMs === null ? "" : `, ${formatDuration(bid.responseTimeMs)}`}${open ? ". Opens its exchange" : ""}`}
           onClick={open}
           onKeyDown={(event) => {
             if (open && event.key === "Enter") open();
@@ -115,7 +115,7 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
               bid.cpm === null ? "text-subtle-foreground" : "font-medium",
             )}
           >
-            {bid.cpm === null ? meta.label : formatCpm(bid.cpm, bid.currency)}
+            {bar.price ?? meta.label}
           </span>
         </li>
       </TooltipTrigger>
@@ -200,8 +200,9 @@ export function AuctionWaterfall({ auction, index }: { auction: Auction; index: 
           ) : null}
         </div>
         <div className="relative flex flex-col gap-1 pb-6">
-          {layout.groups.map((group) => (
-            <AdUnitGroup key={group.code} group={group} auction={auction} />
+          {layout.groups.map((group, position) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: the ad units are a fixed list, and a code is not always unique in it
+            <AdUnitGroup key={position} group={group} auction={auction} />
           ))}
         </div>
       </div>

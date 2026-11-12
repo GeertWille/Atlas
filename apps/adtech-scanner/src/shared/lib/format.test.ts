@@ -71,6 +71,11 @@ test("formatCpm prints USD with a dollar sign and other currencies by code", () 
   expect(formatCpm(2.5)).toBe("$2.50");
   expect(formatCpm(1.2, "EUR")).toBe("1.20 EUR");
   expect(formatCpm(null)).toBe("–");
+  // Side by side with another currency, dollars are written like the rest.
+  expect(formatCpm(2.05, "USD", true)).toBe("2.05 USD");
+  expect(formatCpm(10.01, "EUR", true)).toBe("10.01 EUR");
+  expect(formatCpm(3, null, true)).toBe("3.00");
+  expect(formatCpm(null, "EUR", true)).toBe("–");
 });
 
 test("formatPercent rounds a ratio to a whole percentage", () => {

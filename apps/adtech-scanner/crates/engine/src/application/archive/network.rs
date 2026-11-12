@@ -626,6 +626,7 @@ fn ad_context(row: &NetworkRow, scan: &ScanDetail) -> Option<AdContext> {
                     ad_unit: unit.code.clone(),
                     status: bid.status,
                     cpm: bid.cpm,
+                    currency: bid.currency.clone(),
                     verdict: exchange.verdict,
                 });
                 if !bidders.contains(&bid.bidder.as_str()) {

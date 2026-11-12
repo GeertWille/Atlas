@@ -499,7 +499,10 @@ contract! {
         pub empty_slot_count: u32,
         /// Slots that rendered a creative / slots that requested one, 0-1.
         pub fill_rate: f64,
+        /// `None` without a winning bid, and when the winning bids are in
+        /// more than one currency: such prices cannot be averaged.
         pub avg_winning_cpm: Option<f64>,
+        /// 0 where `avg_winning_cpm` is `None`.
         pub total_winning_cpm: f64,
         /// ms from navigation start to the first auction init.
         pub time_to_first_auction_ms: Option<f64>,

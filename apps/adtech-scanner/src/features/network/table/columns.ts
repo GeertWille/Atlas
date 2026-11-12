@@ -145,7 +145,11 @@ const COMPARE: Record<Exclude<ColumnKey, "waterfall">, (a: NetworkRow, b: Networ
   status: (a, b) => number(a.status, b.status) || text(a.outcome, b.outcome),
   name: (a, b) => text(splitName(a.url).name, splitName(b.url).name),
   vendor: (a, b) => text(a.vendor ?? a.host, b.vendor ?? b.host),
-  outcome: (a, b) => text(a.ad?.verdict ?? null, b.ad?.verdict ?? null) || number(a.ad?.cpm ?? null, b.ad?.cpm ?? null),
+  // Prices are ordered within a currency; rows in another currency form a group of their own.
+  outcome: (a, b) =>
+    text(a.ad?.verdict ?? null, b.ad?.verdict ?? null) ||
+    text(a.ad?.currency ?? null, b.ad?.currency ?? null) ||
+    number(a.ad?.cpm ?? null, b.ad?.cpm ?? null),
   type: (a, b) => text(KIND_LABEL[a.kind], KIND_LABEL[b.kind]),
   initiator: (a, b) => text(a.initiator?.url ?? null, b.initiator?.url ?? null),
   size: (a, b) => a.transferredBytes - b.transferredBytes,

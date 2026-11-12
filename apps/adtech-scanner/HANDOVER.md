@@ -60,9 +60,9 @@ Rules that came from you and must keep holding:
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 226 unit tests; the integration tests drive real Chromium. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: RUST_COUNT tests, 5 ignored (2026-11-12, after the release defect list). |
-| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; VITEST_COUNT Vitest tests and PLAYWRIGHT_COUNT Playwright tests against the fake backend pass (2026-11-12). |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: TAURI_COUNT tests. Not run on macOS. |
+| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1073 tests, 5 ignored (2026-11-12, after the release defect list). |
+| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 781 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-12). |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: 41 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
 
 ## Run it on a Mac
 
@@ -174,9 +174,13 @@ without destroying the old ones.
 - The detection-vendor table against real pages.
 - The sellers.json cache against real exchanges: whether they send `ETag` or `Last-Modified`, answer
   304, and how large their files are. And the scan time now that the lookup is on by default.
-- The focus-ring fix on macOS. On WebKitGTK a select showed a ring after a mouse choice and no
-  longer does (`pnpm test:tauri`); dialogs and menus did not show one there to begin with, so their
-  part of the fix was only checked not to break keyboard focus.
+- The focus-ring fix on macOS. On WebKitGTK a select that was opened by a click and closed on the
+  option it already had showed a ring on its trigger, and no longer does while WebKit itself still
+  matches `:focus-visible` there (`pnpm test:tauri`). Dialogs and menus did not show one on
+  WebKitGTK to begin with, so their part of the fix was only checked not to take the ring away
+  from keyboard users. WebKit's own rule also applies: a scripted focus is ringed only if the
+  control focused before it was, so a ring that a mouse click took away comes back with Tab, not
+  with the next key press inside the same control.
 
 ## Known open issues
 
@@ -200,6 +204,23 @@ without destroying the old ones.
   can have a duration of a millisecond or two below zero (shown as 0) and can be filed under "other
   third party" instead of with its request, and a request made in the first tenth of a second after an
   in-page route change can sit on the page view before it.
+- **Twin ad units.** A page may register several Prebid ad units under one code (seen on knack.be:
+  one per bidder, each with its own sizes). The tracker reports them as registered; the engine makes
+  one ad unit per code of them in every auction (`domain/telemetry.rs::merge_ad_units_by_code`: the
+  sizes of all in the order first named, the bids of all), so the waterfall, the bid exchanges view,
+  the rules, the exports and Phase 2 see one. Scans stored before 2026-11-12 hold one entry per
+  registered ad unit; they are merged when read (`ScanService::get`), the stored rows are not
+  rewritten. The bidder params are still checked per registered bid, and a params finding counts
+  those ("missing on 1 of 2 ad units" can mean two registrations of one code). The bid exchanges
+  table used to key its header columns by ad unit code, which with twins left columns of the auction
+  shown before in the header; header and rows are now built from one column list.
+- **Currencies are never converted.** Bids are shown in the currency Prebid recorded. Where an
+  auction has bids in more than one, every price is written with its code ("2.05 USD", "10.01 EUR")
+  and the bid exchanges view says so; the average winning CPM (report and `ScanMetrics`), a bidder's
+  average CPM and a request's best price are not computed across currencies, and rows are sorted by
+  price within a currency only. Which bid won is Prebid's own decision (`bidWon`) and is shown as
+  recorded: a page without Prebid's currency module compares raw numbers across currencies, which
+  loses money, and the scanner does not report that as a finding yet.
 - The network view and the script viewer still show the error page when fetching the scan again
   fails in the background. Only the report keeps what it had loaded and shows a notice with a retry.
 - A keychain vault that is not valid JSON is never overwritten: every read and every change of a

@@ -203,6 +203,33 @@ test("the bid inspector shows a late or unanswered bid under the 250 ms timeout 
     const cell = cells.find((label) => label?.startsWith(`${bid.bidder} for ${bid.unit}:`));
     expect(cell, `${bid.bidder} for ${bid.unit} in ${JSON.stringify(cells)}`).toMatch(/late|no answer/);
   }
+  // Header and body are one grid: every row has the header's cells, each ad unit has one column, and the
+  // bidder names start where their heading starts.
+  const grid = await browser.execute((path: string) => {
+    const table = document.evaluate(path, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null)
+      .singleNodeValue as HTMLTableElement;
+    const textLeft = (cell: Element) => {
+      const range = document.createRange();
+      range.selectNodeContents(cell);
+      return Math.round(range.getBoundingClientRect().left);
+    };
+    const header = [...table.querySelectorAll("thead th")];
+    const bidders = [...table.querySelectorAll("tbody tr")].filter((row) => row.querySelector("td"));
+    return {
+      columns: header.length,
+      codes: header.slice(1, -1).map((cell) => cell.firstElementChild?.textContent),
+      rowCells: bidders.map((row) => row.children.length),
+      headingLeft: textLeft(header[0] as Element),
+      nameLefts: bidders.map((row) => textLeft(row.children[0] as Element)),
+      tableLeft: Math.round(table.getBoundingClientRect().left),
+    };
+  }, matrix);
+  expect(grid.codes).toEqual(auction?.adUnits.map((unit) => unit.code));
+  expect(new Set(grid.codes).size).toBe(grid.codes.length);
+  expect(grid.rowCells.length).toBeGreaterThan(0);
+  expect(grid.rowCells.every((cells) => cells === grid.columns)).toBe(true);
+  expect(grid.nameLefts.every((left) => left === grid.headingLeft)).toBe(true);
+  expect(grid.headingLeft - grid.tableLeft).toBe(12);
   expect(text).toContain("not sent");
   expect(text).toMatch(/triplelift[\s\S]*not sent/);
   expect(text).toMatch(/openx[\s\S]*no-bid 7/);

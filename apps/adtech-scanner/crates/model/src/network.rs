@@ -216,6 +216,10 @@ contract! {
         pub late_by_ms: Option<f64>,
         /// The highest bid the answer carried.
         pub cpm: Option<f64>,
+        /// The currency `cpm` is in, as the answer or Prebid stated it. `None`
+        /// when neither did, and on scans stored before this was kept.
+        #[serde(default)]
+        pub currency: Option<String>,
         /// OpenRTB no-bid reason of the answer.
         pub nbr: Option<u32>,
     }
@@ -381,6 +385,8 @@ contract! {
         /// What Prebid recorded for the bid.
         pub status: BidStatus,
         pub cpm: Option<f64>,
+        /// The currency Prebid recorded for the bid.
+        pub currency: Option<String>,
         pub verdict: ExchangeVerdict,
     }
 

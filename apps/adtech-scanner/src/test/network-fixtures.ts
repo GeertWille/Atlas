@@ -9,6 +9,7 @@ export function makeAdLink(overrides: Partial<AdLink> = {}): AdLink {
     verdict: "inTime",
     lateByMs: -200,
     cpm: null,
+    currency: null,
     nbr: null,
     ...overrides,
   };
