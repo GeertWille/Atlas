@@ -31,8 +31,8 @@ export function VisitPanel({ visit }: { visit: VisitState }) {
       <div className="flex items-baseline justify-between gap-4">
         <h2 className="text-sm font-semibold">Visit</h2>
         <p className="min-w-0 truncate text-[13px] text-muted-foreground" title={current.url}>
-          Now on page {current.index + 1}
-          {current.title ? `: ${current.title}` : ""}
+          {/* The audit trail announces a page before its title is known; its path always is. */}
+          Now on page {current.index + 1}: {current.title ?? pagePath(current.url)}
         </p>
       </div>
       <ol aria-label="Pages visited" className="flex flex-wrap items-center gap-x-1.5 gap-y-1">

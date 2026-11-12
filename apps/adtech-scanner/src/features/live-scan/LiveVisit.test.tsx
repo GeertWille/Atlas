@@ -69,7 +69,8 @@ const browseLogs = [
     {
       index: 1,
       url: "https://www.example.com/sport/final",
-      title: "Cup final preview",
+      // The backend announces a page before its title is known.
+      title: null,
       reachedBy: "linkClick",
       link: { text: "Final", href: "https://www.example.com/sport/final", reason: "" },
     },
@@ -85,7 +86,7 @@ const view = (detail: ScanDetail, logs: LogEntry[] | undefined) => (
 test("while the capture runs, the visit panel shows the current page, the pages so far and the latest actions", async () => {
   await renderWithApp(view(running(baseOptions), browseLogs));
   const visit = screen.getByRole("region", { name: "Visit" });
-  expect(within(visit).getByText("Now on page 2: Cup final preview")).toBeInTheDocument();
+  expect(within(visit).getByText("Now on page 2: /sport/final")).toBeInTheDocument();
 
   const pages = within(within(visit).getByRole("list", { name: "Pages visited" })).getAllByRole("listitem");
   expect(pages.map((page) => page.textContent)).toEqual(["1/news", "2/sport/final"]);

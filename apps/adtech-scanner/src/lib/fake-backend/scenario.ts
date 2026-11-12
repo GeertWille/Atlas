@@ -450,7 +450,8 @@ export function buildScenario({
       {
         index,
         url: view.url,
-        title: view.title,
+        // The title is read after load: a page view is announced without one.
+        title: null,
         reachedBy: view.reachedBy,
         startedAtMs: view.startedAtMs,
         link: view.link,
@@ -506,7 +507,7 @@ export function buildScenario({
       "environment",
       signals.length > 0
         ? `This visit is identifiable as automated: ${signals.join(", ")}`
-        : "You drive this visit: navigator.webdriver is false. The page can still notice the debugger that records it.",
+        : "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
       0,
       {
         webdriver: environment.webdriver,

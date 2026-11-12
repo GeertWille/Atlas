@@ -210,8 +210,9 @@ export function captureVisit(plan: VisitPlan): CapturedVisit {
         startedAtMs,
         dwellMs,
         reachedBy,
+        // A scripted visitor reaches every later page through a link, in-page navigations included.
         link:
-          later && reachedBy === "linkClick"
+          later && plan.visitor === "browse"
             ? {
                 text: later.title,
                 href: url,

@@ -981,7 +981,7 @@ fn configuration_commands_save_run_filter_and_delete() {
         (None, None)
     );
     let listed: Vec<ScanConfiguration> = invoke(&app, "list_scan_configurations", json!({}));
-    assert_eq!(listed, [saved.clone()]);
+    assert_eq!(listed, std::slice::from_ref(&saved));
     let raw = invoke_raw(&app, "list_scan_configurations", json!({})).unwrap();
     assert_eq!(raw[0]["lastScanId"], Value::Null);
     assert_eq!(

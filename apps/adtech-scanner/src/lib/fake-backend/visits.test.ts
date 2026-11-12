@@ -103,8 +103,9 @@ describe("a browse visit of the reference-bug site", () => {
     expect(detail.pages[0]?.startedAtMs).toBe(0);
     expect(detail.pages[1]?.startedAtMs).toBeGreaterThan(detail.pages[0]?.dwellMs ?? 0);
     expect(detail.pages[1]?.link).toMatchObject({ href: detail.pages[1]?.url });
-    // A route change loads no document.
+    // A route change loads no document, but the visitor still got there through a link.
     expect(detail.pages[2]?.loadMs).toBeNull();
+    expect(detail.pages[2]?.link).toMatchObject({ href: detail.pages[2]?.url });
 
     for (const page of detail.pages) {
       expect(page.metrics.auctionCount).toBe(detail.auctions.filter((auction) => auction.page === page.index).length);
@@ -258,6 +259,9 @@ describe("a manual session", () => {
     const detail = await api.getScan(summary.id);
     const logs = await api.getLogs(summary.id);
     expect(detail.pages.map((page) => page.reachedBy)).toEqual(["entry", "userNavigation", "routeChange"]);
+    // The person chose where to go: no link is attributed to the scanner.
+    expect(detail.pages.every((page) => page.link === null)).toBe(true);
+    expect(logs.some((entry) => entry.message.startsWith("This visit is not flagged as automated"))).toBe(true);
     expect(detail.environment).toMatchObject({ visitor: "manual", webdriver: false, headless: false });
     // Nobody but the person acted: no gestures, no link choices, no consent click.
     expect(activities(logs).filter((activity) => activity.activity === "action")).toEqual([]);

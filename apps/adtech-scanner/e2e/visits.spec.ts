@@ -71,7 +71,7 @@ test("a browse visit shows where it is while it runs, and ends in a report with 
   await expect(visit.getByRole("list", { name: "Pages visited" }).getByRole("listitem")).toHaveCount(2, {
     timeout: 20_000,
   });
-  await expect(visit.getByText(/Now on page 2: Council approves harbour plan/)).toBeVisible();
+  await expect(visit.getByText("Now on page 2: /2026/11/council-approves-harbour-plan")).toBeVisible();
   await expect(visit.getByRole("img", { name: "Followed link" })).toBeVisible();
   await expect(visit.getByText(/^Skipped 15 links: 9 off-site, 3 inside ads/)).toBeVisible();
   await expect(page.getByRole("log", { name: "Activity" })).toBeVisible();
