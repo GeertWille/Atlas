@@ -36,6 +36,8 @@ const REPLIES_FD: i32 = 4;
 pub(super) const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STARTUP_OUTPUT_LINES: usize = 20;
 const STARTUP_OUTPUT_PATIENCE: Duration = Duration::from_secs(1);
+/// How often, 50 ms apart, a shutdown looks whether the killed browser is gone.
+const SHUTDOWN_CHECKS: usize = 100;
 
 static ABANDONED_PROFILES_REMOVED: Once = Once::new();
 
@@ -125,6 +127,10 @@ pub(crate) struct DebuggingPipe {
 
 pub(crate) struct Chrome {
     child: Child,
+    /// The browser's process group, which is its process id. Remembered
+    /// because the child forgets its id once it was waited for, and its
+    /// helpers can outlive it for a moment.
+    group: Option<u32>,
     profile: Option<ProfileInUse>,
     watchdog: Option<Watchdog>,
     debugging_pipe: Option<DebuggingPipe>,
@@ -200,15 +206,15 @@ impl Chrome {
 
         // Best effort: a launch does not fail for want of its second line of
         // defence against being killed.
-        let watchdog = child
-            .id()
-            .and_then(|group| Watchdog::guard(group, profile.disposable()).ok());
+        let group = child.id();
+        let watchdog = group.and_then(|group| Watchdog::guard(group, profile.disposable()).ok());
         let startup_output = child
             .stderr
             .take()
             .map(|stderr| tokio::spawn(drain_stderr(stderr)));
         Ok(Self {
             child,
+            group,
             profile: Some(profile),
             watchdog,
             debugging_pipe: Some(debugging_pipe),
@@ -247,7 +253,7 @@ impl Chrome {
     /// Kills the whole process tree and removes a throwaway profile; both
     /// are gone when this returns.
     pub(crate) async fn shutdown(mut self) {
-        let group = self.child.id();
+        let group = self.group;
         self.kill_process_tree();
         let _ = self.child.wait().await;
         let Some(profile) = self.profile.take() else {
@@ -257,7 +263,7 @@ impl Chrome {
         let disposable = profile.disposable().is_some();
         // Killed processes need a moment to go and release their files. The
         // lock on a kept profile is held until they are gone.
-        for _ in 0..20 {
+        for _ in 0..SHUTDOWN_CHECKS {
             let helpers_left = kill_helpers(&path);
             let group_left = group.is_some_and(group_is_running);
             let profile_done =
@@ -270,8 +276,8 @@ impl Chrome {
     }
 
     fn kill_process_tree(&mut self) {
-        if let Some(pid) = self.child.id().and_then(|pid| i32::try_from(pid).ok()) {
-            let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+        if let Some(group) = self.group.and_then(|group| i32::try_from(group).ok()) {
+            let _ = killpg(Pid::from_raw(group), Signal::SIGKILL);
         }
         let _ = self.child.start_kill();
         if let Some(profile) = &self.profile {
@@ -305,7 +311,6 @@ fn above_the_browser_fds(fd: OwnedFd) -> std::io::Result<OwnedFd> {
 /// path on its command line.
 #[cfg(target_os = "linux")]
 fn kill_helpers(profile: &Path) -> bool {
-    let profile = profile.to_string_lossy();
     let Ok(processes) = std::fs::read_dir("/proc") else {
         return false;
     };
@@ -318,16 +323,30 @@ fn kill_helpers(profile: &Path) -> bool {
         else {
             continue;
         };
-        let uses_profile =
-            std::fs::read(process.path().join("cmdline")).is_ok_and(|command_line| {
-                String::from_utf8_lossy(&command_line).contains(profile.as_ref())
-            });
+        let uses_profile = std::fs::read(process.path().join("cmdline"))
+            .is_ok_and(|command_line| runs_on_profile(&command_line, profile));
         if uses_profile {
             let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
             found = true;
         }
     }
     found
+}
+
+/// Whether a command line (arguments separated by NUL, as `/proc` gives it)
+/// has a switch whose value is the profile directory or a path inside it:
+/// `--user-data-dir=<profile>`, the crash handler's
+/// `--database=<profile>/Crashpad`. A process that merely mentions the path,
+/// or runs on a directory whose name starts the same, is not the browser's.
+#[cfg(any(target_os = "linux", test))]
+fn runs_on_profile(command_line: &[u8], profile: &Path) -> bool {
+    let command_line = String::from_utf8_lossy(command_line);
+    command_line.split('\0').any(|argument| {
+        argument
+            .strip_prefix("--")
+            .and_then(|switch| switch.split_once('='))
+            .is_some_and(|(_, value)| Path::new(value).starts_with(profile))
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -568,6 +587,42 @@ mod tests {
                 .iter()
                 .any(|flag| flag.starts_with("--disk-cache-size"))
         );
+    }
+
+    #[test]
+    fn only_processes_started_on_the_profile_are_taken_for_the_browsers() {
+        let profile = Path::new("/data/scan-profile/desktop");
+        let on_profile =
+            |arguments: &[&str]| runs_on_profile(arguments.join("\0").as_bytes(), profile);
+        assert!(on_profile(&[
+            "chrome",
+            "--type=renderer",
+            "--user-data-dir=/data/scan-profile/desktop"
+        ]));
+        assert!(on_profile(&[
+            "chrome_crashpad_handler",
+            "--database=/data/scan-profile/desktop/Crashpad"
+        ]));
+        // Someone looking at the profile, a browser on a neighbouring
+        // directory, and a browser on the parent are not this browser.
+        assert!(!on_profile(&["du", "-sh", "/data/scan-profile/desktop"]));
+        assert!(!on_profile(&[
+            "tail",
+            "-f",
+            "/data/scan-profile/desktop/chrome_debug.log"
+        ]));
+        assert!(!on_profile(&[
+            "chrome",
+            "--user-data-dir=/data/scan-profile/desktop-old"
+        ]));
+        assert!(!on_profile(&[
+            "chrome",
+            "--user-data-dir=/data/scan-profile"
+        ]));
+        assert!(!on_profile(&[
+            "chrome",
+            "--note=see /data/scan-profile/desktop"
+        ]));
     }
 
     #[tokio::test]

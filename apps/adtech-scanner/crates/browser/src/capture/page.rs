@@ -16,8 +16,8 @@ use crate::device::Emulation;
 
 use super::error::CaptureError;
 use super::injected::{CONSENT_SOURCE, TRACKER_BINDING, TRACKER_FLUSH_EVENT, tracker_script};
-use super::interception::{Interception, Paused};
-use super::recorder::Recorder;
+use super::interception::{DocumentRequest, Interception, Paused};
+use super::recorder::{Recorder, committed_address};
 use super::tabs::{NewTab, Tab, Tabs, on_new_tab};
 use super::visitor::links::loggable;
 use super::visitor::site::Site;
@@ -292,17 +292,8 @@ impl Page {
         match event.method.as_str() {
             "Inspector.targetCrashed" => self.crashed = true,
             "Fetch.requestPaused" => {
-                let request = &event.params;
-                let url = request["request"]["url"].as_str().unwrap_or_default();
-                let main_frame = self
-                    .tabs
-                    .recorded()
-                    .is_some_and(|tab| request["frameId"] == tab.main_frame_id.as_str());
-                let on_site = self.recorder.is_on_site(url);
-                let verdict = self
-                    .interception
-                    .on_request_paused(url, main_frame, on_site);
-                self.answer_paused(session_id, request, verdict);
+                let verdict = self.decide_paused(session_id, &event.params);
+                self.answer_paused(session_id, &event.params, verdict);
             }
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
                 self.note_tab_address(session_id, &event.params);
@@ -364,6 +355,40 @@ impl Page {
         true
     }
 
+    /// What a paused document request of a tab is, for the navigation guard.
+    fn document_request<'a>(
+        &mut self,
+        session_id: &str,
+        request: &'a Value,
+    ) -> DocumentRequest<'a> {
+        DocumentRequest {
+            url: request["request"]["url"].as_str().unwrap_or_default(),
+            method: request["request"]["method"].as_str().unwrap_or("GET"),
+            replaces_the_page: self
+                .tabs
+                .by_session(session_id)
+                .is_some_and(|tab| request["frameId"] == tab.main_frame_id.as_str()),
+        }
+    }
+
+    /// Decides a paused document request of the recorded tab and puts a
+    /// refusal into the audit trail.
+    fn decide_paused(&mut self, session_id: &str, request: &Value) -> Paused {
+        let document = self.document_request(session_id, request);
+        let verdict = self
+            .interception
+            .on_request_paused(&document, self.recorder.site());
+        if let Paused::Refuse(refusal) = verdict {
+            let host = Url::parse(document.url)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_string))
+                .unwrap_or_default();
+            let (reason, message) = refusal.report(&host);
+            self.report_blocked(reason, &message, Some(document.url));
+        }
+        verdict
+    }
+
     fn answer_paused(&self, session_id: &str, request: &Value, verdict: Paused) {
         let request_id = &request["requestId"];
         match verdict {
@@ -374,7 +399,7 @@ impl Page {
             ),
             // Aborted, like a navigation the reader stopped: the page that
             // is showing stays.
-            Paused::Refuse => self.cdp.notify(
+            Paused::Refuse(_) => self.cdp.notify(
                 Some(session_id),
                 "Fetch.failRequest",
                 json!({ "requestId": request_id, "errorReason": "Aborted" }),
@@ -384,12 +409,7 @@ impl Page {
 
     /// Remembers what a tab shows and returns the address.
     fn note_tab_address(&mut self, session_id: &str, frame_navigated: &Value) -> String {
-        let frame = &frame_navigated["frame"];
-        let url = format!(
-            "{}{}",
-            frame["url"].as_str().unwrap_or_default(),
-            frame["urlFragment"].as_str().unwrap_or_default()
-        );
+        let url = committed_address(frame_navigated);
         if let Some(tab) = self.tabs.by_session(session_id) {
             tab.url.clone_from(&url);
         }
@@ -488,25 +508,28 @@ impl Page {
     }
 
     /// The tab a click of the scripted visitor opened asks for its first
-    /// document. On the scanned site, the visit moves into that tab; anywhere
-    /// else, the tab is closed before the request is sent.
+    /// document. When the visit may load it, the visit moves into that tab;
+    /// otherwise the tab is closed before the request is sent.
     fn on_first_document_of_new_tab(&mut self, session_id: &str, request: &Value) {
-        let url = request["request"]["url"].as_str().unwrap_or_default();
-        let Some(tab) = self.tabs.by_session(session_id) else {
-            return;
-        };
-        let is_tabs_own_document = request["frameId"] == tab.main_frame_id.as_str();
-        let target_id = tab.target_id.clone();
-        if self.setup.visitor != VisitorBehavior::Browse || !is_tabs_own_document {
+        let document = self.document_request(session_id, request);
+        if self.setup.visitor != VisitorBehavior::Browse || !document.replaces_the_page {
             return self.answer_paused(session_id, request, Paused::Continue);
         }
-        if !self.recorder.is_on_site(url) {
-            self.answer_paused(session_id, request, Paused::Refuse);
+        let Some(target_id) = self
+            .tabs
+            .by_session(session_id)
+            .map(|tab| tab.target_id.clone())
+        else {
+            return;
+        };
+        let verdict = self.interception.verdict(&document, self.recorder.site());
+        if let Paused::Refuse(_) = verdict {
+            self.answer_paused(session_id, request, verdict);
             self.close_tab(&target_id);
             self.report_blocked(
                 "popup",
                 "Closed a new tab that was leaving the scanned site",
-                Some(url),
+                Some(document.url),
             );
             return;
         }
@@ -554,11 +577,13 @@ impl Page {
     // ------------------------------------------------------------ evaluation
 
     /// The visit has reached its first page: from here on the tracker runs
-    /// on that page's site only.
-    pub(crate) async fn confine_tracker_to_site(&mut self) -> Result<(), CaptureError> {
+    /// on that page's site only, and a visitor that follows links cannot
+    /// leave it.
+    pub(crate) async fn confine_to_site(&mut self) -> Result<(), CaptureError> {
         let Some(site) = self.recorder.site().cloned() else {
             return Ok(());
         };
+        self.interception.confine_to_site();
         if let Some(identifier) = self.tracker_script_id.take() {
             self.call(
                 "Page.removeScriptToEvaluateOnNewDocument",

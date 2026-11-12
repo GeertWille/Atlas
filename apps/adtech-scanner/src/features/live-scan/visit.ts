@@ -19,8 +19,6 @@ export type VisitState = {
   actions: { id: string; message: string; warning: boolean }[];
   /** What the last link choice would not follow, e.g. "Skipped 14 links: 9 off-site, 3 inside ads". */
   skipped: string | null;
-  /** What the page can tell about the visit, in the backend's words. */
-  environment: string | null;
 };
 
 const ACTIONS_SHOWN = 3;
@@ -30,7 +28,6 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
   const pages = new Map<number, VisitPage>();
   const actions: VisitState["actions"] = [];
   let skipped: string | null = null;
-  let environment: string | null = null;
 
   for (const entry of logs) {
     const activity = visitorActivity(entry);
@@ -47,7 +44,7 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
         });
         break;
       case "environment":
-        environment = entry.message;
+        // Said once in the activity feed; the panel follows where the visit is, not what it is.
         break;
       case "linkChoice": {
         const count = activity.skipped.reduce((sum, { count }) => sum + count, 0);
@@ -69,7 +66,6 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
     current: ordered[ordered.length - 1] ?? null,
     actions: actions.slice(-ACTIONS_SHOWN),
     skipped,
-    environment,
   };
 }
 

@@ -217,26 +217,33 @@ test("findings of a multi-page visit say where they were seen, on the card and i
   await expect(page.getByRole("row", { name: /gpt\.js/ })).toContainText("1, 2");
 });
 
-test("the environment notice states what the page could see and how to check the result", async ({ page }) => {
+test("the environment notice is one quiet line of the visit summary, with how to check the result", async ({
+  page,
+}) => {
   await openApp(page, "/scans/seed-techpulse-desktop");
+  const overview = page.getByRole("region", { name: "Overview" });
   const notice = page.getByRole("note", { name: "Scan environment" });
-  await expect(notice).toContainText("Bidders may have treated this scan as automated traffic.");
+  // Said once, with the visit it describes: every tab has it above, none repeats it.
+  await expect(notice).toHaveCount(1);
+  await expect(overview.getByRole("note", { name: "Scan environment" })).toBeVisible();
   await expect(notice).toContainText(
-    "navigator.webdriver was true, Chrome ran headless, DoubleVerify (invalid-traffic measurement) was on the page.",
+    "This visit was automated and the pages could tell: navigator.webdriver was true, Chrome ran headless, DoubleVerify (invalid-traffic measurement) was on the page.",
   );
   await expect(notice).not.toContainText(/undetect|indistinguishable/i);
+  // The backend found a reason to suspect filtering here: it says so itself, as a caveat and as a finding.
+  await expect(overview.getByRole("list", { name: "Scan caveats" })).toContainText(
+    "This scan was identifiable as automated traffic, so bidders may have filtered it",
+  );
   await expect(page.getByRole("article", { name: "This scan was identifiable as automated traffic" })).toBeVisible();
-  // It belongs to the bids and fill, not to the scripts or the audit trail.
-  await reportTab(page, "Scripts").click();
-  await expect(notice).toHaveCount(0);
+  // Nothing stands between the tabs and the findings.
+  await expect(page.getByRole("tabpanel").getByRole("note")).toHaveCount(0);
   await reportTab(page, "Auctions").click();
-  await expect(notice).toBeVisible();
+  await expect(notice).toHaveCount(1);
 
   // What to try is one click away: the same scan with the browser shown.
   await notice.getByRole("button", { name: "with the browser shown" }).click();
   await expect(page).toHaveURL(/#\/scans\/scan-/);
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
-  const overview = page.getByRole("region", { name: "Overview" });
   await expect(overview.getByText("Browser shown", { exact: true })).toBeVisible();
   await expect(page.getByRole("note", { name: "Scan environment" })).toContainText(
     "navigator.webdriver was true, DoubleVerify",
@@ -308,6 +315,5 @@ test("the audit trail explains each link the visitor followed", async ({ page })
   await expect(
     entries.getByText(/Not considered: 9 off-site, 3 inside ads, 2 sign-in, checkout and the like, 1 file downloads/),
   ).toBeVisible();
-  // Audited without the rule the kind filter's counter trips on its own button: that predates this entry kind.
-  await expectNoAxeViolations(page, ["label-content-name-mismatch"]);
+  await expectNoAxeViolations(page);
 });

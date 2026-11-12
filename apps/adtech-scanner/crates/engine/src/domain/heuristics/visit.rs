@@ -143,9 +143,10 @@ impl Rule for LaterPageViewWithoutBids {
         finding.description = format!(
             "On {} the page requested {} ad slot(s) without any Prebid auction for them and without `hb_*` \
              targeting, although the same slots were auctioned on an earlier page view of this visit. Header \
-             bidding runs for the first page of a session and is skipped afterwards. That is the signature of \
-             state that survives the navigation, such as a \"last auction\" timestamp or a \"already requested\" \
-             flag in sessionStorage, localStorage or a cookie.",
+             bidding ran for the first page of this visit and was skipped afterwards. The usual cause is state \
+             that survives the navigation, such as a \"last auction\" timestamp or an \"already requested\" flag \
+             in sessionStorage, localStorage or a cookie. If these pages are meant to be sold without header \
+             bidding, this is that decision at work and not a bug.",
             labels(&ctx.scan.pages, &pages),
             first_unbid.len(),
         );
@@ -514,16 +515,21 @@ impl Rule for ConsentAskedAgain {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
-        let status_on = |page: u32, wanted: &str| {
-            events_on(ctx, page).any(|event| {
-                matches!(&event.kind, Ev::TcfState { event_status, .. }
-                    if event_status.as_deref() == Some(wanted))
+        let statuses_on = |page: u32| {
+            events_on(ctx, page).filter_map(|event| match &event.kind {
+                Ev::TcfState { event_status, .. } => event_status.as_deref(),
+                _ => None,
             })
         };
+        let status_on = |page: u32, wanted: &str| statuses_on(page).any(|status| status == wanted);
+        // A consent platform that has the choice reports `tcloaded` first.
+        // A prompt after that was opened by the visitor (the "privacy
+        // settings" link), which is no fault of the site.
+        let opens_with_the_prompt = |page: u32| statuses_on(page).next() == Some("cmpuishown");
         let mut decided = ctx.capture.consent_accepted;
         let mut asked_again: Vec<u32> = Vec::new();
         for (page, _) in (0u32..).zip(&ctx.scan.pages) {
-            if page > 0 && decided && status_on(page, "cmpuishown") {
+            if page > 0 && decided && opens_with_the_prompt(page) {
                 asked_again.push(page);
             }
             decided |= status_on(page, "useractioncomplete");

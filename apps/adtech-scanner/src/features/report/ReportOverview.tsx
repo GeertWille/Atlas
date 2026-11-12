@@ -2,6 +2,7 @@ import { TriangleAlertIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { Stat, StatGrid } from "@/shared/components/stat";
 import { Badge } from "@/shared/ui/badge";
+import { EnvironmentNotice } from "./EnvironmentNotice";
 import { buildKeyMetrics, detectedStack } from "./key-metrics";
 import { splitOverview } from "./overview-caveats";
 import { isMultiPage } from "./pages/page-scope";
@@ -37,14 +38,17 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
             </div>
           ) : null}
           {visit ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-subtle-foreground">Visit</span>
-              {visit.map((fact) => (
-                <Badge key={fact} tone="outline">
-                  {fact}
-                </Badge>
-              ))}
-            </div>
+            <>
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="text-xs text-subtle-foreground">Visit</span>
+                {visit.map((fact) => (
+                  <Badge key={fact} tone="outline">
+                    {fact}
+                  </Badge>
+                ))}
+              </div>
+              <EnvironmentNotice detail={detail} />
+            </>
           ) : null}
         </div>
       ) : null}

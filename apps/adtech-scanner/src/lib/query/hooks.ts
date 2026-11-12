@@ -171,12 +171,20 @@ export function useClearScanProfile() {
   });
 }
 
-/** Proxy profiles are part of the settings; every change answers with the settings as they are now. */
+/**
+ * Proxy profiles are part of the settings; every change answers with the settings as they are stored.
+ * While a field of the settings screen is still being saved, that answer can lack what the screen
+ * already shows, so it is left out and the settings are reloaded once that save has finished.
+ */
 function useSettingsCommand<T>(command: (input: T) => Promise<Settings>) {
   const client = useQueryClient();
   return useMutation({
     mutationFn: command,
-    onSuccess: (settings) => client.setQueryData(queryKeys.settings, settings),
+    onSuccess: (settings) => {
+      if (client.isMutating({ mutationKey: SETTINGS_UPDATE_KEY }) === 0) {
+        client.setQueryData(queryKeys.settings, settings);
+      }
+    },
   });
 }
 

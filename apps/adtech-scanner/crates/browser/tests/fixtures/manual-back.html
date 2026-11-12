@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>A page a person comes back to</title><link rel="icon" href="data:,"></head>
+<body style="margin:0;height:3000px">
+<script>
+// Stands in for a person who goes to a second page and presses Back. The
+// browser then brings this document back as it was, without loading it.
+var step = Number(new URLSearchParams(location.search).get('step') || 0);
+if (step === 0 && !sessionStorage.getItem('left')) {
+  setTimeout(function () {
+    sessionStorage.setItem('left', '1');
+    location.href = '/manual-back.html?step=1';
+  }, 1500);
+}
+if (step === 1) setTimeout(function () { history.back(); }, 1500);
+addEventListener('pageshow', function (event) {
+  if (!event.persisted) return;
+  // Something the tracker reports, with this document's own clock, the
+  // moment the document wakes up.
+  scrollTo(0, 1500);
+  setTimeout(function () { console.log('BACK restored=true'); }, 300);
+});
+</script>
+</body></html>

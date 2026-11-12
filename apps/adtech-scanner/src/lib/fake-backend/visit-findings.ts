@@ -119,32 +119,49 @@ function consentAskedAgain(pages: VisitedPage[]): FindingDraft {
   };
 }
 
-function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
+/** The backend's caveat for the overview of a scan this finding is raised on. */
+export const AUTOMATED_TRAFFIC_CAVEAT =
+  "This scan was identifiable as automated traffic, so bidders may have filtered it; confirm missing bids with a visit a person drives";
+
+const metric = (label: string, body: string): Evidence => ({
+  kind: "metric",
+  label,
+  body,
+  scriptUrl: null,
+  line: null,
+});
+
+/**
+ * Not a fault of the page: the visit was recognisable as automated and a detection vendor was there
+ * to act on it. The backend also raises this when a bidder was asked twice or more and never bid;
+ * the fake keeps to the vendor, so its other scans stay as they are.
+ */
+export function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
   const { environment } = visit;
-  const signals = [
+  const indicators = [
     environment.webdriver ? "navigator.webdriver was true" : null,
     environment.headless ? "the browser ran headless" : null,
-    ...environment.detectors.map((detector) => `${detector.vendor} is on the page`),
-  ].filter((signal) => signal !== null);
-  if (environment.detectors.length === 0 || !(environment.webdriver || environment.headless)) return null;
+  ].filter((indicator) => indicator !== null);
+  const vendors = environment.detectors.map((detector) => detector.vendor);
+  if (vendors.length === 0 || indicators.length === 0) return null;
   return {
     severity: "info",
     category: "configuration",
     source: "heuristic",
     title: "This scan was identifiable as automated traffic",
-    description: `${signals.join(", ")}. Ad partners that measure invalid traffic can bid less, or not at all, for a visit they recognise as automated.`,
+    description: `Bidders may be filtering this scan as automated traffic: ${indicators.join(", ")}, ${vendors.join(" and ")} ${vendors.length === 1 ? "is" : "are"} on the page. Repeat as "I'll browse myself" or with the browser shown before concluding a bidder is broken.`,
     recommendation:
-      "Repeat the scan as “I'll browse myself” or with the browser shown before concluding that a bidder is broken.",
+      "Nothing to fix on the site. Treat missing bids in this scan with caution and confirm them with a visit a person drives.",
     confidence: 0.5,
-    impact: "Low fill or missing bids in this scan may not match real visitors",
+    impact: "Bid counts and fill in this scan may be lower than what real visitors get",
     estimatedRevenueImpactPct: null,
-    evidence: environment.detectors.map((detector) => ({
-      kind: "log",
-      label: detector.vendor,
-      body: `Request to ${detector.host} (invalid-traffic measurement)`,
-      scriptUrl: null,
-      line: null,
-    })),
+    evidence: [
+      metric("What the page could see", indicators.join(", ")),
+      metric(
+        "Detection vendors on the page",
+        environment.detectors.map((detector) => `${detector.vendor} (${detector.host})`).join("\n"),
+      ),
+    ],
     affectedSlots: [],
     affectedBidders: [],
   };

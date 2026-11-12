@@ -152,6 +152,67 @@ async fn a_manual_visit_records_where_the_person_goes_until_it_is_finished() {
     );
 }
 
+#[tokio::test]
+async fn going_back_to_a_page_the_browser_kept_is_a_page_view_of_its_own() {
+    if !support::has_a_display("going_back_to_a_page_the_browser_kept_is_a_page_view_of_its_own") {
+        return;
+    }
+    let _turn = ONE_BROWSER_AT_A_TIME.lock().await;
+    let fixtures = Fixtures::start().await;
+    let reported = Reported::new();
+    let finish = reported.hooks.finish.clone();
+    let running = tokio::spawn(reported.run(manual(&fixtures.url("manual-back.html"))));
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    finish.cancel();
+    let outcome = running.await.unwrap();
+    let capture = outcome.result.as_ref().unwrap_or_else(|error| {
+        panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress)
+    });
+
+    let reached: Vec<PageReach> = capture.pages.iter().map(|page| page.reached_by).collect();
+    assert_eq!(
+        reached,
+        [
+            PageReach::Entry,
+            PageReach::UserNavigation,
+            PageReach::UserNavigation
+        ],
+        "{:#?}",
+        outcome.progress
+    );
+    assert_eq!(capture.pages[2].url, fixtures.url("manual-back.html"));
+    assert_eq!(
+        fixtures
+            .requested()
+            .iter()
+            .filter(|asked| *asked == "/manual-back.html")
+            .count(),
+        1,
+        "the document was brought back, not loaded again"
+    );
+    // What the document does after it came back is on the third page view,
+    // timed from the moment it came back.
+    let back = capture
+        .console
+        .iter()
+        .find(|line| line.text == "BACK restored=true")
+        .unwrap_or_else(|| panic!("{:#?}", capture.console));
+    assert_eq!(back.page, 2);
+    let scrolled: Vec<(u32, f64)> = capture
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, Kind::Scroll { depth } if depth > 0.0))
+        .map(|event| (event.page, event.t))
+        .collect();
+    assert!(!scrolled.is_empty(), "{:#?}", capture.events);
+    let dwell = capture.pages[2].ended_at_ms - capture.pages[2].started_at_ms;
+    for (page, t) in scrolled {
+        assert_eq!(page, 2);
+        assert!((0.0..=dwell).contains(&t), "{t} of {dwell}");
+    }
+    assert!(capture.pages[2].max_scroll_depth > 0.0);
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn quitting_the_browser_ends_a_manual_visit_and_keeps_what_was_recorded() {

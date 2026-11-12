@@ -19,7 +19,7 @@ import { MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/shared/domain/scan-options
 import { type FakeConfig, readFakeConfig } from "./config";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
-import { type ResolvedScan, resolveScanOptions } from "./resolve";
+import { type ResolvedScan, resolveScanOptions, UNKNOWN_PROXY } from "./resolve";
 import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan } from "./runtime";
 import { buildScenario, type ScenarioContext } from "./scenario";
 import { FAKE_BROWSER_VERSION, SEED_PROXIES, seedConfigurations, seedScans } from "./seed";
@@ -258,34 +258,39 @@ class FakeBackend {
     const name = draft.name.trim();
     const host = draft.host.trim();
     const username = draft.username?.trim() || null;
-    if (name === "") throw new ApiError("invalidInput", "Give the proxy a name");
-    if (name.length > PROXY_NAME_MAX) {
-      throw new ApiError("invalidInput", `A proxy name can be at most ${PROXY_NAME_MAX} characters`);
+    if (name === "" || name.length > PROXY_NAME_MAX) {
+      throw new ApiError("invalidInput", `Give the proxy a name of at most ${PROXY_NAME_MAX} characters`);
     }
     if (this.settings.proxies.some((proxy) => proxy.id !== draft.id && sameName(proxy.name, name))) {
-      throw new ApiError("invalidInput", `A proxy named “${name}” already exists`);
+      throw new ApiError("invalidInput", `A proxy named "${name}" already exists`);
     }
     if (!HOST_NAME.test(host) && !(host.includes(":") && IPV6.test(host))) {
-      throw new ApiError("invalidInput", "Enter a host name or IP address, without scheme, port or path");
+      throw new ApiError(
+        "invalidInput",
+        "Enter the proxy's host name or IP address only, without scheme, port, path or credentials",
+      );
     }
     if (!Number.isInteger(draft.port) || draft.port < 1 || draft.port > 65_535) {
-      throw new ApiError("invalidInput", "The port must be between 1 and 65535");
+      throw new ApiError("invalidInput", "The proxy port must be between 1 and 65535");
     }
     if (draft.scheme === "socks5" && username !== null) {
-      throw new ApiError("invalidInput", "Chrome cannot sign in to a SOCKS5 proxy: remove the user name");
+      throw new ApiError(
+        "invalidInput",
+        "Chrome cannot sign in to a SOCKS5 proxy. Remove the user name or use an http or https proxy.",
+      );
     }
     return { name, scheme: draft.scheme, host, port: draft.port, username };
   }
 
   private proxy(id: string): ProxyProfile {
     const proxy = this.settings.proxies.find((candidate) => candidate.id === id);
-    if (!proxy) throw new ApiError("notFound", `Proxy profile ${id} does not exist`);
+    if (!proxy) throw new ApiError("notFound", `Proxy ${id} was not found`);
     return proxy;
   }
 
   private configuration(id: string): ScanConfiguration {
     const configuration = this.configurations.find((candidate) => candidate.id === id);
-    if (!configuration) throw new ApiError("notFound", `Scan configuration ${id} does not exist`);
+    if (!configuration) throw new ApiError("notFound", `Scan configuration ${id} was not found`);
     return configuration;
   }
 
@@ -304,10 +309,10 @@ class FakeBackend {
       }
       const { defaultExtraPages, defaultProxy } = patch;
       if (defaultExtraPages !== undefined && (defaultExtraPages < 0 || defaultExtraPages > 5)) {
-        throw new ApiError("invalidInput", "A visit can follow links to at most 5 further pages");
+        throw new ApiError("invalidInput", "A browse visit can follow links to at most 5 further pages");
       }
       if (defaultProxy?.kind === "profile" && !this.settings.proxies.some((proxy) => proxy.id === defaultProxy.id)) {
-        throw new ApiError("invalidInput", "The default proxy must be one of the saved proxies");
+        throw new ApiError("invalidInput", UNKNOWN_PROXY);
       }
       const { chromePath, ...rest } = patch;
       this.settings = { ...this.settings, ...rest };
@@ -363,8 +368,11 @@ class FakeBackend {
       try {
         resolved = resolveScanOptions(clone(configuration.options), this.settings, scanId);
       } catch (reason) {
-        if (!(reason instanceof ApiError)) throw reason;
-        throw new ApiError(reason.code, `Configuration “${configuration.name}” cannot run: ${reason.message}`);
+        if (!(reason instanceof ApiError) || reason.message !== UNKNOWN_PROXY) throw reason;
+        throw new ApiError(
+          "invalidInput",
+          `The proxy of the scan configuration "${configuration.name}" no longer exists. Edit the configuration and pick another proxy.`,
+        );
       }
       const summary = this.start(resolved, scanId, { id: configuration.id, name: configuration.name });
       configuration.lastScanId = scanId;
@@ -439,7 +447,10 @@ class FakeBackend {
     clearScanProfile: async () => {
       await latency(200);
       if (this.profileInfo().inUse) {
-        throw new ApiError("profileBusy", "The scan profile is in use by another scan");
+        throw new ApiError(
+          "profileBusy",
+          "The scan profile is in use by a running scan. Try again when that scan has finished.",
+        );
       }
       this.scanProfile = { sizeBytes: 0, lastUsedAt: null };
       this.persist();
@@ -459,14 +470,15 @@ class FakeBackend {
     },
     deleteProxyProfile: async (id) => {
       await latency();
-      this.proxy(id);
+      const profile = this.proxy(id);
       const users = this.configurations.filter(
         ({ options }) => options.proxy?.kind === "profile" && options.proxy.id === id,
       );
       if (users.length > 0) {
+        const one = users.length === 1;
         throw new ApiError(
           "invalidInput",
-          `This proxy is used by ${users.map((configuration) => `“${configuration.name}”`).join(", ")}. Change or delete ${users.length === 1 ? "that configuration" : "those configurations"} first.`,
+          `The proxy "${profile.name}" is used by the scan configuration${one ? "" : "s"} ${users.map((configuration) => `"${configuration.name}"`).join(", ")}. Change or delete ${one ? "it" : "them"} first.`,
         );
       }
       this.settings.proxies = this.settings.proxies.filter((proxy) => proxy.id !== id);
@@ -477,7 +489,7 @@ class FakeBackend {
     },
     setProxyPassword: async (id, password) => {
       await latency();
-      if (password === "") throw new ApiError("invalidInput", "Enter a password");
+      if (password === "") throw new ApiError("invalidInput", "Enter the proxy password.");
       this.proxy(id).hasPassword = true;
       this.persist();
       return clone(this.settings);
@@ -505,12 +517,14 @@ class FakeBackend {
     saveScanConfiguration: async (draft: ScanConfigurationDraft) => {
       await latency();
       const name = draft.name.trim();
-      if (name === "") throw new ApiError("invalidInput", "Give the configuration a name");
-      if (name.length > CONFIGURATION_NAME_MAX) {
-        throw new ApiError("invalidInput", `A configuration name can be at most ${CONFIGURATION_NAME_MAX} characters`);
+      if (name === "" || name.length > CONFIGURATION_NAME_MAX) {
+        throw new ApiError(
+          "invalidInput",
+          `Give the scan configuration a name of at most ${CONFIGURATION_NAME_MAX} characters`,
+        );
       }
       if (this.configurations.some((existing) => existing.id !== draft.id && sameName(existing.name, name))) {
-        throw new ApiError("invalidInput", `A configuration named “${name}” already exists`);
+        throw new ApiError("invalidInput", `A scan configuration named "${name}" already exists`);
       }
       // Validated like a scan start; what the options leave open stays open until each run.
       resolveScanOptions(draft.options, this.settings, "validation");

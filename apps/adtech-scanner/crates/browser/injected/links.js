@@ -24,6 +24,10 @@
   // Whole words of an id or class name, after splitting on "-", "_" and
   // spaces: "ad-slot" and "native_ad" name an ad, "header" and "shadow" do not.
   var AD_WORDS = ['ad', 'ads', 'advert', 'advertisement', 'adslot', 'sponsored', 'promoted'];
+  // Attributes that make a click do more than open the link's address.
+  var ACTS_ON_CLICK =
+    '[onclick], [data-method], [data-turbo-method], [data-remote], [data-confirm], [data-turbo-confirm], ' +
+    '[hx-get], [hx-post], [hx-put], [hx-patch], [hx-delete], [ping]';
   var REGIONS = [
     ['footer', 'footer, [role="contentinfo"]'],
     ['nav', 'nav, header, [role="navigation"], [role="banner"]'],
@@ -106,6 +110,11 @@
     return text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT);
   }
 
+  function labelOf(anchor) {
+    var label = (anchor.getAttribute('aria-label') || '') + ' ' + (anchor.getAttribute('title') || '');
+    return label.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT);
+  }
+
   function distanceFromView(box) {
     var middle = box.y + box.height / 2;
     return middle < 0 ? -middle : Math.max(0, middle - viewport.height);
@@ -120,6 +129,7 @@
       found.push({
         href: anchor.href,
         text: textOf(anchor),
+        label: labelOf(anchor),
         rel: anchor.rel || '',
         target: anchor.target || '',
         download: anchor.hasAttribute('download'),
@@ -129,6 +139,7 @@
         region: regionOf(anchor),
         inAd: isInsideAd(anchor) || !!anchor.querySelector('iframe') || overlapsAdFrame(box),
         inForm: !!anchor.closest('form'),
+        actsOnClick: anchor.matches(ACTS_ON_CLICK),
         hasImage: !!anchor.querySelector('img, picture, svg, video'),
       });
     }

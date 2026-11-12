@@ -79,7 +79,9 @@ describe("what the backend fills in when a scan starts", () => {
 
   test("a budget outside the allowed range and an unknown proxy profile are refused", async () => {
     const api = fresh();
-    await rejects(api.startScan({ ...options, budgetUsd: 0.01 }), "invalidInput");
+    // The backend's own range is wider than what the composer offers: $0 to $50.
+    await rejects(api.startScan({ ...options, budgetUsd: 50.01 }), "invalidInput");
+    await rejects(api.startScan({ ...options, budgetUsd: -1 }), "invalidInput");
     await rejects(api.startScan({ ...options, proxy: { kind: "profile", id: "proxy-nowhere" } }), "invalidInput");
     expect((await api.listScans({})).total).toBe(0);
   });
@@ -543,7 +545,9 @@ describe("scan configurations", () => {
     });
     expect(saved.options.proxy).toEqual({ kind: "profile", id, name: "Belgium", host: "be.proxy.example" });
 
-    await expect(api.deleteProxyProfile(id)).rejects.toThrow(/used by “Sportsdesk desktop”/);
+    await expect(api.deleteProxyProfile(id)).rejects.toThrow(
+      'The proxy "Belgium" is used by the scan configuration "Sportsdesk desktop". Change or delete it first.',
+    );
     expect((await api.getSettings()).proxies).toHaveLength(1);
     await api.deleteScanConfiguration(saved.id);
     await expect(api.deleteProxyProfile(id)).resolves.toMatchObject({ proxies: [] });
@@ -611,7 +615,7 @@ describe("seeded history", () => {
 
     // Germany's proxy is gone: the configuration cannot run until it is edited.
     await expect(api.runScanConfiguration("config-sportsdesk-germany")).rejects.toThrow(
-      /Configuration “Sportsdesk from Germany” cannot run/,
+      'The proxy of the scan configuration "Sportsdesk from Germany" no longer exists. Edit the configuration and pick another proxy.',
     );
     await rejects(api.runScanConfiguration("config-sportsdesk-germany"), "invalidInput");
   });

@@ -208,6 +208,27 @@ What the backend guarantees about it:
   with `data = { activity, page, detail }`: page views, actions (one per gesture), each link choice with
   what it passed over and why, what the scanner refused (off-site navigation, downloads), and the
   environment.
+- **What a browse visit can and cannot do.** It moves the pointer, turns the wheel (or swipes) and
+  clicks links; there is no code path that presses a key or enters text (`capture/input.rs`, with a test
+  that searches the sources). Which link is followed is decided in Rust (`visitor/links.rs`) from facts
+  the page supplies: never a link in or under an ad, off the site, to a file, marked
+  `nofollow`/`sponsored`/`ugc`, named like an account or basket action (text, `aria-label`, `title`,
+  path, query), inside a form, or with an attribute that makes a click do more than navigate
+  (`onclick`, `data-method`, `hx-post`, `ping`, ...). Right before the click the point is tested again
+  (`injected/hit.js`): something over the link, or a frame, form control or custom element inside it,
+  and it is not clicked.
+  From the moment the entry page has loaded until the visit ends, every main-frame document request is
+  checked in Rust before it is sent (`capture/interception.rs`, `Fetch` domain, documents only): another
+  site (public-suffix aware, and http from an https site), a non-GET request (a form submission), a
+  file, or an address that names an account or basket action is failed, and the page that was showing
+  stays. That covers a link rewritten as the button goes down, redirect chains hop by hop, tabs the
+  click opens, and pages that navigate by themselves. Each refusal is a `blocked` entry (`off-site`,
+  `form`, `sensitive`, `download`); a refused click ends the link following of that visit. `none` and
+  `scroll` send no clicks except the consent banner's and are not guarded; `manual` is the person's.
+- **Back/forward cache.** When a person presses Back and Chrome restores the earlier document instead
+  of loading it, that is a new page view (`userNavigation`, no `loadMs`) of the old document: what the
+  document reports from then on is on the new page view, timed from the restore. Console lines and bid
+  responses of the first few milliseconds after a restore can still land on the page view before.
 - **Scan profile.** With "keep a scan profile" (`Settings.persistentProfile`, or per scan) Chrome runs
   in `<data dir>/scan-profile/{desktop,mobile}` and cookies, consent and cache survive between scans.
   One scan at a time uses it; a second waits at its Capture step. `get_scan_profile` /

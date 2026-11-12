@@ -86,8 +86,7 @@ const SINGLETON_FILES: [&str; 3] = ["SingletonLock", "SingletonSocket", "Singlet
 impl PersistentProfile {
     /// Takes the profile at `path` for one launch, creating it when needed.
     pub(crate) fn open(path: &Path) -> Result<Self, PersistentProfileError> {
-        std::fs::create_dir_all(path)?;
-        let owner = lock(path)?;
+        let owner = lock(path, Missing::Create)?.ok_or(PersistentProfileError::Busy)?;
         // The lock file's age is when the profile was last used.
         owner.set_modified(SystemTime::now())?;
         for name in SINGLETON_FILES {
@@ -110,23 +109,50 @@ impl PersistentProfile {
 const LOCK_ATTEMPTS: u32 = 5;
 const LOCK_RETRY_PAUSE: Duration = Duration::from_millis(20);
 
-fn lock(profile: &Path) -> Result<File, PersistentProfileError> {
-    let owner = File::options()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(profile.join(LOCK_FILE))?;
+/// What taking the lock of a profile that is not on disk does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Missing {
+    Create,
+    /// There is nothing to own: `Ok(None)`.
+    Leave,
+}
+
+fn lock(profile: &Path, missing: Missing) -> Result<Option<File>, PersistentProfileError> {
+    let lock_file = profile.join(LOCK_FILE);
     for attempt in 1..=LOCK_ATTEMPTS {
+        if missing == Missing::Create {
+            std::fs::create_dir_all(profile)?;
+        } else if !profile.exists() {
+            return Ok(None);
+        }
+        let owner = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_file)?;
         match owner.try_lock() {
-            Ok(()) => return Ok(owner),
-            Err(TryLockError::WouldBlock) if attempt < LOCK_ATTEMPTS => {
-                std::thread::sleep(LOCK_RETRY_PAUSE)
+            // Whoever held the lock before may have deleted the profile
+            // ([`clear`]): a lock on a file that is no longer the profile's
+            // lock file keeps nobody else out.
+            Ok(()) if is_the_file_at(&owner, &lock_file) => return Ok(Some(owner)),
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                if attempt < LOCK_ATTEMPTS {
+                    std::thread::sleep(LOCK_RETRY_PAUSE);
+                }
             }
-            Err(TryLockError::WouldBlock) => break,
             Err(TryLockError::Error(error)) => return Err(error.into()),
         }
     }
     Err(PersistentProfileError::Busy)
+}
+
+fn is_the_file_at(open: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (open.metadata(), std::fs::metadata(path)) {
+        (Ok(open), Ok(at_path)) => open.dev() == at_path.dev() && open.ino() == at_path.ino(),
+        _ => false,
+    }
 }
 
 /// What is on disk for the persistent profile at `path`.
@@ -168,13 +194,30 @@ fn size_of(directory: &Path) -> u64 {
 /// Deletes the persistent profiles at `paths`, unless a scan is using one of
 /// them: then none is deleted.
 pub(crate) fn clear(paths: &[PathBuf]) -> Result<(), PersistentProfileError> {
-    let owned = paths
-        .iter()
-        .filter(|path| path.exists())
-        .map(|path| Ok((path, lock(path)?)))
-        .collect::<Result<Vec<_>, PersistentProfileError>>()?;
+    let mut owned = Vec::new();
+    for path in paths {
+        if let Some(owner) = lock(path, Missing::Leave)? {
+            owned.push((path, owner));
+        }
+    }
     for (path, _owner) in &owned {
-        std::fs::remove_dir_all(path)?;
+        // The lock file goes last: while it is there and locked, a scan that
+        // starts now waits or is told the profile is busy, and never opens a
+        // profile that is half deleted.
+        for entry in std::fs::read_dir(path)?.flatten() {
+            if entry.file_name() == LOCK_FILE {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                std::fs::remove_dir_all(entry.path())?;
+            } else {
+                std::fs::remove_file(entry.path())?;
+            }
+        }
+        std::fs::remove_file(path.join(LOCK_FILE))?;
+        // A scan may have taken the profile the moment its lock file went;
+        // the directory is then that scan's and stays.
+        let _ = std::fs::remove_dir(path);
     }
     Ok(())
 }
@@ -423,6 +466,57 @@ mod tests {
         drop(desktop);
         clear(&both).unwrap();
         assert!(both.iter().all(|profile| !profile.exists()));
+    }
+
+    /// Two instances of the app: one clears the profile while the other
+    /// starts a scan on it. The scan must end up owning the profile that is
+    /// on disk, not a lock file the clearing deleted.
+    #[test]
+    fn a_scan_that_starts_while_the_profile_is_cleared_owns_the_new_profile() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("desktop");
+        drop(PersistentProfile::open(&path).unwrap());
+        std::fs::write(path.join("Cookies"), "data").unwrap();
+
+        // What `clear` does, with the scan starting in the middle of it.
+        let clearing = lock(&path, Missing::Leave).unwrap().unwrap();
+        let waiting_for_the_lock = File::options()
+            .write(true)
+            .open(path.join(LOCK_FILE))
+            .unwrap();
+        std::fs::remove_dir_all(&path).unwrap();
+        drop(clearing);
+        waiting_for_the_lock.try_lock().unwrap();
+        assert!(
+            !is_the_file_at(&waiting_for_the_lock, &path.join(LOCK_FILE)),
+            "a lock on the deleted file owns nothing"
+        );
+        drop(waiting_for_the_lock);
+
+        let scan = PersistentProfile::open(&path).unwrap();
+        assert!(matches!(
+            PersistentProfile::open(&path),
+            Err(PersistentProfileError::Busy)
+        ));
+        assert!(matches!(
+            clear(std::slice::from_ref(&path)),
+            Err(PersistentProfileError::Busy)
+        ));
+        drop(scan);
+    }
+
+    #[test]
+    fn clearing_removes_everything_and_the_lock_file_last() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("desktop");
+        drop(PersistentProfile::open(&path).unwrap());
+        std::fs::create_dir_all(path.join("Default/Cache")).unwrap();
+        std::fs::write(path.join("Default/Cache/entry"), "data").unwrap();
+        std::os::unix::fs::symlink("gone-host-1", path.join("SingletonLock")).unwrap();
+
+        clear(std::slice::from_ref(&path)).unwrap();
+
+        assert!(!path.exists());
     }
 
     #[test]

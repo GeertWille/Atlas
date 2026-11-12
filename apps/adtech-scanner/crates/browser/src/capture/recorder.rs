@@ -66,6 +66,16 @@ enum Fetched {
     },
 }
 
+/// The full address of the document a `Page.frameNavigated` event reports.
+pub(crate) fn committed_address(frame_navigated: &Value) -> String {
+    let frame = &frame_navigated["frame"];
+    format!(
+        "{}{}",
+        frame["url"].as_str().unwrap_or_default(),
+        frame["urlFragment"].as_str().unwrap_or_default()
+    )
+}
+
 pub(crate) struct Recorder {
     pub tracker: TrackerLog,
     pub pages: PageLog,
@@ -206,13 +216,8 @@ impl Recorder {
             }
             "Page.loadEventFired" => self.load_fired = true,
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
-                let frame = &params["frame"];
-                let url = format!(
-                    "{}{}",
-                    frame["url"].as_str().unwrap_or_default(),
-                    frame["urlFragment"].as_str().unwrap_or_default()
-                );
-                self.on_document_committed(url);
+                let restored = params["type"] == "BackForwardCacheRestore";
+                self.on_document_committed(committed_address(params), restored);
             }
             "Page.navigatedWithinDocument" if params["frameId"] == self.main_frame_id.as_str() => {
                 self.document_url = params["url"].as_str().unwrap_or_default().to_string();
@@ -221,7 +226,7 @@ impl Recorder {
         }
     }
 
-    fn on_document_committed(&mut self, url: String) {
+    fn on_document_committed(&mut self, url: String, restored: bool) {
         self.document_url = url;
         let web_address = Url::parse(&self.document_url)
             .ok()
@@ -243,6 +248,7 @@ impl Recorder {
             url: &self.document_url,
             requested_at: self.document_requested_at.take().unwrap_or(now),
             on_site: self.on_site,
+            restored,
             now,
         });
         match change {

@@ -1,21 +1,11 @@
-import { ExternalLinkIcon, FolderOpenIcon, MonitorIcon, MoonIcon, SmartphoneIcon, SunIcon } from "lucide-react";
+import { FolderOpenIcon, MonitorIcon, MoonIcon, SunIcon } from "lucide-react";
 import { type ReactNode, useId } from "react";
 import { toast } from "sonner";
-import type { BrowserInfo, Settings, SettingsPatch, VisitorBehavior } from "@/bindings";
+import type { BrowserInfo, Settings, SettingsPatch } from "@/bindings";
 import { useDeleteAllScans, useUpdateSettings } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
-import { aiAvailability } from "@/shared/domain/ai-availability";
-import { modelLabel, PRICED_MODELS } from "@/shared/domain/model-pricing";
-import {
-  BUDGET_USD,
-  OBSERVE_SECONDS,
-  VISIT_PAGES,
-  VISITOR_BEHAVIORS,
-  VISITOR_META,
-} from "@/shared/domain/scan-options";
-import { pluralize } from "@/shared/lib/format";
 import { notifyError } from "@/shared/lib/notify-error";
-import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
+import { chooseBrowserExecutable } from "@/shared/lib/system";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,21 +17,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/shared/ui/alert-dialog";
-import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Field, FieldGroup } from "@/shared/ui/field";
-import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
 import { Skeleton } from "@/shared/ui/skeleton";
-import { Stepper } from "@/shared/ui/stepper";
 import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { ApiKeyField } from "./ApiKeyField";
-import { CommitInput } from "./CommitInput";
+import { AiAnalysisFields } from "./AiAnalysisFields";
 import { ProxySection } from "./ProxySection";
+import { ScanDefaultsFields } from "./ScanDefaultsFields";
 import { ScanProfileField } from "./ScanProfileField";
-import { parseBudgetUsd, parseModelId, parseObserveSeconds } from "./settings-schema";
-
-const MODEL_SUGGESTIONS_ID = "model-suggestions";
 
 declare const __APP_VERSION__: string;
 
@@ -59,53 +43,6 @@ function Section({ title, description, children }: { title: string; description?
         <FieldGroup>{children}</FieldGroup>
       </Panel>
     </section>
-  );
-}
-
-function GetKeyLink({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline"
-      onClick={onClick}
-    >
-      Get a key
-      <ExternalLinkIcon className="size-3" />
-    </button>
-  );
-}
-
-/** Says which classifier a scan started now would use, so the effect of the keys and the Jev switch is never a guess. */
-function ScriptTriageStatus({ settings }: { settings: Settings }) {
-  const { triage, logicAnalysis } = aiAvailability(settings);
-  if (triage === "jev") {
-    return (
-      <Field
-        label="Script triage"
-        description={
-          logicAnalysis
-            ? `Jev classifies the scripts that vendor rules cannot place and builds a reading guide for the logic analysis. ${modelLabel(settings.filterModel)} takes over if Jev fails.`
-            : "Jev classifies the scripts that vendor rules cannot place. Logic analysis needs an Anthropic key."
-        }
-      >
-        <Badge tone="violet">Jev System One</Badge>
-      </Field>
-    );
-  }
-  if (triage === "claude") {
-    return (
-      <Field
-        label="Script triage"
-        description="The script filter model classifies the scripts that vendor rules cannot place."
-      >
-        <Badge tone="blue">{modelLabel(settings.filterModel)}</Badge>
-      </Field>
-    );
-  }
-  return (
-    <Field label="Script triage" description="No key stored: scripts are classified by vendor rules only.">
-      <Badge tone="outline">None</Badge>
-    </Field>
   );
 }
 
@@ -195,18 +132,7 @@ function DeleteAllScansButton() {
 
 export function SettingsScreen({ settings, browser }: { settings: Settings; browser: BrowserInfo | null | undefined }) {
   const updateSettings = useUpdateSettings();
-  const ids = {
-    filter: useId(),
-    analysis: useId(),
-    budget: useId(),
-    headless: useId(),
-    observe: useId(),
-    pages: useId(),
-    jev: useId(),
-    jevDisclosure: useId(),
-    sellersJson: useId(),
-    sellersJsonDisclosure: useId(),
-  };
+  const ids = { headless: useId(), sellersJson: useId(), sellersJsonDisclosure: useId() };
 
   const save = (patch: SettingsPatch) =>
     updateSettings.mutate(patch, {
@@ -216,123 +142,11 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
 
   return (
     <>
-      <datalist id={MODEL_SUGGESTIONS_ID}>
-        {PRICED_MODELS.map((model) => (
-          <option key={model} value={model} />
-        ))}
-      </datalist>
-
       <Section
         title="AI analysis"
         description="Two model phases find logic bugs in wrapper code. Without a key, scans still run every deterministic check."
       >
-        <Field
-          stacked
-          label="Anthropic API key"
-          description={
-            <>
-              Stored in your system keychain, never in the app database or logs.{" "}
-              <GetKeyLink onClick={() => openApiKeysPage("anthropic")} />
-            </>
-          }
-        >
-          <div className="w-full">
-            <ApiKeyField provider="anthropic" stored={settings.hasApiKey} />
-          </div>
-        </Field>
-        <Field
-          stacked
-          label="TypeSafe API key (optional)"
-          description={
-            <>
-              Lets Jev System One, a low-cost classifier, triage scripts. Stored in your system keychain.{" "}
-              <GetKeyLink onClick={() => openApiKeysPage("typesafe")} />
-            </>
-          }
-        >
-          <div className="w-full">
-            <ApiKeyField provider="typesafe" stored={settings.hasTypesafeKey} />
-          </div>
-        </Field>
-        <Field
-          label="Classify scripts with Jev"
-          htmlFor={ids.jev}
-          description={
-            <span id={ids.jevDisclosure}>
-              Sends excerpts of the scanned page's scripts to api.typesafe.ai, a second vendor. Jev is sent more of each
-              script than Claude Haiku.
-              {settings.hasTypesafeKey ? null : (
-                <span className="mt-1 block font-medium text-foreground">Add a TypeSafe key first.</span>
-              )}
-            </span>
-          }
-        >
-          <Switch
-            id={ids.jev}
-            aria-describedby={ids.jevDisclosure}
-            disabled={!settings.hasTypesafeKey}
-            checked={settings.jevEnabled && settings.hasTypesafeKey}
-            onCheckedChange={(jevEnabled) => save({ jevEnabled })}
-          />
-        </Field>
-        <ScriptTriageStatus settings={settings} />
-        <Field
-          label="Script filter model"
-          htmlFor={ids.filter}
-          description="Classifies which scripts are ad-related. Used when Jev is off, and as the fallback if Jev fails."
-        >
-          <CommitInput
-            id={ids.filter}
-            list={MODEL_SUGGESTIONS_ID}
-            spellCheck={false}
-            className="w-56 font-mono text-[13px]"
-            value={settings.filterModel}
-            parse={parseModelId}
-            onCommit={(filterModel) => save({ filterModel })}
-          />
-        </Field>
-        <Field
-          label="Logic analysis model"
-          htmlFor={ids.analysis}
-          description="Phase 2 reads the beautified scripts with tools. This is where most of the cost goes."
-        >
-          <CommitInput
-            id={ids.analysis}
-            list={MODEL_SUGGESTIONS_ID}
-            spellCheck={false}
-            className="w-56 font-mono text-[13px]"
-            value={settings.analysisModel}
-            parse={parseModelId}
-            onCommit={(analysisModel) => save({ analysisModel })}
-          />
-        </Field>
-        <Field label="Analysis effort" description="Higher effort reads more code and reasons longer, at higher cost.">
-          <ToggleGroup
-            aria-label="Analysis effort"
-            value={settings.analysisEffort}
-            onValueChange={(analysisEffort) => save({ analysisEffort })}
-          >
-            <ToggleGroupItem value="low">Low</ToggleGroupItem>
-            <ToggleGroupItem value="medium">Medium</ToggleGroupItem>
-            <ToggleGroupItem value="high">High</ToggleGroupItem>
-          </ToggleGroup>
-        </Field>
-        <Field
-          label="Budget per scan"
-          htmlFor={ids.budget}
-          description={`Hard cap on LLM spend. Analysis stops and reports partial results when it is reached. $${BUDGET_USD.min.toFixed(2)} to $${BUDGET_USD.max.toFixed(2)}.`}
-        >
-          <CommitInput
-            leading="$"
-            id={ids.budget}
-            inputMode="decimal"
-            className="w-24 pl-6 text-right tabular-nums"
-            value={settings.budgetUsd}
-            parse={parseBudgetUsd}
-            format={(budget) => budget.toFixed(2)}
-            onCommit={(budgetUsd) => save({ budgetUsd })}
-          />
-        </Field>
+        <AiAnalysisFields settings={settings} save={save} />
       </Section>
 
       <Section
@@ -381,76 +195,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       </Section>
 
       <Section title="Scan defaults" description="Starting values for the new-scan composer.">
-        <Field label="Device">
-          <ToggleGroup
-            aria-label="Default device"
-            value={settings.defaultDevice}
-            onValueChange={(defaultDevice) => save({ defaultDevice })}
-          >
-            <ToggleGroupItem value="desktop">
-              <MonitorIcon />
-              Desktop
-            </ToggleGroupItem>
-            <ToggleGroupItem value="mobile">
-              <SmartphoneIcon />
-              Mobile
-            </ToggleGroupItem>
-          </ToggleGroup>
-        </Field>
-        <Field
-          label="Visitor"
-          description={`${VISITOR_META[settings.defaultVisitor].description} Scripted visits are automated and say so to the page.`}
-        >
-          <Select
-            value={settings.defaultVisitor}
-            onValueChange={(defaultVisitor) => save({ defaultVisitor: defaultVisitor as VisitorBehavior })}
-          >
-            <SelectTrigger aria-label="Default visitor" className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="end">
-              <SelectGroup>
-                {VISITOR_BEHAVIORS.map((visitor) => (
-                  <SelectItem key={visitor} value={visitor}>
-                    {VISITOR_META[visitor].label}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </Field>
-        <Field
-          label="Pages to visit"
-          htmlFor={ids.pages}
-          description="For “Browse like a visitor”: the entry page plus the pages reached by following links on the same site."
-        >
-          <Stepper
-            id={ids.pages}
-            value={settings.defaultExtraPages + 1}
-            min={VISIT_PAGES.min}
-            max={VISIT_PAGES.max}
-            onValueChange={(pages) => save({ defaultExtraPages: pages - 1 })}
-            decreaseLabel="Fewer pages"
-            increaseLabel="More pages"
-          >
-            {pluralize(settings.defaultExtraPages + 1, "page")}
-          </Stepper>
-        </Field>
-        <Field
-          label="Observe after load"
-          htmlFor={ids.observe}
-          description={`Seconds to keep watching each page, ${OBSERVE_SECONDS.min} to ${OBSERVE_SECONDS.max}.`}
-        >
-          <CommitInput
-            trailing="s"
-            id={ids.observe}
-            inputMode="numeric"
-            className="w-24 pr-7 text-right tabular-nums"
-            value={settings.defaultObserveSeconds}
-            parse={parseObserveSeconds}
-            onCommit={(defaultObserveSeconds) => save({ defaultObserveSeconds })}
-          />
-        </Field>
+        <ScanDefaultsFields settings={settings} save={save} />
       </Section>
 
       <Section title="Appearance">

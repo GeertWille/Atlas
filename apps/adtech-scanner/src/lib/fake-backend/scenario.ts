@@ -20,7 +20,7 @@ import { buildDiagnostics } from "./diagnostics";
 import { aiInvestigations, type FindingDraft, healthScore, heuristicFindings, overviewFor } from "./findings";
 import { buildScripts, computeMetrics, JEV_THRESHOLDS, jevParts, jevPublisherSpecific, jevRule } from "./site";
 import { type CapturedVisit, captureVisit, type VisitedPage, visitMetrics } from "./visit";
-import { visitFindings } from "./visit-findings";
+import { AUTOMATED_TRAFFIC_CAVEAT, identifiableAsAutomated, visitFindings } from "./visit-findings";
 
 /** One scripted moment of a simulated scan, `at` ms after it started. */
 export type Beat = { at: number } & (
@@ -375,6 +375,7 @@ export function buildScenario({
   timeline.log("Evaluating 14 deterministic rules against telemetry", { level: "debug" });
   for (const draft of heuristicFindings(site, computeMetrics(site, scripts))) addFinding(draft);
   for (const draft of visitFindings(visit)) addFinding({ pages: [], ...draft });
+  if (identifiableAsAutomated(visit)) caveats.push(AUTOMATED_TRAFFIC_CAVEAT);
   const heuristicCount = findings.length;
   timeline.end(`${heuristicCount} of 14 rules matched`);
 
@@ -481,7 +482,7 @@ export function buildScenario({
 
     const slice = view.dwellMs / 4;
     if (visitor === "scroll") {
-      timeline.log("Auto-scroll started: 4 steps to the bottom of the page", { after: slice });
+      timeline.log("Scrolling to the bottom of the page in 4 steps", { after: slice });
     }
     for (const [step, auction] of laterAuctions.entries()) {
       act(index, step);

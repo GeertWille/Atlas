@@ -14,6 +14,7 @@ export function ManualSessionBar({
   startedAt,
   now,
   pageCount,
+  recording,
   cancel,
 }: {
   scanId: string;
@@ -22,6 +23,11 @@ export function ManualSessionBar({
   startedAt: number;
   now: number;
   pageCount: number;
+  /**
+   * Chrome has opened the page. Before that the backend does not listen for "finish" yet, so the
+   * button would be spent on a request that ends nothing.
+   */
+  recording: boolean;
   /** The control that discards the scan instead. */
   cancel: ReactNode;
 }) {
@@ -37,9 +43,13 @@ export function ManualSessionBar({
       <div className="flex min-w-72 flex-1 items-start gap-2.5">
         <MousePointerClickIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-primary-text" />
         <div className="flex min-w-0 flex-col gap-0.5">
-          <h2 className="text-sm font-semibold">You are browsing {hostname}</h2>
+          <h2 className="text-sm font-semibold">
+            {recording ? `You are browsing ${hostname}` : `Opening Chrome for ${hostname}`}
+          </h2>
           <p className="text-[13px] text-pretty text-muted-foreground">
-            Use the Chrome window that opened. Pages of this site are recorded as you open them; other sites are not.
+            {recording
+              ? "Use the Chrome window that opened. Pages of this site are recorded as you open them; other sites are not."
+              : "Recording starts when the page has opened. The session can last up to 15 minutes from now."}
           </p>
         </div>
       </div>
@@ -59,7 +69,7 @@ export function ManualSessionBar({
       </dl>
       <div className="flex shrink-0 items-center gap-2">
         <Button
-          disabled={finishing}
+          disabled={finishing || !recording}
           onClick={() =>
             finishCapture.mutate(scanId, { onError: (reason) => notifyError("Could not finish the capture", reason) })
           }

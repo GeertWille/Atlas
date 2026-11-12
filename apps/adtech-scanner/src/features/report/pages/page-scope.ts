@@ -59,3 +59,11 @@ export function scopeReport(detail: ScanDetail, pageIndex: number | undefined): 
     markers: pageMarkers(selected),
   };
 }
+
+/**
+ * The page selection a deep link to a script keeps. A finding of the whole visit stays visible on
+ * every page and can cite a script the selected page never loaded: the link then shows all pages.
+ */
+export function pageShowingScript(scope: ReportScope, scriptUrl: string): number | undefined {
+  return scope.scripts.some((script) => script.url === scriptUrl) ? scope.selected?.index : undefined;
+}

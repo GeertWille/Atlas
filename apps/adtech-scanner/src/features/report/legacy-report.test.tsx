@@ -13,7 +13,6 @@ import {
 } from "@/test/fixtures";
 import { renderWithApp } from "@/test/render";
 import { AuctionsTab } from "./auctions/AuctionsTab";
-import { EnvironmentNotice } from "./EnvironmentNotice";
 import { FindingsTab } from "./findings/FindingsTab";
 import { PageSwitcher } from "./pages/PageSwitcher";
 import { isMultiPage, scopeReport } from "./pages/page-scope";
@@ -129,7 +128,6 @@ function Report({ detail }: { detail: ScanDetail }) {
       <ReportHeader detail={detail} />
       <ReportOverview detail={detail} />
       <PageSwitcher pages={detail.pages} selected={scope.selected} onSelect={() => {}} />
-      <EnvironmentNotice detail={detail} />
       <FindingsTab findings={scope.findings} pages={detail.pages} onOpenScript={() => {}} />
       <AuctionsTab auctions={scope.auctions} diagnostics={detail.bidderDiagnostics} pages={scope.groups} />
       <SlotsTab slots={scope.slots} metrics={scope.markers} pages={scope.groups} />

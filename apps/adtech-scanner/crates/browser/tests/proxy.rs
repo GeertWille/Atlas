@@ -303,6 +303,41 @@ async fn a_proxy_that_asks_for_a_login_gets_it_and_nobody_else_sees_the_password
     assert_eq!(fixtures.requested(), ["/proxied.html", "/browse-shared.js"]);
 }
 
+/// The proxy's login is for the proxy. A site reached through it that asks
+/// for a login of its own gets no answer from the scan.
+#[tokio::test]
+async fn a_site_that_asks_for_a_login_is_not_given_the_proxys() {
+    let _turn = ONE_BROWSER_AT_A_TIME.lock().await;
+    let fixtures = Fixtures::start().await;
+    let proxy = Proxy::start(fixtures.port, Some((USER, PASSWORD))).await;
+    let request = through(
+        proxy.as_custom(Some(USER)),
+        "http://site.adscan.test/members-only",
+    );
+    let mut reported = Reported::new();
+    reported.hooks.proxy_password = Some(PASSWORD.to_string());
+    let outcome = reported.run(request).await;
+
+    let Err(BrowserError::Navigation(message)) = &outcome.result else {
+        panic!("{:?}", outcome.result);
+    };
+    assert!(
+        message.contains("401") && message.contains("needs a login the scanner does not have"),
+        "the site, not the proxy, is named as the one that wants a login: {message}"
+    );
+    assert!(!everything_reported(&outcome).contains(PASSWORD));
+    // The proxy let the scan in, and the site was asked without any login.
+    let seen = proxy.seen();
+    let page = requests_for(&seen, "site.adscan.test/members-only");
+    assert!(page.iter().any(|request| request.logged_in), "{seen:#?}");
+    let asked = fixtures.requested();
+    assert!(!asked.is_empty(), "the site was reached");
+    assert!(
+        asked.iter().all(|asked| asked == "/members-only"),
+        "the site was sent a login: {asked:#?}"
+    );
+}
+
 #[tokio::test]
 async fn a_login_the_proxy_does_not_accept_fails_the_scan_with_a_plain_message() {
     let _turn = ONE_BROWSER_AT_A_TIME.lock().await;

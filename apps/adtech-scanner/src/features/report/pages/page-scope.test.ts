@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import { makeAuction, makeDetail, makeFinding, makePage, makeScript, makeSlot } from "@/test/fixtures";
-import { isMultiPage, pageMarkers, scopeReport } from "./page-scope";
+import { isMultiPage, pageMarkers, pageShowingScript, scopeReport } from "./page-scope";
 
 const pages = [
   makePage(),
@@ -24,7 +24,10 @@ const visit = makeDetail({
   ],
   auctions: [makeAuction([], { id: "a1", page: 0 }), makeAuction([], { id: "a2", page: 2 })],
   slots: [makeSlot({ page: 0 }), makeSlot({ page: 1 }), makeSlot({ page: 1, elementId: "div-gpt-side" })],
-  scripts: [makeScript({ id: "s1", pages: [0, 1] }), makeScript({ id: "s2", pages: [0] })],
+  scripts: [
+    makeScript({ id: "s1", pages: [0, 1] }),
+    makeScript({ id: "s2", url: "https://www.example.com/ads/entry-only.js", pages: [0] }),
+  ],
 });
 
 const ids = <T extends { id: string }>(items: T[]) => items.map((item) => item.id);
@@ -82,4 +85,13 @@ test("a single-page scan and a scan stored without pages are never narrowed or g
       expect(scope.markers).toBe(detail.metrics);
     }
   }
+});
+
+test("opening a script from a finding keeps the page only when that page loaded the script", () => {
+  const onSecondPage = scopeReport(visit, 1);
+  // The whole-visit finding is listed on page 2, but its script was only loaded by the entry page.
+  expect(ids(onSecondPage.findings)).toContain("whole-visit");
+  expect(pageShowingScript(onSecondPage, "https://www.example.com/ads/entry-only.js")).toBeUndefined();
+  expect(pageShowingScript(onSecondPage, makeScript().url)).toBe(1);
+  expect(pageShowingScript(scopeReport(visit, undefined), makeScript().url)).toBeUndefined();
 });

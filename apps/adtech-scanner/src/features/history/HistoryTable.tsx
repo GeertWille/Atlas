@@ -4,6 +4,7 @@ import type { ScanSummary } from "@/bindings";
 import { HealthRing } from "@/shared/components/health-ring";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, ScanStatusBadge, SeverityCountPills } from "@/shared/components/status";
+import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatDateTime, formatDuration, formatRelativeTime, formatUsd } from "@/shared/lib/format";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
@@ -131,7 +132,8 @@ export function HistoryTable({
                       title={scan.proxy.host ? `Scanned through the proxy ${scan.proxy.host}` : undefined}
                     >
                       <GlobeIcon aria-hidden="true" className="size-3.5 shrink-0" />
-                      <span className="truncate">
+                      {/* A configuration's name usually says where it scans from: in a narrow window it gets the room. */}
+                      <span className={cn("truncate", scan.configuration && "max-xl:sr-only")}>
                         <span className="sr-only">Proxy </span>
                         {scan.proxy.name ?? "Proxy"}
                       </span>

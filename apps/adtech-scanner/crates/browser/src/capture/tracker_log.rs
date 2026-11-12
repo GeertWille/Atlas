@@ -151,6 +151,7 @@ mod tests {
             url,
             requested_at,
             on_site: true,
+            restored: false,
             now: requested_at,
         })
     }
@@ -325,6 +326,7 @@ mod tests {
             url: "https://partner.example/",
             requested_at: ORIGIN + 9_000.0,
             on_site: false,
+            restored: false,
             now: ORIGIN + 9_000.0,
         });
 

@@ -5,7 +5,8 @@ import { api } from "@/lib/api";
 import { makeDetail, makeEnvironment, makeFinding } from "@/test/fixtures";
 import { renderWithApp } from "@/test/render";
 import { EnvironmentNotice } from "./EnvironmentNotice";
-import { environmentNotice, isAutomatedTrafficFinding } from "./environment-notice";
+import { environmentNotice } from "./environment-notice";
+import { ReportOverview } from "./ReportOverview";
 
 vi.hoisted(() => {
   localStorage.setItem("adscan.fake.profile", "fresh");
@@ -16,36 +17,22 @@ beforeEach(async () => {
   await api.deleteAllScans();
 });
 
-const automatedFinding = makeFinding({
-  id: "r6",
-  severity: "info",
-  category: "configuration",
-  source: "heuristic",
-  title: "This scan was identifiable as automated traffic",
-});
-
-test("the automated-traffic finding is recognised by what it is, not by a similar-looking one", () => {
-  expect(isAutomatedTrafficFinding(automatedFinding)).toBe(true);
-  expect(isAutomatedTrafficFinding({ ...automatedFinding, source: "ai" })).toBe(false);
-  expect(isAutomatedTrafficFinding({ ...automatedFinding, severity: "medium" })).toBe(false);
-  expect(isAutomatedTrafficFinding({ ...automatedFinding, category: "consent" })).toBe(false);
-  expect(isAutomatedTrafficFinding({ ...automatedFinding, title: "Prebid debug mode is on" })).toBe(false);
-});
-
-test("no notice for a scan without a recorded environment, a manual visit, or an unreadable webdriver flag", () => {
+test("no notice for a scan without a recorded environment, or for a visit a person drove in a window", () => {
   expect(environmentNotice(makeDetail())).toBeNull();
   expect(
     environmentNotice(
       makeDetail({ environment: makeEnvironment({ visitor: "manual", webdriver: false, headless: false }) }),
     ),
   ).toBeNull();
-  expect(environmentNotice(makeDetail({ environment: makeEnvironment({ webdriver: null }) }))).toBeNull();
+  // Nothing was seen of the flag and the browser had a window: there is no sign to report.
+  expect(
+    environmentNotice(makeDetail({ environment: makeEnvironment({ webdriver: null, headless: false }) })),
+  ).toBeNull();
 });
 
 test("a scripted visit is reported with the facts the page could see", () => {
   const headless = environmentNotice(makeDetail({ environment: makeEnvironment() }));
   expect(headless).toEqual({
-    title: "The pages could tell that this visit was automated",
     signals: ["navigator.webdriver was true", "Chrome ran headless"],
     canShowBrowser: true,
   });
@@ -70,14 +57,24 @@ test("a scripted visit is reported with the facts the page could see", () => {
   expect(shown?.canShowBrowser).toBe(false);
 });
 
-test("the automated-traffic finding raises the notice even when webdriver was false, with a stronger title", () => {
-  const notice = environmentNotice(
-    makeDetail({
-      findings: [automatedFinding],
-      environment: makeEnvironment({ visitor: "manual", webdriver: false, headless: false }),
-    }),
-  );
-  expect(notice).toMatchObject({ title: "Bidders may have treated this scan as automated traffic", signals: [] });
+test("headless Chrome alone is a sign, as it is for the backend's own rule", () => {
+  expect(environmentNotice(makeDetail({ environment: makeEnvironment({ webdriver: null }) }))).toEqual({
+    signals: ["Chrome ran headless"],
+    canShowBrowser: true,
+  });
+});
+
+test("the notice follows the recorded environment, never the wording of a finding", () => {
+  const lookalike = makeFinding({
+    severity: "info",
+    category: "configuration",
+    source: "heuristic",
+    title: "This scan was identifiable as automated traffic",
+  });
+  const person = makeEnvironment({ visitor: "manual", webdriver: false, headless: false });
+  expect(environmentNotice(makeDetail({ findings: [lookalike], environment: person }))).toBeNull();
+  // Without that finding, or with its title reworded, a scripted visit is still reported.
+  expect(environmentNotice(makeDetail({ findings: [], environment: makeEnvironment() }))).not.toBeNull();
 });
 
 test("nothing is rendered when there is nothing to say", async () => {
@@ -89,7 +86,7 @@ test("the notice states the facts, what they mean and what to try, without promi
   await renderWithApp(<EnvironmentNotice detail={makeDetail({ environment: makeEnvironment() })} />);
   const notice = screen.getByRole("note", { name: "Scan environment" });
   expect(notice).toHaveTextContent(
-    "The pages could tell that this visit was automated. navigator.webdriver was true, Chrome ran headless. Ad partners can bid less, or not at all, for automated visits, so low fill or missing bids in this report may not match your visitors'. Before concluding that a bidder is broken, repeat the scan as “I'll browse myself” or with the browser shown.",
+    "This visit was automated and the pages could tell: navigator.webdriver was true, Chrome ran headless. Ad partners can bid less, or not at all, for automated visits. To compare, repeat the scan as “I'll browse myself” or with the browser shown.",
   );
   expect(notice).not.toHaveTextContent(/undetect|indistinguishable|like a (real|human)/i);
   expect(
@@ -97,6 +94,15 @@ test("the notice states the facts, what they mean and what to try, without promi
       .getAllByRole("button")
       .map((button) => button.textContent),
   ).toEqual(["as “I'll browse myself”", "with the browser shown"]);
+});
+
+test("the report says it once, as a line of the visit summary", async () => {
+  const detail = makeDetail({ overview: "Two auctions ran.", environment: makeEnvironment() });
+  await renderWithApp(<ReportOverview detail={detail} />);
+  const overview = screen.getByRole("region", { name: "Overview" });
+  expect(within(overview).getAllByRole("note", { name: "Scan environment" })).toHaveLength(1);
+  // A remark every scripted scan carries must not look like an alarm.
+  expect(within(overview).queryByRole("alert")).toBeNull();
 });
 
 test("repeating as a manual session starts a headed visit that clicks nothing, without the old seed", async () => {

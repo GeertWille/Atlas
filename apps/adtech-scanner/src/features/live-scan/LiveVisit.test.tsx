@@ -102,6 +102,8 @@ test("while the capture runs, the visit panel shows the current page, the pages 
   expect(
     within(visit).getByText("Skipped 14 links: 9 off-site, 3 inside ads, 2 sign-in, checkout and the like"),
   ).toBeInTheDocument();
+  // Nothing is checked during the capture: the empty findings panel makes room for the visit.
+  expect(screen.queryByRole("region", { name: "Findings so far" })).toBeNull();
   // A scripted visit has no session to finish.
   expect(screen.queryByRole("region", { name: "Manual session" })).toBeNull();
   expect(screen.getByRole("button", { name: "Cancel scan" })).toBeInTheDocument();
@@ -116,6 +118,7 @@ test("there is no visit panel before the first page view, without logs, or once 
   second.unmount();
   await renderWithApp(view(running(baseOptions, "completed"), browseLogs));
   expect(screen.queryByRole("region", { name: "Visit" })).toBeNull();
+  expect(screen.getByRole("region", { name: "Findings so far" })).toBeInTheDocument();
 });
 
 test("a manual session shows how long it has run, how long is left and what it has recorded", async () => {
@@ -132,6 +135,21 @@ test("a manual session shows how long it has run, how long is left and what it h
   // Cancelling lives in the bar while the session runs, and nowhere else.
   expect(screen.getAllByRole("button", { name: "Cancel scan" })).toHaveLength(1);
   expect(within(bar).getByRole("button", { name: "Cancel scan" })).toBeInTheDocument();
+});
+
+test("Finish capture waits until Chrome has opened the page, because the backend ignores it before that", async () => {
+  const manual = running({ ...baseOptions, visitor: "manual", extraPages: 0 });
+  const { unmount } = await renderWithApp(view(manual, [makeLog({ message: "Launching Chrome (visible)" })]));
+  const bar = screen.getByRole("region", { name: "Manual session" });
+  expect(within(bar).getByRole("heading", { name: "Opening Chrome for www.example.com" })).toBeInTheDocument();
+  expect(within(bar).getByRole("button", { name: "Finish capture" })).toBeDisabled();
+  // Cancelling is always possible.
+  expect(within(bar).getByRole("button", { name: "Cancel scan" })).toBeEnabled();
+  unmount();
+
+  // Without an audit trail to tell from, the button is not held back.
+  await renderWithApp(view(manual, undefined));
+  expect(screen.getByRole("button", { name: "Finish capture" })).toBeEnabled();
 });
 
 test("the manual session bar is gone once the capture step has finished", async () => {

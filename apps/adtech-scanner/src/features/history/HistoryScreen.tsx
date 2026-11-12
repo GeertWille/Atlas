@@ -95,67 +95,68 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
 
   return (
     <>
+      {/* One row when there is room; in a narrow window the search and the sort keep the first row to themselves. */}
       <div className="flex flex-wrap items-center gap-2">
         <SearchInput
           aria-label="Search scans"
           placeholder="Search by URL"
           value={search}
           onValueChange={setSearch}
-          className="w-56 xl:w-72"
+          className="min-w-48 flex-1"
         />
-        <Select value={status} onValueChange={(value) => setStatus(value as ScanStatus | "all")}>
-          <SelectTrigger aria-label="Status" className="w-36">
+        <div className="order-last flex basis-full items-center gap-2 xl:order-none xl:basis-auto">
+          <Select value={status} onValueChange={(value) => setStatus(value as ScanStatus | "all")}>
+            <SelectTrigger aria-label="Status" className="w-36">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="all">All statuses</SelectItem>
+                {STATUS_FILTERS.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {SCAN_STATUS_META[value].label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <ToggleGroup<DeviceProfile | "all"> aria-label="Device" value={device} onValueChange={setDevice}>
+            <ToggleGroupItem value="all">All</ToggleGroupItem>
+            <ToggleGroupItem value="desktop">Desktop</ToggleGroupItem>
+            <ToggleGroupItem value="mobile">Mobile</ToggleGroupItem>
+          </ToggleGroup>
+          {configurations.length > 0 ? (
+            <Select value={configurationId} onValueChange={setConfigurationId}>
+              <SelectTrigger aria-label="Configuration" className="w-44 [&>span]:truncate">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="all">All configurations</SelectItem>
+                  {configurations.map((configuration) => (
+                    <SelectItem key={configuration.id} value={configuration.id}>
+                      {configuration.name}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          ) : null}
+        </div>
+        <Select value={sort} onValueChange={(value) => setSort(value as HistorySort)}>
+          <SelectTrigger aria-label="Sort" className="w-44">
             <SelectValue />
           </SelectTrigger>
-          <SelectContent>
+          <SelectContent align="end">
             <SelectGroup>
-              <SelectItem value="all">All statuses</SelectItem>
-              {STATUS_FILTERS.map((value) => (
+              {(Object.keys(HISTORY_SORT_LABEL) as HistorySort[]).map((value) => (
                 <SelectItem key={value} value={value}>
-                  {SCAN_STATUS_META[value].label}
+                  {HISTORY_SORT_LABEL[value]}
                 </SelectItem>
               ))}
             </SelectGroup>
           </SelectContent>
         </Select>
-        <ToggleGroup<DeviceProfile | "all"> aria-label="Device" value={device} onValueChange={setDevice}>
-          <ToggleGroupItem value="all">All</ToggleGroupItem>
-          <ToggleGroupItem value="desktop">Desktop</ToggleGroupItem>
-          <ToggleGroupItem value="mobile">Mobile</ToggleGroupItem>
-        </ToggleGroup>
-        {configurations.length > 0 ? (
-          <Select value={configurationId} onValueChange={setConfigurationId}>
-            <SelectTrigger aria-label="Configuration" className="w-44 min-w-0 shrink [&>span]:truncate">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectGroup>
-                <SelectItem value="all">All configurations</SelectItem>
-                {configurations.map((configuration) => (
-                  <SelectItem key={configuration.id} value={configuration.id}>
-                    {configuration.name}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        ) : null}
-        <div className="ml-auto">
-          <Select value={sort} onValueChange={(value) => setSort(value as HistorySort)}>
-            <SelectTrigger aria-label="Sort" className="w-48">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent align="end">
-              <SelectGroup>
-                {(Object.keys(HISTORY_SORT_LABEL) as HistorySort[]).map((value) => (
-                  <SelectItem key={value} value={value}>
-                    {HISTORY_SORT_LABEL[value]}
-                  </SelectItem>
-                ))}
-              </SelectGroup>
-            </SelectContent>
-          </Select>
-        </div>
       </div>
 
       <Panel aria-label="Scans" className="overflow-hidden">

@@ -114,3 +114,13 @@ export function validateScanForm(form: ScanForm): ScanFormResult {
     },
   };
 }
+
+/**
+ * Whether two forms describe the same scan. What differs only in how it was typed ("0.5" and "0.50"),
+ * or in a field the chosen visitor does not use, is the same scan.
+ */
+export function sameScan(a: ScanForm, b: ScanForm): boolean {
+  const [left, right] = [validateScanForm(a), validateScanForm(b)];
+  if (!left.ok || !right.ok) return JSON.stringify(a) === JSON.stringify(b);
+  return JSON.stringify(left.options) === JSON.stringify(right.options);
+}

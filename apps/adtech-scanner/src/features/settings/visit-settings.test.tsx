@@ -170,6 +170,31 @@ test("a proxy is added with its password, listed without it, edited and deleted 
   expect(await api.getSettings()).toMatchObject({ proxies: [], defaultProxy: { kind: "system" } });
 });
 
+test("when the password cannot be stored, trying again finishes the same proxy instead of adding a second", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ConnectedSettings />);
+  const proxies = await section("Proxies");
+  await user.click(within(proxies).getByRole("button", { name: "Add proxy…" }));
+  const add = await dialog();
+  await user.type(within(add).getByLabelText("Name"), "Belgium");
+  await user.type(within(add).getByLabelText("Host"), "be.proxy.example");
+  await user.type(within(add).getByLabelText("User name (optional)"), "scanner");
+  await user.type(within(add).getByLabelText("Password (optional)"), "s3cret");
+
+  const keychain = vi
+    .spyOn(api, "setProxyPassword")
+    .mockRejectedValueOnce({ code: "internal", message: "The keychain is locked" });
+  await user.click(within(add).getByRole("button", { name: "Add proxy" }));
+  expect(await within(add).findByText("The keychain is locked")).toBeInTheDocument();
+  // The proxy itself was saved; only its password is missing.
+  expect((await api.getSettings()).proxies).toMatchObject([{ name: "Belgium", hasPassword: false }]);
+
+  await user.click(within(add).getByRole("button", { name: "Add proxy" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect((await api.getSettings()).proxies).toMatchObject([{ name: "Belgium", hasPassword: true }]);
+  keychain.mockRestore();
+});
+
 test("SOCKS5 with a user name is refused in the dialog, with the reason", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ConnectedSettings />);
@@ -218,6 +243,6 @@ test("a proxy that a configuration uses is not deleted, and the reason names the
   await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Delete" }));
 
   expect(await screen.findByText("Could not delete the proxy")).toBeInTheDocument();
-  expect(screen.getByText(/used by “Example from Belgium”/)).toBeInTheDocument();
+  expect(screen.getByText(/is used by the scan configuration "Example from Belgium"/)).toBeInTheDocument();
   expect(within(proxies).getByRole("listitem")).toHaveTextContent("Belgium");
 });

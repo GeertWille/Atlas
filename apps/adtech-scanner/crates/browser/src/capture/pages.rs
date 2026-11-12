@@ -21,6 +21,9 @@ pub(crate) struct Committed<'a> {
     pub requested_at: f64,
     /// Whether the document belongs to the scanned site.
     pub on_site: bool,
+    /// The browser brought an earlier document back as it was (the
+    /// back/forward cache) instead of loading it again.
+    pub restored: bool,
     pub now: f64,
 }
 
@@ -64,8 +67,13 @@ impl Document {
 struct View {
     document: usize,
     /// ms into its document at which the page view starts: 0 unless it was
-    /// opened by a route change.
+    /// opened by a route change or by the document coming back from the
+    /// back/forward cache.
     offset_ms: f64,
+    /// ms into its document from which what the document reports belongs
+    /// to this page view. The same as `offset_ms`, except after a restore:
+    /// see [`PageLog::document_restored`].
+    claims_from_ms: f64,
     url: String,
     title: Option<String>,
     reached_by: PageReach,
@@ -128,6 +136,12 @@ impl PageLog {
 
     /// The main frame committed a document.
     pub(crate) fn document_committed(&mut self, committed: Committed<'_>) -> Change {
+        if committed.restored
+            && committed.on_site
+            && let Some(document) = self.document_last_showing(committed.url)
+        {
+            return self.document_restored(document, &committed);
+        }
         let document = self.documents.len();
         self.documents.push(Document {
             time_origin: None,
@@ -167,6 +181,7 @@ impl PageLog {
         self.views.push(View {
             document,
             offset_ms: 0.0,
+            claims_from_ms: 0.0,
             url: committed.url.to_string(),
             title: None,
             reached_by,
@@ -179,6 +194,53 @@ impl PageLog {
         } else {
             Change::Opened(index)
         }
+    }
+
+    /// The recorded document that showed `url` most recently.
+    fn document_last_showing(&self, url: &str) -> Option<usize> {
+        self.views
+            .iter()
+            .rev()
+            .find(|view| !differs_beyond_fragment(&view.url, url))
+            .map(|view| view.document)
+            .filter(|document| self.documents[*document].recorded)
+    }
+
+    /// A document came back from the back/forward cache: its scripts go on
+    /// where they stopped, with the time origin they had. That is a new page
+    /// view of the old document, starting now.
+    ///
+    /// "Now" is when the scanner heard of it, a moment after the document
+    /// woke up. A cached document is frozen and reports nothing, so
+    /// everything it reports after the visit left it belongs to the new page
+    /// view, including what it did in that moment.
+    fn document_restored(&mut self, document: usize, committed: &Committed<'_>) -> Change {
+        if self.views.len() >= self.max_views {
+            self.cap_reached = true;
+            return Change::OverCap;
+        }
+        let document_started_at = self.documents[document].started_at();
+        let offset_ms = (committed.now - document_started_at).max(0.0);
+        let left_at_ms = self
+            .views
+            .iter()
+            .rposition(|view| view.document == document)
+            .filter(|last| last + 1 < self.views.len())
+            .map_or(offset_ms, |last| {
+                self.started_at(last + 1) - document_started_at
+            });
+        let (reached_by, link) = self.reach_of_next_document(committed.url);
+        self.views.push(View {
+            document,
+            offset_ms,
+            claims_from_ms: left_at_ms.min(offset_ms),
+            url: committed.url.to_string(),
+            title: None,
+            reached_by,
+            link,
+        });
+        self.opening = false;
+        Change::Opened(self.last_index())
     }
 
     fn reach_of_next_document(&mut self, url: &str) -> (PageReach, Option<FollowedLink>) {
@@ -229,6 +291,7 @@ impl PageLog {
         self.views.push(View {
             document,
             offset_ms: t,
+            claims_from_ms: t,
             url: url.to_string(),
             title: None,
             reached_by: PageReach::RouteChange,
@@ -276,7 +339,7 @@ impl PageLog {
             return Some((last as u32, t + since_last_started));
         }
         let view = self.view_at(document, t)?;
-        Some((view as u32, t - self.views[view].offset_ms))
+        Some((view as u32, (t - self.views[view].offset_ms).max(0.0)))
     }
 
     /// The page view of `document` that was showing `t` ms into it.
@@ -288,7 +351,7 @@ impl PageLog {
                 .filter(move |(_, view)| view.document == document)
         };
         of_document()
-            .rfind(|(_, view)| view.offset_ms <= t)
+            .rfind(|(_, view)| view.claims_from_ms <= t)
             .or_else(|| of_document().next())
             .map(|(index, _)| index)
     }
@@ -431,6 +494,7 @@ mod tests {
             url,
             requested_at,
             on_site: true,
+            restored: false,
             now: requested_at + 50.0,
         }
     }
@@ -536,6 +600,57 @@ mod tests {
             ..committed("https://news.example/a", T0 + 5_000.0)
         };
         assert_eq!(slow.document_committed(late), Change::Opened(1));
+    }
+
+    /// A person goes to a second page and back; the browser brings the first
+    /// document back from its cache, and its tracker goes on reporting with
+    /// the time origin it always had.
+    #[test]
+    fn a_document_brought_back_from_the_cache_is_a_new_page_view_of_that_document() {
+        let mut log = PageLog::new(8, true);
+        log.document_committed(committed("https://news.example/a", T0));
+        assert_eq!(log.document_of(T0), Some(0));
+        log.document_committed(committed("https://news.example/b", T0 + 5_000.0));
+        assert_eq!(log.document_of(T0 + 5_000.0), Some(1));
+
+        let back = Committed {
+            restored: true,
+            ..committed("https://news.example/a", T0 + 9_000.0)
+        };
+        assert_eq!(log.document_committed(back), Change::Opened(2));
+        assert_eq!(log.reached_by(2), Some(PageReach::UserNavigation));
+        assert_eq!(log.started_at_ms(2), 9_050.0);
+
+        // What the first document reported before it was left stays on the
+        // first page view; what it reports now is on the third, counted
+        // from the moment it came back.
+        assert_eq!(log.document_of(T0), Some(0), "no new time origin");
+        assert_eq!(log.place(0, 400.0), Some((0, 400.0)));
+        assert_eq!(log.place(0, 9_750.0), Some((2, 700.0)));
+        // The scanner hears of the restore a moment after the document woke
+        // up; what it did in that moment is the new page view's too.
+        assert_eq!(log.place(0, 9_020.0), Some((2, 0.0)));
+        assert_eq!(log.place(0, 4_900.0), Some((0, 4_900.0)));
+        assert_eq!(log.place(1, 100.0), Some((1, 100.0)));
+        assert_eq!(log.place_at(T0 + 9_500.0), (2, 450.0));
+
+        let pages = pages(log, T0 + 12_000.0);
+        assert_eq!(pages.len(), 3);
+        assert_eq!(
+            (pages[2].started_at_ms, pages[2].ended_at_ms),
+            (9_050.0, 12_000.0)
+        );
+    }
+
+    #[test]
+    fn a_restored_document_that_was_never_recorded_is_taken_as_a_new_one() {
+        let mut log = PageLog::new(8, true);
+        let back = Committed {
+            restored: true,
+            ..committed("https://news.example/a", T0)
+        };
+        assert_eq!(log.document_committed(back), Change::Opened(0));
+        assert_eq!(log.reached_by(0), Some(PageReach::Entry));
     }
 
     #[test]

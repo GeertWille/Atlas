@@ -358,7 +358,7 @@ test("the options can be saved as a named configuration, which the composer then
   await user.type(within(again).getByLabelText("Name"), "example, THREE pages");
   await user.click(within(again).getByRole("button", { name: "Save configuration" }));
   expect(await within(again).findByRole("alert")).toHaveTextContent(
-    "A configuration named “example, THREE pages” already exists",
+    'A scan configuration named "example, THREE pages" already exists',
   );
 });
 
@@ -420,6 +420,68 @@ test("edits to a loaded configuration are marked, scanned once without it, or sa
   const [scan] = (await api.listScans({})).items;
   expect(scan).toMatchObject({ device: "desktop", configuration: null });
   expect((await api.listScanConfigurations())[0]?.options.device).toBe("mobile");
+});
+
+test("a configuration is only marked as edited when the scan itself differs, not how a value is typed", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example with a cap",
+    options: { ...validOptions, budgetUsd: 0.5 },
+  });
+  // No key is stored here: the AI switch is off and locked, which is not an edit of the configuration.
+  await renderWithApp(
+    <ScanComposer settings={{ ...settingsFixture, hasApiKey: false }} configuration={configuration} />,
+  );
+  const budget = screen.getByRole("textbox", { name: "LLM budget" });
+  expect(budget).toHaveValue("0.50");
+  expect(screen.queryByText("Edited")).toBeNull();
+
+  await user.clear(budget);
+  expect(screen.getByText("Edited")).toBeInTheDocument();
+  await user.type(budget, "0.5");
+  expect(screen.queryByText("Edited")).toBeNull();
+  await user.type(budget, "5");
+  expect(screen.getByText("Edited")).toBeInTheDocument();
+});
+
+test("leaving a configuration with unsaved edits asks first; unchanged it just leaves", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example on mobile",
+    options: { ...validOptions, device: "mobile" },
+  });
+  const { router } = await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+  await user.click(screen.getByRole("radio", { name: "Desktop" }));
+
+  void router.navigate({ to: "/history" });
+  const question = await screen.findByRole("alertdialog", { name: "Discard the changes to “Example on mobile”?" });
+  await user.click(within(question).getByRole("button", { name: "Keep editing" }));
+  await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  expect(router.state.location.pathname).toBe("/");
+  expect(screen.getByRole("radio", { name: "Desktop" })).toBeChecked();
+
+  void router.navigate({ to: "/history" });
+  await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Discard changes" }));
+  expect(await screen.findByText("history screen")).toBeInTheDocument();
+  expect((await api.listScanConfigurations())[0]?.options.device).toBe("mobile");
+});
+
+test("an unchanged configuration, and a scan of the edited options, leave without a question", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example on mobile",
+    options: { ...validOptions, device: "mobile" },
+  });
+  const first = await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+  void first.router.navigate({ to: "/history" });
+  expect(await screen.findByText("history screen")).toBeInTheDocument();
+  first.unmount();
+
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+  await user.click(screen.getByRole("radio", { name: "Desktop" }));
+  await user.click(scanButton());
+  expect(await screen.findByText("scan screen")).toBeInTheDocument();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
 });
 
 test("a configuration whose proxy was deleted says so and cannot be scanned until another proxy is chosen", async () => {

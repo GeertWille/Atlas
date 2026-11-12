@@ -225,55 +225,20 @@ impl Visit<'_> {
         events: UnboundedReceiver<CdpEvent>,
     ) -> Result<Capture, CaptureError> {
         let request = self.request;
-        // A scanned page must not be able to put files in the user's Downloads.
-        cdp.send(
-            None,
-            "Browser.setDownloadBehavior",
-            json!({ "behavior": "deny", "eventsEnabled": true }),
-        )
-        .await?;
-        let version = cdp.send(None, "Browser.getVersion", json!({})).await?;
-        let emulation = emulation_for(
-            request.device,
-            version["userAgent"].as_str().unwrap_or_default(),
-            version["product"].as_str().unwrap_or_default(),
-        );
-        let setup = TabSetup {
-            override_viewport: overrides_viewport(request),
-            emulation,
-            visitor: request.visitor,
-        };
-        let device = if setup.override_viewport {
-            setup.emulation.label.clone()
-        } else {
-            "desktop (the browser's own window)".to_string()
-        };
+        let on_activity = &self.hooks.on_activity;
         let proxy_host = self.proxy_login.as_ref().map(|proxy| proxy.host.clone());
-        let follows_links = request.visitor == VisitorBehavior::Browse;
-        let interception = Interception::new(self.proxy_login, follows_links);
-        let manual = request.visitor == VisitorBehavior::Manual;
-        let page_views = if manual {
-            MAX_PAGE_VIEWS_MANUAL
-        } else {
-            MAX_PAGE_VIEWS
-        };
-        let on_activity = self.hooks.on_activity.clone();
-        let mut page = Page::attach(cdp, events, setup, interception, |main_frame_id| {
-            Recorder::new(main_frame_id, PageLog::new(page_views, manual), on_activity)
-        })
-        .await?;
-        if !request.headless {
-            // Once: the window opens behind the app otherwise. A scan never
-            // takes the focus again after that.
-            page.call("Page.bringToFront", json!({})).await?;
-        }
-
-        (self.hooks.on_activity)(CaptureActivity::progress(format!(
-            "Opening {} as {device}",
-            self.address
+        let mut page = attach(cdp, events, request, self.proxy_login, on_activity).await?;
+        on_activity(CaptureActivity::progress(format!(
+            "Opening {} as {}",
+            self.address,
+            if page.overrides_viewport() {
+                page.emulation().label.as_str()
+            } else {
+                "desktop (the browser's own window)"
+            }
         )));
         driver::open(&mut page, self.address, proxy_host.as_deref()).await?;
-        page.confine_tracker_to_site().await?;
+        page.confine_to_site().await?;
         let observed = page.observe_environment().await?;
         let environment = CaptureEnvironment {
             headless: request.headless,
@@ -309,7 +274,7 @@ impl Visit<'_> {
             ending,
         )
         .await?;
-        (self.hooks.on_activity)(CaptureActivity::progress(format!(
+        on_activity(CaptureActivity::progress(format!(
             "Captured {} scripts, {} tracker events and {} console lines on {}",
             capture.scripts.len(),
             capture.events.len(),
@@ -321,6 +286,52 @@ impl Visit<'_> {
         )));
         Ok(capture)
     }
+}
+
+/// Sets the browser up for the visit and attaches to its first tab.
+async fn attach(
+    cdp: Arc<Cdp>,
+    events: UnboundedReceiver<CdpEvent>,
+    request: &CaptureRequest,
+    proxy_login: Option<ProxyLogin>,
+    on_activity: &recorder::ActivitySink,
+) -> Result<Page, CaptureError> {
+    // A scanned page must not be able to put files in the user's Downloads.
+    cdp.send(
+        None,
+        "Browser.setDownloadBehavior",
+        json!({ "behavior": "deny", "eventsEnabled": true }),
+    )
+    .await?;
+    let version = cdp.send(None, "Browser.getVersion", json!({})).await?;
+    let setup = TabSetup {
+        override_viewport: overrides_viewport(request),
+        emulation: emulation_for(
+            request.device,
+            version["userAgent"].as_str().unwrap_or_default(),
+            version["product"].as_str().unwrap_or_default(),
+        ),
+        visitor: request.visitor,
+    };
+    let follows_links = request.visitor == VisitorBehavior::Browse;
+    let interception = Interception::new(proxy_login, follows_links);
+    let manual = request.visitor == VisitorBehavior::Manual;
+    let page_views = if manual {
+        MAX_PAGE_VIEWS_MANUAL
+    } else {
+        MAX_PAGE_VIEWS
+    };
+    let on_activity = on_activity.clone();
+    let mut page = Page::attach(cdp, events, setup, interception, |main_frame_id| {
+        Recorder::new(main_frame_id, PageLog::new(page_views, manual), on_activity)
+    })
+    .await?;
+    if !request.headless {
+        // Once: the window opens behind the app otherwise. A scan never
+        // takes the focus again after that.
+        page.call("Page.bringToFront", json!({})).await?;
+    }
+    Ok(page)
 }
 
 /// Turns what was recorded into the capture. With the browser gone, that is

@@ -325,6 +325,120 @@ async fn a_link_that_redirects_off_the_site_is_stopped_before_the_other_site_is_
     assert_eq!(capture.final_url, page, "the visit is still on its page");
 }
 
+fn tricks(fixtures: &Fixtures, trick: &str, to: &str) -> String {
+    format!(
+        "{}?trick={trick}&to={to}",
+        fixtures.url("browse-tricks.html")
+    )
+}
+
+#[tokio::test]
+async fn a_link_rewritten_as_the_button_goes_down_cannot_take_the_visit_off_the_site() {
+    let fixtures = Fixtures::start().await;
+    let elsewhere = Fixtures::start().await;
+    let page = tricks(&fixtures, "rewrite", &elsewhere.url("emulation.html"));
+    let (capture, outcome) = visit(browse(&page, 2)).await;
+
+    assert!(says(&capture, "CLICK trusted=true on=bait"));
+    assert_eq!(capture.pages.len(), 1, "{:#?}", outcome.progress);
+    assert_eq!(
+        elsewhere.requested(),
+        Vec::<String>::new(),
+        "nothing was requested from the other site"
+    );
+    assert_eq!(blocked(&outcome, "off-site"), 1, "{:#?}", outcome.progress);
+    assert_eq!(requests_of(&fixtures, "/browse-hard-2.html"), 0);
+    assert_eq!(
+        outcome.activities_of(ActivityKind::LinkChoice).len(),
+        1,
+        "after the refusal the visit follows nothing more"
+    );
+}
+
+#[tokio::test]
+async fn a_link_rewritten_to_an_action_of_the_site_is_not_loaded() {
+    let fixtures = Fixtures::start().await;
+    let page = tricks(&fixtures, "rewrite", "/trap/logout");
+    let (capture, outcome) = visit(browse(&page, 1)).await;
+
+    assert!(says(&capture, "CLICK trusted=true on=bait"));
+    assert_eq!(capture.pages.len(), 1, "{:#?}", outcome.progress);
+    assert_eq!(requests_of(&fixtures, "/trap/logout"), 0);
+    assert_eq!(blocked(&outcome, "sensitive"), 1, "{:#?}", outcome.progress);
+}
+
+#[tokio::test]
+async fn a_click_that_submits_a_form_sends_nothing() {
+    let fixtures = Fixtures::start().await;
+    let page = tricks(&fixtures, "submit", "");
+    let (capture, outcome) = visit(browse(&page, 1)).await;
+
+    assert!(says(&capture, "CLICK trusted=true on=bait"));
+    assert_eq!(capture.pages.len(), 1, "{:#?}", outcome.progress);
+    assert_eq!(requests_of(&fixtures, "/trap/posted"), 0);
+    assert_eq!(blocked(&outcome, "form"), 1, "{:#?}", outcome.progress);
+}
+
+/// The link changes as the pointer arrives: an ad frame expands over it, or
+/// a control appears inside it. What is under the pointer is looked at again
+/// before the button goes down, and neither is clicked.
+#[tokio::test]
+async fn what_appears_over_the_link_as_the_pointer_arrives_is_not_clicked() {
+    let fixtures = Fixtures::start().await;
+    for (trick, trap) in [("frame", "/trap/in-frame"), ("control", "/trap/saved")] {
+        let page = tricks(&fixtures, trick, "");
+        let (capture, outcome) = visit(browse(&page, 1)).await;
+
+        assert_eq!(capture.pages.len(), 1, "{trick}: {:#?}", outcome.progress);
+        assert!(
+            !capture
+                .console
+                .iter()
+                .any(|line| line.text.starts_with("CLICK")),
+            "{trick}: {:#?}",
+            capture.console
+        );
+        assert!(
+            says(&capture, "FIRST pointermove trusted=true"),
+            "{trick}: the pointer went to the link"
+        );
+        assert_eq!(requests_of(&fixtures, trap), 0, "{trick}");
+        assert_eq!(requests_of(&fixtures, "/browse-hard-2.html"), 0, "{trick}");
+        // The frame makes the link part of an ad, which is seen when the
+        // link is looked for again; the control is only seen under the pointer.
+        let refused_as = if trick == "frame" {
+            "dead-link"
+        } else {
+            "hit-test"
+        };
+        assert_eq!(
+            blocked(&outcome, refused_as),
+            1,
+            "{trick}: {:#?}",
+            outcome.progress
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_page_that_leaves_the_site_by_itself_is_kept_on_it() {
+    let fixtures = Fixtures::start().await;
+    let elsewhere = Fixtures::start().await;
+    let page = tricks(&fixtures, "wander", &elsewhere.url("emulation.html"));
+    let (capture, outcome) = visit(browse(&page, 1)).await;
+
+    assert_eq!(capture.pages.len(), 1, "{:#?}", outcome.progress);
+    assert_eq!(capture.final_url, page, "the visit is still on its page");
+    assert_eq!(
+        elsewhere.requested(),
+        Vec::<String>::new(),
+        "nothing was requested from the other site"
+    );
+    assert_eq!(blocked(&outcome, "off-site"), 1, "{:#?}", outcome.progress);
+    // The page was read to the end: recorded, not abandoned.
+    assert!(capture.pages[0].ended_at_ms > 4_000.0);
+}
+
 #[tokio::test]
 async fn links_that_must_not_be_followed_are_never_requested() {
     let fixtures = Fixtures::start().await;

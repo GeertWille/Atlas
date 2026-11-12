@@ -30,10 +30,19 @@ export function FilterMenu<T extends string>({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Filter by ${label.toLowerCase()}`}>
+        {/* The name keeps the visible label in it; the counter is said as the description instead. */}
+        <Button
+          variant="outline"
+          size="sm"
+          aria-label={`Filter by ${label.toLowerCase()}`}
+          aria-description={selected.length > 0 ? `${selected.length} selected` : undefined}
+        >
           {label}
           {selected.length > 0 ? (
-            <span className="rounded-full bg-primary-soft px-1.5 text-[11px] leading-4 font-semibold text-primary-text tabular-nums">
+            <span
+              aria-hidden="true"
+              className="rounded-full bg-primary-soft px-1.5 text-[11px] leading-4 font-semibold text-primary-text tabular-nums"
+            >
               {selected.length}
             </span>
           ) : null}

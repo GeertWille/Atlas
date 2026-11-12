@@ -172,6 +172,8 @@ export function LiveScanView({
           startedAt={current.startedAt ?? now}
           now={now}
           pageCount={visit.pages.length}
+          // Without the audit trail there is no telling; the button must not stay locked then.
+          recording={logs === undefined || visit.current !== null}
           cancel={cancelButton}
         />
       ) : null}
@@ -187,7 +189,8 @@ export function LiveScanView({
           </Panel>
           {/* Beside the feed, not above it: the feed follows its newest line and must not change height mid-scan. */}
           <VisitPanel visit={visit} />
-          <FindingsSoFar detail={detail} />
+          {/* Checks only report once the capture is over; until then the visit has that room. */}
+          {visit.current && detail.findings.length === 0 ? null : <FindingsSoFar detail={detail} />}
         </div>
         <Panel className="flex min-h-0 flex-col overflow-hidden">
           <PanelHeader title="Activity" description="Live audit trail: progress, model calls, tool use and findings" />

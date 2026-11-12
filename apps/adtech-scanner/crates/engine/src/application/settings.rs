@@ -215,6 +215,9 @@ impl SettingsService {
         if password.is_empty() {
             return Err(AppError::InvalidInput("Enter the proxy password.".into()));
         }
+        // Held so that a delete of the profile cannot run in between and
+        // leave a password in the keychain that belongs to nothing.
+        let _updating = self.updating.lock().await;
         self.require_proxy(id).await?;
         self.secrets.store_proxy_password(id, password).await?;
         self.get().await

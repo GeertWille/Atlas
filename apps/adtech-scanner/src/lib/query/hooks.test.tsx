@@ -5,7 +5,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { Settings, SettingsPatch } from "@/bindings";
 import { api } from "@/lib/api";
 import { settingsFixture } from "@/test/fixtures";
-import { useSettings, useUpdateSettings } from "./hooks";
+import { useSaveProxyProfile, useSettings, useUpdateSettings } from "./hooks";
 
 const STORED: Settings = { ...settingsFixture, hasTypesafeKey: true };
 
@@ -34,7 +34,10 @@ async function renderSettings() {
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  const view = renderHook(() => ({ settings: useSettings().data, update: useUpdateSettings() }), { wrapper });
+  const view = renderHook(
+    () => ({ settings: useSettings().data, update: useUpdateSettings(), saveProxy: useSaveProxyProfile() }),
+    { wrapper },
+  );
   await waitFor(() => expect(view.result.current.settings).toEqual(STORED));
   return { ...view, savesUnderWay: () => client.isMutating() };
 }
@@ -81,4 +84,28 @@ test("a save the backend refuses is taken back", async () => {
   await waitFor(() => expect(result.current.settings?.budgetUsd).toBe(2));
   await act(async () => backend.fail(0));
   await waitFor(() => expect(result.current.settings?.budgetUsd).toBe(0.5));
+});
+
+test("a proxy command answered while a field is being saved does not undo what that field shows", async () => {
+  const backend = controllableBackend();
+  const belgium = { id: "p1", name: "Belgium", scheme: "http", host: "be.proxy.example", port: 8080 } as const;
+  // The proxy is stored before the field's save is applied: its answer still has the old visitor.
+  vi.spyOn(api, "saveProxyProfile").mockImplementation(async () => ({
+    ...STORED,
+    proxies: [{ ...belgium, username: null, hasPassword: false }],
+  }));
+  const { result, savesUnderWay } = await renderSettings();
+
+  act(() => result.current.update.mutate({ defaultVisitor: "browse" }));
+  await waitFor(() => expect(result.current.settings?.defaultVisitor).toBe("browse"));
+  await act(async () => {
+    await result.current.saveProxy.mutateAsync({ ...belgium, id: undefined, username: null });
+  });
+  expect(result.current.settings?.defaultVisitor).toBe("browse");
+
+  await act(async () => backend.answer(0));
+  await waitFor(() => expect(savesUnderWay()).toBe(0));
+  // The reload after the last save brings what is stored: the field's value, whatever else changed meanwhile.
+  await waitFor(() => expect(api.getSettings).toHaveBeenCalledTimes(2));
+  expect(result.current.settings?.defaultVisitor).toBe("browse");
 });

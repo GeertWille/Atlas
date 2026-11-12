@@ -72,8 +72,12 @@ export function ProxyDialog({
   const [form, setForm] = useState<ProxyForm>(() => (proxy ? proxyFormOf(proxy) : newProxyForm()));
   const [errors, setErrors] = useState<ProxyFormErrors>({});
   const [failure, setFailure] = useState<string | null>(null);
+  // A proxy this dialog has already created: when storing its password failed, a retry must change
+  // that proxy, not try to add a second one under the same name.
+  const [createdId, setCreatedId] = useState<string>();
+  const id = proxy?.id ?? createdId;
   // Follows the settings, so removing the stored password shows at once.
-  const hasPassword = settings.proxies.find((candidate) => candidate.id === proxy?.id)?.hasPassword ?? false;
+  const hasPassword = settings.proxies.find((candidate) => candidate.id === id)?.hasPassword ?? false;
   const busy = saveProfile.isPending || setPassword.isPending;
 
   const update = (patch: Partial<ProxyForm>) => {
@@ -84,21 +88,20 @@ export function ProxyDialog({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    const others = settings.proxies.filter((other) => other.id !== proxy?.id).map((other) => other.name);
-    const result = validateProxyForm(form, others, proxy?.id);
+    const others = settings.proxies.filter((other) => other.id !== id).map((other) => other.name);
+    const result = validateProxyForm(form, others, id);
     if (!result.ok) {
       setErrors(result.errors);
       return;
     }
     try {
       const saved = await saveProfile.mutateAsync(result.draft);
-      if (result.password !== null) {
-        // A new profile gets its id from the backend; its name is unique, so it finds it.
-        const id =
-          proxy?.id ??
-          saved.proxies.find((candidate) => candidate.name.toLowerCase() === result.draft.name.toLowerCase())?.id;
-        if (id) await setPassword.mutateAsync({ id, password: result.password });
-      }
+      // A new profile gets its id from the backend; its name is unique, so it finds it.
+      const savedId =
+        id ?? saved.proxies.find((candidate) => candidate.name.toLowerCase() === result.draft.name.toLowerCase())?.id;
+      setCreatedId(proxy ? undefined : savedId);
+      if (result.password !== null && savedId)
+        await setPassword.mutateAsync({ id: savedId, password: result.password });
       toast.success(proxy ? `Saved “${result.draft.name}”` : `Added “${result.draft.name}”`);
       onClose();
     } catch (reason) {
@@ -182,7 +185,7 @@ export function ProxyDialog({
               onChange={(event) => update({ password: event.target.value })}
             />
           </div>
-          {proxy && hasPassword ? (
+          {id && hasPassword ? (
             <div className="flex items-center justify-between gap-4 rounded-lg border border-green-line bg-green-soft/60 px-3.5 py-2">
               <p className="text-[13px] text-green-fg">A password for this proxy is stored in your keychain.</p>
               <Button
@@ -190,7 +193,7 @@ export function ProxyDialog({
                 size="sm"
                 disabled={clearPassword.isPending}
                 onClick={() =>
-                  clearPassword.mutate(proxy.id, {
+                  clearPassword.mutate(id, {
                     onSuccess: () => toast.success("Proxy password removed"),
                     onError: (reason) => notifyError("Could not remove the password", reason),
                   })

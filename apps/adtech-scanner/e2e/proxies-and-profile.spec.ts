@@ -150,7 +150,9 @@ test("a proxy in use by a configuration cannot be deleted; the stored password c
   await belgium.getByRole("button", { name: "Delete Belgium" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
   const toast = page.getByRole("listitem").filter({ hasText: "Could not delete the proxy" });
-  await expect(toast).toContainText("This proxy is used by “Sportsdesk from Belgium”");
+  await expect(toast).toContainText(
+    'The proxy "Belgium" is used by the scan configuration "Sportsdesk from Belgium". Change or delete it first.',
+  );
   await expect(belgium).toBeVisible();
 
   await belgium.getByRole("button", { name: "Edit Belgium" }).click();

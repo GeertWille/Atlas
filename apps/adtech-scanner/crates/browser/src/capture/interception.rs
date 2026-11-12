@@ -2,7 +2,10 @@
 //! is answered. Two things need it, and only document requests are paused
 //! for them, so a page's scripts, images and bid requests never wait:
 //!
-//! - a scripted visitor's click must not take the visit to another site;
+//! - a visit that follows links must stay on the scanned site and must not
+//!   load an address the link policy would never have chosen, whatever the
+//!   page does with a click: rewrite the link as the pointer goes down,
+//!   redirect, submit a form, or navigate by itself later;
 //! - a proxy that asks for a login gets it here, over the DevTools
 //!   connection, because a command line is readable by other processes.
 //!
@@ -11,6 +14,10 @@
 use std::collections::HashSet;
 
 use serde_json::{Value, json};
+use url::Url;
+
+use super::visitor::links::{Skip, classify_destination};
+use super::visitor::site::Site;
 
 /// The custom proxy of the scan and what the scan may tell it.
 pub(crate) struct ProxyLogin {
@@ -22,23 +29,68 @@ pub(crate) struct ProxyLogin {
 #[derive(Default)]
 pub(crate) struct Interception {
     proxy: Option<ProxyLogin>,
-    /// The visitor may follow links: navigations it causes are guarded.
+    /// The visitor may follow links: navigations are guarded once the visit
+    /// is on its first page.
     follows_links: bool,
     /// Requests whose proxy challenge was answered once already.
     answered: HashSet<String>,
     /// The proxy asked for a login the scan does not have, or refused it.
     proxy_login_failed: bool,
-    /// A click of the visitor is under way.
+    /// The site itself asked for a login (HTTP authentication).
+    site_login_wanted: bool,
     guarding: bool,
-    /// The off-site address the guarded click was refused.
-    refused: Option<String>,
+    /// How many navigations were refused so far.
+    refusals: u32,
+}
+
+/// A document request as the browser paused it.
+pub(crate) struct DocumentRequest<'a> {
+    pub url: &'a str,
+    pub method: &'a str,
+    /// It would replace the page of its tab, not fill an iframe.
+    pub replaces_the_page: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Paused {
     Continue,
     /// Fail the request: the visit stays on the page it is on.
-    Refuse,
+    Refuse(Refusal),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Refusal {
+    OffSite,
+    /// Anything but a plain page load: a form being submitted.
+    Submission,
+    /// An address that names an action on an account or a basket.
+    Sensitive,
+    File,
+}
+
+impl Refusal {
+    /// The reason as the audit trail names it, and the sentence that goes
+    /// with it. `host` is where the navigation was headed.
+    pub(crate) fn report(self, host: &str) -> (&'static str, String) {
+        match self {
+            Refusal::OffSite => (
+                "off-site",
+                format!(
+                    "A navigation off the scanned site ({host}) was refused; the visit stays on its page"
+                ),
+            ),
+            Refusal::Submission => (
+                "form",
+                "The page tried to submit a form; that was refused".to_string(),
+            ),
+            Refusal::Sensitive => (
+                "sensitive",
+                "A navigation to an address that names an account or basket action was refused"
+                    .to_string(),
+            ),
+            Refusal::File => ("download", "A navigation to a file was refused".to_string()),
+        }
+    }
 }
 
 impl Interception {
@@ -60,24 +112,16 @@ impl Interception {
         })
     }
 
-    /// From now until [`Self::stop_guarding`], a main-frame navigation to
-    /// another site is refused.
-    pub(crate) fn guard_navigation(&mut self) {
-        self.guarding = true;
-        self.refused = None;
+    /// The visit is on its first page. From now on, for a visitor that
+    /// follows links, nothing replaces a page of the visit except a plain
+    /// load of an address of the scanned site that the link policy allows.
+    pub(crate) fn confine_to_site(&mut self) {
+        self.guarding = self.follows_links;
     }
 
-    pub(crate) fn stop_guarding(&mut self) {
-        self.guarding = false;
-    }
-
-    pub(crate) fn has_refused(&self) -> bool {
-        self.refused.is_some()
-    }
-
-    /// The address a guarded navigation was refused, once.
-    pub(crate) fn take_refused(&mut self) -> Option<String> {
-        self.refused.take()
+    /// How many navigations were refused so far.
+    pub(crate) fn refusals(&self) -> u32 {
+        self.refusals
     }
 
     /// The name of the proxy that would not let the scan in, if one did.
@@ -86,25 +130,48 @@ impl Interception {
         self.proxy_login_failed.then_some(proxy.host.as_str())
     }
 
-    /// A document request is paused. `on_site` is whether it stays on the
-    /// scanned site; redirects are paused again, hop by hop.
+    /// Whether the site, not the proxy, asked for a login.
+    pub(crate) fn site_wanted_a_login(&self) -> bool {
+        self.site_login_wanted
+    }
+
+    /// A document request of the recorded tab is paused; redirects are
+    /// paused again, hop by hop. `site` is the scanned site, once the visit
+    /// has reached it. A refusal is counted.
     pub(crate) fn on_request_paused(
         &mut self,
-        url: &str,
-        main_frame: bool,
-        on_site: bool,
+        request: &DocumentRequest<'_>,
+        site: Option<&Site>,
     ) -> Paused {
-        if self.guarding && main_frame && !on_site {
-            self.refused = Some(url.to_string());
-            return Paused::Refuse;
+        let verdict = self.verdict(request, site);
+        if let Paused::Refuse(_) = verdict {
+            self.refusals += 1;
         }
-        Paused::Continue
+        verdict
+    }
+
+    /// Whether the visit may load the document.
+    pub(crate) fn verdict(&self, request: &DocumentRequest<'_>, site: Option<&Site>) -> Paused {
+        let (true, true, Some(site)) = (self.guarding, request.replaces_the_page, site) else {
+            return Paused::Continue;
+        };
+        if !request.method.eq_ignore_ascii_case("GET") {
+            return Paused::Refuse(Refusal::Submission);
+        }
+        match Url::parse(request.url).map(|url| classify_destination(&url, site)) {
+            Ok(Ok(())) => Paused::Continue,
+            Ok(Err(Skip::Sensitive)) => Paused::Refuse(Refusal::Sensitive),
+            Ok(Err(Skip::File)) => Paused::Refuse(Refusal::File),
+            Ok(Err(_)) | Err(_) => Paused::Refuse(Refusal::OffSite),
+        }
     }
 
     /// The `authChallengeResponse` to a `Fetch.authRequired` event.
     pub(crate) fn on_auth_required(&mut self, params: &Value) -> Value {
         if params["authChallenge"]["source"] != "Proxy" {
             // A page behind HTTP authentication: as without interception.
+            // The proxy's login is never an answer to a site.
+            self.site_login_wanted = true;
             return json!({ "response": "Default" });
         }
         let request_id = params["requestId"].as_str().unwrap_or_default();
@@ -163,39 +230,118 @@ mod tests {
         );
     }
 
+    fn site() -> Site {
+        Site::of(&Url::parse("https://news.example/").unwrap()).unwrap()
+    }
+
+    fn load(url: &str) -> DocumentRequest<'_> {
+        DocumentRequest {
+            url,
+            method: "GET",
+            replaces_the_page: true,
+        }
+    }
+
     #[test]
-    fn a_navigation_off_the_site_is_refused_only_while_a_click_is_guarded() {
+    fn a_visit_that_follows_links_is_confined_to_the_site_once_it_is_on_its_first_page() {
+        let site = site();
         let mut interception = Interception::new(None, true);
         let off_site = "https://partner.example/offer?id=1";
         assert_eq!(
-            interception.on_request_paused(off_site, true, false),
-            Paused::Continue
+            interception.on_request_paused(&load(off_site), None),
+            Paused::Continue,
+            "the entry page may redirect where it likes"
         );
 
-        interception.guard_navigation();
+        interception.confine_to_site();
         assert_eq!(
-            interception.on_request_paused("https://news.example/b", true, true),
+            interception.on_request_paused(&load("https://news.example/b"), Some(&site)),
             Paused::Continue
         );
+        let in_an_iframe = DocumentRequest {
+            replaces_the_page: false,
+            ..load("https://ads.example/frame")
+        };
         assert_eq!(
-            interception.on_request_paused("https://ads.example/frame", false, false),
+            interception.on_request_paused(&in_an_iframe, Some(&site)),
             Paused::Continue,
             "an iframe may load what it likes"
         );
-        assert_eq!(interception.take_refused(), None);
+        assert_eq!(interception.refusals(), 0);
         assert_eq!(
-            interception.on_request_paused(off_site, true, false),
-            Paused::Refuse
+            interception.on_request_paused(&load(off_site), Some(&site)),
+            Paused::Refuse(Refusal::OffSite)
         );
-        assert!(interception.has_refused());
-        assert_eq!(interception.take_refused().as_deref(), Some(off_site));
-        assert_eq!(interception.take_refused(), None);
-
-        interception.stop_guarding();
         assert_eq!(
-            interception.on_request_paused(off_site, true, false),
+            interception.on_request_paused(&load("http://news.example/b"), Some(&site)),
+            Paused::Refuse(Refusal::OffSite),
+            "leaving https is leaving the site"
+        );
+        assert_eq!(
+            interception.on_request_paused(&load("not an address"), Some(&site)),
+            Paused::Refuse(Refusal::OffSite)
+        );
+        assert_eq!(interception.refusals(), 3);
+    }
+
+    #[test]
+    fn a_confined_visit_loads_no_form_submission_no_action_address_and_no_file() {
+        let site = site();
+        let mut interception = Interception::new(None, true);
+        interception.confine_to_site();
+        let submission = DocumentRequest {
+            method: "POST",
+            ..load("https://news.example/comments")
+        };
+        assert_eq!(
+            interception.on_request_paused(&submission, Some(&site)),
+            Paused::Refuse(Refusal::Submission)
+        );
+        // What a link may have been rewritten to as the pointer went down,
+        // or what a followed address may redirect to.
+        assert_eq!(
+            interception.on_request_paused(&load("https://news.example/logout"), Some(&site)),
+            Paused::Refuse(Refusal::Sensitive)
+        );
+        assert_eq!(
+            interception
+                .on_request_paused(&load("https://news.example/basket/add?id=3"), Some(&site)),
+            Paused::Refuse(Refusal::Sensitive)
+        );
+        assert_eq!(
+            interception.on_request_paused(&load("https://news.example/kit.pdf"), Some(&site)),
+            Paused::Refuse(Refusal::File)
+        );
+        assert_eq!(interception.refusals(), 4);
+    }
+
+    #[test]
+    fn a_visit_that_follows_no_links_is_never_confined() {
+        let site = site();
+        let mut interception = Interception::new(proxy(None, None), false);
+        interception.confine_to_site();
+        assert_eq!(
+            interception.on_request_paused(&load("https://partner.example/"), Some(&site)),
             Paused::Continue
         );
+        let submission = DocumentRequest {
+            method: "POST",
+            ..load("https://news.example/comments")
+        };
+        assert_eq!(
+            interception.on_request_paused(&submission, Some(&site)),
+            Paused::Continue
+        );
+    }
+
+    #[test]
+    fn every_refusal_has_a_reason_and_a_sentence_for_the_audit_trail() {
+        let (reason, message) = Refusal::OffSite.report("partner.example");
+        assert_eq!(reason, "off-site");
+        assert!(message.contains("partner.example"), "{message}");
+        assert_eq!(Refusal::Submission.report("news.example").0, "form");
+        assert_eq!(Refusal::Sensitive.report("news.example").0, "sensitive");
+        assert_eq!(Refusal::File.report("news.example").0, "download");
     }
 
     #[test]
@@ -250,5 +396,6 @@ mod tests {
             json!({ "response": "Default" })
         );
         assert_eq!(interception.failed_proxy_login(), None);
+        assert!(interception.site_wanted_a_login());
     }
 }

@@ -97,7 +97,17 @@ pub(crate) async fn open(
         .as_str()
         .filter(|text| !text.is_empty())
     {
-        return Err(network_failure(error_text, &host, proxy).into());
+        // Behind a proxy that takes a login, a login the site itself asks
+        // for ends the navigation with an error and no page. It is the
+        // site's doing, not the proxy's.
+        let site_login = page
+            .interception
+            .site_wanted_a_login()
+            .then(|| http_failure(401, &host))
+            .flatten();
+        return Err(site_login
+            .unwrap_or_else(|| network_failure(error_text, &host, proxy))
+            .into());
     }
 
     let loader_id = navigation["loaderId"].as_str().unwrap_or_default();
@@ -427,6 +437,10 @@ fn with_article(noun: &str) -> String {
 /// What the page says about itself right now. `None` while it has no
 /// document to ask.
 async fn page_facts(page: &mut Page, links: bool) -> Result<Option<PageFacts>, CaptureError> {
+    // On a page of another site nothing of the scanner's is done.
+    if !page.recorder.is_recording() {
+        return Ok(None);
+    }
     let slot_ids = ad_container_ids(page);
     let facts = page
         .evaluate(&page_facts_expression(&slot_ids, links))
@@ -565,7 +579,9 @@ fn report_link_choice(page: &Page, found: &Survey, links: &[LinkFacts]) {
 enum Clicked {
     /// The visit is on a new page view.
     Arrived,
-    /// The link would have left the site; the visit follows nothing more.
+    /// The navigation was refused (it left the site, submitted a form or
+    /// went to an address the link policy rules out); the visit follows
+    /// nothing more.
     Refused,
     LedNowhere,
 }
@@ -574,6 +590,7 @@ enum Clicked {
 struct Before {
     page_views: usize,
     document_requests: u32,
+    refusals: u32,
 }
 
 impl Before {
@@ -581,7 +598,12 @@ impl Before {
         Self {
             page_views: page.recorder.pages.len(),
             document_requests: page.recorder.document_requests,
+            refusals: page.interception.refusals(),
         }
+    }
+
+    fn was_refused(&self, page: &Page) -> bool {
+        page.interception.refusals() > self.refusals
     }
 
     fn opened_a_page_view(&self, page: &Page) -> bool {
@@ -639,7 +661,6 @@ async fn click_link(
 
     let before = Before::of(page);
     page.recorder.pages.announce(followed);
-    page.interception.guard_navigation();
     page.expect_tab();
     page.download_began = false;
     if touch {
@@ -661,7 +682,6 @@ async fn click_link(
         json!({ "action": if touch { "tap" } else { "click" }, "target": "link" }),
     );
     let outcome = await_navigation(page, &before, chosen).await;
-    page.interception.stop_guarding();
     page.recorder.pages.withdraw_announcement();
     outcome
 }
@@ -727,16 +747,22 @@ async fn approach(
         let Some(facts) = page_facts(page, true).await? else {
             return Ok(None);
         };
-        let Some(rect) = facts
-            .links
-            .iter()
+        // The link as it is now: one that was hidden or covered by an ad
+        // since it was chosen is not one to click.
+        let still_followable = || {
+            facts
+                .links
+                .iter()
+                .filter(|candidate| candidate.visible && !candidate.in_ad)
+        };
+        let Some(rect) = still_followable()
             .find(|candidate| candidate.href == link.href && candidate.text == link.text)
             .or_else(|| {
                 let same_page = |candidate: &&LinkFacts| {
                     Url::parse(&candidate.href)
                         .is_ok_and(|url| page_key(&url) == page_key(&chosen.url))
                 };
-                facts.links.iter().find(same_page)
+                still_followable().find(same_page)
             })
             .map(|candidate| candidate.rect)
         else {
@@ -771,7 +797,7 @@ async fn await_navigation(
     chosen: &Followable,
 ) -> Result<Clicked, CaptureError> {
     let shows_an_outcome = |page: &Page| {
-        before.opened_a_page_view(page) || page.interception.has_refused() || page.download_began
+        before.opened_a_page_view(page) || before.was_refused(page) || page.download_began
     };
     let signalled = page
         .record_until_or(Instant::now() + NAVIGATION_SIGNAL_PATIENCE, |page| {
@@ -783,16 +809,7 @@ async fn await_navigation(
         page.record_until_or(Instant::now() + NAVIGATION_TIMEOUT, shows_an_outcome)
             .await?;
     }
-    if let Some(refused) = page.interception.take_refused() {
-        let host = Url::parse(&refused)
-            .ok()
-            .and_then(|url| url.host_str().map(str::to_string))
-            .unwrap_or_default();
-        page.report_blocked(
-            "off-site",
-            &format!("The link leads off the scanned site ({host}); it was not followed"),
-            Some(&refused),
-        );
+    if before.was_refused(page) {
         return Ok(Clicked::Refused);
     }
     if page.download_began {

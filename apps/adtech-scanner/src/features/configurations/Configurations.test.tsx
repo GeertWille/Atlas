@@ -145,7 +145,7 @@ test("edit opens the composer with the configuration; duplicate, rename and dele
   await user.type(name, "example COPY");
   await user.click(within(rename).getByRole("button", { name: "Rename" }));
   expect(await within(rename).findByRole("alert")).toHaveTextContent(
-    "A configuration named “example COPY” already exists",
+    'A scan configuration named "example COPY" already exists',
   );
   await user.clear(name);
   await user.type(name, "Example on a phone{Enter}");

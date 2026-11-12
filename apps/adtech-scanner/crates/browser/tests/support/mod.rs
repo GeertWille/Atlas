@@ -16,7 +16,7 @@ use adscan_model::{
 };
 use axum::Router;
 use axum::extract::State;
-use axum::http::{StatusCode, Uri, header};
+use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -202,7 +202,11 @@ impl Drop for Fixtures {
     }
 }
 
-async fn respond(State(requested): State<Arc<Mutex<Vec<String>>>>, uri: Uri) -> Response {
+async fn respond(
+    State(requested): State<Arc<Mutex<Vec<String>>>>,
+    uri: Uri,
+    headers: HeaderMap,
+) -> Response {
     let asked = uri
         .path_and_query()
         .map_or(uri.path(), |asked| asked.as_str());
@@ -212,6 +216,24 @@ async fn respond(State(requested): State<Arc<Mutex<Vec<String>>>>, uri: Uri) -> 
         return status(code.parse().unwrap());
     }
     match path {
+        // A page of a site that asks for a login of its own. Any login it is
+        // given is remembered as a request of its own, to be found.
+        "members-only" => {
+            for name in [header::AUTHORIZATION, header::PROXY_AUTHORIZATION] {
+                if let Some(login) = headers.get(&name) {
+                    requested
+                        .lock()
+                        .unwrap()
+                        .push(format!("LOGIN {name}: {login:?}"));
+                }
+            }
+            (
+                StatusCode::UNAUTHORIZED,
+                [(header::WWW_AUTHENTICATE, "Basic realm=\"members\"")],
+                "<h1>Members only</h1>",
+            )
+                .into_response()
+        }
         // Sends the browser on to the address given as the query.
         "redirect" => (
             StatusCode::FOUND,

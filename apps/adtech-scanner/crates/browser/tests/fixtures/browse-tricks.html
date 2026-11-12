@@ -1,0 +1,81 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Browse: a page that plays tricks</title><link rel="icon" href="data:,">
+<script src="/browse-shared.js"></script></head>
+<body style="margin:0;font:18px/1.6 sans-serif">
+<main style="max-width:700px;margin:0 auto">
+<h1>A link that is not what it says</h1>
+<p>Paragraph 1 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 2 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 3 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p style="position:relative"><a id="bait" href="/browse-hard-2.html">A link that looks like the way to the second page</a></p>
+<p>Paragraph 1 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 2 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 3 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 4 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 5 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 6 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 7 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 8 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 9 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 10 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 11 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+<p>Paragraph 12 of a page that is long enough to be scrolled through, with enough words in it to look like something a reader would read before moving on.</p>
+</main>
+<script>
+// The trick is named by the test, as this page's query: `trick` and, where
+// one is needed, the address `to` go to.
+var query = new URLSearchParams(location.search);
+var to = query.get('to');
+var bait = document.getElementById('bait');
+switch (query.get('trick')) {
+  case 'rewrite':
+    // What search results and link trackers do: the address changes as the
+    // button goes down, after anything could have looked at it.
+    bait.addEventListener('mousedown', function () {
+      bait.href = to;
+    });
+    break;
+  case 'submit':
+    bait.addEventListener('click', function (event) {
+      event.preventDefault();
+      var form = document.createElement('form');
+      form.method = 'post';
+      form.action = '/trap/posted';
+      document.body.appendChild(form);
+      form.submit();
+    });
+    break;
+  case 'frame':
+    // An ad that expands over the link when the pointer comes near.
+    bait.addEventListener('mouseover', function () {
+      if (bait.querySelector('iframe')) return;
+      var frame = document.createElement('iframe');
+      frame.srcdoc = '<a href="/trap/in-frame" target="_top">an ad</a>';
+      frame.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0';
+      bait.appendChild(frame);
+    });
+    break;
+  case 'control':
+    // A control inside the link that takes the click for itself.
+    bait.addEventListener('mouseover', function () {
+      if (bait.querySelector('button')) return;
+      var control = document.createElement('button');
+      control.textContent = 'Save for later';
+      control.style.cssText = 'position:absolute;inset:0;width:100%;height:100%';
+      control.addEventListener('click', function (event) {
+        event.preventDefault();
+        fetch('/trap/saved', { method: 'POST' });
+      });
+      bait.appendChild(control);
+    });
+    break;
+  case 'wander':
+    bait.remove();
+    setTimeout(function () {
+      location.href = to;
+    }, 1500);
+    break;
+}
+</script>
+</body></html>

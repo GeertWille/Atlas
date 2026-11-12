@@ -1,8 +1,13 @@
 import type { ProxyUse, ScanOptions, Settings } from "@/bindings";
 import { ApiError } from "@/lib/api/error";
-import { BUDGET_USD, defaultHeadless, visitorOf } from "@/shared/domain/scan-options";
+import { defaultHeadless, visitorOf } from "@/shared/domain/scan-options";
 import { hashString } from "./rng";
 import { MAX_LATER_PAGES } from "./visit";
+
+/** The backend accepts a wider budget than the composer and the settings screen offer. */
+const MAX_BUDGET_USD = 50;
+
+export const UNKNOWN_PROXY = "The chosen proxy no longer exists. Pick another proxy.";
 
 export type ResolvedScan = {
   /** The options as a backend stores them: nothing is left to the settings any more. */
@@ -16,23 +21,24 @@ export type ResolvedScan = {
  */
 export function resolveScanOptions(options: ScanOptions, settings: Settings, scanId: string): ResolvedScan {
   if (!/^https?:\/\/[^\s/]+/.test(options.url)) {
-    throw new ApiError("invalidInput", "Enter an absolute http(s) URL");
+    throw new ApiError("invalidInput", "Enter a valid web address, for example https://example.com");
   }
   const visitor = visitorOf(options);
-  const extraPages = visitor === "browse" ? (options.extraPages ?? settings.defaultExtraPages) : 0;
-  if ((options.extraPages ?? 0) > MAX_LATER_PAGES) {
-    throw new ApiError("invalidInput", `A visit can follow links to at most ${MAX_LATER_PAGES} further pages`);
+  const requestedPages = options.extraPages ?? settings.defaultExtraPages;
+  if (requestedPages > MAX_LATER_PAGES) {
+    throw new ApiError("invalidInput", `A browse visit can follow links to at most ${MAX_LATER_PAGES} further pages`);
   }
+  const extraPages = visitor === "browse" ? requestedPages : 0;
   const budgetUsd = options.budgetUsd ?? settings.budgetUsd;
-  if (budgetUsd < BUDGET_USD.min || budgetUsd > BUDGET_USD.max) {
-    throw new ApiError("invalidInput", `The per-scan budget must be between $${BUDGET_USD.min} and $${BUDGET_USD.max}`);
+  if (!(budgetUsd >= 0 && budgetUsd <= MAX_BUDGET_USD)) {
+    throw new ApiError("invalidInput", `The per-scan budget must be between $0 and $${MAX_BUDGET_USD}`);
   }
 
   const choice = options.proxy ?? settings.defaultProxy;
   let proxy: ProxyUse = { kind: choice.kind, name: null, host: null };
   if (choice.kind === "profile") {
     const profile = settings.proxies.find((candidate) => candidate.id === choice.id);
-    if (!profile) throw new ApiError("invalidInput", "The proxy profile this scan names no longer exists");
+    if (!profile) throw new ApiError("invalidInput", UNKNOWN_PROXY);
     proxy = { kind: "profile", name: profile.name, host: profile.host };
   }
 

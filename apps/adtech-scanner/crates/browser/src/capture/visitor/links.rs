@@ -22,6 +22,10 @@ pub(crate) struct LinkFacts {
     /// The address the browser would navigate to.
     pub href: String,
     pub text: String,
+    /// What the link is called where its text does not say it: its
+    /// `aria-label` and `title`.
+    #[serde(default)]
+    pub label: String,
     pub rel: String,
     pub target: String,
     pub download: bool,
@@ -32,6 +36,12 @@ pub(crate) struct LinkFacts {
     pub region: Region,
     pub in_ad: bool,
     pub in_form: bool,
+    /// An attribute makes a click do more than open the address: a script
+    /// library turns it into a request that changes something
+    /// (`data-method`, `hx-post`), asks for confirmation first, or the link
+    /// has a click handler of its own.
+    #[serde(default)]
+    pub acts_on_click: bool,
     pub has_image: bool,
 }
 
@@ -162,10 +172,13 @@ pub(crate) fn classify(link: &LinkFacts, surroundings: &Surroundings) -> Result<
     {
         return Err(Skip::Rel);
     }
-    if is_sensitive(&url, &link.text) {
+    if is_sensitive_address(&url)
+        || names_an_action(&words(&link.text))
+        || names_an_action(&words(&link.label))
+    {
         return Err(Skip::Sensitive);
     }
-    if link.in_form || link.role.eq_ignore_ascii_case("button") {
+    if link.in_form || link.acts_on_click || link.role.eq_ignore_ascii_case("button") {
         return Err(Skip::Control);
     }
     if surroundings.visited.contains(&page_key(&url)) {
@@ -183,8 +196,21 @@ pub(crate) fn classify_address(url: &Url, surroundings: &Surroundings) -> Result
     if page_key(url) == page_key(surroundings.current) {
         return Err(Skip::Anchor);
     }
-    if !surroundings.site.contains(url) {
+    classify_destination(url, surroundings.site)
+}
+
+/// Whether the visit may load `url` as its next page, wherever the address
+/// came from: the link as it was chosen, the link as the page rewrote it
+/// when the pointer went down, or a redirect on the way.
+pub(crate) fn classify_destination(url: &Url, site: &Site) -> Result<(), Skip> {
+    if !site.contains(url) {
         return Err(Skip::OffSite);
+    }
+    if has_file_extension(url) {
+        return Err(Skip::File);
+    }
+    if is_sensitive_address(url) {
+        return Err(Skip::Sensitive);
     }
     Ok(())
 }
@@ -346,14 +372,48 @@ const SENSITIVE_WORDS: &[&str] = &[
     "stemmen",
 ];
 
+/// The words of [`SENSITIVE_WORDS`] that a headline or an article slug has
+/// no other use for: they name the action however long the phrase is.
+const UNMISTAKABLE_WORDS: &[&str] = &[
+    "login",
+    "signin",
+    "signup",
+    "signout",
+    "logout",
+    "unsubscribe",
+    "checkout",
+    "cart",
+    "basket",
+    "einloggen",
+    "abmelden",
+    "warenkorb",
+    "abbestellen",
+    "déconnexion",
+    "deconnexion",
+    "panier",
+    "désabonner",
+    "desabonner",
+    "carrito",
+    "carrello",
+    "inloggen",
+    "uitloggen",
+    "afmelden",
+    "winkelwagen",
+    "winkelmand",
+    "afrekenen",
+    "uitschrijven",
+];
+
 /// Query keys that carry a credential or make the request do something.
 const SENSITIVE_QUERY_KEYS: &[&str] = &["token", "key", "session", "sid", "nonce", "action"];
 
 /// A headline may contain "report" or "order"; a control is named by it.
-/// Longer phrases than this are taken for headlines and article slugs.
+/// Longer phrases than this are taken for headlines and article slugs,
+/// unless they use an unmistakable word.
 const MAX_CONTROL_WORDS: usize = 3;
 
-fn is_sensitive(url: &Url, text: &str) -> bool {
+/// Whether the path or the query of an address names an action.
+fn is_sensitive_address(url: &Url) -> bool {
     let path_names_an_action = url
         .path_segments()
         .into_iter()
@@ -363,14 +423,16 @@ fn is_sensitive(url: &Url, text: &str) -> bool {
         let key = key.to_lowercase();
         SENSITIVE_QUERY_KEYS.contains(&key.as_str()) || names_an_action(&words(&key))
     });
-    path_names_an_action || query_names_an_action || names_an_action(&words(text))
+    path_names_an_action || query_names_an_action
 }
 
 fn names_an_action(phrase: &[String]) -> bool {
-    if phrase.len() > MAX_CONTROL_WORDS {
-        return false;
-    }
-    let is_sensitive = |word: &str| SENSITIVE_WORDS.contains(&word);
+    let vocabulary = if phrase.len() > MAX_CONTROL_WORDS {
+        UNMISTAKABLE_WORDS
+    } else {
+        SENSITIVE_WORDS
+    };
+    let is_sensitive = |word: &str| vocabulary.contains(&word);
     // "log in", "sign-up" and "check out" are written as two words.
     phrase.iter().any(|word| is_sensitive(word))
         || phrase
@@ -470,6 +532,7 @@ mod tests {
         LinkFacts {
             href: href.into(),
             text: "The village that bought its own substation".into(),
+            label: String::new(),
             rel: String::new(),
             target: String::new(),
             download: false,
@@ -484,6 +547,7 @@ mod tests {
             region: Region::Content,
             in_ad: false,
             in_form: false,
+            acts_on_click: false,
             has_image: false,
         }
     }
@@ -613,6 +677,81 @@ mod tests {
         );
         let other_subdomain = link("https://sport.news.example/cup/final");
         assert!(visit.verdict(&other_subdomain).is_ok());
+    }
+
+    #[test]
+    fn an_action_is_recognised_in_a_long_phrase_in_a_label_and_in_what_a_click_would_do() {
+        let visit = Visit::at("https://news.example/");
+        let with = |change: fn(&mut LinkFacts)| {
+            let mut link = link("https://news.example/climate/kelp-carbon");
+            change(&mut link);
+            link
+        };
+        let cases: Vec<(LinkFacts, Skip)> = vec![
+            (
+                with(|link| link.text = "Log out of your account on all devices".into()),
+                Skip::Sensitive,
+            ),
+            (
+                with(|link| link.text = "Sign up for our newsletter today".into()),
+                Skip::Sensitive,
+            ),
+            (
+                with(|link| link.text = "Click here to unsubscribe from everything".into()),
+                Skip::Sensitive,
+            ),
+            (
+                with(|link| link.text = "Add this to your cart now".into()),
+                Skip::Sensitive,
+            ),
+            (
+                link("https://news.example/logout-and-forget-this-device"),
+                Skip::Sensitive,
+            ),
+            (
+                link("https://news.example/newsletter/unsubscribe-from-all-mail"),
+                Skip::Sensitive,
+            ),
+            // An icon whose only name is in its label.
+            (
+                with(|link| {
+                    link.text = "J. Doe".into();
+                    link.label = "Sign out".into();
+                }),
+                Skip::Sensitive,
+            ),
+            (with(|link| link.acts_on_click = true), Skip::Control),
+        ];
+        for (link, expected) in cases {
+            assert_eq!(
+                visit.verdict(&link),
+                Err(expected),
+                "{} / {:?} / {:?}",
+                link.href,
+                link.text,
+                link.label
+            );
+        }
+    }
+
+    #[test]
+    fn a_destination_is_judged_by_its_address_alone() {
+        let site = Site::of(&Url::parse("https://news.example/").unwrap()).unwrap();
+        let verdict = |address: &str| classify_destination(&Url::parse(address).unwrap(), &site);
+        assert_eq!(verdict("https://news.example/climate/kelp-carbon"), Ok(()));
+        assert_eq!(verdict("https://sport.news.example/cup?page=2"), Ok(()));
+        assert_eq!(verdict("https://partner.example/offer"), Err(Skip::OffSite));
+        assert_eq!(verdict("http://news.example/climate"), Err(Skip::OffSite));
+        assert_eq!(verdict("https://news.example/kit.zip"), Err(Skip::File));
+        assert_eq!(verdict("https://news.example/logout"), Err(Skip::Sensitive));
+        assert_eq!(
+            verdict("https://news.example/basket/add?item=3"),
+            Err(Skip::Sensitive)
+        );
+        assert_eq!(
+            verdict("https://news.example/a?token=abc"),
+            Err(Skip::Sensitive)
+        );
     }
 
     #[test]

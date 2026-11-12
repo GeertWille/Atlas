@@ -4,9 +4,9 @@ import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
 import { ActivityFeed, LiveScanView } from "@/features/live-scan";
 import {
-  EnvironmentNotice,
   isMultiPage,
   PageSwitcher,
+  pageShowingScript,
   ReportHeader,
   ReportOverview,
   ScanOutcomeNotice,
@@ -34,8 +34,6 @@ const TAB_LABEL: Record<ReportTab, string> = {
   scripts: "Scripts",
   audit: "Audit trail",
 };
-
-const NOTICE_TABS: readonly ReportTab[] = ["findings", "auctions", "slots"];
 
 function TabCount({ value }: { value: number }) {
   return (
@@ -88,14 +86,14 @@ function Report({ detail }: { detail: ScanDetail }) {
             </TabsTrigger>
           ))}
         </TabsList>
-        {/* What the bids and fill below are worth: shown with them, not with scripts or the audit trail. */}
-        {completed && NOTICE_TABS.includes(tab) ? <EnvironmentNotice detail={detail} /> : null}
         <TabsContent value="findings">
           <FindingsTab
             findings={scope.findings}
             pages={detail.pages}
             focusedFindingId={search.finding}
-            onOpenScript={(script) => navigate({ search: { tab: "scripts", script, page } })}
+            onOpenScript={(script) =>
+              navigate({ search: { tab: "scripts", script, page: pageShowingScript(scope, script) } })
+            }
           />
         </TabsContent>
         <TabsContent value="auctions">

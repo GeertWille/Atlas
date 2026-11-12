@@ -753,6 +753,24 @@ fn a_prompt_nobody_answered_may_show_on_every_page_view() {
     assert!(!fired(&capture).contains(&"consent-asked-again"));
 }
 
+/// On the second page the consent platform loads the stored choice, and the
+/// prompt only appears later: a person opened the privacy settings.
+#[test]
+fn a_prompt_the_visitor_opened_themselves_is_not_the_choice_being_forgotten() {
+    let mut first = healthy_page();
+    first.push(tcf(100.0, "cmpuishown"));
+    first.push(tcf(200.0, "useractioncomplete"));
+    let mut second = page_setup();
+    second.push(tcf(150.0, "tcloaded"));
+    second.extend(auction_round(500.0, "auction-2"));
+    second.push(tcf(6_000.0, "cmpuishown"));
+    let capture = visit(vec![
+        (entry(12_000.0), first),
+        (link_click(8_000.0), second),
+    ]);
+    assert!(!fired(&capture).contains(&"consent-asked-again"));
+}
+
 // -- R6: identifiable as automated ---------------------------------------------------------
 
 fn visit_environment(webdriver: Option<bool>, headless: bool, detector: bool) -> ScanEnvironment {

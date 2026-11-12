@@ -128,7 +128,7 @@ export function heuristicFindings(site: CapturedSite, metrics: ScanMetrics): Fin
       category: "fill",
       source: "heuristic",
       title: `${neverRequested.length} of ${site.slots.length} ad slots were defined but never requested`,
-      description: `GPT defined these slots, but no ad request left the page during the observation window, even after auto-scroll passed their containers. A slot that is never requested earns **nothing**: no header bids, no direct campaigns, no backfill.`,
+      description: `GPT defined these slots, but no ad request left the page during the observation window, even after the visit scrolled past their containers. A slot that is never requested earns **nothing**: no header bids, no direct campaigns, no backfill.`,
       recommendation:
         "Check the condition that gates `googletag.pubads().refresh()` / `display()` for these units. If they are lazy-loaded, verify the trigger actually fires on this device class.",
       confidence: 0.97,
@@ -301,7 +301,7 @@ function leakDesktop(site: CapturedSite): Investigation[] {
         {
           name: "get_page_context",
           input: { fields: ["screen.width", "innerWidth", "scrollHeight", "maxScrollY"] },
-          result: `screen.width: 1280\ninnerWidth: 1280\ndocument.scrollHeight: 2960\nmax scrollY reached during auto-scroll: 2060`,
+          result: `screen.width: 1280\ninnerWidth: 1280\ndocument.scrollHeight: 2960\nmax scrollY reached while scrolling: 2060`,
         },
       ],
       finding: {

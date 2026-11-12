@@ -692,7 +692,17 @@ async fn identical_scripts_are_judged_once_and_share_the_verdict() {
 #[tokio::test]
 async fn a_part_that_settles_the_script_stops_the_questions_about_its_other_parts() {
     let claude = anthropic(None).await;
-    let jev = typesafe(|request| judged(request, |_, _| 0.9)).await;
+    // The page's other undecided script holds one of the four seats when the
+    // batch starts. Its answer comes first and frees the seat for a fourth
+    // part of the bundle, before any part is answered. Answered in the order
+    // the requests happen to arrive, three or four parts would be under way.
+    let jev = typesafe(|request| {
+        let screens_the_bundle = question_count(request) == 2
+            && request["state"]["script"]["url"] == "https://pub.example/js/bundle.js";
+        let delay = Duration::from_millis(if screens_the_bundle { 750 } else { 0 });
+        judged(request, |_, _| 0.9).set_delay(delay)
+    })
+    .await;
     // Twelve parts, every one naming an ad identifier.
     let bundle = "render(el.dataset.adunit);".repeat(2_700);
     let page = page_with(&[("https://pub.example/js/bundle.js", bundle.as_str())]);

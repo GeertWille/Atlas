@@ -22,7 +22,6 @@ test("nothing is known about a visit before its first visitor entry", () => {
     current: null,
     actions: [],
     skipped: null,
-    environment: null,
   });
 });
 
@@ -57,7 +56,10 @@ test("pages, the current page, the latest actions and the skip summary come from
   ]);
   expect(visit.actions.map((action) => action.warning)).toEqual([false, false, true]);
   expect(visit.skipped).toBe("Skipped 14 links: 9 off-site, 3 inside ads, 2 sign-in, checkout and the like");
-  expect(visit.environment).toBe("This visit is identifiable as automated: navigator.webdriver is true");
+  // The environment entry is no action of the visitor: it is not listed among them.
+  expect(visit.actions.map((action) => action.message)).not.toContain(
+    "This visit is identifiable as automated: navigator.webdriver is true",
+  );
 });
 
 test("a page view announced again keeps its place, and a later choice without skips clears the summary", () => {

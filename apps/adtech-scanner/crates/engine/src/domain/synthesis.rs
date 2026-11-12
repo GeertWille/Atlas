@@ -30,8 +30,13 @@ pub fn merge_and_rank(findings: Vec<Finding>) -> Vec<Finding> {
 }
 
 /// Two findings share a root cause when their categories are related and they
-/// do not point at disjoint slots or bidders.
+/// do not point at disjoint slots or bidders. A rule's note about the scan
+/// itself (severity info) is the cause of nothing: it stays a finding of its
+/// own, to be read as the caveat it is.
 fn same_root_cause(ai: &Finding, heuristic: &Finding) -> bool {
+    if heuristic.severity == Severity::Info {
+        return false;
+    }
     let both_unscoped = |a: &Finding, b: &Finding| {
         a.affected_slots.is_empty()
             && a.affected_bidders.is_empty()
@@ -274,6 +279,34 @@ mod tests {
             Severity::Low,
         );
         assert_eq!(merge_and_rank(vec![ai, other_bidder, pricing]).len(), 3);
+    }
+
+    #[test]
+    fn a_note_about_the_scan_is_never_folded_into_a_finding_about_the_site() {
+        let mut ai = finding(
+            FindingSource::Ai,
+            FindingCategory::Configuration,
+            Severity::Medium,
+        );
+        ai.affected_bidders = vec!["rubicon".into()];
+        let mut automated = finding(
+            FindingSource::Heuristic,
+            FindingCategory::Configuration,
+            Severity::Info,
+        );
+        automated.title = "This scan was identifiable as automated traffic".into();
+        automated.affected_bidders = vec!["rubicon".into()];
+
+        let merged = merge_and_rank(vec![automated, ai]);
+
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].source, FindingSource::Ai);
+        assert_eq!(merged[0].evidence.len(), 1, "nothing was added to it");
+        assert_eq!(
+            merged[1].title,
+            "This scan was identifiable as automated traffic"
+        );
+        assert_eq!(health_score(&merged), health_score(&merged[..1]));
     }
 
     #[test]
