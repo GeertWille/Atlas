@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Notice Message App</title></head>
+<body style="margin:0;font:16px sans-serif">
+<div class="message-container"><div class="message type-modal">
+<p class="message-component">Mit Werbung und Tracking lesen, oder werbefrei mit dem PUR-Abo.</p>
+<div id="choices" style="margin-top:40px"></div>
+</div></div>
+<script>
+// `shape` is how the accept control can be told apart: by the platform's
+// class for "accept all", by its title alone, by its text alone, or (`none`)
+// not at all: a wall that only sells. The paid option comes first and looks
+// the same.
+var shape = new URLSearchParams(location.search).get('shape');
+var accept = {
+  class: '<button class="message-component message-button no-children focusable sp_choice_type_11" title="Zustimmen">Weiter</button>',
+  title: '<button class="message-component message-button no-children focusable" title="Alle akzeptieren" aria-label="Alle akzeptieren"><span aria-hidden="true">&#10003;</span></button>',
+  text: '<button class="message-component message-button no-children focusable">Akzeptieren und weiter</button>',
+}[shape] || '';
+document.getElementById('choices').innerHTML =
+  '<button id="pay" class="message-component message-button no-children focusable sp_choice_type_9" title="Jetzt PUR-Abo abschließen">PUR abonnieren</button> ' +
+  '<button id="settings" class="message-component message-button no-children focusable sp_choice_type_12" title="Einstellungen">Einstellungen</button> ' +
+  '<span id="accept">' + accept + '</span>';
+function tell(choice) {
+  return function (event) {
+    parent.postMessage({ sp: 'choice', choice: choice, trusted: event.isTrusted }, '*');
+  };
+}
+document.getElementById('pay').addEventListener('click', tell('pay'));
+document.getElementById('settings').addEventListener('click', tell('settings'));
+var acceptAll = document.querySelector('#accept button');
+if (acceptAll) acceptAll.addEventListener('click', tell('accept-all'));
+</script>
+</body></html>

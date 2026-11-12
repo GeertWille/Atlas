@@ -230,10 +230,7 @@ test("the environment notice is one quiet line of the visit summary, with how to
     "This visit was automated and the pages could tell: navigator.webdriver was true, Chrome ran headless, DoubleVerify (invalid-traffic measurement) was on the page.",
   );
   await expect(notice).not.toContainText(/undetect|indistinguishable/i);
-  // The backend found a reason to suspect filtering here: it says so itself, as a caveat and as a finding.
-  await expect(overview.getByRole("list", { name: "Scan caveats" })).toContainText(
-    "This scan was identifiable as automated traffic, so bidders may have filtered it",
-  );
+  // The backend's own finding about it is in the list like any other; nothing else repeats it.
   await expect(page.getByRole("article", { name: "This scan was identifiable as automated traffic" })).toBeVisible();
   // Nothing stands between the tabs and the findings.
   await expect(page.getByRole("tabpanel").getByRole("note")).toHaveCount(0);

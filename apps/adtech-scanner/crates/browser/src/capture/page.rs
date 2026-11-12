@@ -15,7 +15,7 @@ use crate::cdp::{Cdp, CdpError, CdpEvent};
 use crate::device::Emulation;
 
 use super::error::CaptureError;
-use super::injected::{CONSENT_SOURCE, TRACKER_BINDING, TRACKER_FLUSH_EVENT, tracker_script};
+use super::injected::{TRACKER_BINDING, TRACKER_FLUSH_EVENT, tracker_script};
 use super::interception::{DocumentRequest, Interception, Paused};
 use super::recorder::{Recorder, committed_address};
 use super::tabs::{NewTab, Tab, Tabs, on_new_tab};
@@ -117,7 +117,7 @@ impl ScrollPosition {
 pub(crate) struct Page {
     pub(super) cdp: Arc<Cdp>,
     events: UnboundedReceiver<CdpEvent>,
-    tabs: Tabs,
+    pub(super) tabs: Tabs,
     setup: TabSetup,
     pub recorder: Recorder,
     pub interception: Interception,
@@ -201,13 +201,22 @@ impl Page {
         self.call_in(&session_id, method, params).await
     }
 
-    async fn call_in(
+    pub(super) async fn call_in(
         &mut self,
         session_id: &str,
         method: &'static str,
         params: Value,
     ) -> Result<Value, CaptureError> {
         let response = self.cdp.send(Some(session_id), method, params);
+        self.record_until_answered(response).await
+    }
+
+    /// Waits for the answer to a command that was already sent, recording
+    /// page events meanwhile.
+    pub(super) async fn record_until_answered(
+        &mut self,
+        response: impl Future<Output = Result<Value, CdpError>>,
+    ) -> Result<Value, CaptureError> {
         tokio::pin!(response);
         loop {
             tokio::select! {
@@ -612,54 +621,55 @@ impl Page {
         else {
             return Err(CaptureError::TabClosed);
         };
-        let world = self
-            .call_in(
-                &session_id,
-                "Page.createIsolatedWorld",
-                json!({ "frameId": main_frame_id, "worldName": SCANNER_WORLD }),
-            )
-            .await;
-        let Some(world) = tolerate_rejection(world)? else {
-            return Ok(None);
-        };
-        self.evaluate_in(&session_id, expression, Some(&world["executionContextId"]))
+        self.evaluate_in_frame(&session_id, &main_frame_id, expression)
             .await
     }
 
-    async fn evaluate_in(
+    /// Evaluates in the scanner's isolated world of one frame, reached
+    /// through the session that frame belongs to. `None` when the frame was
+    /// navigating or is gone.
+    pub(super) async fn evaluate_in_frame(
         &mut self,
         session_id: &str,
+        frame_id: &str,
         expression: &str,
-        context_id: Option<&Value>,
     ) -> Result<Option<Value>, CaptureError> {
-        let mut params =
-            json!({ "expression": expression, "returnByValue": true, "awaitPromise": true });
-        if let Some(context_id) = context_id {
-            params["contextId"] = context_id.clone();
-        }
-        let evaluated = self.call_in(session_id, "Runtime.evaluate", params).await;
+        let Some(evaluation) = self
+            .evaluation_in_frame(session_id, frame_id, expression)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let evaluated = self
+            .call_in(session_id, "Runtime.evaluate", evaluation)
+            .await;
         Ok(tolerate_rejection(evaluated)?.map(|mut result| result["result"]["value"].take()))
     }
 
-    /// Tries to accept a consent banner in the page or one of its iframes.
-    /// Returns the name of the banner that was accepted.
-    pub(crate) async fn accept_consent(&mut self) -> Result<Option<String>, CaptureError> {
-        if let Some(Value::String(banner)) = self.evaluate(CONSENT_SOURCE).await? {
-            return Ok(Some(banner));
-        }
-        let frame_sessions = self
-            .tabs
-            .recorded()
-            .map(|tab| tab.frame_sessions.clone())
-            .unwrap_or_default();
-        for session_id in frame_sessions {
-            if let Some(Value::String(banner)) =
-                self.evaluate_in(&session_id, CONSENT_SOURCE, None).await?
-            {
-                return Ok(Some(banner));
-            }
-        }
-        Ok(None)
+    /// The `Runtime.evaluate` parameters that run `expression` in the
+    /// scanner's isolated world of a frame. `None` when the frame has no
+    /// world to run in.
+    pub(super) async fn evaluation_in_frame(
+        &mut self,
+        session_id: &str,
+        frame_id: &str,
+        expression: &str,
+    ) -> Result<Option<Value>, CaptureError> {
+        let world = self
+            .call_in(
+                session_id,
+                "Page.createIsolatedWorld",
+                json!({ "frameId": frame_id, "worldName": SCANNER_WORLD }),
+            )
+            .await;
+        Ok(tolerate_rejection(world)?.map(|world| {
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": true,
+                "contextId": world["executionContextId"],
+            })
+        }))
     }
 
     pub(crate) async fn scroll_position(&mut self) -> Result<Option<ScrollPosition>, CaptureError> {

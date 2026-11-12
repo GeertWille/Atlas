@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { ProxyProfile, ProxyScheme, Settings } from "@/bindings";
 import { toApiError } from "@/lib/api";
 import { useClearProxyPassword, useSaveProxyProfile, useSetProxyPassword } from "@/lib/query/hooks";
+import { PROXY_NAME_MAX } from "@/shared/domain/proxy";
 import { cn } from "@/shared/lib/cn";
 import { notifyError } from "@/shared/lib/notify-error";
 import { Button } from "@/shared/ui/button";
@@ -12,7 +13,6 @@ import { Label } from "@/shared/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
 import {
   newProxyForm,
-  PROXY_NAME_MAX,
   PROXY_SCHEME_LABEL,
   PROXY_SCHEMES,
   type ProxyForm,

@@ -1,0 +1,48 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: one platform's dialog</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// The markup each consent platform gives its dialog, reduced to what tells
+// it apart. `{accept}` and `{other}` are where the handlers go. The labels
+// say nothing ("Weiter", "Mehr"), so only the platform's own names can lead
+// to the right control. The test names the platform as `cmp`.
+var PLATFORMS = {
+  'Sourcepoint': '<div id="sp_message_container_9"><button class="message-component sp_choice_type_12"{other}>Mehr</button><button class="message-component message-button sp_choice_type_11"{accept}>Weiter</button></div>',
+  'OneTrust': '<div id="onetrust-banner-sdk"><button id="onetrust-pc-btn-handler"{other}>Mehr</button><button id="onetrust-accept-btn-handler"{accept}>Weiter</button></div>',
+  'Didomi': '<div id="didomi-notice"><button id="didomi-notice-learn-more-button"{other}>Mehr</button><button id="didomi-notice-agree-button"{accept}>Weiter</button></div>',
+  'Cookiebot': '<div id="CybotCookiebotDialog"><button id="CybotCookiebotDialogBodyButtonDecline"{other}>Mehr</button><button id="CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll"{accept}>Weiter</button></div>',
+  'Quantcast / InMobi Choice': '<div class="qc-cmp2-container"><div class="qc-cmp2-summary-buttons"><button mode="secondary"{other}>Mehr</button><button mode="primary"{accept}>Weiter</button></div></div>',
+  'TrustArc': '<div id="truste-consent-track"><button id="truste-show-consent"{other}>Mehr</button><button id="truste-consent-button"{accept}>Weiter</button></div>',
+  'Google Funding Choices': '<div class="fc-consent-root"><button class="fc-button fc-cta-manage-options"{other}>Mehr</button><button class="fc-button fc-cta-consent"{accept}>Weiter</button></div>',
+  'consentmanager.net': '<div id="cmpbox" class="cmpbox"><a class="cmpboxbtn cmpboxbtnno"{other}>Mehr</a><a class="cmpboxbtn cmpboxbtnyes" id="cmpbntyestxt"{accept}>Weiter</a></div>',
+  'Iubenda': '<div id="iubenda-cs-banner"><button class="iubenda-cs-customize-btn"{other}>Mehr</button><button class="iubenda-cs-accept-btn"{accept}>Weiter</button></div>',
+  'Borlabs Cookie': '<div id="BorlabsCookieBox"><button class="brlbs-btn-settings"{other}>Mehr</button><button class="brlbs-btn-accept-all" data-cookie-accept-all{accept}>Weiter</button></div>',
+  'Osano': '<div class="osano-cm-dialog"><button class="osano-cm-denyAll"{other}>Mehr</button><button class="osano-cm-accept-all"{accept}>Weiter</button></div>',
+  'Complianz': '<div class="cmplz-cookiebanner"><button class="cmplz-btn cmplz-deny"{other}>Mehr</button><button class="cmplz-btn cmplz-accept"{accept}>Weiter</button></div>',
+  'CookieYes': '<div class="cky-consent-container"><button class="cky-btn cky-btn-reject"{other}>Mehr</button><button class="cky-btn cky-btn-accept"{accept}>Weiter</button></div>',
+  'Usercentrics': '<button data-testid="uc-more-button"{other}>Mehr</button><button data-testid="uc-accept-all-button"{accept}>Weiter</button>',
+};
+var name = new URLSearchParams(location.search).get('cmp');
+var markup = PLATFORMS[name]
+  .replace(/\{other\}/g, ' data-does="other"')
+  .replace(/\{accept\}/g, ' data-does="accept"');
+var host = document.createElement('div');
+// Usercentrics draws its dialog in a shadow tree.
+var root = host;
+if (name === 'Usercentrics') {
+  host.id = 'usercentrics-root';
+  root = host.attachShadow({ mode: 'open' });
+}
+root.innerHTML = markup;
+setTimeout(function () {
+  document.body.appendChild(host);
+  root.querySelector('[data-does="other"]').addEventListener('click', function () {
+    console.log('WRONG other');
+  });
+  root.querySelector('[data-does="accept"]').addEventListener('click', function (event) {
+    host.remove();
+    console.log('CONSENT accepted trusted=' + event.isTrusted);
+  });
+}, 300);
+</script>
+</body></html>

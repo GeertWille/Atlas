@@ -59,11 +59,14 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
     let scrolled = interaction_at_ms.is_some();
     // A consent banner nobody answered is an equally good reason for Prebid to
     // sit idle, and waiting for consent is not a bug.
-    let consent_unanswered = !ctx.capture.consent_accepted
-        && ctx
-            .scripts
-            .iter()
-            .any(|script| script.category == ScriptCategory::Cmp);
+    let consent_unanswered = ctx
+        .page_consent()
+        .is_some_and(|consent| consent.unanswered())
+        || (!ctx.capture.consent_accepted
+            && ctx
+                .scripts
+                .iter()
+                .any(|script| script.category == ScriptCategory::Cmp));
     let (severity, confidence) = match (scrolled, consent_unanswered) {
         (true, false) => (Severity::Critical, 0.8),
         (false, false) => (Severity::High, 0.6),

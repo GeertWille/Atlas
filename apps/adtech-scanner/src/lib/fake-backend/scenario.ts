@@ -20,7 +20,7 @@ import { buildDiagnostics } from "./diagnostics";
 import { aiInvestigations, type FindingDraft, healthScore, heuristicFindings, overviewFor } from "./findings";
 import { buildScripts, computeMetrics, JEV_THRESHOLDS, jevParts, jevPublisherSpecific, jevRule } from "./site";
 import { type CapturedVisit, captureVisit, type VisitedPage, visitMetrics } from "./visit";
-import { AUTOMATED_TRAFFIC_CAVEAT, identifiableAsAutomated, visitFindings } from "./visit-findings";
+import { visitFindings } from "./visit-findings";
 
 /** One scripted moment of a simulated scan, `at` ms after it started. */
 export type Beat = { at: number } & (
@@ -375,7 +375,6 @@ export function buildScenario({
   timeline.log("Evaluating 14 deterministic rules against telemetry", { level: "debug" });
   for (const draft of heuristicFindings(site, computeMetrics(site, scripts))) addFinding(draft);
   for (const draft of visitFindings(visit)) addFinding({ pages: [], ...draft });
-  if (identifiableAsAutomated(visit)) caveats.push(AUTOMATED_TRAFFIC_CAVEAT);
   const heuristicCount = findings.length;
   timeline.end(`${heuristicCount} of 14 rules matched`);
 
@@ -396,12 +395,12 @@ export function buildScenario({
 
   timeline.start("synthesize", analysisRan ? settings.filterModel : null);
   const score = healthScore(findings);
-  const visitNote =
-    visit.pages.length > 1
-      ? ` The visit covered ${pages(visit.pages.length)}; the slot and auction counts in this summary are the entry page's.`
-      : "";
+  // Like the backend's: the counts of a visit are the sums over its page views, and the overview says so.
+  const multiPage = visit.pages.length > 1;
+  const visitNote = multiPage ? ` The visit covered ${visit.pages.length} page views; the counts are their sum.` : "";
+  const counted = multiPage ? { ...site, auctions: visit.auctions, slots: visit.slots } : site;
   const overview = [
-    `${overviewFor(site, findings, analysisRan ? "analysed" : triageRan ? "triaged" : "deterministic")}${visitNote}`,
+    `${overviewFor(counted, findings, analysisRan ? "analysed" : triageRan ? "triaged" : "deterministic")}${visitNote}`,
     ...caveats.map((caveat) => `**Note:** ${caveat}.`),
   ].join("\n\n");
   timeline.log(`Ranked ${findings.length} findings; no duplicates between rule and model findings`, { after: 200 });

@@ -72,6 +72,10 @@ pub struct Capture {
     /// Final scroll depth reached, 0-1.
     pub max_scroll_depth: f64,
     pub consent_accepted: bool,
+    /// What the scanner itself saw and did about consent dialogs, in time
+    /// order. What the consent platform reports is in `events` (`TcfState`).
+    #[serde(default)]
+    pub consent_notes: Vec<ConsentNote>,
     /// What the bidders' endpoints answered, reduced to a status and a short
     /// reason. The response bodies themselves are dropped during capture.
     #[serde(default)]
@@ -114,11 +118,35 @@ impl Capture {
             console: Vec::new(),
             max_scroll_depth: 0.0,
             consent_accepted: false,
+            consent_notes: Vec::new(),
             bid_responses: Vec::new(),
             pages: vec![CapturedPage::entry(url)],
             environment: CaptureEnvironment::default(),
         }
     }
+}
+
+/// Something the scanner noticed or did about a consent dialog.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConsentNote {
+    pub page: u32,
+    /// ms since the start of the page view.
+    pub t: f64,
+    pub kind: ConsentNoteKind,
+    /// The consent platform, or the label of the control: "Sourcepoint",
+    /// `button "alle akzeptieren"`.
+    pub banner: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConsentNoteKind {
+    /// A consent dialog is on the page and the scanner found nothing in it
+    /// that plainly means "accept all". Noted once per page view.
+    DialogWithoutAccept,
+    /// The scanner clicked the dialog's accept-all control.
+    Accepted,
 }
 
 /// One page view of the visit.

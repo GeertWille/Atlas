@@ -1,5 +1,4 @@
 import type { AdSlot } from "@/bindings";
-
 import { createTimeScale, type TimeScale } from "@/shared/lib/time-scale";
 import type { PageMarkers } from "../pages/page-scope";
 
@@ -123,6 +122,9 @@ function slotMarkTimes(slot: AdSlot): { phase: SlotPhase; atMs: number }[] {
   });
 }
 
+/** Past this share of the axis a label written after its line would run out of the plot. */
+const LABEL_FLIP_PERCENT = 75;
+
 function pageMarkers(metrics: PageMarkers, scale: TimeScale): PageMarker[] {
   const candidates: [string, number | null][] = [
     ["First auction", metrics.timeToFirstAuctionMs],
@@ -130,15 +132,18 @@ function pageMarkers(metrics: PageMarkers, scale: TimeScale): PageMarker[] {
     ["First ad", metrics.timeToFirstAdMs],
   ];
   // The three labels can never overlap, however close the lines are and however narrow the plot:
-  // the earliest is written before its line, the other two after theirs on separate rows.
-  return candidates
+  // the earliest is written before its line, the other two after theirs on separate rows. A line
+  // near the right edge has no room after it, so its label goes before it, on the row the label
+  // of the line to its left does not use.
+  const sorted = candidates
     .flatMap(([label, atMs]) => (atMs === null ? [] : [{ label, atMs, percent: scale.toPercent(atMs) }]))
-    .sort((a, b) => a.atMs - b.atMs)
-    .map((marker, index) => ({
-      ...marker,
-      labelSide: index === 0 ? "before" : "after",
-      labelRow: index === 2 ? 1 : 0,
-    }));
+    .sort((a, b) => a.atMs - b.atMs);
+  const flipped = sorted.map((marker, index) => index > 0 && marker.percent > LABEL_FLIP_PERCENT);
+  return sorted.map((marker, index): PageMarker => {
+    if (index === 0) return { ...marker, labelSide: "before", labelRow: 0 };
+    if (!flipped[index]) return { ...marker, labelSide: "after", labelRow: index === 2 ? 1 : 0 };
+    return { ...marker, labelSide: "before", labelRow: index === 2 && flipped[1] ? 0 : 1 };
+  });
 }
 
 /** Puts every slot's lifecycle and the page lifecycle markers on one axis (ms since navigation start). */

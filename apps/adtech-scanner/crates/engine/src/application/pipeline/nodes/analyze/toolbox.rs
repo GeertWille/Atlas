@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::render::{self, Scope};
 use crate::domain::chunks::LineRange;
+use crate::domain::consent_wait;
 use crate::domain::finding::FindingDraft;
 use crate::domain::telemetry::ScanTelemetry;
 
@@ -181,6 +182,45 @@ struct CitationInput {
     explanation: String,
 }
 
+/// The matches of one search: how many, and the first of them with context.
+#[derive(Default)]
+struct Matches {
+    total: usize,
+    listed: usize,
+    shown: String,
+}
+
+impl Matches {
+    /// Counts the match at line `index` of `script` and lists it while
+    /// there is room.
+    fn add(&mut self, script: &ScriptSource, index: usize) {
+        self.total += 1;
+        if self.listed == MAX_SEARCH_MATCHES {
+            return;
+        }
+        self.listed += 1;
+        let start = index.saturating_sub(SEARCH_CONTEXT_LINES) + 1;
+        let end = (index + 1 + SEARCH_CONTEXT_LINES).min(script.lines.len());
+        self.shown.push_str(&format!(
+            "--- {} line {}\n{}\n",
+            script.id,
+            index + 1,
+            numbered(script, start, end)
+        ));
+    }
+
+    fn truncation(&self) -> String {
+        if self.listed < self.total {
+            format!(
+                " [truncated: showing the first {}; narrow the pattern or pass script_id]",
+                self.listed
+            )
+        } else {
+            String::new()
+        }
+    }
+}
+
 impl Toolbox {
     pub fn new(
         scripts: Vec<ScriptSource>,
@@ -215,7 +255,11 @@ impl Toolbox {
         Self {
             scripts,
             sections: TelemetrySections {
-                pages: render::visit(environment, &telemetry.pages),
+                pages: render::visit(
+                    environment,
+                    &telemetry.pages,
+                    &consent_wait::accounts(capture, environment),
+                ),
                 auctions: render::auctions_detail(&telemetry.total.auctions, visit),
                 slots: render::slots(&telemetry.total.slots, visit),
                 prebid_config: render::prebid_config(capture),
@@ -370,11 +414,12 @@ impl Toolbox {
                 "`pattern` is too complex to search with. Use a simpler expression or plain text.",
             );
         };
-        let mut out = String::new();
-        let mut shown = 0;
-        let mut total = 0;
+        // Matches in the lines searched by default, and those in the
+        // vendor-library lines a search of everything leaves out.
+        let mut found = Matches::default();
+        let mut in_libraries = Matches::default();
         let mut hidden_notes = Vec::new();
-        for script in scripts {
+        for script in &scripts {
             let mut hidden = 0;
             for (index, line) in script.lines.iter().enumerate() {
                 if !regex.is_match(line) {
@@ -382,49 +427,57 @@ impl Toolbox {
                 }
                 if everything && !script.in_default_search(index + 1) {
                     hidden += 1;
-                    continue;
+                    in_libraries.add(script, index);
+                } else {
+                    found.add(script, index);
                 }
-                total += 1;
-                if shown == MAX_SEARCH_MATCHES {
-                    continue;
-                }
-                shown += 1;
-                let start = index.saturating_sub(SEARCH_CONTEXT_LINES) + 1;
-                let end = (index + 1 + SEARCH_CONTEXT_LINES).min(script.lines.len());
-                out.push_str(&format!(
-                    "--- {} line {}\n{}\n",
-                    script.id,
-                    index + 1,
-                    numbered(script, start, end)
-                ));
             }
             if hidden > 0 {
                 hidden_notes.push(format!(
-                    "{hidden} more matching lines in vendor library {} hidden; pass script_id to see them",
-                    script.id
+                    "{hidden} more matching lines in vendor library {id} hidden; search again with \
+                     script_id \"{id}\" to see them (a publisher's wrapper can be bundled into the library's file)",
+                    id = script.id
                 ));
             }
         }
-        if total == 0 && hidden_notes.is_empty() {
-            return ToolOutcome::ok(format!("No matches for `{}`.", args.pattern));
+        let pattern = &args.pattern;
+        let literal = if literal_fallback {
+            " (not a valid regular expression; searched as literal text)"
+        } else {
+            ""
+        };
+        if found.total == 0 && in_libraries.total == 0 {
+            return ToolOutcome::ok(if everything {
+                format!(
+                    "No matches for `{pattern}`{literal} in any of the {} scripts of this analysis, vendor \
+                     libraries included.",
+                    scripts.len()
+                )
+            } else {
+                format!("No matches for `{pattern}`{literal}.")
+            });
         }
-        let hidden_notes = hidden_notes.join("\n");
-        if total == 0 {
+        // Nothing where the publisher's code usually is: the search is
+        // widened by itself, so that "not found" is never the answer while
+        // the code is in a bundle the default search skips.
+        if found.total == 0 {
             return ToolOutcome::ok(format!(
-                "No matches for `{}` in the publisher's scripts.\n{hidden_notes}",
-                args.pattern
+                "No matches for `{pattern}`{literal} in the lines searched by default. Widened to the vendor \
+                 libraries: {} matching lines there{}. A publisher's wrapper is often shipped inside the same \
+                 file as Prebid, so read these before concluding anything; pass script_id to search one \
+                 script in full.\n{}",
+                in_libraries.total,
+                in_libraries.truncation(),
+                in_libraries.shown
             ));
         }
-        let mut header = format!("{total} matching lines for `{}`", args.pattern);
-        if literal_fallback {
-            header.push_str(" (not a valid regular expression; searched as literal text)");
-        }
-        if shown < total {
-            header.push_str(&format!(
-                " [truncated: showing the first {shown}; narrow the pattern or pass script_id]"
-            ));
-        }
-        ToolOutcome::ok(format!("{header}\n{out}{hidden_notes}"))
+        ToolOutcome::ok(format!(
+            "{} matching lines for `{pattern}`{literal}{}\n{}{}",
+            found.total,
+            found.truncation(),
+            found.shown,
+            hidden_notes.join("\n")
+        ))
     }
 
     fn get_telemetry(&self, args: TelemetryInput) -> ToolOutcome {
@@ -782,7 +835,10 @@ mod tests {
             "search_scripts",
             &json!({ "pattern": "requestBids", "script_id": null }),
         );
-        assert_eq!(none.content, "No matches for `requestBids`.");
+        assert_eq!(
+            none.content,
+            "No matches for `requestBids` in any of the 1 scripts of this analysis, vendor libraries included."
+        );
     }
 
     /// The publisher's wrapper plus a Prebid build whose last lines hold the
@@ -817,17 +873,13 @@ mod tests {
             everywhere.content
         );
         assert!(!everywhere.content.contains("--- s7"));
-        assert!(everywhere.content.ends_with(
-            "50 more matching lines in vendor library s7 hidden; pass script_id to see them"
-        ));
-
-        let only_in_the_library = toolbox.execute(
-            "search_scripts",
-            &json!({ "pattern": "adapter\\d+", "script_id": null }),
-        );
-        assert_eq!(
-            only_in_the_library.content,
-            "No matches for `adapter\\d+` in the publisher's scripts.\n50 more matching lines in vendor library s7 hidden; pass script_id to see them"
+        assert!(
+            everywhere.content.ends_with(
+                "50 more matching lines in vendor library s7 hidden; search again with script_id \"s7\" to \
+                 see them (a publisher's wrapper can be bundled into the library's file)"
+            ),
+            "{}",
+            everywhere.content
         );
 
         let by_id = toolbox.execute(
@@ -845,6 +897,65 @@ mod tests {
         assert!(
             read.content
                 .contains("    1| adapter0.timeout = startAuction;")
+        );
+    }
+
+    /// The scan that made this necessary: the wrapper lives inside the
+    /// Prebid bundle under its own namespace, the default search finds no
+    /// `requestBids`, and the analysis concluded the trigger was "in code it
+    /// did not inspect". A search that finds nothing by default now shows
+    /// what the libraries hold.
+    #[test]
+    fn a_search_that_finds_nothing_by_default_widens_to_the_vendor_libraries_by_itself() {
+        let mut toolbox = toolbox_with_vendor_library(vec![]);
+        let bundle = &mut toolbox.scripts[1].lines;
+        bundle.push("ASCDP.adS.init = function () {".into());
+        bundle.push("  if (ASCDP.adS.hasConsent()) { x.requestBids({ timeout: 900 }); }".into());
+        bundle.push("};".into());
+
+        let widened = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "requestBids", "script_id": null }),
+        );
+        assert!(!widened.is_error);
+        assert!(
+            widened.content.starts_with(
+                "No matches for `requestBids` in the lines searched by default. Widened to the vendor \
+                 libraries: 1 matching lines there. A publisher's wrapper is often shipped inside the same \
+                 file as Prebid, so read these before concluding anything"
+            ),
+            "{}",
+            widened.content
+        );
+        assert!(
+            widened.content.contains("--- s7 line 53\n"),
+            "{}",
+            widened.content
+        );
+        assert!(widened.content.contains("ASCDP.adS.init = function () {"));
+        assert!(widened.content.contains("x.requestBids({ timeout: 900 })"));
+
+        // Many matches in the libraries are cut like any other result.
+        let many = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "adapter\\d+", "script_id": null }),
+        );
+        assert!(
+            many.content.contains(&format!(
+                "50 matching lines there [truncated: showing the first {MAX_SEARCH_MATCHES}; narrow the \
+                 pattern or pass script_id]"
+            )),
+            "{}",
+            many.content
+        );
+        // And what is nowhere is said to be nowhere, libraries included.
+        let nowhere = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "fetchBids", "script_id": null }),
+        );
+        assert_eq!(
+            nowhere.content,
+            "No matches for `fetchBids` in any of the 2 scripts of this analysis, vendor libraries included."
         );
     }
 

@@ -1,0 +1,43 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: a Sourcepoint choice wall</title><link rel="icon" href="data:,"></head>
+<body style="margin:0">
+<p style="height:120px">An article of a publisher that offers a choice: read with ads and tracking, or subscribe.</p>
+<script>
+// The structure of a large publisher's consent wall: the message is an iframe
+// served from the consent platform's own origin (given by the test as `cmp`),
+// inside a container that covers the page. `shape` picks what the message
+// identifies its accept control by; `delay` is when the wall appears.
+var query = new URLSearchParams(location.search);
+var listeners = [];
+var status = 'cmpuishown';
+// What the page's ad stack asks the consent platform.
+window.__tcfapi = function (command, version, callback) {
+  if (command !== 'addEventListener') return;
+  listeners.push(callback);
+  callback({ eventStatus: status, gdprApplies: true, tcString: '', listenerId: listeners.length }, true);
+};
+function show() {
+  var container = document.createElement('div');
+  container.id = 'sp_message_container_1127';
+  container.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483647';
+  var frame = document.createElement('iframe');
+  frame.id = 'sp_message_iframe_1127';
+  frame.title = 'SP Consent Message';
+  frame.src = query.get('cmp') + 'consent-sourcepoint-message.html?shape=' + (query.get('shape') || 'class');
+  frame.style.cssText = 'position:absolute;left:180px;top:90px;width:640px;height:420px;border:0;background:#fff';
+  container.appendChild(frame);
+  document.body.appendChild(container);
+  addEventListener('message', function (event) {
+    if (!event.data || event.data.sp !== 'choice') return;
+    console.log('CHOICE ' + event.data.choice + ' trusted=' + event.data.trusted);
+    if (event.data.choice !== 'accept-all') return;
+    container.remove();
+    status = 'useractioncomplete';
+    listeners.forEach(function (callback, index) {
+      callback({ eventStatus: status, gdprApplies: true, tcString: 'CP-accepted', listenerId: index + 1 }, true);
+    });
+  });
+}
+setTimeout(show, Number(query.get('delay') || 300));
+</script>
+</body></html>

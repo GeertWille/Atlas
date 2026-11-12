@@ -91,7 +91,7 @@ pub fn publisher_ranges(
         .copied()
         .filter(|chunk| {
             let text = chunk.of(lines).join("\n");
-            names_a_placement(&text, literals) || ad_api_calls(&text) > 0
+            names_a_placement(&text, literals) || ad_api_calls(&text) > 0 || has_call_site(&text)
         })
         .collect()
 }
@@ -374,6 +374,25 @@ mod tests {
             [
                 LineRange { start: 1, end: 3 },
                 LineRange { start: 6, end: 6 }
+            ]
+        );
+    }
+
+    /// The calls go through an alias and a namespace, never through `pbjs.`
+    /// or `googletag.` by name.
+    #[test]
+    fn a_bundled_wrapper_that_calls_through_an_alias_or_a_namespace_stays_searchable() {
+        let mut source = vec!["function adapterInternals(){return bidderSettings}".to_string(); 8];
+        source[2] = "ASCDP.adS.init=function(){x.requestBids({timeout:900})}".into();
+        source[4] = "window[ns].que.push(function(){ASCDP.adS.init()})".into();
+        source[6] = "w.gt.cmd.push(function(){ASCDP.adS.slots()})".into();
+        let chunks: Vec<LineRange> = (1..=8).map(|n| LineRange { start: n, end: n }).collect();
+        assert_eq!(
+            publisher_ranges(&source, &chunks, &[]),
+            [
+                LineRange { start: 3, end: 3 },
+                LineRange { start: 5, end: 5 },
+                LineRange { start: 7, end: 7 }
             ]
         );
     }

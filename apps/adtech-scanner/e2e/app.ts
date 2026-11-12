@@ -60,6 +60,15 @@ export function reportHealth(page: Page, name: string | RegExp = /Health score \
 }
 
 /** The page as it is now passes axe's WCAG 2.1 A and AA rules. */
+/**
+ * The window itself has nothing to scroll: only the regions inside it do. A document taller than the
+ * window can be shifted by anything that scrolls an element into view, leaving a blank band below the app.
+ */
+export async function expectWindowDoesNotScroll(page: Page) {
+  const overflow = await page.evaluate(() => document.documentElement.scrollHeight - window.innerHeight);
+  expect(overflow, "document height beyond the window").toBeLessThanOrEqual(0);
+}
+
 export async function expectNoAxeViolations(page: Page, disabledRules: string[] = []) {
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])

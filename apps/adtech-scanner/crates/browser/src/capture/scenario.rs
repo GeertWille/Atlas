@@ -108,12 +108,19 @@ pub(crate) fn swipe_lengths(distance: f64, viewport_height: f64) -> Vec<f64> {
 }
 
 const CONSENT_ATTEMPT_INTERVAL: Duration = Duration::from_millis(500);
-/// Banners that have not appeared by now are not coming.
-const CONSENT_MAX_ATTEMPTS: u32 = 20;
+/// Most banners are there within ten seconds of the page; that long, they
+/// are looked for twice a second.
+const CONSENT_EAGER_ATTEMPTS: u32 = 20;
+/// A consent wall can come seconds later still (a slow tag manager, a
+/// platform that waits for the page to settle): after the eager attempts it
+/// is looked for at this pace for as long as the page is watched.
+const CONSENT_PATIENT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Whether to look for a consent banner again, `since_load` after the page loaded.
 pub(crate) fn consent_attempt_due(since_load: Duration, attempts_made: u32) -> bool {
-    attempts_made < CONSENT_MAX_ATTEMPTS && since_load >= CONSENT_ATTEMPT_INTERVAL * attempts_made
+    let eager = attempts_made.min(CONSENT_EAGER_ATTEMPTS);
+    let patient = attempts_made - eager;
+    since_load >= CONSENT_ATTEMPT_INTERVAL * eager + CONSENT_PATIENT_INTERVAL * patient
 }
 
 #[cfg(test)]
@@ -202,14 +209,32 @@ mod tests {
     }
 
     #[test]
-    fn consent_is_retried_twice_a_second_for_ten_seconds() {
+    fn consent_is_looked_for_twice_a_second_for_ten_seconds_and_every_two_seconds_after() {
         assert!(consent_attempt_due(Duration::ZERO, 0));
         assert!(!consent_attempt_due(Duration::from_millis(400), 1));
         assert!(consent_attempt_due(Duration::from_millis(500), 1));
         assert!(consent_attempt_due(Duration::from_secs(9), 3));
         assert!(!consent_attempt_due(
+            Duration::from_millis(9_900),
+            CONSENT_EAGER_ATTEMPTS
+        ));
+        assert!(consent_attempt_due(
+            Duration::from_secs(10),
+            CONSENT_EAGER_ATTEMPTS
+        ));
+        // A wall that only comes after half a minute is still found, without
+        // asking the page twice a second for all that time.
+        assert!(!consent_attempt_due(
+            Duration::from_secs(11),
+            CONSENT_EAGER_ATTEMPTS + 1
+        ));
+        assert!(consent_attempt_due(
+            Duration::from_secs(12),
+            CONSENT_EAGER_ATTEMPTS + 1
+        ));
+        assert!(consent_attempt_due(
             Duration::from_secs(60),
-            CONSENT_MAX_ATTEMPTS
+            CONSENT_EAGER_ATTEMPTS + 25
         ));
     }
 }

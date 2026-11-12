@@ -21,6 +21,14 @@ impl Point {
     pub(crate) fn distance_to(self, other: Point) -> f64 {
         (other.x - self.x).hypot(other.y - self.y)
     }
+
+    /// The same point seen from a frame whose origin is `by` further out.
+    pub(crate) fn offset_by(self, by: Point) -> Point {
+        Point {
+            x: self.x + by.x,
+            y: self.y + by.y,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]

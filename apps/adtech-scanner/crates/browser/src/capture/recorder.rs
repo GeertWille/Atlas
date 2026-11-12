@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use adscan_model::{ActivityKind, CaptureActivity, PageReach};
+use adscan_model::{ActivityKind, CaptureActivity, ConsentNoteKind, PageReach};
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesUnordered;
@@ -76,7 +76,19 @@ pub(crate) fn committed_address(frame_navigated: &Value) -> String {
     )
 }
 
+/// What the scanner saw or did about a consent dialog, and when.
+pub(crate) struct ConsentSeen {
+    pub at_epoch_ms: f64,
+    pub page: Option<u32>,
+    pub kind: ConsentNoteKind,
+    pub banner: String,
+}
+
 pub(crate) struct Recorder {
+    pub consent_notes: Vec<ConsentSeen>,
+    /// How many looks in a row found a consent dialog without an accept
+    /// control.
+    pub dialog_without_accept_seen: u32,
     pub tracker: TrackerLog,
     pub pages: PageLog,
     pub scripts: ScriptLibrary,
@@ -111,6 +123,8 @@ pub(crate) struct Recorder {
 impl Recorder {
     pub(crate) fn new(main_frame_id: String, pages: PageLog, on_activity: ActivitySink) -> Self {
         Self {
+            consent_notes: Vec::new(),
+            dialog_without_accept_seen: 0,
             tracker: TrackerLog::default(),
             pages,
             scripts: ScriptLibrary::default(),

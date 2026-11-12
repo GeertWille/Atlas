@@ -377,6 +377,11 @@ impl PageLog {
         self.documents[view.document].started_at() + view.offset_ms
     }
 
+    /// Epoch ms at which a page view started.
+    pub(crate) fn started_at_epoch_ms(&self, index: u32) -> Option<f64> {
+        ((index as usize) < self.views.len()).then(|| self.started_at(index as usize))
+    }
+
     /// Epoch ms every time of the capture is in the end measured from: the
     /// start of the entry page.
     pub(crate) fn navigation_start(&self) -> Option<f64> {

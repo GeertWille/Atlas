@@ -9,6 +9,9 @@ export const VISIT_PAGES = { min: 1, max: 6 } as const;
 
 export const BUDGET_USD = { min: 0.05, max: 20 } as const;
 
+/** A saved configuration's name can be this long; the backend enforces the same. */
+export const CONFIGURATION_NAME_MAX = 80;
+
 /** A manual session is recorded for at most this long; the backend ends the capture then. */
 export const MANUAL_SESSION_LIMIT_MS = 15 * 60_000;
 

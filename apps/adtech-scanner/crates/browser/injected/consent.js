@@ -1,35 +1,82 @@
-// Finds a consent banner's "accept all" control and clicks it.
-// Evaluates to the name of the banner that was accepted, or null.
-(function () {
+// Finds a consent banner's "accept all" control in one frame. Evaluated in the
+// scanner's isolated world of every frame of the tab, because consent
+// platforms put their dialog in an iframe of another origin as often as not.
+//
+// One function expression, called with `{ click, watchMs }`. It evaluates to
+//   { name, x, y }  the control was found; `x`/`y` are a point on it in this
+//                   frame's viewport, or null when the point is covered;
+//   { dialog }      a consent dialog is here but nothing in it plainly means
+//                   "accept all";
+//   null            nothing of the kind.
+// With `click` set, the control is clicked from script as well. Without it,
+// nothing on the page is touched: the scanner clicks the point itself. With
+// `watchMs`, it evaluates instead to a promise of whether the control was
+// clicked within that time, so the scanner knows its click arrived.
+(function (request) {
   'use strict';
 
-  // Accept buttons of the consent platforms most publishers use.
-  var KNOWN_BANNERS = [
-    ['OneTrust', '#onetrust-accept-btn-handler'],
-    ['Didomi', '#didomi-notice-agree-button'],
-    ['Cookiebot', '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept'],
-    ['Quantcast / InMobi Choice', '.qc-cmp2-summary-buttons button[mode="primary"], .qc-cmp2-footer button[mode="primary"]'],
-    ['Usercentrics', '[data-testid="uc-accept-all-button"], button[data-action-type="accept"]'],
-    ['TrustArc', '#truste-consent-button, .trustarc-agree-btn'],
-    ['Sourcepoint', 'button.sp_choice_type_11, button.sp_choice_type_ACCEPT_ALL, .message-component[title="Accept All"]'],
-    ['Google Funding Choices', '.fc-cta-consent'],
-    ['Osano', '.osano-cm-accept-all'],
-    ['Iubenda', '.iubenda-cs-accept-btn'],
-    ['Complianz', '.cmplz-btn.cmplz-accept'],
-    ['CookieYes', '.cky-btn-accept'],
+  // The consent platforms most publishers use: the accept-all control, and
+  // the dialog it belongs to. One row per platform; add rows, not code.
+  var PLATFORMS = [
+    {
+      name: 'Sourcepoint',
+      accept:
+        'button.sp_choice_type_11, button.sp_choice_type_ACCEPT_ALL, .message-component[title="Accept All"], ' +
+        '.message-component.message-button[title="Alle akzeptieren"], .message-component.message-button[title="Zustimmen"]',
+      dialog: '[id^="sp_message_container"], [id^="sp_message_iframe"], .message-container .message-component',
+    },
+    { name: 'OneTrust', accept: '#onetrust-accept-btn-handler', dialog: '#onetrust-banner-sdk' },
+    { name: 'Didomi', accept: '#didomi-notice-agree-button', dialog: '#didomi-notice, #didomi-popup' },
+    {
+      name: 'Cookiebot',
+      accept: '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept',
+      dialog: '#CybotCookiebotDialog',
+    },
+    {
+      name: 'Quantcast / InMobi Choice',
+      accept: '.qc-cmp2-summary-buttons button[mode="primary"], .qc-cmp2-footer button[mode="primary"]',
+      dialog: '.qc-cmp2-container',
+    },
+    {
+      name: 'Usercentrics',
+      accept: '[data-testid="uc-accept-all-button"], button[data-action-type="accept"]',
+      dialog: '#usercentrics-root, #usercentrics-cmp-ui, [data-testid="uc-default-wall"]',
+    },
+    {
+      name: 'TrustArc',
+      accept: '#truste-consent-button, .trustarc-agree-btn',
+      dialog: '#truste-consent-track, #trustarc-banner-overlay',
+    },
+    { name: 'Google Funding Choices', accept: '.fc-cta-consent', dialog: '.fc-consent-root' },
+    {
+      name: 'consentmanager.net',
+      accept: '#cmpwelcomebtnyes a, #cmpbntyestxt, .cmpboxbtnyes',
+      dialog: '#cmpbox, .cmpbox',
+    },
+    { name: 'Iubenda', accept: '.iubenda-cs-accept-btn', dialog: '#iubenda-cs-banner' },
+    {
+      name: 'Borlabs Cookie',
+      accept: '#BorlabsCookieBox [data-cookie-accept-all], .brlbs-btn-accept-all, [data-borlabs-cookie-accept-all]',
+      dialog: '#BorlabsCookieBox, .brlbs-cmpnt-dialog',
+    },
+    { name: 'Osano', accept: '.osano-cm-accept-all', dialog: '.osano-cm-dialog' },
+    { name: 'Complianz', accept: '.cmplz-btn.cmplz-accept', dialog: '.cmplz-cookiebanner' },
+    { name: 'CookieYes', accept: '.cky-btn-accept', dialog: '.cky-consent-container' },
   ];
 
   // Unambiguous "accept everything" labels: English, Dutch, German, French,
   // Spanish, Italian, Portuguese.
   var ACCEPT_ALL = [
     'accept all', 'accept all cookies', 'allow all', 'allow all cookies', 'agree to all', 'accept & continue',
-    'accept and continue', 'agree and proceed', 'agree & proceed', 'yes, i agree', 'i accept all',
+    'accept and continue', 'accept all and continue', 'accept all & continue', 'agree and proceed',
+    'agree & proceed', 'yes, i agree', 'i accept all',
     'alles accepteren', 'accepteer alles', 'alle cookies accepteren', 'alles toestaan', 'alle cookies toestaan',
-    'ik ga akkoord', 'akkoord en doorgaan',
-    'alle akzeptieren', 'alles akzeptieren', 'alle cookies akzeptieren', 'alle zulassen', 'allen zustimmen',
-    'akzeptieren und weiter', 'zustimmen und weiter',
-    'tout accepter', 'accepter tout', 'accepter et continuer', 'accepter et fermer', "j'accepte tout",
-    'tout autoriser',
+    'ik ga akkoord', 'akkoord en doorgaan', 'accepteren en doorgaan',
+    'alle akzeptieren', 'alles akzeptieren', 'alle cookies akzeptieren', 'alle zulassen', 'alles zulassen',
+    'alle cookies zulassen', 'allen zustimmen', 'akzeptieren und weiter', 'zustimmen und weiter',
+    'alle akzeptieren und weiter', 'akzeptieren und schließen', 'akzeptieren & schließen',
+    'tout accepter', 'accepter tout', 'accepter et continuer', 'accepter et fermer', 'accepter & fermer',
+    "j'accepte tout", 'tout autoriser',
     'aceptar todo', 'aceptar todas', 'aceptar todas las cookies', 'aceptar y continuar', 'permitir todas',
     'aceptar y cerrar',
     'accetta tutto', 'accetta tutti', 'accetta tutti i cookie', 'accetta e continua', 'accetta e chiudi',
@@ -42,36 +89,35 @@
     'akzeptieren', 'zustimmen', 'einverstanden', 'ich stimme zu',
     'accepter', "j'accepte", "d'accord", 'autoriser',
     'aceptar', 'acepto', 'de acuerdo', 'permitir',
+    'accetta', 'accetto', 'acconsento',
   ];
+  // A consent wall may offer a paid way out next to the consent option
+  // ("read with ads" or "subscribe"). Whatever a control is otherwise, one
+  // that names a purchase is never clicked.
+  var PURCHASE =
+    /(^|[^a-z])(pur|abo|abos|abonn\w*|subscri\w*|suscri\w*|pay|paid|bezahl\w*|zahlen|kaufen|kopen|buy|acheter|payer|comprar|premium|plus|price|preis|prijs|prix)([^a-z]|$)|[€$£]/i;
   var CONSENT_CONTEXT = /cookie|consent|privacy|gdpr|rgpd|datenschutz|privacidad|confidentialit|cmp/i;
   var CLICKABLE = 'button, [role="button"], a, input[type="button"], input[type="submit"]';
 
   // The document plus everything reachable from it: open shadow roots and
-  // same-origin iframes. Cross-origin iframes are evaluated separately.
+  // same-origin iframes. Frames of other origins are evaluated on their own.
   function searchRoots(root, roots) {
     roots.push(root);
     var elements = root.querySelectorAll('*');
     for (var i = 0; i < elements.length; i++) {
       var element = elements[i];
       if (element.shadowRoot) searchRoots(element.shadowRoot, roots);
-      if (element.tagName === 'IFRAME') {
-        try {
-          if (element.contentDocument) searchRoots(element.contentDocument, roots);
-        } catch (crossOrigin) {}
-      }
     }
     return roots;
   }
 
   function isClickable(element) {
     if (element.disabled || !element.getClientRects().length) return false;
-    var view = element.ownerDocument.defaultView || window;
-    var style = view.getComputedStyle(element);
+    var style = getComputedStyle(element);
     return style.visibility !== 'hidden' && style.pointerEvents !== 'none' && Number(style.opacity) > 0.05;
   }
 
-  function labelOf(element) {
-    var text = element.tagName === 'INPUT' ? element.value : element.innerText || element.textContent;
+  function normalized(text) {
     return String(text || '')
       .replace(/\s+/g, ' ')
       .replace(/[’`]/g, "'")
@@ -79,9 +125,28 @@
       .toLowerCase();
   }
 
+  // What the control is called: its text, and where that says nothing (an
+  // icon, a styled span), its accessible name or tooltip.
+  function labelsOf(element) {
+    var text = element.tagName === 'INPUT' ? element.value : element.innerText || element.textContent;
+    return [text, element.getAttribute('aria-label'), element.getAttribute('title')].map(normalized).filter(Boolean);
+  }
+
+  function namesAPurchase(element) {
+    return labelsOf(element).some(function (label) {
+      return PURCHASE.test(label);
+    });
+  }
+
+  // A frame that holds nothing but a consent message says so in its address
+  // or title; every control in it is in consent context.
+  var isConsentFrame =
+    window !== window.top && CONSENT_CONTEXT.test(location.hostname + location.pathname + ' ' + document.title);
+
   // `<html>` and `<body>` are not a dialog: feature-detection classes such as
   // Modernizr's "cookies" would put every button of the page in consent context.
   function isInsideConsentDialog(element) {
+    if (isConsentFrame) return true;
     for (var node = element, depth = 0; node && depth < 8; depth++) {
       if (node.nodeType === 1) {
         if (node.tagName === 'BODY' || node.tagName === 'HTML') return false;
@@ -95,12 +160,14 @@
     return false;
   }
 
-  function findKnownBanner(roots) {
-    for (var b = 0; b < KNOWN_BANNERS.length; b++) {
+  function findKnownPlatform(roots) {
+    for (var p = 0; p < PLATFORMS.length; p++) {
       for (var r = 0; r < roots.length; r++) {
-        var matches = roots[r].querySelectorAll(KNOWN_BANNERS[b][1]);
+        var matches = roots[r].querySelectorAll(PLATFORMS[p].accept);
         for (var m = 0; m < matches.length; m++) {
-          if (isClickable(matches[m])) return { name: KNOWN_BANNERS[b][0], element: matches[m] };
+          if (isClickable(matches[m]) && !namesAPurchase(matches[m])) {
+            return { name: PLATFORMS[p].name, element: matches[m] };
+          }
         }
       }
     }
@@ -113,24 +180,75 @@
       var candidates = roots[r].querySelectorAll(CLICKABLE);
       for (var c = 0; c < candidates.length; c++) {
         var element = candidates[c];
-        var label = labelOf(element);
-        if (!label || label.length > 40 || !isClickable(element)) continue;
-        if (ACCEPT_ALL.indexOf(label) >= 0) return { name: 'button "' + label + '"', element: element };
-        if (!inContext && ACCEPT_IN_CONTEXT.indexOf(label) >= 0 && isInsideConsentDialog(element)) {
-          inContext = { name: 'button "' + label + '"', element: element };
+        if (!isClickable(element) || namesAPurchase(element)) continue;
+        var labels = labelsOf(element);
+        for (var l = 0; l < labels.length; l++) {
+          var label = labels[l];
+          if (label.length > 40) continue;
+          if (ACCEPT_ALL.indexOf(label) >= 0) return { name: 'button "' + label + '"', element: element };
+          if (!inContext && ACCEPT_IN_CONTEXT.indexOf(label) >= 0 && isInsideConsentDialog(element)) {
+            inContext = { name: 'button "' + label + '"', element: element };
+          }
         }
       }
     }
     return inContext;
   }
 
+  function findDialog(roots) {
+    for (var p = 0; p < PLATFORMS.length; p++) {
+      for (var r = 0; r < roots.length; r++) {
+        var matches = roots[r].querySelectorAll(PLATFORMS[p].dialog);
+        for (var m = 0; m < matches.length; m++) {
+          if (matches[m].getClientRects().length) return PLATFORMS[p].name;
+        }
+      }
+    }
+    return null;
+  }
+
+  // A point on the control that a click would land on, in this frame's
+  // viewport; null when something else is in front of the control there.
+  function pointOn(element) {
+    var box = element.getBoundingClientRect();
+    var x = box.left + box.width / 2;
+    var y = box.top + box.height / 2;
+    if (x < 0 || y < 0 || x > window.innerWidth || y > window.innerHeight) return null;
+    var root = element.getRootNode();
+    var hit = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
+    var onIt = hit && (hit === element || element.contains(hit));
+    return onIt ? { x: x, y: y } : null;
+  }
+
   try {
     var roots = searchRoots(document, []);
-    var found = findKnownBanner(roots) || findByLabel(roots);
-    if (!found) return null;
-    found.element.click();
-    return found.name;
+    var found = findKnownPlatform(roots) || findByLabel(roots);
+    if (!found) {
+      var dialog = findDialog(roots);
+      return dialog ? { dialog: dialog } : null;
+    }
+    if (request.watchMs) {
+      return new Promise(function (resolve) {
+        var timer = setTimeout(function () {
+          resolve(false);
+        }, request.watchMs);
+        found.element.addEventListener(
+          'click',
+          function () {
+            clearTimeout(timer);
+            resolve(true);
+          },
+          { capture: true, once: true }
+        );
+      });
+    }
+    if (request.click) {
+      found.element.click();
+      return { name: found.name, x: null, y: null };
+    }
+    var point = pointOn(found.element);
+    return { name: found.name, x: point && point.x, y: point && point.y };
   } catch (error) {
     return null;
   }
-})()
+})

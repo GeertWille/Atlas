@@ -119,10 +119,6 @@ function consentAskedAgain(pages: VisitedPage[]): FindingDraft {
   };
 }
 
-/** The backend's caveat for the overview of a scan this finding is raised on. */
-export const AUTOMATED_TRAFFIC_CAVEAT =
-  "This scan was identifiable as automated traffic, so bidders may have filtered it; confirm missing bids with a visit a person drives";
-
 const metric = (label: string, body: string): Evidence => ({
   kind: "metric",
   label,
@@ -133,10 +129,10 @@ const metric = (label: string, body: string): Evidence => ({
 
 /**
  * Not a fault of the page: the visit was recognisable as automated and a detection vendor was there
- * to act on it. The backend also raises this when a bidder was asked twice or more and never bid;
- * the fake keeps to the vendor, so its other scans stay as they are.
+ * to act on it. The backend also raises this when a bidder was asked twice or more and never bid, and
+ * then adds a note to the overview; the fake keeps to the vendor, so its other scans stay as they are.
  */
-export function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
+function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
   const { environment } = visit;
   const indicators = [
     environment.webdriver ? "navigator.webdriver was true" : null,
@@ -149,7 +145,7 @@ export function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | nu
     category: "configuration",
     source: "heuristic",
     title: "This scan was identifiable as automated traffic",
-    description: `Bidders may be filtering this scan as automated traffic: ${indicators.join(", ")}, ${vendors.join(" and ")} ${vendors.length === 1 ? "is" : "are"} on the page. Repeat as "I'll browse myself" or with the browser shown before concluding a bidder is broken.`,
+    description: `A scripted visit (scroll, or "Browse like a visitor") is automated by design, and the pages could tell: ${indicators.join(", ")}. ${vendors.join(" and ")} ${vendors.length === 1 ? "is" : "are"} on the page, a service that tells automated visits apart. Every bidder that was asked more than once did bid, so nothing in this scan points at filtering; this only says how the visit looked to the page. To rule it out, run the scan again as "I'll browse myself": a person drives the browser and it is not flagged as automated.`,
     recommendation:
       "Nothing to fix on the site. Treat missing bids in this scan with caution and confirm them with a visit a person drives.",
     confidence: 0.5,

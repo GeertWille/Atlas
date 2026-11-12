@@ -1,10 +1,9 @@
 import type { ProxyProfile, ProxyProfileDraft, ProxyScheme } from "@/bindings";
+import { isProxyHost } from "@/shared/domain/proxy";
 
 export const PROXY_SCHEMES: readonly ProxyScheme[] = ["http", "https", "socks5"];
 
 export const PROXY_SCHEME_LABEL: Record<ProxyScheme, string> = { http: "HTTP", https: "HTTPS", socks5: "SOCKS5" };
-
-export const PROXY_NAME_MAX = 60;
 
 /** The proxy dialog as typed. The password never leaves the dialog except on its way to the keychain. */
 export type ProxyForm = {
@@ -23,9 +22,6 @@ export type ProxyFormResult =
   | { ok: false; errors: ProxyFormErrors };
 
 const DEFAULT_PORT: Record<ProxyScheme, string> = { http: "8080", https: "443", socks5: "1080" };
-
-const HOST_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
-const IPV6 = /^[0-9a-f:.]+$/i;
 
 export function newProxyForm(): ProxyForm {
   return { name: "", scheme: "http", host: "", port: DEFAULT_PORT.http, username: "", password: "" };
@@ -48,17 +44,14 @@ export function withScheme(form: ProxyForm, scheme: ProxyScheme): ProxyForm {
   return { ...form, scheme, port: untouched ? DEFAULT_PORT[scheme] : form.port };
 }
 
-function isHost(host: string): boolean {
-  return HOST_NAME.test(host) || (host.includes(":") && IPV6.test(host));
-}
-
 /**
  * Checks the dialog before anything is sent. `others` are the names of the other proxies, and
  * `id` the proxy being edited, if any.
  */
 export function validateProxyForm(form: ProxyForm, others: string[], id?: string): ProxyFormResult {
   const name = form.name.trim();
-  const host = form.host.trim();
+  // An IPv6 address is often written in brackets; the backend stores it without them.
+  const host = form.host.trim().replace(/^\[(.*)\]$/, "$1");
   const username = form.username.trim();
   const port = Number(form.port.trim());
   const errors: ProxyFormErrors = {};
@@ -68,7 +61,7 @@ export function validateProxyForm(form: ProxyForm, others: string[], id?: string
     errors.name = `A proxy named “${name}” already exists.`;
   }
   if (host === "") errors.host = "Enter the proxy's host name or IP address.";
-  else if (!isHost(host)) {
+  else if (!isProxyHost(host)) {
     errors.host = "Only the host name or IP address, like proxy.example.com: no http://, port, path or password.";
   }
   if (!/^\d+$/.test(form.port.trim()) || port < 1 || port > 65_535) errors.port = "A port from 1 to 65535.";

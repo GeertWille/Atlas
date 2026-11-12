@@ -59,6 +59,25 @@ test("the earliest marker is labelled before its line, so labels cannot overlap 
   ]);
 });
 
+test("a marker near the right edge is labelled before its line, where there is room for it", () => {
+  // A page view without an auction: the first ad early, the load event almost at the end of the axis.
+  const late = { ...metrics, timeToFirstAuctionMs: null, timeToFirstAdMs: 800, pageLoadMs: 3400 };
+  const { markers } = layoutSlotTimeline([filled], late);
+  expect(markers.map((marker) => [marker.label, marker.labelSide, marker.labelRow])).toEqual([
+    ["First ad", "before", 0],
+    ["Page load", "before", 1],
+  ]);
+  expect(markers[1]?.percent).toBeGreaterThan(75);
+
+  // Two late lines: their labels take a row each.
+  const bothLate = { ...metrics, timeToFirstAuctionMs: 400, timeToFirstAdMs: 3300, pageLoadMs: 3500 };
+  expect(layoutSlotTimeline([filled], bothLate).markers.map((marker) => [marker.labelSide, marker.labelRow])).toEqual([
+    ["before", 0],
+    ["before", 1],
+    ["before", 0],
+  ]);
+});
+
 test("missing page timings produce no markers", () => {
   const bare = { ...metrics, pageLoadMs: null, timeToFirstAuctionMs: null, timeToFirstAdMs: null };
   expect(layoutSlotTimeline([filled], bare).markers).toEqual([]);

@@ -1,6 +1,7 @@
 //! One capture, start to finish: launch, emulate, visit, collect.
 
 mod bid_endpoints;
+mod consent;
 mod console;
 mod driver;
 mod environment;
@@ -26,7 +27,7 @@ use std::time::Duration;
 
 use adscan_model::{
     Capture, CaptureActivity, CaptureEnvironment, CaptureProxy, CaptureRequest, CapturedPage,
-    DeviceProfile, ProxyScheme, VisitorBehavior,
+    ConsentNote, DeviceProfile, ProxyScheme, VisitorBehavior,
 };
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -364,6 +365,7 @@ async fn collect(
         scripts,
         console,
         bid_responses,
+        consent_notes,
         ..
     } = recorder;
 
@@ -375,6 +377,20 @@ async fn collect(
     let scripts = scripts.into_captured(place);
     let console = console.into_lines(place);
     let bid_responses = bid_responses.into_observed(place);
+    let consent_notes = consent_notes
+        .into_iter()
+        .map(|note| {
+            let page = note.page.unwrap_or(0);
+            ConsentNote {
+                page,
+                t: pages
+                    .started_at_epoch_ms(page)
+                    .map_or(0.0, |started_at| (note.at_epoch_ms - started_at).max(0.0)),
+                kind: note.kind,
+                banner: note.banner,
+            }
+        })
+        .collect();
     let mut pages = pages.into_captured(ended_at, |page| facts[page as usize]);
     if pages.is_empty() {
         pages.push(CapturedPage::entry(request.url.clone()));
@@ -396,6 +412,7 @@ async fn collect(
         console,
         events: tracker.into_events(),
         consent_accepted,
+        consent_notes,
         bid_responses,
         pages,
         environment,

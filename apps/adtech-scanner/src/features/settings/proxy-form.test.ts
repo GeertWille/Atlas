@@ -34,6 +34,8 @@ test.each([
   ["a URL as host", { host: "http://be.proxy.example" }, "host", /no http:\/\/, port, path or password/],
   ["a host with a port", { host: "be.proxy.example:8080" }, "host", /Only the host name or IP address/],
   ["a host with a path", { host: "be.proxy.example/x" }, "host", /Only the host name or IP address/],
+  ["an IP address with a port", { host: "10.0.0.7:8080" }, "host", /Only the host name or IP address/],
+  ["a hex-looking host with a port", { host: "cafe.de:8080" }, "host", /Only the host name or IP address/],
   ["credentials in the host", { host: "me:pw@be.proxy.example" }, "host", /Only the host name or IP address/],
   ["a port of zero", { port: "0" }, "port", "A port from 1 to 65535."],
   ["a port that is not a number", { port: "http" }, "port", "A port from 1 to 65535."],
@@ -93,4 +95,15 @@ test("editing starts from the saved proxy and never from its password", () => {
     password: "",
   });
   expect(proxyFormOf(makeProxy()).username).toBe("");
+});
+
+test.each([
+  ["10.0.0.7", "10.0.0.7"],
+  ["2001:db8::1", "2001:db8::1"],
+  ["::1", "::1"],
+  // Brackets are how an IPv6 address is written in a URL; the backend stores the bare address.
+  ["[2001:db8::1]", "2001:db8::1"],
+])("the address %s is accepted as a host", (typed, stored) => {
+  const result = validateProxyForm(form({ host: typed }), []);
+  expect(result.ok && result.draft.host).toBe(stored);
 });

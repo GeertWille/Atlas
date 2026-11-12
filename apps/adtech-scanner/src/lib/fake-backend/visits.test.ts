@@ -151,7 +151,11 @@ describe("a browse visit of the reference-bug site", () => {
 
     // Findings of the entry page say so; the visit's own environment is not tied to a page.
     expect(byTitle(/never requested/)?.pages).toEqual([0]);
-    expect(detail.overview).toContain("The visit covered 3 pages");
+    // Like the backend, the overview counts the whole visit and says so.
+    expect(detail.overview).toContain(
+      `of ${detail.slots.length} ad slots rendered a creative across ${detail.auctions.length} Prebid auctions`,
+    );
+    expect(detail.overview).toContain("The visit covered 3 page views; the counts are their sum.");
   });
 
   test("tells its story in visitor entries: environment, page views, gestures, link choices and a block", async () => {
@@ -216,7 +220,7 @@ describe("the automated-traffic finding", () => {
     const finding = detail.findings.find((candidate) => /automated/.test(candidate.title));
     expect(finding).toMatchObject({ severity: "info", category: "configuration", source: "heuristic", pages: [] });
     expect(finding?.description).toContain(
-      "navigator.webdriver was true, the browser ran headless, DoubleVerify is on the page",
+      "the pages could tell: navigator.webdriver was true, the browser ran headless. DoubleVerify is on the page",
     );
     expect(detail.environment?.detectors).toEqual([
       { vendor: "DoubleVerify", kind: "invalidTrafficMeasurement", host: "cdn.doubleverify.com" },

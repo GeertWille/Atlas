@@ -127,7 +127,7 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
           </ToggleGroup>
           {configurations.length > 0 ? (
             <Select value={configurationId} onValueChange={setConfigurationId}>
-              <SelectTrigger aria-label="Configuration" className="w-44 [&>span]:truncate">
+              <SelectTrigger aria-label="Configuration" className="w-44">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

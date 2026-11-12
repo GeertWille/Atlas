@@ -15,7 +15,8 @@ import type {
 } from "@/bindings";
 import { ApiError } from "@/lib/api/error";
 import type { ApiPort } from "@/lib/api/port";
-import { MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/shared/domain/scan-options";
+import { isProxyHost, PROXY_NAME_MAX } from "@/shared/domain/proxy";
+import { CONFIGURATION_NAME_MAX, MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/shared/domain/scan-options";
 import { type FakeConfig, readFakeConfig } from "./config";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
@@ -48,11 +49,6 @@ const DEFAULT_SETTINGS: Settings = {
 /** What one scan adds to the kept profile (cache, cookies, storage), and where Chrome's cache cap stops it. */
 const PROFILE_GROWTH_BYTES = 21_400_000;
 const PROFILE_MAX_BYTES = 180_000_000;
-
-const PROXY_NAME_MAX = 60;
-const CONFIGURATION_NAME_MAX = 80;
-const HOST_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
-const IPV6 = /^[0-9a-f:.]+$/i;
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
@@ -264,7 +260,7 @@ class FakeBackend {
     if (this.settings.proxies.some((proxy) => proxy.id !== draft.id && sameName(proxy.name, name))) {
       throw new ApiError("invalidInput", `A proxy named "${name}" already exists`);
     }
-    if (!HOST_NAME.test(host) && !(host.includes(":") && IPV6.test(host))) {
+    if (!isProxyHost(host)) {
       throw new ApiError(
         "invalidInput",
         "Enter the proxy's host name or IP address only, without scheme, port, path or credentials",

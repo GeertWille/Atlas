@@ -74,6 +74,8 @@ export function ScanComposer({
   const effective = { ...form, aiEnabled: form.aiEnabled && ai.triage !== null };
   const browse = form.visitor === "browse";
   const validation = validateScanForm(effective);
+  // What a configuration keeps is the AI choice as made, also while no key is stored to act on it.
+  const savable = validateScanForm(form);
   const proxyMissing =
     form.proxy.startsWith("profile:") &&
     !settings.proxies.some((proxy) => proxyChoiceKey({ kind: "profile", id: proxy.id }) === form.proxy);
@@ -121,10 +123,9 @@ export function ScanComposer({
   };
 
   const updateConfiguration = () => {
-    const options = validOptions();
-    if (!configuration || !options) return;
+    if (!configuration || !validOptions() || !savable.ok) return;
     saveConfiguration.mutate(
-      { id: configuration.id, name: configuration.name, options },
+      { id: configuration.id, name: configuration.name, options: savable.options },
       {
         onSuccess: (updated) => {
           // The saved URL is the normalised one; show it, so the form matches what is stored.
@@ -263,9 +264,9 @@ export function ScanComposer({
         </CollapsibleContent>
       </Collapsible>
 
-      {savingAsNew && validation.ok ? (
+      {savingAsNew && savable.ok ? (
         <SaveConfigurationDialog
-          options={validation.options}
+          options={savable.options}
           onClose={() => setSavingAsNew(false)}
           onSaved={(created) => {
             leaving.current = true;

@@ -29,7 +29,12 @@ export function Page({
           <h1 className="truncate font-semibold">{title}</h1>
         </div>
       </header>
-      <main className={cn("min-h-0 flex-1", scroll && "overflow-y-auto")}>{children}</main>
+      {/*
+        Positioned, so that it contains the absolutely placed helpers inside it (screen-reader text,
+        the hidden inputs of switches and selects). Left to the document, those stretch the page
+        below the window, and anything scrolled into view can then shift the whole app upwards.
+      */}
+      <main className={cn("relative min-h-0 flex-1", scroll && "overflow-y-auto")}>{children}</main>
     </div>
   );
 }

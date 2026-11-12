@@ -3,13 +3,12 @@ import { toast } from "sonner";
 import type { ScanConfiguration, ScanOptions } from "@/bindings";
 import { toApiError } from "@/lib/api";
 import { useSaveScanConfiguration } from "@/lib/query/hooks";
+import { CONFIGURATION_NAME_MAX } from "@/shared/domain/scan-options";
 import { hostnameOf } from "@/shared/lib/url";
 import { Button } from "@/shared/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
-
-const NAME_MAX = 80;
 
 /** Names the composer's current options and saves them as a new configuration. Mounted while it is open. */
 export function SaveConfigurationDialog({
@@ -63,7 +62,7 @@ export function SaveConfigurationDialog({
             <Input
               id={nameId}
               autoComplete="off"
-              maxLength={NAME_MAX}
+              maxLength={CONFIGURATION_NAME_MAX}
               placeholder={`${hostnameOf(options.url).replace(/^www\./, "")} from Belgium`}
               value={name}
               aria-invalid={error ? true : undefined}

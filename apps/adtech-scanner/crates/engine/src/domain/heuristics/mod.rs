@@ -18,6 +18,7 @@ use adscan_model::{
     TrackerEventKind as Ev,
 };
 
+use super::consent_wait::PageConsent;
 use super::finding::{FindingDraft, metric, timeline};
 use super::telemetry::{ScanTelemetry, Telemetry, auction_covers};
 
@@ -79,12 +80,17 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(visit::RefreshWithStaleBids),
         Box::new(visit::RefreshWithoutAuction),
         Box::new(visit::ConsentAskedAgain),
+        Box::new(visit::BiddingWaitedForConsent),
         Box::new(visit::ScanIdentifiableAsAutomated),
     ]
 }
 
 /// Id of the rule that reports a visit the page could tell was automated.
 pub const AUTOMATION_RULE: &str = "scan-identifiable-as-automated";
+
+/// Id of the rule that reports page views whose bidding waited for a
+/// consent choice the scan made late or not at all.
+pub const CONSENT_WAIT_RULE: &str = "bidding-waited-for-consent";
 
 pub struct RuleHit {
     pub rule: &'static str,
@@ -272,6 +278,9 @@ pub(crate) struct PrebidConfig {
 /// waiting for that interaction.
 const GATE_REACTION_WINDOW_MS: f64 = 2000.0;
 const GATE_MIN_IDLE_MS: f64 = 1500.0;
+/// Prebid has to have been on the page, with consent given, for this long
+/// before "no auction ever started" says anything about it.
+const GATE_MIN_WATCH_MS: f64 = 5000.0;
 
 impl<'a> RuleContext<'a> {
     pub(crate) fn auctions(&self) -> &'a [Auction] {
@@ -342,6 +351,19 @@ impl<'a> RuleContext<'a> {
             .is_some_and(|page| page.reached_by == PageReach::RouteChange)
     }
 
+    /// What became of the consent dialog of the page view in scope.
+    pub(crate) fn page_consent(&self) -> Option<PageConsent> {
+        self.page
+            .map(|page| PageConsent::of(self.capture, page.index))
+    }
+
+    /// When consent was given on the page view in scope, where that was late
+    /// enough to have held its ad stack up. Until then a wait is not the
+    /// site's doing.
+    pub(crate) fn held_up_by_consent_until(&self) -> Option<f64> {
+        self.page_consent()?.held_up_until_ms()
+    }
+
     pub(crate) fn first_event_at(&self, matches: impl Fn(&Ev) -> bool) -> Option<f64> {
         self.events
             .iter()
@@ -390,8 +412,16 @@ impl<'a> RuleContext<'a> {
         let prebid_ready_at =
             self.first_event_at(|kind| matches!(kind, Ev::PrebidDetected { .. }))?;
         let interaction_at_ms = self.first_interaction_at();
+        let consent_at = self.held_up_by_consent_until();
         if self.auctions().is_empty() {
-            return Some(AuctionGate::NeverStarted { interaction_at_ms });
+            // Prebid that arrived, or was allowed to start, moments before
+            // the page view ended had no chance to run an auction.
+            let could_start_at = prebid_ready_at.max(consent_at.unwrap_or(0.0));
+            let watched_ms = self
+                .page
+                .map_or(f64::INFINITY, |page| page.dwell_ms - could_start_at);
+            return (watched_ms >= GATE_MIN_WATCH_MS)
+                .then_some(AuctionGate::NeverStarted { interaction_at_ms });
         }
         let interaction_at_ms = interaction_at_ms?;
         self.auctions()
@@ -402,7 +432,11 @@ impl<'a> RuleContext<'a> {
                 let reacted_to_interaction =
                     (0.0..=GATE_REACTION_WINDOW_MS).contains(&(auction_at_ms - interaction_at_ms));
                 let prebid_sat_idle = auction_at_ms - prebid_ready_at >= GATE_MIN_IDLE_MS;
-                if !reacted_to_interaction || !prebid_sat_idle {
+                // An auction right after consent was given waited for that.
+                let reacted_to_consent = consent_at.is_some_and(|consent_at| {
+                    (0.0..=GATE_REACTION_WINDOW_MS).contains(&(auction_at_ms - consent_at))
+                });
+                if !reacted_to_interaction || !prebid_sat_idle || reacted_to_consent {
                     return None;
                 }
                 let earlier = &self.auctions()[..index];

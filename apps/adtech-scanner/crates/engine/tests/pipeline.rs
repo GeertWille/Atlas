@@ -2021,3 +2021,87 @@ async fn both_prompts_mark_script_content_as_untrusted_and_state_their_task() {
     assert!(analysis_system.contains("Prefer a few findings you are sure of"));
     assert!(analysis_system.contains("State confidence honestly"));
 }
+
+// -- a wrapper bundled into the Prebid file ---------------------------------------------------
+
+/// A Prebid build with the publisher's wrapper inside it, under a namespace
+/// of its own and with the Prebid global aliased. The gate that decides
+/// whether bidding starts sits far from any call into the ad stack.
+fn prebid_bundle_with_wrapper() -> String {
+    let stock = |from: usize| -> String {
+        (from..from + 400)
+            .map(|n| format!("function adapter{n}(){{return bidderSettings.get({n})}}\n"))
+            .collect()
+    };
+    format!(
+        "var auctionManager={{}};function registerBidAdapter(){{}}\n{}\
+         ASCDP.adS.gate=function(){{return document.cookie.indexOf(\"consentOk\")>-1}};\n{}\
+         ASCDP.adS.init=function(){{var x=window[ASCDP.ns];if(ASCDP.adS.gate()){{x.requestBids({{timeout:900}})}}}};\n",
+        stock(0),
+        stock(400),
+    )
+}
+
+#[tokio::test]
+async fn a_search_that_misses_by_default_shows_the_model_the_wrapper_inside_the_prebid_bundle() {
+    let server = mock_api(
+        vec![lazy_script_is_a_wrapper()],
+        vec![
+            calls(
+                "toolu_1",
+                "search_scripts",
+                json!({ "pattern": "consentOk", "script_id": null }),
+            ),
+            finish("toolu_2"),
+        ],
+    )
+    .await;
+    let mut capture = scroll_gated_capture(DeviceProfile::Desktop);
+    capture.scripts.push(script(
+        "https://pub.example/hb/prebid-bundle.js",
+        &prebid_bundle_with_wrapper(),
+    ));
+    let harness = harness(
+        CaptureBehavior::Return(Box::new(capture)),
+        &server.uri(),
+        Some(KEY),
+    );
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+
+    // The bundle is a Prebid build by its contents, and it is analysed.
+    let bundle = detail
+        .scripts
+        .iter()
+        .find(|script| script.url.ends_with("/prebid-bundle.js"))
+        .unwrap();
+    assert_eq!(bundle.category, ScriptCategory::Prebid);
+    assert!(bundle.analyzed, "the bundle is in the Phase 2 selection");
+
+    let sonnet = requests_for(&server, SONNET).await;
+    assert_eq!(sonnet.len(), 2);
+    // The model is told how its search is scoped and what to do about it.
+    let system = sonnet[0]["system"].to_string();
+    assert!(
+        system.contains("When a search finds nothing by default"),
+        "{system}"
+    );
+    // Its search of "everything" found nothing where publisher code usually
+    // is, and came back with the gate from inside the bundle all the same.
+    let result = sonnet[1]["messages"][2]["content"][0]["content"]
+        .as_str()
+        .unwrap();
+    assert!(
+        result.starts_with(
+            "No matches for `consentOk` in the lines searched by default. Widened to the vendor libraries: \
+             1 matching lines there."
+        ),
+        "{result}"
+    );
+    assert!(
+        result.contains(&format!("--- {} line ", bundle.id)),
+        "{result}"
+    );
+    assert!(result.contains("ASCDP.adS.gate"), "{result}");
+    assert!(result.contains("consentOk"), "{result}");
+}

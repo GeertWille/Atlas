@@ -40,7 +40,14 @@ impl Scope {
 }
 
 /// How the visit was made and what its page views were.
-pub fn visit(environment: Option<&ScanEnvironment>, pages: &[PageView]) -> String {
+/// `consent` is what is known about consent dialogs that were answered late
+/// or not at all (`domain::consent_wait::accounts`): stated as fact, so the
+/// model does not have to guess why a page view started late.
+pub fn visit(
+    environment: Option<&ScanEnvironment>,
+    pages: &[PageView],
+    consent: &[String],
+) -> String {
     let mut out = Vec::new();
     if let Some(environment) = environment {
         out.push(format!(
@@ -99,6 +106,11 @@ pub fn visit(environment: Option<&ScanEnvironment>, pages: &[PageView]) -> Strin
             pages.len() - MAX_PAGE_ROWS
         ));
     }
+    out.extend(
+        consent.iter().map(|account| {
+            format!("consent (established by the scanner, not a guess): {account}.")
+        }),
+    );
     out.join("\n")
 }
 
@@ -427,4 +439,25 @@ fn flag(value: Option<bool>) -> &'static str {
 
 fn short_id(id: &str) -> &str {
     id.char_indices().nth(8).map_or(id, |(cut, _)| &id[..cut])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_visit_block_states_what_is_known_about_consent_as_fact() {
+        let account =
+            "On page 1 a consent dialog was showing from 0.4 s and the scanner did not accept it. \
+                       Consent was given by hand in the browser window 27.0 s into the page view"
+                .to_string();
+        let block = visit(None, &[], std::slice::from_ref(&account));
+        assert!(
+            block.ends_with(&format!(
+                "consent (established by the scanner, not a guess): {account}."
+            )),
+            "{block}"
+        );
+        assert!(!visit(None, &[], &[]).contains("consent"));
+    }
 }

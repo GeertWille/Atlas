@@ -1,0 +1,11 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: consent or pay</title><link rel="icon" href="data:,"></head>
+<body>
+<div id="cookie-wall" role="dialog" aria-label="Cookies und Datenschutz">
+  <p>Mit Werbung und Tracking lesen, oder werbefrei im Abo.</p>
+  <button onclick="console.log('WRONG pay')">Akzeptieren und Abo abschließen</button>
+  <button onclick="console.log('WRONG plus')" title="Zustimmen">Jetzt für 4,99 € lesen</button>
+  <button onclick="console.log('WRONG settings')">Einstellungen</button>
+  <button onclick="this.parentNode.remove(); console.log('CONSENT accepted')">Akzeptieren und weiter</button>
+</div>
+</body></html>

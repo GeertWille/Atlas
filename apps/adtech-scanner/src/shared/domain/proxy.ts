@@ -1,5 +1,17 @@
 import type { ProxyChoice, ProxyProfile, ProxyUse, ScanOptions, Settings } from "@/bindings";
 
+/** A proxy profile's name can be this long; the backend enforces the same. */
+export const PROXY_NAME_MAX = 60;
+
+const HOST_NAME = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+// At least two colons: "10.0.0.7:8080" and "cafe.de:8080" are a host with a port, not an address.
+const IPV6 = /^(?=(?:[^:]*:){2})[0-9a-f:.]+$/i;
+
+/** A bare host name or IP address: no scheme, port, path or credentials. */
+export function isProxyHost(host: string): boolean {
+  return HOST_NAME.test(host) || IPV6.test(host);
+}
+
 /** A proxy choice as one string, for select controls: `none`, `system` or `profile:<id>`. */
 export type ProxyChoiceKey = "none" | "system" | `profile:${string}`;
 

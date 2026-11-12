@@ -444,6 +444,21 @@ test("a configuration is only marked as edited when the scan itself differs, not
   expect(screen.getByText("Edited")).toBeInTheDocument();
 });
 
+test("updating a configuration while no key is stored keeps its AI choice", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({ name: "Example with AI", options: validOptions });
+  await renderWithApp(
+    <ScanComposer settings={{ ...settingsFixture, hasApiKey: false }} configuration={configuration} />,
+  );
+  expect(screen.getByRole("switch", { name: "AI logic analysis" })).toBeDisabled();
+
+  await user.click(screen.getByRole("radio", { name: "Mobile" }));
+  await user.click(screen.getByRole("button", { name: "Update configuration" }));
+  expect(await screen.findByText("Updated “Example with AI”")).toBeInTheDocument();
+  // The switch only shows what a scan started now would do; the configuration still asks for the analysis.
+  expect((await api.listScanConfigurations())[0]?.options).toMatchObject({ device: "mobile", aiEnabled: true });
+});
+
 test("leaving a configuration with unsaved edits asks first; unchanged it just leaves", async () => {
   const user = userEvent.setup();
   const configuration = await api.saveScanConfiguration({

@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { expectNoAxeViolations, expectNoHorizontalOverflow, openApp } from "./app";
+import { expectNoAxeViolations, expectNoHorizontalOverflow, expectWindowDoesNotScroll, openApp } from "./app";
 
 const REPORT = "/scans/seed-sportsdesk-desktop";
 const MULTI_PAGE_REPORT = "/scans/seed-sportsdesk-browse";
@@ -104,6 +104,7 @@ for (const viewport of VIEWPORTS) {
             await screen.ready(page);
             await expect(page.locator("html")).toHaveClass(colorScheme === "dark" ? /dark/ : /^(?!.*dark)/);
             await expectNoHorizontalOverflow(page);
+            await expectWindowDoesNotScroll(page);
             await expect(page.getByRole("button", { name: /New scan/ })).toBeInViewport({ ratio: 1 });
             await expect(page.getByRole("link", { name: "Settings" })).toBeInViewport({ ratio: 1 });
             await expect(page.getByRole("heading", { level: 1 })).toBeInViewport({ ratio: 1 });
@@ -123,6 +124,21 @@ for (const viewport of VIEWPORTS) {
         for (const tab of ["Findings", "Auctions", "Ad slots", "Scripts", "Audit trail"]) {
           await expect(page.getByRole("tab", { name: new RegExp(`^${tab}`) })).toBeInViewport({ ratio: 1 });
         }
+      });
+
+      test("revealing a control far down the composer scrolls the page area, never the whole window", async ({
+        page,
+      }) => {
+        await openApp(page, "/");
+        await page.getByRole("button", { name: "Options" }).click();
+        await page.getByRole("radio", { name: "Browse like a visitor" }).click();
+        await page.getByRole("button", { name: "Proxy, profile and budget" }).click();
+        await expectWindowDoesNotScroll(page);
+        await page.getByRole("region", { name: "Recent scans" }).evaluate((element) => element.scrollIntoView());
+        await page.getByRole("form", { name: "New scan" }).evaluate((element) => element.scrollIntoView());
+        expect(await page.evaluate(() => document.documentElement.scrollTop)).toBe(0);
+        await expect(page.getByRole("button", { name: /New scan/ })).toBeInViewport({ ratio: 1 });
+        await expect(page.getByRole("link", { name: "Settings" })).toBeInViewport({ ratio: 1 });
       });
 
       test("the live view fits the window with its own scroll regions", async ({ page }) => {

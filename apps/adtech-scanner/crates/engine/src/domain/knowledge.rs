@@ -247,7 +247,16 @@ const CONSENT_SETUP_GLOBALS: &[&str] = &[
 const ACCIDENTAL_IDENTIFIER: &str = "cpm";
 
 /// Where a publisher hands its own configuration to the ad libraries.
-const CALL_SITES: &[&str] = &["pbjs.que", ".addAdUnits(", ".requestBids(", "googletag.cmd"];
+const CALL_SITES: &[&str] = &[
+    "pbjs.que",
+    ".addAdUnits(",
+    ".requestBids(",
+    "googletag.cmd",
+    // The same queues under a renamed global or a namespace of the
+    // publisher's: `window[ns].que.push(`, `w.gt.cmd.push(`.
+    ".que.push(",
+    ".cmd.push(",
+];
 
 /// Browser APIs that viewport, device and lazy-load decisions are made with.
 const PAGE_STATE_APIS: &[&str] = &[
@@ -360,6 +369,16 @@ pub fn logic_anchors(text: &str) -> Vec<&'static str> {
 /// Whether `body` configures or hooks into a consent platform.
 pub fn sets_up_consent(body: &str) -> bool {
     !present(body, CONSENT_SETUP_GLOBALS).is_empty()
+}
+
+/// Calls that start an auction or define a slot. A library defines these
+/// functions; code that calls them, under whatever name the global has
+/// (`x.requestBids(`), is a wrapper, also when it is shipped inside the
+/// library's file.
+const ORCHESTRATION_CALLS: &[&str] = &[".requestBids(", ".addAdUnits(", ".defineSlot("];
+
+pub fn orchestrates(body: &str) -> bool {
+    !present(body, ORCHESTRATION_CALLS).is_empty()
 }
 
 pub fn has_call_site(text: &str) -> bool {

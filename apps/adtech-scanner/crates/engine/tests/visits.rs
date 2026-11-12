@@ -9,9 +9,9 @@ use adscan_engine::domain::heuristics::{self, RuleInput};
 use adscan_engine::domain::telemetry::{self, ScanTelemetry};
 use adscan_engine::domain::{environment, scripts};
 use adscan_model::{
-    AutomationDetector, BidStatus, Capture, CaptureEnvironment, DetectorKind, EvidenceKind,
-    PageReach, ProxyKind, ProxyUse, ScanEnvironment, Severity, SlotOutcome, TrackedAdUnit,
-    TrackerEvent, TrackerEventKind as Ev, VisitorBehavior,
+    AutomationDetector, BidStatus, Capture, CaptureEnvironment, ConsentNote, ConsentNoteKind,
+    DetectorKind, EvidenceKind, PageReach, ProxyKind, ProxyUse, ScanEnvironment, Severity,
+    SlotOutcome, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, VisitorBehavior,
 };
 use common::*;
 
@@ -771,6 +771,146 @@ fn a_prompt_the_visitor_opened_themselves_is_not_the_choice_being_forgotten() {
     assert!(!fired(&capture).contains(&"consent-asked-again"));
 }
 
+// -- consent the scan gave late or not at all ------------------------------------------------
+
+fn consent_note(page: u32, t: f64, kind: ConsentNoteKind, banner: &str) -> ConsentNote {
+    ConsentNote {
+        page,
+        t,
+        kind,
+        banner: banner.into(),
+    }
+}
+
+/// The scan a publisher ran: a consent wall the scanner could not accept, a
+/// person who clicked it 27 s into the entry page, an ad stack that only
+/// loads with consent, and a page view that ended three seconds later. The
+/// two pages after it auction at once.
+fn visit_with_consent_given_by_hand() -> Capture {
+    let mut first = vec![
+        lifecycle(300.0, "domContentLoaded"),
+        lifecycle(950.0, "load"),
+        tcf(400.0, "cmpuishown"),
+        lifecycle(5_000.0, "firstPointerMove"),
+        tcf(27_000.0, "useractioncomplete"),
+        prebid_detected(27_300.0, "pbjs", "10.25.0"),
+        ev(
+            27_400.0,
+            Ev::GptDetected {
+                version: Some("2026".into()),
+            },
+        ),
+    ];
+    first.extend(scroll_events(28_000.0));
+    let mut capture = visit(vec![
+        (entry(30_000.0), first),
+        (
+            page_view(SECOND, PageReach::LinkClick, 30_400.0, 60_400.0),
+            healthy_page(),
+        ),
+        (
+            page_view(
+                "https://pub.example/sport/semi",
+                PageReach::LinkClick,
+                60_800.0,
+                90_800.0,
+            ),
+            healthy_page(),
+        ),
+    ]);
+    capture.consent_notes = vec![consent_note(
+        0,
+        900.0,
+        ConsentNoteKind::DialogWithoutAccept,
+        "Sourcepoint",
+    )];
+    capture
+}
+
+#[test]
+fn a_page_view_that_waited_for_consent_given_by_hand_is_explained_and_not_blamed() {
+    let capture = visit_with_consent_given_by_hand();
+    let mut browse = visit_environment(Some(true), false, false);
+    browse.visitor = VisitorBehavior::Browse;
+    let findings = evaluate_in(&capture, Some(&browse));
+    let rules: Vec<&str> = findings.iter().map(|(rule, _)| *rule).collect();
+
+    // Nothing blames the site for the wait or for the page view that ended
+    // before its first auction.
+    for blaming in [
+        "auction-gated-on-interaction",
+        "late-first-auction",
+        "slow-gpt-load",
+        "slots-never-requested",
+        "later-page-view-without-bids",
+    ] {
+        assert!(!rules.contains(&blaming), "{blaming} fired: {rules:?}");
+    }
+    let (_, finding) = findings
+        .iter()
+        .find(|(rule, _)| *rule == heuristics::CONSENT_WAIT_RULE)
+        .expect("the wait is explained");
+    assert_eq!(
+        (finding.severity, finding.pages.as_slice()),
+        (Severity::Info, [0].as_slice())
+    );
+    assert_eq!(
+        finding.title,
+        "Bidding on page 1 (/) waited for a consent choice the scan made late or not at all"
+    );
+    assert!(
+        finding.description.starts_with(
+            "On page 1 a consent dialog was showing from 0.4 s and the scanner did not accept it (it found \
+             a Sourcepoint dialog with no control that plainly means \"accept all\"). Consent was given by \
+             hand in the browser window 27.0 s into the page view."
+        ),
+        "{}",
+        finding.description
+    );
+    let timeline = &finding.evidence[0].body;
+    for line in [
+        "consent dialog showing: 400 ms",
+        "scanner accepted: no",
+        "consent choice reported: 27.0 s",
+        "Prebid first seen: 27.3 s",
+        "GPT first seen: 27.4 s",
+        "first auction: never",
+        "page view ended: 30.0 s",
+    ] {
+        assert!(timeline.contains(line), "missing {line:?} in {timeline}");
+    }
+}
+
+#[test]
+fn a_page_that_stays_idle_long_after_consent_is_still_reported() {
+    // Consent by hand at 3.5 s, Prebid right after, and then nothing for the
+    // remaining 26 s although the page was scrolled: that is the site's.
+    let mut capture = visit_with_consent_given_by_hand();
+    for event in capture.events.iter_mut().filter(|event| event.page == 0) {
+        if event.t >= 27_000.0 {
+            event.t -= 23_500.0;
+        }
+    }
+    let rules = fired(&capture);
+    assert!(rules.contains(&"auction-gated-on-interaction"), "{rules:?}");
+}
+
+#[test]
+fn a_dialog_the_scanner_accepted_at_once_changes_nothing() {
+    let mut first = healthy_page();
+    first.push(tcf(100.0, "cmpuishown"));
+    first.push(tcf(250.0, "useractioncomplete"));
+    let mut capture = visit(vec![(entry(12_000.0), first)]);
+    capture.consent_accepted = true;
+    capture.consent_notes = vec![consent_note(
+        0,
+        200.0,
+        ConsentNoteKind::Accepted,
+        "OneTrust",
+    )];
+    assert!(!fired(&capture).contains(&heuristics::CONSENT_WAIT_RULE));
+}
+
 // -- R6: identifiable as automated ---------------------------------------------------------
 
 fn visit_environment(webdriver: Option<bool>, headless: bool, detector: bool) -> ScanEnvironment {
@@ -829,11 +969,16 @@ fn an_automated_visit_with_a_detection_vendor_on_the_page_is_flagged_as_informat
         (finding.severity, finding.confidence),
         (Severity::Info, 0.5)
     );
+    // Says why a scripted visit shows as automated, claims nothing about
+    // bidders that all bid, and says what to do.
     assert_eq!(
         finding.description,
-        "Bidders may be filtering this scan as automated traffic: navigator.webdriver was true, the browser ran \
-         headless, DoubleVerify is on the page. Repeat as \"I'll browse myself\" or with the browser shown before \
-         concluding a bidder is broken."
+        "A scripted visit (scroll, or \"Browse like a visitor\") is automated by design, and the pages could \
+         tell: navigator.webdriver was true, the browser ran headless. DoubleVerify is on the page, a service \
+         that tells automated visits apart. Every bidder that was asked more than once did bid, so nothing in \
+         this scan points at filtering; this only says how the visit looked to the page. To rule it out, run \
+         the scan again as \"I'll browse myself\": a person drives the browser and it is not flagged as \
+         automated."
     );
     assert!(finding.affected_bidders.is_empty());
 }
@@ -845,6 +990,16 @@ fn an_automated_visit_with_a_bidder_that_never_bid_is_flagged_and_the_bidder_fin
     let finding = automation_finding(&capture, &environment).unwrap();
     assert_eq!(finding.affected_bidders, ["appnexus"]);
     assert!(finding.description.contains("the browser ran headless."));
+    // The claim is tied to the bidder that never bid, and bounded by the
+    // ones that did.
+    assert!(
+        finding.description.contains(
+            "appnexus was asked for bids and never bid, which is what a bidder that filters automated \
+             traffic looks like. Other bidders did bid, so the scan was not filtered as a whole."
+        ),
+        "{}",
+        finding.description
+    );
 
     let never_bid = evaluate_in(&capture, Some(&environment))
         .into_iter()

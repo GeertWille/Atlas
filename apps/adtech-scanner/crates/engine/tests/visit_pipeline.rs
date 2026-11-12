@@ -58,6 +58,61 @@ fn two_page_capture() -> adscan_model::Capture {
     capture
 }
 
+/// A shown browse visit whose entry page had a consent wall the scanner
+/// could not accept. A person clicked it 27 s in; the ad stack loaded then,
+/// and the page view ended three seconds later. The second page is healthy.
+fn capture_with_consent_given_by_hand() -> adscan_model::Capture {
+    let tcf = |t: f64, status: &str| {
+        ev(
+            t,
+            adscan_model::TrackerEventKind::TcfState {
+                event_status: Some(status.into()),
+                gdpr_applies: Some(true),
+                has_tc_string: status != "cmpuishown",
+                purpose_consents: vec![],
+                vendor_consents: vec![],
+            },
+        )
+    };
+    let mut first = vec![
+        lifecycle(950.0, "load"),
+        tcf(400.0, "cmpuishown"),
+        tcf(27_000.0, "useractioncomplete"),
+        prebid_detected(27_300.0, "pbjs", "10.25.0"),
+    ];
+    first.extend(scroll_events(28_000.0));
+    let mut second = page_setup();
+    second.push(tcf(100.0, "tcloaded"));
+    second.extend(auction_round(360.0, "auction-1"));
+    second.push(lifecycle(950.0, "load"));
+    let mut capture = visit(vec![
+        (
+            page_view("https://pub.example/", PageReach::Entry, 0.0, 30_000.0),
+            first,
+        ),
+        (
+            page_view(
+                "https://pub.example/sport/final",
+                PageReach::LinkClick,
+                30_400.0,
+                60_400.0,
+            ),
+            second,
+        ),
+    ]);
+    capture.consent_notes = vec![adscan_model::ConsentNote {
+        page: 0,
+        t: 900.0,
+        kind: adscan_model::ConsentNoteKind::DialogWithoutAccept,
+        banner: "Sourcepoint".into(),
+    }];
+    capture.environment = CaptureEnvironment {
+        webdriver: Some(true),
+        ..CaptureEnvironment::default()
+    };
+    capture
+}
+
 fn browse_options() -> ScanOptions {
     ScanOptions {
         visitor: Some(VisitorBehavior::Browse),
@@ -102,6 +157,57 @@ fn profile_choice(id: &str) -> ProxyChoice {
 }
 
 // -- the stored scan -------------------------------------------------------------
+
+#[tokio::test]
+async fn consent_the_scanner_failed_to_give_is_in_the_overview_the_findings_and_the_audit_trail() {
+    let harness = offline(CaptureBehavior::Return(Box::new(
+        capture_with_consent_given_by_hand(),
+    )));
+    let options = ScanOptions {
+        headless: Some(false),
+        ..browse_options()
+    };
+    let detail = run_scan(&harness, options).await;
+
+    let account = "On page 1 a consent dialog was showing from 0.4 s and the scanner did not accept it \
+        (it found a Sourcepoint dialog with no control that plainly means \"accept all\"). Consent was \
+        given by hand in the browser window 27.0 s into the page view.";
+    let overview = detail.overview.as_deref().unwrap();
+    assert!(
+        overview.contains(&format!("**Note:** {account}")),
+        "{overview}"
+    );
+    let waited = detail
+        .findings
+        .iter()
+        .find(|finding| {
+            finding
+                .title
+                .starts_with("Bidding on page 1 (/) waited for a consent choice")
+        })
+        .expect("the wait is a finding");
+    assert_eq!(waited.pages, [0]);
+    // The page view that had three seconds for its ads is not held against
+    // the site, and nothing lowers the score for it.
+    assert!(
+        detail
+            .findings
+            .iter()
+            .all(|finding| !finding.title.contains("no auction ever started")),
+        "{:#?}",
+        detail
+            .findings
+            .iter()
+            .map(|finding| &finding.title)
+            .collect::<Vec<_>>()
+    );
+    let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
+    assert!(
+        logs.iter()
+            .any(|entry| entry.level == LogLevel::Warn && entry.message.starts_with(account)),
+        "the audit trail says it too"
+    );
+}
 
 #[tokio::test]
 async fn a_multi_page_visit_is_stored_with_its_page_views_environment_and_findings() {
@@ -186,10 +292,9 @@ async fn a_multi_page_visit_is_stored_with_its_page_views_environment_and_findin
         overview.contains("The visit covered 2 page views"),
         "{overview}"
     );
-    assert!(
-        overview.contains("**Note:** This scan was identifiable as automated traffic"),
-        "{overview}"
-    );
+    // Every bidder bid in this scan: the finding stays as information, and
+    // the overview does not offer automation as an explanation for anything.
+    assert!(!overview.contains("automated"), "{overview}");
     assert_eq!(
         step_summary(&detail, PipelineNode::Capture),
         "Captured 2 page views, 5 scripts and 46 tracker events from https://pub.example/"

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import type { ScanConfiguration } from "@/bindings";
 import { toApiError } from "@/lib/api";
 import { useSaveScanConfiguration } from "@/lib/query/hooks";
+import { CONFIGURATION_NAME_MAX } from "@/shared/domain/scan-options";
 import { Button } from "@/shared/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
@@ -56,7 +57,7 @@ export function RenameConfigurationDialog({
             <Input
               id={nameId}
               autoComplete="off"
-              maxLength={80}
+              maxLength={CONFIGURATION_NAME_MAX}
               value={name}
               aria-invalid={error ? true : undefined}
               aria-describedby={error ? errorId : undefined}

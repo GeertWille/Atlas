@@ -32,7 +32,8 @@ const findings = [
 const titles = () => screen.getAllByRole("article").map((card) => card.getAttribute("aria-label"));
 
 async function chooseFilter(user: ReturnType<typeof userEvent.setup>, menu: string, option: string) {
-  await user.click(screen.getByRole("button", { name: `Filter by ${menu}` }));
+  // Once something is chosen the button also says how many: "Filter by severity 1 selected".
+  await user.click(screen.getByRole("button", { name: new RegExp(`^Filter by ${menu}( \\d+ selected)?$`) }));
   await user.click(await screen.findByRole("menuitemcheckbox", { name: new RegExp(`^${option}`) }));
   await user.keyboard("{Escape}");
 }

@@ -9,7 +9,8 @@ use adscan_model::{
     TrackerEvent, TrackerEventKind as Ev,
 };
 
-use super::{AUTOMATION_RULE, Rule, RuleContext, heuristic, ms, page_label};
+use super::{AUTOMATION_RULE, CONSENT_WAIT_RULE, Rule, RuleContext, heuristic, ms, page_label};
+use crate::domain::consent_wait::PageConsent;
 use crate::domain::finding::{FindingDraft, metric, timeline};
 use crate::domain::telemetry::{ScanTelemetry, auction_covers};
 
@@ -603,6 +604,90 @@ impl Rule for ConsentAskedAgain {
     }
 }
 
+/// Not a fault of the page: on some page view consent came late, or never,
+/// and not from the scanner. An ad stack that waits for consent then starts
+/// late or not at all, and the page view must not be read as broken.
+pub struct BiddingWaitedForConsent;
+
+impl Rule for BiddingWaitedForConsent {
+    fn id(&self) -> &'static str {
+        CONSENT_WAIT_RULE
+    }
+
+    fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
+        let first_seen = |page: u32, wanted: fn(&Ev) -> bool| {
+            events_on(ctx, page)
+                .find(|event| wanted(&event.kind))
+                .map(|event| event.t)
+        };
+        let mut accounts = Vec::new();
+        let mut pages = Vec::new();
+        let mut evidence = Vec::new();
+        for (page, view) in (0u32..).zip(&ctx.scan.pages) {
+            let consent = PageConsent::of(ctx.capture, page);
+            let Some(account) = consent.account(ctx.environment) else {
+                continue;
+            };
+            // An ad stack that was bidding before consent came did not wait for it.
+            let first_auction = view.metrics.time_to_first_auction_ms;
+            let waited = match consent.held_up_until_ms() {
+                Some(consent_at) => first_auction.is_none_or(|started_at| started_at >= consent_at),
+                None => consent.unanswered() && first_auction.is_none(),
+            };
+            if !waited {
+                continue;
+            }
+            let at = |time: Option<f64>| time.map_or("never".to_string(), ms);
+            evidence.push(timeline(
+                format!("Consent and the ad stack on {}", page_label(&ctx.scan.pages, page)),
+                format!(
+                    "consent dialog showing: {}\nscanner accepted: {}\nconsent choice reported: {}\n\
+                     Prebid first seen: {}\nGPT first seen: {}\nfirst auction: {}\npage view ended: {}",
+                    at(consent.prompt_at_ms),
+                    consent
+                        .scanner_accepted
+                        .as_ref()
+                        .map_or("no".to_string(), |(accepted_at, banner)| format!(
+                            "{} ({banner})",
+                            ms(*accepted_at)
+                        )),
+                    at(consent.decided_at_ms),
+                    at(first_seen(page, |kind| matches!(kind, Ev::PrebidDetected { .. }))),
+                    at(first_seen(page, |kind| matches!(kind, Ev::GptDetected { .. }))),
+                    at(first_auction),
+                    ms(view.dwell_ms),
+                ),
+            ));
+            accounts.push(account);
+            pages.push(page);
+        }
+        if accounts.is_empty() {
+            return Vec::new();
+        }
+        let mut finding = heuristic(
+            Severity::Info,
+            FindingCategory::Consent,
+            0.9,
+            format!(
+                "Bidding on {} waited for a consent choice the scan made late or not at all",
+                labels(&ctx.scan.pages, &pages)
+            ),
+        );
+        finding.description = format!("{}.", accounts.join(". "));
+        finding.recommendation = "Nothing to fix on the site for this alone. To see these page views as a \
+             visitor with a stored choice gets them, scan again: the audit trail of the Capture step says why \
+             the dialog was not accepted automatically, and a kept scan profile or \"I'll browse myself\" with \
+             the dialog answered right away gives the ad stack the whole page view."
+            .into();
+        finding.impact =
+            "Auctions that are missing or late on these page views say nothing about the site yet"
+                .into();
+        finding.evidence = evidence;
+        finding.pages = pages;
+        vec![finding]
+    }
+}
+
 /// The indicators by which a page could tell this visit was automated, as a
 /// clause: "navigator.webdriver was true, the browser ran headless".
 pub(super) fn automation_indicators(environment: Option<&ScanEnvironment>) -> Option<String> {
@@ -652,25 +737,48 @@ impl Rule for ScanIdentifiableAsAutomated {
         if detectors.is_empty() && silent.is_empty() {
             return Vec::new();
         }
-        let mut reasons = vec![indicators.clone()];
-        if !detectors.is_empty() {
-            reasons.push(format!(
-                "{} {} on the page",
-                detectors.join(" and "),
-                if detectors.len() == 1 { "is" } else { "are" }
-            ));
-        }
         let mut finding = heuristic(
             Severity::Info,
             FindingCategory::Configuration,
             0.5,
             "This scan was identifiable as automated traffic",
         );
-        finding.description = format!(
-            "Bidders may be filtering this scan as automated traffic: {}. Repeat as \"I'll browse myself\" or \
-             with the browser shown before concluding a bidder is broken.",
-            reasons.join(", "),
+        // Only what was seen: who could tell, and who behaved as if they did.
+        let mut description = format!(
+            "A scripted visit (scroll, or \"Browse like a visitor\") is automated by design, and the pages \
+             could tell: {indicators}."
         );
+        if !detectors.is_empty() {
+            description.push_str(&format!(
+                " {} {} on the page, a service that tells automated visits apart.",
+                detectors.join(" and "),
+                if detectors.len() == 1 { "is" } else { "are" }
+            ));
+        }
+        if silent.is_empty() {
+            description.push_str(
+                " Every bidder that was asked more than once did bid, so nothing in this scan points at \
+                 filtering; this only says how the visit looked to the page.",
+            );
+        } else {
+            let others_bid = ctx.bidder_stats().values().any(|stats| stats.bids > 0);
+            description.push_str(&format!(
+                " {} {} asked for bids and never bid, which is what a bidder that filters automated traffic \
+                 looks like.{}",
+                silent.join(", "),
+                if silent.len() == 1 { "was" } else { "were" },
+                if others_bid {
+                    " Other bidders did bid, so the scan was not filtered as a whole."
+                } else {
+                    ""
+                }
+            ));
+        }
+        description.push_str(
+            " To rule it out, run the scan again as \"I'll browse myself\": a person drives the browser \
+             and it is not flagged as automated.",
+        );
+        finding.description = description;
         finding.recommendation =
             "Nothing to fix on the site. Treat missing bids in this scan with caution and \
              confirm them with a visit a person drives."

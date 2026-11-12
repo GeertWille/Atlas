@@ -225,6 +225,27 @@ What the backend guarantees about it:
   click opens, and pages that navigate by themselves. Each refusal is a `blocked` entry (`off-site`,
   `form`, `sensitive`, `download`); a refused click ends the link following of that visit. `none` and
   `scroll` send no clicks except the consent banner's and are not guarded; `manual` is the person's.
+- **Consent dialogs.** With "accept consent" the scanner looks for the dialog in every frame of the tab
+  (`capture/consent.rs`, `injected/consent.js`): the page, its same-process iframes of other origins (a
+  consent platform on a subdomain of the publisher, as Sourcepoint on bild.de) and out-of-process
+  iframes, each in the scanner's isolated world. What to press comes from one table of platforms
+  (`PLATFORMS` in consent.js; a row there, a row in `tests/consent.rs` and one in
+  `fixtures/consent-platforms.html` adds a platform) and from labels that plainly mean "accept all" in
+  en/nl/de/fr/es/it/pt, read from text, `aria-label` and `title`. A control whose name mentions a
+  purchase (PUR, Abo, subscribe, pay, a price) is never pressed, so on a consent-or-pay wall only the
+  consent option is. The control is pressed with a real click at its place on the screen once
+  `DOM.getNodeForLocation` confirms that its frame is what is there; otherwise from script. It is looked
+  for twice a second for ten seconds, then every two seconds for as long as the page view is watched.
+  `Capture.consentNotes` records what the scanner did (`accepted`) or could not do
+  (`dialogWithoutAccept`, also a `blocked` entry with reason `consent`).
+- **Consent the scan did not give.** The engine combines those notes with what the consent platform
+  reports (`TcfState`): `domain/consent_wait.rs` says per page view whether the scanner gave consent,
+  someone else did (a person, in a visible browser) and when, or nobody. Where bidding on a page view
+  waited for that, the info finding `bidding-waited-for-consent` says so, the same sentence is a note in
+  the overview and a warning in the audit trail of the Heuristics step, and it is stated as fact in the
+  Phase 2 prompt's visit block. The gate rule does not report "no auction ever started" unless Prebid
+  had at least 5 s after it loaded and consent was given; late-auction and slow-GPT are counted from the
+  consent choice.
 - **Back/forward cache.** When a person presses Back and Chrome restores the earlier document instead
   of loading it, that is a new page view (`userNavigation`, no `loadMs`) of the old document: what the
   document reports from then on is on the new page view, timed from the restore. Console lines and bid

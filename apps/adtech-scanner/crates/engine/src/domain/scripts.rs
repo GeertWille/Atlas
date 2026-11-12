@@ -27,6 +27,10 @@ pub struct DescribedScript {
     pub ad_api_calls: usize,
     /// Whether the body configures or hooks into a consent platform.
     pub sets_up_consent: bool,
+    /// The body starts auctions or defines slots itself. In a file that is
+    /// otherwise a vendor library, that is the publisher's wrapper bundled
+    /// into it.
+    pub orchestrates: bool,
 }
 
 /// One record per captured script, in capture order, with ids `s1`, `s2`, ...
@@ -104,6 +108,7 @@ fn describe_one(
         ambiguous_hints,
         ad_api_calls: knowledge::ad_api_calls(&script.body),
         sets_up_consent: knowledge::sets_up_consent(&script.body),
+        orchestrates: knowledge::orchestrates(&script.body),
     }
 }
 
@@ -154,7 +159,9 @@ pub fn select_for_analysis(
 }
 
 /// Sort key that puts the publisher's own orchestration code first and stock
-/// vendor libraries last. Smaller sorts earlier.
+/// vendor libraries last. A Prebid build with the publisher's wrapper bundled
+/// into it is orchestration code: where the limits bite it must not be the
+/// script that is left out. Smaller sorts earlier.
 fn analysis_rank(script: &DescribedScript) -> (u8, bool, std::cmp::Reverse<usize>, f64) {
     let record = &script.record;
     let unsure = record
@@ -162,6 +169,7 @@ fn analysis_rank(script: &DescribedScript) -> (u8, bool, std::cmp::Reverse<usize
         .is_some_and(|probability| probability < ANALYSE_THRESHOLD);
     let tier = match record.category {
         ScriptCategory::Wrapper => 0,
+        ScriptCategory::Prebid if script.orchestrates => 0,
         ScriptCategory::Prebid => 3,
         ScriptCategory::Cmp => 1,
         _ if unsure => 2,
@@ -350,6 +358,40 @@ mod tests {
             select_for_analysis(&described, 10, 1e6),
             vec![4, 1, 5, 3, 2, 0],
             "first-party wrapper with most ad calls, inline snippet, third-party wrapper, likely, unsure, Prebid"
+        );
+    }
+
+    /// The publisher ships its wrapper inside the Prebid file, under its own
+    /// namespace and with the Prebid global aliased. Where not everything
+    /// fits, that file is analysed before any stock library.
+    #[test]
+    fn a_prebid_build_with_the_wrapper_bundled_into_it_is_not_ranked_as_a_stock_library() {
+        let bundle = "var auctionManager={};function registerBidAdapter(){}\n\
+                      ASCDP.adS={init:function(){var x=window[ns];x.que.push(function(){x.requestBids({timeout:900})})}};";
+        let described = describe(&capture_with(vec![
+            script(
+                "https://cdn.jsdelivr.net/npm/prebid.js",
+                false,
+                "var auctionManager={};function registerBidAdapter(){}",
+            ),
+            script(
+                "inline:1",
+                true,
+                "googletag.cmd.push(function(){googletag.display('a')})",
+            ),
+            script(
+                "https://static.example.co.uk/hb/prebid-bundle.js",
+                false,
+                bundle,
+            ),
+        ]));
+        assert_eq!(described[2].record.category, ScriptCategory::Prebid);
+        assert!(described[2].orchestrates && !described[0].orchestrates);
+        assert_eq!(select_for_analysis(&described, 10, 1e6), vec![1, 2, 0]);
+        assert_eq!(
+            select_for_analysis(&described, 2, 1e6),
+            vec![1, 2],
+            "the stock library is what is left out, not the bundle"
         );
     }
 

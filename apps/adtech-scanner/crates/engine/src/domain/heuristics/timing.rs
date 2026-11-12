@@ -179,26 +179,36 @@ impl Rule for LateFirstAuction {
         let Some(started_at) = ctx.telemetry.metrics.time_to_first_auction_ms else {
             return Vec::new();
         };
+        // Bidding that had to wait for a late consent choice is late from
+        // that moment, not from navigation.
+        let consent_at = ctx
+            .held_up_by_consent_until()
+            .filter(|consent_at| *consent_at <= started_at);
+        let waited = started_at - consent_at.unwrap_or(0.0);
         // After a route change nothing is loading: when the page asks for
         // bids there is its own decision, not a slow start.
-        if started_at < LATE_AUCTION_MS || ctx.auction_gate().is_some() || ctx.is_route_change() {
+        if waited < LATE_AUCTION_MS || ctx.auction_gate().is_some() || ctx.is_route_change() {
             return Vec::new();
         }
-        let severity = if started_at >= VERY_LATE_AUCTION_MS {
+        let severity = if waited >= VERY_LATE_AUCTION_MS {
             Severity::High
         } else {
             Severity::Medium
+        };
+        let since = match consent_at {
+            Some(consent_at) => format!("consent was given (at {})", ms(consent_at)),
+            None => "navigation".to_string(),
         };
         let mut finding = heuristic(
             severity,
             FindingCategory::Timing,
             0.7,
-            format!("First auction starts {} after navigation", ms(started_at)),
+            format!("First auction starts {} after {since}", ms(waited)),
         );
         finding.description = format!(
-            "The first Prebid auction began {} after navigation start{}. Until it completes no slot can carry \
+            "The first Prebid auction began {} after {since}{}. Until it completes no slot can carry \
              header bidding demand, so early impressions are lost to short sessions and viewability suffers.",
-            ms(started_at),
+            ms(waited),
             ctx.page_load_ms().map_or(String::new(), |load| format!(
                 " (page load event at {})",
                 ms(load)
@@ -235,7 +245,12 @@ impl Rule for SlowGptLoad {
         else {
             return Vec::new();
         };
-        if ready_at < SLOW_GPT_MS || ctx.auction_gate().is_some() {
+        // A page that loads its ad stack once consent is given is not slow
+        // for the time the visitor took to give it.
+        let held_up_by_consent = ctx
+            .held_up_by_consent_until()
+            .is_some_and(|consent_at| ready_at - consent_at < SLOW_GPT_MS);
+        if ready_at < SLOW_GPT_MS || held_up_by_consent || ctx.auction_gate().is_some() {
             return Vec::new();
         }
         let severity = if ready_at >= VERY_SLOW_GPT_MS {

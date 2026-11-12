@@ -9,9 +9,7 @@ use super::visitor::site::Site;
 /// activity. A function expression: see [`tracker_script`].
 pub(crate) const TRACKER_SOURCE: &str = include_str!("../../injected/tracker.js");
 
-/// Finds and clicks the "accept all" control of a consent banner. Evaluates to
-/// the name of the banner it accepted, or `null`.
-pub(crate) const CONSENT_SOURCE: &str = include_str!("../../injected/consent.js");
+const CONSENT_SOURCE: &str = include_str!("../../injected/consent.js");
 
 const PAGE_FACTS_SOURCE: &str = include_str!("../../injected/links.js");
 const HIT_TEST_SOURCE: &str = include_str!("../../injected/hit.js");
@@ -44,6 +42,28 @@ pub(crate) fn is_tracker_script(source: &str) -> bool {
 pub(crate) fn page_facts_expression(slot_ids: &[String], links: bool) -> String {
     let request = json!({ "slotIds": slot_ids, "links": links });
     format!("{PAGE_FACTS_SOURCE}({request})")
+}
+
+/// What `injected/consent.js` is asked to do in a frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConsentAsk {
+    /// Say what the frame shows of a consent dialog: its accept-all control
+    /// and where it is, or the dialog alone.
+    Look,
+    /// Click the accept-all control from script.
+    Click,
+    /// Resolve to whether the accept-all control is clicked within this
+    /// many ms.
+    WatchForClick(u32),
+}
+
+pub(crate) fn consent_expression(ask: ConsentAsk) -> String {
+    let request = match ask {
+        ConsentAsk::Look => json!({}),
+        ConsentAsk::Click => json!({ "click": true }),
+        ConsentAsk::WatchForClick(ms) => json!({ "watchMs": ms }),
+    };
+    format!("{CONSENT_SOURCE}({request})")
 }
 
 /// Expression that evaluates to the link a click at `point` would follow.

@@ -30,21 +30,20 @@ export function FilterMenu<T extends string>({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        {/* The name keeps the visible label in it; the counter is said as the description instead. */}
+        {/* The name says what the button is for and still contains everything it shows: "Kind 2". */}
         <Button
           variant="outline"
           size="sm"
-          aria-label={`Filter by ${label.toLowerCase()}`}
-          aria-description={selected.length > 0 ? `${selected.length} selected` : undefined}
+          aria-label={`Filter by ${label.toLowerCase()}${selected.length > 0 ? ` ${selected.length} selected` : ""}`}
         >
           {label}
           {selected.length > 0 ? (
-            <span
-              aria-hidden="true"
-              className="rounded-full bg-primary-soft px-1.5 text-[11px] leading-4 font-semibold text-primary-text tabular-nums"
-            >
-              {selected.length}
-            </span>
+            <>
+              {" "}
+              <span className="rounded-full bg-primary-soft px-1.5 text-[11px] leading-4 font-semibold text-primary-text tabular-nums">
+                {selected.length}
+              </span>
+            </>
           ) : null}
           <ChevronDownIcon className="text-subtle-foreground" />
         </Button>
