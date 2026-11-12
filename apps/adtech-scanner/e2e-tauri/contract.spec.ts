@@ -1,6 +1,16 @@
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { ApiKeyStatus, BrowserInfo, DashboardStats, ScanList, ScanSummary, Settings } from "../src/bindings";
-import { type App, button, invoke, invokeOk, launchApp } from "./support/app";
+import {
+  type App,
+  button,
+  closeCommandPalette,
+  invoke,
+  invokeOk,
+  labelled,
+  launchApp,
+  openCommandPalette,
+  seeText,
+} from "./support/app";
 import { cspViolations, watchCspViolations } from "./support/csp";
 import { type MockAnthropic, startMockAnthropic } from "./support/mock-anthropic";
 
@@ -58,9 +68,8 @@ test("the built frontend runs under the production CSP without a violation", asy
     await browser.$(`//nav//a[normalize-space(.)="${screen}"]`).click();
     await browser.waitUntil(async () => (await browser.getTitle()).startsWith(screen === "Home" ? "Welcome" : screen));
   }
-  await browser.keys(["Control", "k"]);
-  await browser.$('//*[@role="dialog"]//input').waitForDisplayed();
-  await browser.keys("Escape");
+  await openCommandPalette(browser);
+  await closeCommandPalette(browser);
   expect(await cspViolations(browser)).toEqual([]);
 
   // The policy is really enforced: what it forbids is blocked and reported.
@@ -207,7 +216,27 @@ test("the webview can only do what its capability grants", async () => {
   expect(await invoke(browser, "plugin:opener|open_url", { url: "file:///etc/hostname" })).toEqual({
     rejected: expect.stringContaining("Not allowed to open url"),
   });
+  // A web link passes the scope. Whether a browser then opens depends on the machine, so only the scope is asserted.
+  const webLink = await invoke(browser, "plugin:opener|open_url", { url: "https://example.invalid/" });
+  expect(JSON.stringify(webLink)).not.toContain("Not allowed");
   expect(await browser.$(button("New scan")).isDisplayed()).toBe(true);
+});
+
+test("the app keeps working while the computer is offline", async () => {
+  const { browser } = app;
+  await browser.execute(() => window.dispatchEvent(new Event("offline")));
+  try {
+    await browser.$('//nav//a[normalize-space(.)="Settings"]').click();
+    const dark = browser.$(`${labelled("Theme")}//button[normalize-space(.)="Dark"]`);
+    await dark.waitForDisplayed();
+    await dark.click();
+    await browser.waitUntil(async () => (await invokeOk<Settings>(browser, "get_settings")).theme === "dark");
+    await browser.$('//nav//a[normalize-space(.)="History"]').click();
+    await seeText(browser, "No scans yet", { within: "//main" });
+  } finally {
+    await browser.execute(() => window.dispatchEvent(new Event("online")));
+    await invokeOk(browser, "update_settings", { patch: { theme: "system" } });
+  }
 });
 
 test("the custom title bar drags the window and zooms it on a double click", async () => {
@@ -216,18 +245,18 @@ test("the custom title bar drags the window and zooms it on a double click", asy
   expect(await invokeOk<null>(browser, "plugin:window|internal_toggle_maximize")).toBeNull();
   expect(await invokeOk<null>(browser, "plugin:window|internal_toggle_maximize")).toBeNull();
 
-  // No window manager runs here to move the window, so record what the title bar asks for instead.
+  // No window manager runs here to move the window, so answer the title bar's requests in the page and
+  // record them. They travel as `fetch("ipc://localhost/<command>")`; `invoke` itself cannot be replaced.
   await browser.execute(() => {
-    const page = window as unknown as {
-      __windowCommands: string[];
-      __TAURI_INTERNALS__: { invoke(command: string, ...rest: unknown[]): Promise<unknown> };
-    };
+    const page = window as unknown as { __windowCommands: string[] };
     page.__windowCommands = [];
-    const { invoke } = page.__TAURI_INTERNALS__;
-    page.__TAURI_INTERNALS__.invoke = (command, ...rest) => {
-      if (!command.startsWith("plugin:window|")) return invoke(command, ...rest);
+    const send = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const command = decodeURIComponent(String(input).replace("ipc://localhost/", ""));
+      if (!command.startsWith("plugin:window|")) return send(input, init);
       page.__windowCommands.push(command);
-      return Promise.resolve(null);
+      const headers = { "content-type": "application/json", "Tauri-Response": "ok" };
+      return Promise.resolve(new Response("null", { headers }));
     };
   });
   const windowCommands = () =>
@@ -236,7 +265,7 @@ test("the custom title bar drags the window and zooms it on a double click", asy
   // The page title is text inside the bar, not the bar itself.
   await browser.$("//header//h1").click();
   expect(await windowCommands()).toEqual(["plugin:window|start_dragging"]);
-  await browser.$("//aside//*[normalize-space(.)='Ad-Tech Scanner']").doubleClick();
+  await browser.$("//aside//span[normalize-space(.)='Ad-Tech Scanner']").doubleClick();
   expect(await windowCommands()).toEqual(["plugin:window|start_dragging", "plugin:window|internal_toggle_maximize"]);
   await browser.$(button("New scan")).click();
   expect(await windowCommands()).toEqual([]);

@@ -4,6 +4,7 @@ import { connect, createServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { remote } from "webdriverio";
+import type { ScanList } from "../../src/bindings";
 
 export type Browser = Awaited<ReturnType<typeof remote>>;
 
@@ -101,8 +102,7 @@ export async function launchApp(env: Record<string, string>): Promise<App> {
     return {
       browser,
       close: async () => {
-        // Closing the window lets the app exit on its own, which also stops the browser of a scan a failed test left running.
-        await browser.closeWindow().catch(() => undefined);
+        await cancelRunningScans(browser).catch(() => undefined);
         await browser.deleteSession().catch(() => undefined);
         await stop();
       },
@@ -111,6 +111,21 @@ export async function launchApp(env: Record<string, string>): Promise<App> {
     await stop();
     throw error;
   }
+}
+
+/**
+ * Ending the WebDriver session kills the app outright, unlike quitting it, so
+ * a scan a failed test left running would leave its browser behind.
+ */
+async function cancelRunningScans(browser: Browser) {
+  const active = async () => {
+    const lists = await Promise.all(
+      ["running", "queued"].map((status) => invokeOk<ScanList>(browser, "list_scans", { query: { status } })),
+    );
+    return lists.flatMap((list) => list.items);
+  };
+  for (const scan of await active()) await invokeOk(browser, "cancel_scan", { scanId: scan.id });
+  await browser.waitUntil(async () => (await active()).length === 0, { timeout: 15_000 });
 }
 
 // Not `error`: WebdriverIO takes a script result with that key for a WebDriver failure.
@@ -191,4 +206,18 @@ export async function goTo(browser: Browser, route: string) {
   await browser.execute((target: string) => {
     window.location.hash = target;
   }, route);
+}
+
+const PALETTE = '//*[@role="dialog"]';
+
+export async function openCommandPalette(browser: Browser) {
+  await browser.keys(["Control", "k"]);
+  await browser.$(`${PALETTE}//input`).waitForDisplayed();
+}
+
+export async function closeCommandPalette(browser: Browser) {
+  await browser.keys("Escape");
+  // Its backdrop keeps covering the window until the exit animation ends, which software rendering makes slow.
+  await browser.$(PALETTE).waitForExist({ reverse: true, timeout: 15_000 });
+  await browser.$(".fixed.inset-0").waitForExist({ reverse: true, timeout: 15_000 });
 }

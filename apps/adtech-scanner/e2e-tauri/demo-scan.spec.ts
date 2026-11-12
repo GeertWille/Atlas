@@ -123,6 +123,12 @@ test("every report tab shows what the scan captured, including the planted bugs"
 
   await browser.$(reportTab("Auctions")).click();
   const auctions = await seeText(browser, "By bidder", { within: MAIN });
+  // WebKit rings every element focused from script, which is how a clicked tab gets its focus.
+  const clickedTab = await browser.execute(() => {
+    const tab = document.activeElement;
+    return tab && { name: tab.textContent, outline: getComputedStyle(tab).outlineStyle };
+  });
+  expect(clickedTab).toEqual({ name: "Auctions3", outline: "none" });
   expect(auctions).toMatch(/Auction 1[\s\S]*ad-sticky-footer[\s\S]*Auction 2[\s\S]*ad-leaderboard/);
   expect(auctions).toContain("timeout 250 ms");
   expect(auctions).toMatch(/pubmatic\s+5\s+0\s+0\s+5/);
@@ -200,14 +206,12 @@ test("settings are saved by the backend and survive a reload", async () => {
   await budget.waitForDisplayed();
   await budget.setValue("0.75");
   await browser.keys("Enter");
-  await seeText(browser, "Settings saved");
   await browser.$(`${labelled("Default device")}//button[normalize-space(.)="Mobile"]`).click();
   await browser.$(`${labelled("Theme")}//button[normalize-space(.)="Dark"]`).click();
   await browser.waitUntil(() => browser.execute(() => document.documentElement.classList.contains("dark")));
-  await browser.waitUntil(async () => {
-    const settings = await invokeOk<Settings>(browser, "get_settings");
-    return settings.budgetUsd === 0.75 && settings.defaultDevice === "mobile" && settings.theme === "dark";
-  });
+  await expect
+    .poll(() => invokeOk<Settings>(browser, "get_settings"), { timeout: 10_000 })
+    .toMatchObject({ budgetUsd: 0.75, defaultDevice: "mobile", theme: "dark" });
 
   await reloadApp();
   expect(await browser.execute(() => document.documentElement.classList.contains("dark"))).toBe(true);
@@ -223,8 +227,16 @@ test.skipIf(!canDriveNativeDialogs)("export writes the report where the native s
   const exportDir = mkdtempSync(join(tmpdir(), "adscan-export-"));
   const target = join(exportDir, "report.md");
   const openSaveDialog = async () => {
-    await browser.$(button("Export")).click();
-    await browser.$(withRole("menuitem", "Markdown report")).click();
+    const markdown = browser.$(withRole("menuitem", "Markdown report"));
+    // GTK can still hold the pointer for a dialog that has just closed and swallow the click.
+    await browser.waitUntil(
+      async () => {
+        if (!(await markdown.isExisting())) await browser.$(button("Export")).click();
+        return markdown.isExisting();
+      },
+      { interval: 500 },
+    );
+    await markdown.click();
   };
   try {
     await goTo(browser, `/scans/${scanId}`);

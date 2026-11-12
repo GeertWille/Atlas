@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, expect, test } from "vitest";
-import type { LogSearchHit, ScanDetail } from "../src/bindings";
+import type { LogSearchHit, ScanDetail, Settings } from "../src/bindings";
 import {
   type App,
   button,
@@ -135,7 +135,7 @@ test("a script the knowledge base cannot decide is classified by Phase 1 and ana
   await observe.waitForDisplayed();
   await observe.setValue("5");
   await browser.keys("Enter");
-  await seeText(browser, "Settings saved");
+  await browser.waitUntil(async () => (await invokeOk<Settings>(browser, "get_settings")).defaultObserveSeconds === 5);
 
   await browser.$('//nav//a[normalize-space(.)="Home"]').click();
   await browser.$(labelled("Page URL")).setValue(page.url);

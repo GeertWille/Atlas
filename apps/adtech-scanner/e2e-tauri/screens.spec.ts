@@ -2,7 +2,19 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, test } from "vitest";
 import type { ScanSummary } from "../src/bindings";
-import { type App, type Browser, button, goTo, invokeOk, labelled, launchApp, reportTab, seeText } from "./support/app";
+import {
+  type App,
+  type Browser,
+  button,
+  closeCommandPalette,
+  goTo,
+  invokeOk,
+  labelled,
+  launchApp,
+  openCommandPalette,
+  reportTab,
+  seeText,
+} from "./support/app";
 import { AI_FINDING_TITLE, MOCK_API_KEY, type MockAnthropic, startMockAnthropic } from "./support/mock-anthropic";
 
 /**
@@ -91,7 +103,7 @@ describe.skipIf(!outDir)("screenshots of the real window", () => {
         await shot(browser, `report-${name}-${theme}`);
       }
       await browser.$(`${labelled("Pipeline steps")}//button[contains(., "Analyse logic")]`).click();
-      await browser.$(`${labelled("Log entries")}//button[contains(., "report_finding")]`).click();
+      await browser.$(`(${labelled("Log entries")}//button[contains(., "report_finding")])[1]`).click();
       await shot(browser, `report-audit-tool-call-${theme}`);
 
       await goTo(browser, "/history");
@@ -105,10 +117,9 @@ describe.skipIf(!outDir)("screenshots of the real window", () => {
       await shot(browser, `settings-${theme}`);
       await scrollMain(browser, 10_000);
       await shot(browser, `settings-bottom-${theme}`);
-      await browser.keys(["Control", "k"]);
-      await browser.$('//*[@role="dialog"]//input').waitForDisplayed();
+      await openCommandPalette(browser);
       await shot(browser, `command-palette-${theme}`);
-      await browser.keys("Escape");
+      await closeCommandPalette(browser);
     }
 
     // A second scan, for the live view in the dark theme.

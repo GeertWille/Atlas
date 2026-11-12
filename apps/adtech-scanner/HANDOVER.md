@@ -37,7 +37,7 @@ Rules that came from you and must keep holding:
 | Engine (domain, pipeline, SQLite, Anthropic client) | `crates/engine` | Done, reviewed, fixes applied. 133+ tests pass. |
 | Tauri shell (16 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 2 real-browser pipeline tests pass on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
-| Integration of frontend with the real backend | – | **Not started.** The real app window has never been opened. |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, and every command's contract. Not run on macOS. |
 
 The checkpoint commit that adds this file contains the frontend exactly as the build agent left it
 mid-work. Expect `pnpm typecheck` and `pnpm lint` to fail until the frontend is finished.
@@ -62,7 +62,14 @@ cargo test --workspace
 cargo test -p adtech-scanner --test real_browser -- --ignored   # drives real Chrome against the demo site
 cargo test -p adscan-model                                      # regenerates src/bindings
 pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e && pnpm build
+pnpm test:tauri         # Linux only: builds the app and drives the real window (see below)
 ```
+
+`pnpm test:tauri` needs `tauri-driver` (`cargo install tauri-driver --locked`), `WebKitWebDriver`
+(package `webkit2gtk-driver`) and `xvfb-run`; with `xdotool` and `xclip` installed it also drives the
+native save and open dialogs, otherwise those two tests are skipped. tauri-driver has no macOS backend,
+so the suite cannot run on a Mac. `TAURI_E2E_SCREENSHOTS=<dir> pnpm test:tauri screens` saves a picture
+of every screen in light and dark.
 
 Environment overrides for tests and local runs:
 
@@ -83,11 +90,11 @@ loopback port and has four planted bugs, documented in `crates/browser/demo-site
 
 1. **Finish the frontend.** Get `pnpm typecheck`, `pnpm lint`, `pnpm test` green; write the Playwright
    e2e suite against the fake backend (`src/lib/fake-backend`); `e2e/` is empty.
-2. **Integrate.** Open the real app and run a demo-site scan end to end. Check every command and the
-   `scan-event` stream against the real backend, the export flow (the path must come from the save
-   dialog, `.json`, `.md` or `.markdown` only), the Chrome file picker, external links, the drag region
-   and the production CSP with the built `dist/`.
-3. **Replace the placeholder icons**: `pnpm tauri icon <1024px png>`.
+2. **Integrate.** Done on Linux (`pnpm test:tauri`). On the Mac, still check by hand: the save and
+   open dialogs, external links opening in the browser, dragging and double-click zoom of the title
+   bar, and that a scan's Chrome is gone after quitting mid-scan.
+3. **Icons.** Done. The source is `src-tauri/icons/icon.svg`; after changing it, render it to a
+   1024 px PNG and run `pnpm tauri icon <png>`.
 4. **Simplify and review** the frontend, then the integrated app. Fix and repeat until clean.
 5. **Visual polish** of every screen in light and dark, at 1024x680 and 1280x820.
 6. **First real API run.** Enter a key in Settings and scan the demo site, then a real publisher page.

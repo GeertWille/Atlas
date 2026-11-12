@@ -8,7 +8,10 @@ export function createQueryClient(): QueryClient {
         staleTime: 30_000,
         refetchOnWindowFocus: false,
         retry: false,
+        // Every call goes to the local backend. The default mode pauses all of them while the computer is offline.
+        networkMode: "always",
       },
+      mutations: { networkMode: "always" },
     },
   });
 }

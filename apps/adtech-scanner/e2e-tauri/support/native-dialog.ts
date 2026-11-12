@@ -29,13 +29,18 @@ export async function nativeDialog(browser: Browser, open: () => Promise<void>):
   );
   // Without a window manager the keyboard goes to the window under the pointer.
   xdotool("mousemove", "--window", dialog ?? "", "300", "300");
-  const closed = async () => {
-    await browser.waitUntil(async () => appWindows().length === before.length, {
+  type FocusWindow = Window & { __refocused?: boolean };
+  await browser.execute(() => {
+    const page = window as FocusWindow;
+    page.__refocused = false;
+    window.addEventListener("focus", () => (page.__refocused = true), { once: true });
+  });
+  // The window gets its focus back a moment after the dialog is gone, and that
+  // moves focus in the page, which would close a menu a test opened before it.
+  const closed = () =>
+    browser.waitUntil(async () => browser.execute(() => (window as FocusWindow).__refocused === true), {
       timeoutMsg: "the dialog stayed open",
     });
-    // The window gets its focus back a moment later, and that closes any menu opened before it.
-    await browser.waitUntil(() => browser.execute(() => document.hasFocus()), { timeoutMsg: "focus did not return" });
-  };
   return {
     cancel: async () => {
       xdotool("key", "Escape");
