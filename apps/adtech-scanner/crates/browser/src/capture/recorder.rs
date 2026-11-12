@@ -540,6 +540,8 @@ impl Recorder {
             Some(sink) => {
                 let admission = sink.admit_body(&BodyOffer {
                     seq: finished.seq,
+                    url: &finished.url,
+                    bidder: finished.bid.as_ref().map(|bid| bid.bidder),
                     kind: finished.kind,
                     mime_type: finished.mime_type.as_deref(),
                     status: finished.status,

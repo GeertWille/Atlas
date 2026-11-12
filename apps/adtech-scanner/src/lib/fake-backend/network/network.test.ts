@@ -37,7 +37,6 @@ describe("the simulated network record", () => {
   it("gives the three-page visit about 400 requests, most of them on the entry page", async () => {
     const rows = await allRows(api, BROWSE);
     const perPage = [0, 1, 2].map((page) => rows.filter((row) => row.page === page).length);
-    console.log(perPage);
     expect(rows.length).toBeGreaterThan(360);
     expect(rows.length).toBeLessThan(440);
     expect(perPage[0]).toBeGreaterThan(170);

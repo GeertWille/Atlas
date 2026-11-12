@@ -72,7 +72,7 @@ mod tests {
             connection.execute_batch(migration).unwrap();
         }
         connection
-            .pragma_update(None, "user_version", earlier)
+            .pragma_update(None, "user_version", earlier as u32)
             .unwrap();
         connection
     }

@@ -6,7 +6,7 @@ mod support;
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    Capture, DeviceProfile, PageReach, SchainNode, TrackedAdUnit, TrackedBid,
+    Capture, DeviceProfile, PageReach, SchainNode, TrackedAdUnit, TrackedBid, TrackedBidRequest,
     TrackerEventKind as Kind, VisitorBehavior,
 };
 use serde_json::{Value, json};
@@ -233,8 +233,17 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                         hp: Some(false),
                     },
                 ],
-                bidder_request_id: None,
-                bids: Vec::new(),
+                bidder_request_id: Some("request-foo".into()),
+                bids: vec![
+                    TrackedBidRequest {
+                        bid_id: "bid-1".into(),
+                        ad_unit_code: "unit-a".into(),
+                    },
+                    TrackedBidRequest {
+                        bid_id: "bid-2".into(),
+                        ad_unit_code: "unit-a".into(),
+                    },
+                ],
             },
             &Kind::BidRequested {
                 auction_id: "auction-1".into(),

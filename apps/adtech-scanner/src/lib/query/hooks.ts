@@ -308,10 +308,13 @@ export function useDeleteScanConfiguration() {
   });
 }
 
-/** The newest scan started from a configuration, kept current by the scan events like every scan list. */
-export function useLastConfigurationScan(configurationId: string) {
-  const list = useScanList({ configurationId, limit: 1 });
-  return list.data?.items[0];
+/**
+ * The two newest scans started from a configuration, newest first: the last run and the one to compare it
+ * with. Kept current by the scan events like every scan list.
+ */
+export function useLatestConfigurationScans(configurationId: string): ScanSummary[] {
+  const list = useScanList({ configurationId, limit: 2 });
+  return list.data?.items ?? [];
 }
 
 export function useCancelScan() {

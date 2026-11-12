@@ -64,7 +64,9 @@ impl Vault {
     fn document(&self) -> Result<Zeroizing<String>, SecretError> {
         serde_json::to_string(&self.0)
             .map(Zeroizing::new)
-            .map_err(|_| SecretError::Failed("the secrets could not be prepared for storing".into()))
+            .map_err(|_| {
+                SecretError::Failed("the secrets could not be prepared for storing".into())
+            })
     }
 
     fn names(&self) -> HashSet<SecretName> {

@@ -164,6 +164,21 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
     }
 }
 
+/// Whether a request is a bid or ad-server call by what is known before its
+/// answer is read: the engine reads those answers whether or not the scan
+/// stores network data.
+pub fn is_ad_call(host: &str, path: &str, bidder: Option<&str>) -> bool {
+    let on = |table: &[(&str, &str)]| {
+        table
+            .iter()
+            .any(|(suffix, prefix)| is_suffix(suffix, host) && path.starts_with(prefix))
+    };
+    bidder.is_some()
+        || on(BID_CALLS)
+        || on(AD_SERVER_CALLS)
+        || BID_PATH_MARKS.iter().any(|mark| path.contains(mark))
+}
+
 /// Display name of the host's owner, when the knowledge base knows it.
 pub fn vendor(host: &str) -> Option<&'static str> {
     known_host(host).map(|(vendor, _)| vendor)
@@ -284,6 +299,24 @@ mod tests {
                 *expected,
                 "{method} {url} ({kind:?}, {context:?})"
             );
+        }
+    }
+
+    #[test]
+    fn bid_and_ad_server_calls_are_known_before_their_answer_is_read() {
+        for (host, path, bidder, expected) in [
+            ("rtb.openx.net", "/openrtbb/prebidjs", Some("openx"), true),
+            ("fastlane.rubiconproject.com", "/a/api/fastlane.json", Some("rubicon"), true),
+            ("ib.adnxs.com", "/ut/v3", None, true),
+            ("ib.adnxs.com", "/ut/v3/prebid", None, true),
+            ("www8.smartadserver.com", "/ac", None, true),
+            ("securepubads.g.doubleclick.net", "/gampad/ads", None, true),
+            ("pbs.example.net", "/openrtb2/auction", None, true),
+            ("securepubads.g.doubleclick.net", "/tag/js/gpt.js", None, false),
+            ("www.pub.example", "/article", None, false),
+            ("ib.adnxs.com", "/getuid", None, false),
+        ] {
+            assert_eq!(is_ad_call(host, path, bidder), expected, "{host}{path}");
         }
     }
 

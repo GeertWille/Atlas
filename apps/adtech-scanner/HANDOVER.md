@@ -34,9 +34,9 @@ Rules that came from you and must keep holding:
 - No raw payloads stored. Script bodies, bid responses, ads.txt and sellers.json stay in memory; only
   findings, derived telemetry, the bidder check results (with excerpts of at most 300 characters) and
   the audit trail (steps plus AI debug logs, full-text indexed) are persisted.
-- API keys and proxy passwords live in the macOS Keychain (service `com.webclew.adtech-scanner`,
-  accounts `anthropic-api-key`, `typesafe-api-key` and one `proxy-password:<profile id>` per proxy
-  profile), never in SQLite, logs or the frontend.
+- API keys and proxy passwords live in the macOS Keychain, all in one item (service
+  `com.webclew.adtech-scanner`, account `vault`; see "Keychain prompts"), never in SQLite, logs or the
+  frontend. SQLite only records which of them exist (table `secret_presence`, names without values).
 - A scripted visit never hides that it is automated: no stealth flags, no spoofed fingerprint. What the
   page could see is recorded with the scan and reported (rule `scan-identifiable-as-automated`).
 - Per-scan LLM budget cap, default $0.50.
@@ -148,7 +148,8 @@ without destroying the old ones.
 - Whether Jev judges minified JavaScript well at all. Every threshold, chunk size, question wording,
   ranking weight and token estimate on the Jev path is a starting value. They are named constants in
   `crates/engine/src/domain/{triage,guide,chunks,questions}.rs`, each marked as uncalibrated.
-- Whether a second Keychain item makes macOS prompt a second time. Proxy profiles add one item each.
+- Everything in "Keychain prompts" that happens on a Mac: the number of prompts, the move of the old
+  items into the vault, what macOS returns when the prompt is denied, and the signing steps.
 - Proxies of any kind: no scan was run through a real proxy. The browser side (flag mapping, answering
   the proxy's password challenge) and the fetcher side were tested against local stand-ins only, and
   SOCKS5 not at all beyond building the client.
@@ -175,10 +176,134 @@ without destroying the old ones.
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
 - A cancelled step shows as Failed with summary "Cancelled"; there is no cancelled step status.
 - `delete_all_scans` can race with a scan started at the same moment.
-- Keychain read errors are reported as "no API key configured".
 - Very small scripts can fit entirely inside one stored excerpt.
 - The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
   Prebid releases.
+
+## Keychain prompts
+
+macOS shows "AdTech Scanner wants to use your confidential information stored in
+"com.webclew.adtech-scanner" in your keychain" when an app reads a Keychain item that does not list
+that app as trusted. The item remembers the app by its code signature. `pnpm tauri dev` and an
+unsigned `pnpm tauri build` produce a binary whose signature is unique to that build (no signature, or
+the ad-hoc one the linker adds on Apple Silicon, which is a hash of the binary). So after every
+rebuild the app is a stranger to its own item, and "Always Allow" is forgotten. macOS asks once per
+item and per read, which is where the four or five prompts came from: the app kept one item per
+secret (Anthropic key, TypeSafe key, one per proxy password) and read every one of them on every
+settings fetch and again when a scan started.
+
+What the app does now:
+
+- **One item.** Every secret is in one generic-password item, account `vault`, holding a small JSON
+  map (`anthropic`, `typesafe`, `proxy:<profile id>`). One item means one prompt at most.
+- **Read once, on first need.** Nothing reads the Keychain at start, for Settings, or while browsing
+  scans and reports. `hasApiKey`, `hasTypesafeKey` and `hasPassword` come from the SQLite table
+  `secret_presence`. The first action that needs a secret reads the vault once and keeps it in memory
+  until the app quits: starting a scan that uses a stored key or a proxy password, or saving or
+  removing a key or password. A scan with AI off and no proxy password never reads it.
+- **A refusal is reported as one.** Denying the prompt fails the action with "Keychain access was
+  denied" (a broken or locked Keychain: "The keychain is unavailable: ..."). The scan is not started
+  without AI, the record of what exists is not changed, and the next need asks again.
+- **Old items are moved once.** The first read that finds no vault looks for the items of earlier
+  versions (`anthropic-api-key`, `typesafe-api-key`, `proxy-password:<id>` for the profiles in the
+  settings), writes them into the vault and then deletes them. If the vault cannot be written, the old
+  items stay. Expect one last round of prompts, one per old item, on the first scan after updating.
+  Until then the flags in Settings are a guess made by the database migration (an Anthropic key if any
+  scan used AI, a TypeSafe key if Jev was on, a password for every proxy profile); that first read
+  corrects them.
+- `ADSCAN_API_KEY`, `ADSCAN_TYPESAFE_API_KEY` and `ADSCAN_PROXY_PASSWORD` still bypass the Keychain
+  completely. For day-to-day development that is the simplest way to see no prompt at all.
+
+The code: `infrastructure/keychain.rs` (the OS calls, behind the `Keychain` trait),
+`infrastructure/secrets.rs` (`VaultSecretStore`: vault, cache, migration),
+`infrastructure/sqlite/secret_presence.rs` (the record and its migration), and
+`crates/engine/tests/keychain_prompts.rs`, which counts Keychain accesses per user action against a
+counting stand-in for the OS layer.
+
+What you see per launch, as long as the build is not signed with a stable identity: one prompt, at the
+first scan that uses a key or at the first change of a key. "Allow" covers that one read; a later
+change of a key in the same launch can ask once more, because the `keyring` crate looks the item up
+again before it overwrites it. "Always Allow" covers the rest of that build's life.
+
+### Making "Always Allow" stick
+
+Sign every build with the same identity. Then the item recognises the app after a rebuild and macOS
+stops asking. The signing configuration was left alone because the identity is yours to choose. In
+`src-tauri/tauri.conf.json`:
+
+```json
+"bundle": {
+  "macOS": {
+    "minimumSystemVersion": "11.0",
+    "signingIdentity": "Developer ID Application: Your Name (TEAMID)"
+  }
+}
+```
+
+The environment variable `APPLE_SIGNING_IDENTITY` does the same without touching the file.
+
+(a) With an Apple Developer ID:
+
+1. Create a "Developer ID Application" certificate in the Apple Developer account and install it
+   (Xcode > Settings > Accounts > Manage Certificates, or download and double-click it).
+2. `security find-identity -v -p codesigning` prints its exact name. Put that name in
+   `signingIdentity`.
+3. `pnpm tauri build`.
+
+(b) Free, with a self-signed certificate:
+
+1. Open Keychain Access. Menu Keychain Access > Certificate Assistant > Create a Certificate...
+2. Name: `AdTech Scanner Dev`. Identity Type: Self Signed Root. Certificate Type: Code Signing. Create.
+3. `security find-identity -p codesigning` should list it (it may be marked as not trusted; that is
+   fine for signing your own build).
+4. Set `"signingIdentity": "AdTech Scanner Dev"` and run `pnpm tauri build`. The first signing asks
+   for permission to use the new key; choose Always Allow there too.
+
+A self-signed build is for this Mac only: Gatekeeper on another Mac will not accept it. That needs (a)
+plus notarization, which has nothing to do with the Keychain prompt.
+
+Verify either one:
+
+```sh
+codesign -dv --verbose=4 "target/release/bundle/macos/AdTech Scanner.app"
+codesign -d -r- "target/release/bundle/macos/AdTech Scanner.app"
+```
+
+The first must show `Authority=` with your certificate, not `Signature=adhoc`. The second prints the
+designated requirement, which is what the Keychain item stores: it must name the identifier and the
+certificate, not `cdhash`. A requirement by `cdhash` changes with every build.
+
+The first launch of the first signed build still asks once, because the vault was created by a build
+with another signature. Choose "Always Allow". Later builds with the same identity should not ask.
+
+`pnpm tauri dev` does not sign: it runs the debug binary straight from `target/debug`, and
+`signingIdentity` only applies to `tauri build`. Use the environment variables above in development,
+or expect one prompt per rebuild.
+
+### The `keyring` crate
+
+Version 4.2 with its default feature `v1`, which on macOS uses `apple-native-keyring-store` with the
+`keychain` feature: the file-based login keychain through the `SecKeychain` calls.
+
+- A read is one call (`SecKeychainFindGenericPassword`). There is no separate existence check, so the
+  crate adds no prompt of its own on reads.
+- A write is a lookup of the item and then a change of it (`set_generic_password` in
+  `security-framework`). The lookup reads the secret, so a write to an item that does not trust the
+  app can prompt like a read does. The app therefore writes only when a secret changes, and always
+  after its one read.
+- The crate's other macOS store (`protected`, the data protection keychain) never shows this prompt,
+  but it only works for an app signed with a provisioning profile and a keychain access group. An
+  unsigned or self-signed build gets an error from it. It was not chosen for that reason; it becomes
+  an option once the app ships with a Developer ID and a provisioning profile, and would need the
+  vault moved once more.
+
+Not verified, because no Mac was available: every statement above about what macOS shows and when.
+The macOS half of `infrastructure/keychain.rs` was type-checked and linted for `aarch64-apple-darwin`
+on Linux (in a scratch crate, because the engine's C dependencies do not cross-compile here) and has
+never run. The mapping of a denied prompt assumes macOS answers with `errSecAuthFailed` (-25293) or
+`errSecUserCanceled` (-128), and with `errSecDuplicateItem` (-25299) when the denied read is the lookup
+inside a write. If a denial shows up as "The keychain operation failed: ..." instead of "Keychain
+access was denied", the status code in that message is the one to add in `platform_failure`.
 
 ## Visits: visitor behaviour, page views, the scan profile
 
@@ -289,7 +414,8 @@ Settings hold named proxy profiles (`Settings.proxies`: name, scheme http/https/
 optional user name). A scan runs through none, the system's proxy (the default, as before) or one
 profile: `Settings.defaultProxy`, or `ScanOptions.proxy` per scan.
 
-- The password of a profile is its own Keychain item and is only ever reported as `hasPassword`. It is
+- The password of a profile is kept in the app's one Keychain item and is only ever reported as
+  `hasPassword`. It is
   handed to the browser outside the capture request (answered to the proxy's challenge over CDP, never
   on the command line) and to the app's own file fetcher.
 - Chrome cannot sign in to a SOCKS5 proxy, so a SOCKS5 profile with a user name is refused.
@@ -455,7 +581,7 @@ src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake
 ```
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
-`ScanConfigurationRepository`, `SecretStore`, `LlmClient`, `JudgeClient`, `CaptureSource`,
+`ScanConfigurationRepository`, `SecretStore`, `SecretPresenceRepository`, `LlmClient`, `JudgeClient`, `CaptureSource`,
 `PublicFileFetcher`, `SourceFormatter`,
 `EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.

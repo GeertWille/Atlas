@@ -81,7 +81,7 @@ function literal(rng: Rng): string {
 
 /** A long single statement: the string tables and route maps that make a minified bundle heavy. */
 function table(rng: Rng): string {
-  const entries = Array.from({ length: rng.int(7, 12) }, () => {
+  const entries = Array.from({ length: rng.int(110, 150) }, () => {
     const key = `${rng.pick(WORDS)}${rng.pick([...NOUNS, ...MORE_NOUNS])}`;
     return `${key}: '${rng.pick(WORDS)}/${rng.pick(WORDS)}-${rng.int(100, 999)}'`;
   });
@@ -169,9 +169,10 @@ export function generateFile(
   for (const excerpt of [...excerpts].sort((a, b) => a.line - b.line)) {
     const start = excerpt.line - 1;
     if (start < lines.length) continue;
-    // The line before an excerpt stays blank, so the excerpt reads as its own block.
+    // The lines around an excerpt stay blank, so the excerpt reads as its own block.
     const gap = start - lines.length;
-    if (gap > 0) lines.push(...fillerLines(rng, gap - 1, flavor), "");
+    const after = lines.length > 0 && gap > 1 ? 1 : 0;
+    if (gap > 0) lines.push(...Array<string>(after).fill(""), ...fillerLines(rng, gap - 1 - after, flavor), "");
     lines.push(...excerpt.body.split("\n"));
   }
   if (lines.length < lineCount) {

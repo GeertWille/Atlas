@@ -14,6 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use adscan_model::{
     AdsTxtLineProblem, AdsTxtReport, AdsTxtStatus, BidStatus, BidderDiagnosis, BidderDiagnostics,
     Capture, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, ObservedBidResponse, SchainNode,
+    request_id,
     TrackerEventKind as Ev,
 };
 use serde_json::Value;
@@ -539,6 +540,12 @@ fn prebid_rejections<'a>(capture: &'a Capture, bidder: &BidderFacts) -> Vec<&'a 
         .collect()
 }
 
+/// Where an outcome was seen: on which page views and in which requests.
+struct Seen {
+    pages: Vec<u32>,
+    request_ids: Vec<String>,
+}
+
 /// What the bidder's endpoint and Prebid's own error events said.
 fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticCheck> {
     let mut checks = Vec::new();
@@ -563,7 +570,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
             format!("{count} of {total} bid requests")
         }
     };
-    let mut problem = |code: &str, summary: String, quote: Option<&str>, pages: Vec<u32>| {
+    let mut problem = |code: &str, summary: String, quote: Option<&str>, seen: Seen| {
         let mut check = check(
             DiagnosticArea::Response,
             DiagnosticStatus::Problem,
@@ -571,17 +578,19 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
             summary,
         );
         check.excerpt = quote.map(excerpt);
-        check.pages = pages;
+        check.pages = seen.pages;
+        check.request_ids = seen.request_ids;
         checks.push(check);
     };
-    let pages_where = |matches: &dyn Fn(&ObservedBidResponse) -> bool| {
-        pages_seen(
-            capture,
-            responses
-                .iter()
-                .filter(|response| matches(response))
-                .map(|response| response.page),
-        )
+    let seen_where = |matches: &dyn Fn(&ObservedBidResponse) -> bool| {
+        let matching = || responses.iter().filter(|response| matches(response));
+        Seen {
+            pages: pages_seen(capture, matching().map(|response| response.page)),
+            request_ids: matching()
+                .filter_map(|response| response.request_seq)
+                .map(request_id)
+                .collect(),
+        }
     };
 
     let failed: Vec<_> = responses
@@ -597,7 +606,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(failed.len())
             ),
             first.reason.as_deref(),
-            pages_where(&|response| response.status.is_none()),
+            seen_where(&|response| response.status.is_none()),
         );
     }
     let mut by_error_status: BTreeMap<u16, usize> = BTreeMap::new();
@@ -618,7 +627,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(count)
             ),
             quote,
-            pages_where(&|response| response.status == Some(status)),
+            seen_where(&|response| response.status == Some(status)),
         );
     }
     let mut reasons: Vec<(&str, usize)> = Vec::new();
@@ -639,7 +648,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(*count)
             ),
             Some(reason),
-            pages_where(&|response| {
+            seen_where(&|response| {
                 response.status.is_some_and(|status| status < 400)
                     && response.reason.as_deref() == Some(*reason)
             }),
@@ -671,7 +680,10 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 }
             ),
             Some(first),
-            pages_seen(capture, prebid_errors.iter().map(|(page, _)| *page)),
+            Seen {
+                pages: pages_seen(capture, prebid_errors.iter().map(|(page, _)| *page)),
+                request_ids: Vec::new(),
+            },
         );
     }
 

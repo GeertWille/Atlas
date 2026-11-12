@@ -1,3 +1,4 @@
+export { svgIcon } from "./dom";
 export { type EditorLanguage, languageForMime } from "./languages";
 export { LONG_LINE_LIMIT } from "./long-lines";
 export { clampLine, jumpToLine } from "./navigation";

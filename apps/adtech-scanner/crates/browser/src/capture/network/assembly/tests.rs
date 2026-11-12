@@ -114,7 +114,7 @@ fn finished_of(outputs: &[Output]) -> Option<Finished> {
 }
 
 /// A page view that started at monotonic second 1000.
-fn record(ended: Ended) -> NetworkRecord {
+fn placed(ended: Ended) -> NetworkRecord {
     ended.into_record(|epoch_ms| (0, epoch_ms - EPOCH_AT_1000), |_, _| None)
 }
 
@@ -143,7 +143,7 @@ fn fetched(assembler: &mut Assembler, id: &str, url: &str, at: f64) -> NetworkRe
     let seq = finished_of(&outputs).unwrap().seq;
     let mut records = ended(assembler.body_settled(seq, CapturedBody::Empty, now));
     assert_eq!(records.len(), 1, "{id}");
-    record(records.remove(0))
+    placed(records.remove(0))
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn extra_info_that_comes_first_is_kept_for_its_request() {
         &finished("1.2", 1_001.2, 90),
     );
     let seq = finished_of(&outputs).unwrap().seq;
-    let record = record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
+    let record = placed(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
     assert_eq!(
         header_of(&record.request_headers, "cookie"),
         Some("early=1")
@@ -346,7 +346,7 @@ fn an_ended_request_waits_for_late_extra_info_but_not_for_ever() {
         "Network.responseReceivedExtraInfo",
         &response_extra("1.3", "late=2"),
     );
-    let first = record(ended(outputs).remove(0));
+    let first = placed(ended(outputs).remove(0));
     assert_eq!(first.seq, 0);
     assert_eq!(header_of(&first.request_headers, "cookie"), Some("late=1"));
     assert_eq!(
@@ -360,7 +360,7 @@ fn an_ended_request_waits_for_late_extra_info_but_not_for_ever() {
         "Network.requestWillBeSent",
         &request("1.5", "https://a.example/next", 1_003.0),
     );
-    let second = record(ended(outputs).remove(0));
+    let second = placed(ended(outputs).remove(0));
     assert_eq!(second.seq, 1);
     assert_eq!(header_of(&second.request_headers, "accept"), Some("*/*"));
     assert_eq!(header_of(&second.request_headers, "cookie"), None);
@@ -393,7 +393,7 @@ fn every_redirect_hop_is_a_record_linked_to_the_hop_before() {
     let mut observe = |assembler: &mut Assembler, method: &str, event: Value| {
         let outputs = assembler.observe(&tab(now), method, &event);
         let offer = finished_of(&outputs);
-        records.extend(ended(outputs).into_iter().map(record));
+        records.extend(ended(outputs).into_iter().map(placed));
         offer
     };
 
@@ -456,7 +456,7 @@ fn every_redirect_hop_is_a_record_linked_to_the_hop_before() {
     records.extend(
         ended(assembler.body_settled(2, CapturedBody::Skipped(BodySkip::Type), now))
             .into_iter()
-            .map(record),
+            .map(placed),
     );
 
     records.sort_by_key(|record| record.seq);
@@ -592,7 +592,7 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
         "Network.requestWillBeSent",
         &request("5.5", "https://bid.example/auction", 1_020.03),
     );
-    let record = record(ended(outputs).remove(0));
+    let record = placed(ended(outputs).remove(0));
     assert_eq!((record.seq, record.preflight_of), (0, Some(1)));
     assert_eq!(record.kind, ResourceKind::Preflight);
     assert_eq!(record.initiator.kind, InitiatorKind::Preflight);
@@ -611,7 +611,7 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
         "Network.requestWillBeSent",
         &preflight("P2", "5.6", 1_020.01),
     );
-    let record = record(end_preflight(&mut assembler, "P2", 1_020.01).remove(0));
+    let record = placed(end_preflight(&mut assembler, "P2", 1_020.01).remove(0));
     assert_eq!((record.seq, record.preflight_of), (1, Some(0)));
 
     // A request that is never announced does not keep its preflight for ever.
@@ -627,7 +627,7 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
         "Network.requestWillBeSent",
         &request("5.8", "https://a.example/later", 1_021.5),
     );
-    let record = record(ended(outputs).remove(0));
+    let record = placed(ended(outputs).remove(0));
     assert_eq!((record.seq, record.preflight_of), (0, None));
 }
 
@@ -658,7 +658,7 @@ fn where_a_response_came_from_is_read_from_the_browser() {
             &finished("1.1", 1_001.2, 0),
         );
         let seq = finished_of(&outputs).unwrap().seq;
-        record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0)).served_from
+        placed(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0)).served_from
     };
     assert_eq!(served(&|_| {}, false), ServedFrom::Network);
     assert_eq!(served(&|_| {}, true), ServedFrom::MemoryCache);
@@ -727,7 +727,7 @@ fn the_events_of_one_request_may_come_from_several_sessions() {
     assert!(!offer.in_tab);
     let mut records = ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now));
     assert_eq!(records.len(), 1, "one request, one record");
-    let record = record(records.remove(0));
+    let record = placed(records.remove(0));
     assert_eq!(
         record.context,
         RequestContext::Page,
@@ -761,8 +761,7 @@ fn the_events_of_one_request_may_come_from_several_sessions() {
         &finished("W2", 1_031.2, 400),
     );
     let seq = finished_of(&outputs).unwrap().seq;
-    let record =
-        self::record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
+    let record = placed(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
     assert_eq!(record.context, RequestContext::Worker);
     assert_eq!(record.target_id.as_deref(), Some("child-target"));
     assert_eq!(record.frame_id, None);
@@ -782,7 +781,7 @@ fn the_frame_and_the_session_decide_where_a_request_was_made() {
             "Network.loadingFailed",
             &failed("1.1", 1_001.1, "net::ERR_FAILED"),
         );
-        record(assembler.finish().remove(0))
+        placed(assembler.finish().remove(0))
     };
     assert_eq!(
         record.context,
@@ -803,7 +802,7 @@ fn the_frame_and_the_session_decide_where_a_request_was_made() {
             "Network.requestWillBeSent",
             &request("2.1", "https://ads.example/x", 1_002.0),
         );
-        let record = self::record(assembler.finish().remove(0));
+        let record = placed(assembler.finish().remove(0));
         assert_eq!(record.context, context);
         assert_eq!(record.target_id.as_deref(), Some("child-target"));
     }
@@ -861,7 +860,7 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
 
     let ends: Vec<RequestEnd> = failures
         .into_iter()
-        .map(|ended| record(ended).end)
+        .map(|ended| placed(ended).end)
         .collect();
     let failed = |error: &str, cancelled: bool, blocked_reason: Option<&str>| RequestEnd::Failed {
         error: error.into(),
@@ -901,7 +900,7 @@ fn a_failed_request_has_no_body_and_is_handed_over_once_its_headers_are_known() 
         "Network.requestWillBeSentExtraInfo",
         &request_extra("1.1", "sent=1"),
     );
-    let record = record(ended(outputs).remove(0));
+    let record = placed(ended(outputs).remove(0));
     assert_eq!((record.status, record.response_at_ms), (None, None));
     assert_eq!(record.body, CapturedBody::Absent);
     assert_eq!(record.ended_at_ms.unwrap().round(), 40_100.0);
@@ -938,7 +937,7 @@ fn what_is_still_open_at_the_end_is_handed_over_as_pending_in_order() {
         &finished("1.3", 1_050.3, 10),
     );
 
-    let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(record).collect();
+    let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(placed).collect();
     assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), [0, 1, 2]);
     assert_eq!(records[0].end, RequestEnd::Pending);
     assert_eq!((records[0].ended_at_ms, records[0].status), (None, None));
@@ -1057,7 +1056,7 @@ fn a_navigation_is_handed_over_when_its_document_commits_on_the_site() {
     let offer = finished_of(&outputs).unwrap();
     assert!(offer.main_document);
     let document =
-        record(ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now)).remove(0));
+        placed(ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now)).remove(0));
     assert_eq!((document.seq, document.redirect_from), (1, Some(0)));
     assert_eq!(document.kind, ResourceKind::Document);
 }
@@ -1135,7 +1134,7 @@ fn a_navigation_away_from_the_site_is_a_request_of_the_page_that_made_it() {
         "Network.requestWillBeSent",
         &request("1.1", "https://a.example/x", 1_092.0),
     );
-    let refused = record(ended(outputs).remove(0));
+    let refused = placed(ended(outputs).remove(0));
     assert_eq!(refused.url, "https://other.example/");
     assert!(matches!(refused.end, RequestEnd::Failed { .. }));
 
@@ -1152,7 +1151,7 @@ fn a_navigation_away_from_the_site_is_a_request_of_the_page_that_made_it() {
     let left = assembler.finish();
     assert_eq!(left.len(), 2);
     assert_eq!(
-        record(left.into_iter().last().unwrap()).url,
+        placed(left.into_iter().last().unwrap()).url,
         "https://other.example/2"
     );
 }
@@ -1198,7 +1197,7 @@ fn a_websocket_is_one_record_from_its_creation_to_its_close() {
         finished_of(&outputs).is_none(),
         "a socket has no body to read"
     );
-    let socket = record(ended(outputs).remove(0));
+    let socket = placed(ended(outputs).remove(0));
     assert_eq!(socket.kind, ResourceKind::WebSocket);
     assert_eq!(
         (socket.method.as_str(), socket.url.as_str()),
@@ -1225,7 +1224,7 @@ fn a_websocket_is_one_record_from_its_creation_to_its_close() {
         "Network.webSocketCreated",
         &json!({ "requestId": "7.2", "url": "wss://live.pub.example/2" }),
     );
-    let open = record(assembler.finish().remove(0));
+    let open = placed(assembler.finish().remove(0));
     assert_eq!(
         (open.kind, open.end),
         (ResourceKind::WebSocket, RequestEnd::Pending)
@@ -1268,7 +1267,7 @@ fn a_request_body_comes_with_the_request_or_is_asked_for() {
             )
             .is_empty()
     );
-    let inline = record(ended(fail(&mut assembler, "1.1")).remove(0));
+    let inline = placed(ended(fail(&mut assembler, "1.1")).remove(0));
     assert_eq!(inline.bidder.as_deref(), Some("openx"));
     let data = inline.post_data.unwrap();
     assert_eq!(
@@ -1284,13 +1283,13 @@ fn a_request_body_comes_with_the_request_or_is_asked_for() {
         [Output::PostDataWanted { seq: 1, session, request_id }] if session == "tab" && request_id == "1.2"
     ));
     assert!(ended(fail(&mut assembler, "1.2")).is_empty());
-    let asked = record(ended(assembler.post_data_settled(1, Some("a=1&b=2"), now)).remove(0));
+    let asked = placed(ended(assembler.post_data_settled(1, Some("a=1&b=2"), now)).remove(0));
     assert_eq!(asked.post_data.unwrap().bytes, b"a=1&b=2");
 
     // The browser no longer has it.
     assembler.observe(&tab(now), "Network.requestWillBeSent", &post("1.3", None));
     fail(&mut assembler, "1.3");
-    let lost = record(ended(assembler.post_data_settled(2, None, now)).remove(0));
+    let lost = placed(ended(assembler.post_data_settled(2, None, now)).remove(0));
     assert_eq!((lost.post_data, lost.post_data_missing), (None, true));
 
     // An upload far beyond what is kept is not asked for at all.
@@ -1301,7 +1300,7 @@ fn a_request_body_comes_with_the_request_or_is_asked_for() {
             .observe(&tab(now), "Network.requestWillBeSent", &upload)
             .is_empty()
     );
-    let upload = record(ended(fail(&mut assembler, "1.4")).remove(0));
+    let upload = placed(ended(fail(&mut assembler, "1.4")).remove(0));
     assert_eq!((upload.post_data, upload.post_data_missing), (None, true));
 
     // A request without a body.
@@ -1323,7 +1322,7 @@ fn request_bodies_held_for_open_requests_are_bounded() {
         assembler.observe(&tab(now), "Network.requestWillBeSent", &event);
     }
     assert_eq!(assembler.held_post_bytes, MAX_HELD_POST_BYTES);
-    let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(record).collect();
+    let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(placed).collect();
     let kept = records
         .iter()
         .filter(|record| record.post_data.is_some())

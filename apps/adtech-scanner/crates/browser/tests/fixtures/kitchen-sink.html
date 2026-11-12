@@ -61,7 +61,8 @@
   emit('bidRequested', {
     bidderCode: 'foo',
     auctionId: 'auction-1',
-    bids: [{ bidder: 'foo', adUnitCode: 'unit-a' }, { bidder: 'foo', adUnitCode: 'unit-a' }],
+    bidderRequestId: 'request-foo',
+    bids: [{ bidder: 'foo', adUnitCode: 'unit-a', bidId: 'bid-1' }, { bidder: 'foo', adUnitCode: 'unit-a', bidId: 'bid-2' }, { bidder: 'foo', bidId: 'bid-without-unit' }],
     gdprConsent: { consentString: 'CPsecretTcString', gdprApplies: true, apiVersion: 2 },
     ortb2: {
       source: {

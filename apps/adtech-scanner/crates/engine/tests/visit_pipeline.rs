@@ -8,7 +8,6 @@ mod common;
 use std::time::Duration;
 
 use adscan_engine::application::AppError;
-use adscan_engine::application::ports::SecretStore;
 use adscan_model::{
     ActivityKind, CaptureActivity, CaptureEnvironment, CaptureProxy, DeviceProfile, ErrorCode,
     ExportFormat, LogKind, LogLevel, PageReach, PipelineNode, ProxyChoice, ProxyKind,

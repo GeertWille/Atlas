@@ -610,9 +610,10 @@ pub const MAX_INITIATOR_FRAMES: usize = 32;
 /// sink is not used again.
 pub trait NetworkSink: Send + Sync {
     /// Asked once per finished response, before its body is read from the
-    /// browser. The answer is the sink's whole policy: which kinds of body
-    /// are kept, the per-body and per-scan caps, and back-pressure when it
-    /// cannot write as fast as bodies arrive. After `Read` the capture must
+    /// browser. The answer is the sink's whole policy: which bodies it reads
+    /// (to keep them, or only to analyse them and drop them), the per-body
+    /// and per-scan caps, and back-pressure when it cannot work as fast as
+    /// bodies arrive. After `Read` the capture must
     /// hand over a record for `offer.seq`, whatever becomes of the read.
     fn admit_body(&self, offer: &BodyOffer<'_>) -> BodyAdmission;
 
@@ -626,6 +627,10 @@ pub trait NetworkSink: Send + Sync {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BodyOffer<'a> {
     pub seq: u32,
+    /// The request's URL, as in its record.
+    pub url: &'a str,
+    /// The record's `bidder`: set for a recognised bid request.
+    pub bidder: Option<&'a str>,
     pub kind: ResourceKind,
     pub mime_type: Option<&'a str>,
     pub status: Option<u16>,
@@ -650,6 +655,8 @@ pub enum BodySkip {
     ScanLimit,
     /// The sink holds as many unwritten bytes as it may.
     Backlog,
+    /// The scan keeps no network data and nothing reads this body.
+    NotStored,
 }
 
 /// The response body of a request as handed over.

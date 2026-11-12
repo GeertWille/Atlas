@@ -8,6 +8,7 @@ import {
 } from "@codemirror/search";
 import { EditorSelection } from "@codemirror/state";
 import type { EditorView, Panel, ViewUpdate } from "@codemirror/view";
+import { svgIcon } from "./dom";
 import { describeMatches, searchSummaryField } from "./search-summary";
 
 const ICON_PATHS = {
@@ -16,18 +17,11 @@ const ICON_PATHS = {
   close: "M18 6 6 18M6 6l12 12",
 } as const;
 
-function icon(name: keyof typeof ICON_PATHS): SVGSVGElement {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("class", "size-3.5 fill-none stroke-current stroke-2");
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", ICON_PATHS[name]);
-  path.setAttribute("stroke-linecap", "round");
-  path.setAttribute("stroke-linejoin", "round");
-  svg.append(path);
-  return svg;
-}
+const icon = (name: keyof typeof ICON_PATHS) =>
+  svgIcon(
+    [ICON_PATHS[name]],
+    "size-3.5 fill-none stroke-current stroke-2 [stroke-linecap:round] [stroke-linejoin:round]",
+  );
 
 const BUTTON_CLASS =
   "flex h-6 min-w-6 shrink-0 items-center justify-center rounded-md px-1 font-mono text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:bg-primary-soft aria-pressed:text-primary-text";

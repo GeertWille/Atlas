@@ -1,23 +1,13 @@
 import { useBlocker, useNavigate } from "@tanstack/react-router";
-import {
-  BookmarkIcon,
-  ChevronDownIcon,
-  GlobeIcon,
-  MonitorIcon,
-  ScanSearchIcon,
-  SmartphoneIcon,
-  TriangleAlertIcon,
-} from "lucide-react";
-import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { BookmarkIcon, ChevronDownIcon, GlobeIcon, MonitorIcon, ScanSearchIcon, SmartphoneIcon } from "lucide-react";
+import { type FormEvent, type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import type { ScanConfiguration, Settings } from "@/bindings";
 import { useSaveScanConfiguration } from "@/lib/query/hooks";
 import { aiAvailability } from "@/shared/domain/ai-availability";
 import { proxyChoiceKey } from "@/shared/domain/proxy";
-import { VISITOR_META } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
-import { pluralize } from "@/shared/lib/format";
 import { notifyError } from "@/shared/lib/notify-error";
 import {
   AlertDialog,
@@ -32,10 +22,11 @@ import {
 import { Button } from "@/shared/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/shared/ui/collapsible";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { AdvancedOptions } from "./AdvancedOptions";
-import { AiSummary } from "./AiSummary";
+import { AnalysisOptions } from "./AnalysisOptions";
+import { ComposerSummary } from "./ComposerSummary";
 import { ConfigurationBar } from "./ConfigurationBar";
 import { SCAN_URL_INPUT_ID, takePendingComposerFocus } from "./composer-focus";
+import { OriginOptions } from "./OriginOptions";
 import { SaveConfigurationDialog } from "./SaveConfigurationDialog";
 import {
   formFromOptions,
@@ -46,6 +37,7 @@ import {
   validateScanForm,
   withVisitor,
 } from "./scan-form";
+import { scanSummary } from "./scan-summary";
 import { VisitOptions } from "./VisitOptions";
 
 export function ScanComposer({
@@ -60,19 +52,16 @@ export function ScanComposer({
   const { launch, launchConfiguration, isPending } = useLaunchScan();
   const saveConfiguration = useSaveScanConfiguration();
   const errorId = useId();
+  const summaryId = useId();
   // What the loaded configuration holds, as a form: the composer's edits are measured against it.
   const [saved, setSaved] = useState(() => (configuration ? formFromOptions(configuration.options, settings) : null));
   const [form, setForm] = useState<ScanForm>(() => saved ?? newScanForm(settings));
   const [errors, setErrors] = useState<ScanFormErrors>({});
   const [optionsOpen, setOptionsOpen] = useState(configuration !== undefined);
-  const [advancedOpen, setAdvancedOpen] = useState(
-    () => form.proxy !== "settings" || form.profile !== "settings" || form.budget !== "",
-  );
   const [savingAsNew, setSavingAsNew] = useState(false);
 
   const ai = aiAvailability(settings);
   const effective = { ...form, aiEnabled: form.aiEnabled && ai.triage !== null };
-  const browse = form.visitor === "browse";
   const validation = validateScanForm(effective);
   // What a configuration keeps is the AI choice as made, also while no key is stored to act on it.
   const savable = validateScanForm(form);
@@ -103,10 +92,8 @@ export function ScanComposer({
   const validOptions = () => {
     if (validation.ok && !proxyMissing) return validation.options;
     setErrors(validation.ok ? {} : validation.errors);
-    if (proxyMissing || (!validation.ok && validation.errors.budget)) {
-      setOptionsOpen(true);
-      setAdvancedOpen(true);
-    }
+    // Both are fixed inside the options.
+    if (proxyMissing || (!validation.ok && validation.errors.budget)) setOptionsOpen(true);
     return null;
   };
 
@@ -139,20 +126,43 @@ export function ScanComposer({
     );
   };
 
+  const saveAsNew = () => {
+    if (validOptions()) setSavingAsNew(true);
+  };
+
+  /** Mod+Enter scans from any field; Mod+S keeps the options: into the open configuration, or as a new one. */
+  const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
+    // Dialogs opened from the composer are portals: their keys bubble here through React, not through the form.
+    if (!event.currentTarget.contains(event.target as Node)) return;
+    if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+    if (event.key === "Enter") {
+      event.preventDefault();
+      event.currentTarget.requestSubmit();
+    } else if (event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      if (!configuration) saveAsNew();
+      else if (edited) updateConfiguration();
+    }
+  };
+
+  const budgetUsd = validation.ok ? validation.options.budgetUsd : undefined;
+
   return (
     <form
       onSubmit={submit}
+      onKeyDown={onKeyDown}
       noValidate
       aria-label="New scan"
-      className="rounded-xl border bg-card shadow-xs transition-shadow focus-within:shadow-pop"
+      className="overflow-hidden rounded-xl border bg-card shadow-xs transition-shadow focus-within:shadow-pop"
     >
       {configuration ? (
         <ConfigurationBar
           configuration={configuration}
           edited={edited}
           saving={saveConfiguration.isPending}
+          onRevert={() => saved && setForm(saved)}
           onUpdate={updateConfiguration}
-          onSaveAsNew={() => validOptions() && setSavingAsNew(true)}
+          onSaveAsNew={saveAsNew}
         />
       ) : null}
       <div className="flex items-center gap-2 p-2">
@@ -184,7 +194,7 @@ export function ScanComposer({
             Mobile
           </ToggleGroupItem>
         </ToggleGroup>
-        <Button type="submit" size="lg" disabled={isPending} className="h-9">
+        <Button type="submit" size="lg" disabled={isPending} aria-describedby={summaryId} className="h-9">
           <ScanSearchIcon />
           Scan
         </Button>
@@ -195,25 +205,20 @@ export function ScanComposer({
           {errors.url}
         </p>
       ) : null}
-      {configuration && edited ? (
-        <p className="px-5 pb-2 text-xs text-muted-foreground">
-          Scan runs these edited options once. Update the configuration to keep them.
-        </p>
-      ) : null}
-
       <Collapsible open={optionsOpen} onOpenChange={setOptionsOpen} className="border-t">
-        <div className="flex min-h-10 items-center justify-between gap-4 px-4 py-2">
-          <AiSummary
-            settings={settings}
-            ai={ai}
-            form={effective}
-            budgetUsd={validation.ok ? validation.options.budgetUsd : undefined}
+        <div className="flex min-h-11 items-center justify-between gap-4 py-2 pr-2 pl-4">
+          <ComposerSummary
+            id={summaryId}
+            parts={scanSummary({ form: effective, settings, ai, budgetUsd, proxyMissing })}
+            needsKey={ai.triage === null}
           />
-          <div className="-mr-2 flex shrink-0 items-center gap-1">
-            <span className="text-xs whitespace-nowrap text-muted-foreground">
-              {VISITOR_META[form.visitor].label}
-              {browse ? `, ${pluralize(form.pages, "page")}` : ""}
-            </span>
+          <div className="flex shrink-0 items-center gap-1">
+            {configuration ? null : (
+              <Button variant="ghost" size="sm" onClick={saveAsNew}>
+                <BookmarkIcon />
+                Save as configuration…
+              </Button>
+            )}
             <CollapsibleTrigger asChild>
               <Button variant="ghost" size="sm">
                 Options
@@ -225,42 +230,22 @@ export function ScanComposer({
         <CollapsibleContent>
           <VisitOptions
             form={form}
-            settings={settings}
-            ai={ai}
-            aiEnabled={effective.aiEnabled}
             update={update}
             onVisitorChange={(visitor) => {
               leaving.current = false;
               setForm((current) => withVisitor(current, visitor, settings));
             }}
-          >
-            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="col-span-2 border-t pt-2">
-              <div className="flex items-center justify-between gap-4">
-                <CollapsibleTrigger asChild>
-                  <Button variant="ghost" size="sm" className="-ml-2">
-                    <ChevronDownIcon className={cn("transition-transform", !advancedOpen && "-rotate-90")} />
-                    Proxy, profile and budget
-                    {proxyMissing ? <TriangleAlertIcon aria-label="Needs attention" className="text-amber-fg" /> : null}
-                  </Button>
-                </CollapsibleTrigger>
-                {configuration ? null : (
-                  <Button variant="outline" size="sm" onClick={() => validOptions() && setSavingAsNew(true)}>
-                    <BookmarkIcon />
-                    Save as configuration…
-                  </Button>
-                )}
-              </div>
-              <CollapsibleContent>
-                <AdvancedOptions
-                  form={form}
-                  settings={settings}
-                  budgetError={errors.budget}
-                  proxyMissing={proxyMissing}
-                  update={update}
-                />
-              </CollapsibleContent>
-            </Collapsible>
-          </VisitOptions>
+          />
+          <OriginOptions form={form} settings={settings} proxyMissing={proxyMissing} update={update} />
+          <AnalysisOptions
+            form={form}
+            settings={settings}
+            ai={ai}
+            aiEnabled={effective.aiEnabled}
+            budgetUsd={budgetUsd}
+            budgetError={errors.budget}
+            update={update}
+          />
         </CollapsibleContent>
       </Collapsible>
 

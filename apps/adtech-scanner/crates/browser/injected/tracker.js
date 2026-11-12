@@ -441,6 +441,8 @@
             gdprApplies: data.gdprConsent ? flag(data.gdprConsent.gdprApplies) : null,
             hasConsentString: data.gdprConsent ? !!str(data.gdprConsent.consentString) : null,
             schain: schainOf(data),
+            bidderRequestId: str(data.bidderRequestId),
+            bids: bidIdsOf(data.bids),
           },
           at
         );
@@ -612,6 +614,19 @@
     var codes = [];
     for (var i = 0; isArray(bids) && i < bids.length; i++) pushUnique(codes, str(bids[i] && bids[i].adUnitCode));
     return codes;
+  }
+
+  // The ids Prebid gave the bids of one bidder request. Adapters put them
+  // into what they send, which is how a request on the network is matched to
+  // its auction.
+  function bidIdsOf(bids) {
+    var ids = [];
+    for (var i = 0; isArray(bids) && i < bids.length && ids.length < MAX_LIST; i++) {
+      var bidId = str(bids[i] && bids[i].bidId);
+      var adUnitCode = str(bids[i] && bids[i].adUnitCode);
+      if (bidId && adUnitCode) ids.push({ bidId: bidId, adUnitCode: adUnitCode });
+    }
+    return ids;
   }
 
   function reportPrebidConfig(instance, at) {

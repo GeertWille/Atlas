@@ -1,5 +1,6 @@
 //! Use cases and the scan pipeline. Depends on the domain and on ports only.
 
+pub mod archive;
 pub mod configurations;
 pub mod error;
 pub mod export;

@@ -67,8 +67,7 @@ impl SettingsService {
         // The key can disappear from the keychain behind the app's back.
         settings.jev_enabled &= settings.has_typesafe_key;
         for profile in &mut settings.proxies {
-            profile.has_password =
-                stored.contains(&SecretName::ProxyPassword(profile.id.clone()));
+            profile.has_password = stored.contains(&SecretName::ProxyPassword(profile.id.clone()));
         }
         Ok(settings)
     }

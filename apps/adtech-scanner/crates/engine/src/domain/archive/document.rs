@@ -249,7 +249,7 @@ impl RequestDocument {
 pub fn state_without_bytes(body: &CapturedBody, end: &RequestEnd) -> BodyState {
     match body {
         CapturedBody::Empty => BodyState::Empty,
-        CapturedBody::Skipped(BodySkip::Type) => BodyState::NotKeptType,
+        CapturedBody::Skipped(BodySkip::Type | BodySkip::NotStored) => BodyState::NotKeptType,
         CapturedBody::Skipped(BodySkip::ScanLimit) => BodyState::ScanLimit,
         CapturedBody::Skipped(BodySkip::Backlog) => BodyState::Dropped,
         CapturedBody::Absent if *end == RequestEnd::Pending => BodyState::Pending,

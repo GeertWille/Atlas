@@ -6,7 +6,7 @@ import { estimateScanCost } from "./cost-estimate";
 import { SettingsLink } from "./SettingsLink";
 import type { ScanForm } from "./scan-form";
 
-/** What the scan will cost in model spend, or why it will cost nothing. */
+/** What the scan will cost in model spend and under which cap, or why it will cost nothing. */
 export function AiSummary({
   settings,
   ai,
@@ -22,8 +22,7 @@ export function AiSummary({
   if (ai.triage === null) {
     return (
       <p className="text-xs text-muted-foreground">
-        No API key: this scan runs the deterministic checks only. <SettingsLink>Add a key</SettingsLink> to analyse
-        wrapper logic.
+        No API key: this scan runs the deterministic checks only. Add a key in Settings to analyse wrapper logic.
       </p>
     );
   }
