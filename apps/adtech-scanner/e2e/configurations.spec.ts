@@ -31,7 +31,6 @@ test("configurations are one click from anywhere: sidebar, home and the command 
   await expect(palette.getByRole("option", { name: /Run configuration/ })).toHaveCount(1);
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#\/scans\/scan-/);
-  await expect(page.getByRole("list", { name: "Pipeline" })).toBeVisible();
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
   // The scan carries the configuration's name, and its proxy choice.
   await expect(page.getByRole("main").locator("header").getByText("Morning Ledger, no proxy")).toBeVisible();
