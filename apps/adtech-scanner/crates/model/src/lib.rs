@@ -161,8 +161,9 @@ contract! {
         /// Read-only: whether a TypeSafe API key is stored in the keychain.
         pub has_typesafe_key: bool,
         /// Look up the publisher's seller ids in the sellers.json of the ad
-        /// exchanges its ads.txt names. Contacts those third-party hosts, so
-        /// it is off unless the user turns it on.
+        /// exchanges its ads.txt names. Contacts those third-party hosts
+        /// (at most twelve per scan, never for a page on this machine); on
+        /// unless the user turns it off.
         pub check_sellers_json: bool,
         /// What a new scan does on the page unless its options say otherwise.
         pub default_visitor: VisitorBehavior,
@@ -298,7 +299,7 @@ impl Default for Settings {
             has_api_key: false,
             jev_enabled: false,
             has_typesafe_key: false,
-            check_sellers_json: false,
+            check_sellers_json: true,
             default_visitor: VisitorBehavior::Scroll,
             default_extra_pages: 2,
             persistent_profile: false,

@@ -233,6 +233,13 @@ const MIGRATIONS: &[&str] = &[
     );
     ",
     secret_presence::MIGRATION,
+    // The sellers.json lookup is on by default from this version, and the
+    // owner wants it on for existing installs too. Until now "off" was the
+    // default, so a stored "off" cannot be told from a deliberate choice:
+    // this turns it on for everyone, once. Turning it off afterwards sticks.
+    "
+    UPDATE settings SET data = json_set(data, '$.checkSellersJson', json('true'));
+    ",
 ];
 
 /// Implements the scan, configuration, log and settings repositories on one
@@ -366,7 +373,10 @@ mod tests {
             .unwrap();
         let settings: adscan_model::Settings = from_json(&stored).unwrap();
         assert!(settings.jev_enabled, "existing choices are kept");
-        assert!(!settings.check_sellers_json, "the new lookup starts off");
+        assert!(
+            settings.check_sellers_json,
+            "added switched off by migration 3, switched on for every install by migration 7"
+        );
         let diagnostics: Option<String> = connection
             .query_row(
                 "SELECT diagnostics FROM scans WHERE id = 'old'",
@@ -396,6 +406,53 @@ mod tests {
                 .unwrap();
             assert_eq!(foreign_keys, 1);
         }
+    }
+
+    #[test]
+    fn the_sellers_json_lookup_is_switched_on_once_for_an_existing_install() {
+        let stored_off = adscan_model::Settings {
+            check_sellers_json: false,
+            budget_usd: 0.25,
+            ..adscan_model::Settings::default()
+        };
+        let mut connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..6] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection.pragma_update(None, "user_version", 6).unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings (id, data) VALUES (1, ?1)",
+                [to_json(&stored_off).unwrap()],
+            )
+            .unwrap();
+        let read = |connection: &Connection| -> adscan_model::Settings {
+            let stored: String = connection
+                .query_row("SELECT data FROM settings WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            from_json(&stored).unwrap()
+        };
+
+        migrate(&mut connection).unwrap();
+        assert_eq!(
+            read(&connection),
+            adscan_model::Settings {
+                check_sellers_json: true,
+                ..stored_off.clone()
+            }
+        );
+
+        // Switched off after that, it stays off: the migration does not run again.
+        connection
+            .execute(
+                "UPDATE settings SET data = ?1 WHERE id = 1",
+                [to_json(&stored_off).unwrap()],
+            )
+            .unwrap();
+        migrate(&mut connection).unwrap();
+        assert_eq!(read(&connection), stored_off);
     }
 
     #[test]
