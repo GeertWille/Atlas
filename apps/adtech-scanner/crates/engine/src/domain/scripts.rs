@@ -13,6 +13,9 @@ const ANALYZABLE: &[ScriptCategory] = &[
     ScriptCategory::Unknown,
 ];
 
+/// Script URLs are persisted and shown; this keeps them from growing without bound.
+const MAX_STORED_URL_CHARS: usize = 2_000;
+
 /// A script record plus what the knowledge base could not decide about it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DescribedScript {
@@ -56,7 +59,7 @@ fn describe_one(
     });
     let mut record = ScriptRecord {
         id: format!("s{}", index + 1),
-        url: script.url.clone(),
+        url: stored_url(&script.url),
         hostname,
         inline: script.inline,
         size_bytes: script.body.len() as f64,
@@ -129,7 +132,24 @@ pub fn select_for_analysis(
     selected
 }
 
-pub fn content_hash(body: &str) -> String {
+/// The URL as it may be persisted. A `data:` URL is the script body itself,
+/// which must never be stored, so only its media type is kept.
+fn stored_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("data:") {
+        let media_type: String = rest
+            .chars()
+            .take_while(|c| !matches!(c, ',' | ';'))
+            .take(100)
+            .collect();
+        return format!("data:{media_type},[{} bytes not stored]", rest.len());
+    }
+    match url.char_indices().nth(MAX_STORED_URL_CHARS) {
+        Some((cut, _)) => format!("{}…", &url[..cut]),
+        None => url.to_string(),
+    }
+}
+
+fn content_hash(body: &str) -> String {
     let digest = Sha256::digest(body.as_bytes());
     digest
         .iter()
@@ -138,7 +158,7 @@ pub fn content_hash(body: &str) -> String {
         .collect()
 }
 
-pub fn hostname_of(url: &str) -> String {
+fn hostname_of(url: &str) -> String {
     Url::parse(url)
         .ok()
         .and_then(|parsed| parsed.host_str().map(str::to_string))
@@ -146,7 +166,7 @@ pub fn hostname_of(url: &str) -> String {
 }
 
 /// eTLD+1 according to the public suffix list (`news.example.co.uk` -> `example.co.uk`).
-pub fn registrable_domain(hostname: &str) -> Option<String> {
+fn registrable_domain(hostname: &str) -> Option<String> {
     psl::domain_str(hostname).map(str::to_string)
 }
 
@@ -200,6 +220,31 @@ mod tests {
         assert_eq!(described[2].record.hostname, "www.news.example.co.uk");
         assert_eq!(described[0].record.id, "s1");
         assert_eq!(described[2].record.id, "s3");
+    }
+
+    #[test]
+    fn data_urls_and_oversized_urls_are_not_stored_verbatim() {
+        let payload = "pbjs.requestBids({timeout:1500});".repeat(50);
+        let long_query = format!("https://cdn.example/ads.js?cb={}", "9".repeat(5_000));
+        let described = describe(&capture_with(vec![
+            script(
+                &format!("data:text/javascript;charset=utf-8,{payload}"),
+                false,
+                &payload,
+            ),
+            script(&long_query, false, "boot()"),
+        ]));
+        let inline_url = &described[0].record.url;
+        assert!(
+            inline_url.starts_with("data:text/javascript,["),
+            "{inline_url}"
+        );
+        assert!(inline_url.ends_with(" bytes not stored]"));
+        assert!(!inline_url.contains("requestBids"));
+        let long_url = &described[1].record.url;
+        assert_eq!(long_url.chars().count(), MAX_STORED_URL_CHARS + 1);
+        assert!(long_url.starts_with("https://cdn.example/ads.js?cb=999"));
+        assert_eq!(described[1].record.hostname, "cdn.example");
     }
 
     #[test]

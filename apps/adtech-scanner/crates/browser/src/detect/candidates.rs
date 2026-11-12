@@ -107,6 +107,19 @@ pub(crate) fn well_known_paths(os: Os, roots: &SearchRoots) -> Vec<PathBuf> {
     }
 }
 
+/// The executable for a path the user configured. macOS file pickers hand
+/// out the application bundle (`Google Chrome.app`), which is a directory;
+/// its executable carries the bundle's name.
+pub(crate) fn executable_of(configured: &Path) -> PathBuf {
+    let is_bundle = configured
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"));
+    match configured.file_stem() {
+        Some(name) if is_bundle => configured.join("Contents/MacOS").join(name),
+        _ => configured.to_path_buf(),
+    }
+}
+
 /// Browser family guessed from the executable path alone.
 pub(crate) fn family_name(path: &Path) -> &'static str {
     let lower = path.to_string_lossy().to_lowercase();
@@ -263,6 +276,27 @@ mod tests {
             "C:/Users/ada/AppData/Local/Microsoft/Edge/Application/msedge.exe"
         )));
         assert_eq!(paths.len(), WINDOWS_INSTALLS.len() * 2);
+    }
+
+    #[test]
+    fn a_configured_app_bundle_resolves_to_its_executable() {
+        assert_eq!(
+            executable_of(Path::new("/Applications/Google Chrome.app")),
+            PathBuf::from("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
+        );
+        assert_eq!(
+            executable_of(Path::new("/Users/ada/Applications/Chromium.app/")),
+            PathBuf::from("/Users/ada/Applications/Chromium.app/Contents/MacOS/Chromium")
+        );
+        let executable = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+        assert_eq!(
+            executable_of(Path::new(executable)),
+            PathBuf::from(executable)
+        );
+        assert_eq!(
+            executable_of(Path::new("/usr/bin/chromium")),
+            PathBuf::from("/usr/bin/chromium")
+        );
     }
 
     #[test]

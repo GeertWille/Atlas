@@ -23,6 +23,7 @@ use tauri::test::{
 };
 use tauri::webview::InvokeRequest;
 use tauri::{Listener, Manager, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_fs::FsExt;
 use tokio_util::sync::CancellationToken;
 
 /// The commands of the contract table in the build brief.
@@ -134,6 +135,11 @@ fn invoke_error(app: &TestApp, command: &str, args: Value) -> CommandError {
     let error = invoke_raw(app, command, args).expect_err("expected the command to fail");
     serde_json::from_value(error.clone())
         .unwrap_or_else(|_| panic!("{command} did not return a CommandError: {error}"))
+}
+
+/// What the dialog plugin does when the user confirms a save dialog.
+fn pick_in_save_dialog(app: &TestApp, path: &std::path::Path) {
+    app.window.app_handle().fs_scope().allow_file(path).unwrap();
 }
 
 fn scan_options(url: &str) -> Value {
@@ -361,6 +367,7 @@ fn export_returns_the_document_and_writes_it_when_a_path_is_given() {
     let started: ScanSummary = invoke(&app, "start_scan", scan_options("example.com"));
     wait_for_end(&app, &started.id);
     let target = app._data_dir.path().join("report.md");
+    pick_in_save_dialog(&app, &target);
 
     let markdown: String = invoke(
         &app,
@@ -378,6 +385,7 @@ fn export_returns_the_document_and_writes_it_when_a_path_is_given() {
     let detail: ScanDetail = serde_json::from_str(&json_document).unwrap();
     assert_eq!(detail.summary.id, started.id);
 
+    pick_in_save_dialog(&app, std::path::Path::new("/nonexistent-dir/report.json"));
     let unwritable = invoke_error(
         &app,
         "export_scan",
@@ -398,4 +406,78 @@ fn export_returns_the_document_and_writes_it_when_a_path_is_given() {
         .code,
         ErrorCode::NotFound
     );
+}
+
+#[test]
+fn export_only_writes_where_the_user_picked_and_only_export_files() {
+    let app = test_app();
+    let started: ScanSummary = invoke(&app, "start_scan", scan_options("example.com"));
+    wait_for_end(&app, &started.id);
+    let export_to = |format: &str, path: &std::path::Path| {
+        invoke_error(
+            &app,
+            "export_scan",
+            json!({ "scanId": started.id, "format": format, "path": path.to_str().unwrap() }),
+        )
+    };
+
+    // A path the webview made up, never confirmed in a dialog.
+    let never_picked = app._data_dir.path().join("planted.md");
+    let refused = export_to("markdown", &never_picked);
+    assert_eq!(
+        (refused.code, refused.message.as_str()),
+        (
+            ErrorCode::InvalidInput,
+            "Choose where to save the export in the save dialog first"
+        )
+    );
+    assert!(!never_picked.exists());
+
+    // A file picked in a dialog for another purpose keeps its content.
+    let browser = app._data_dir.path().join("chrome");
+    std::fs::write(&browser, "binary").unwrap();
+    pick_in_save_dialog(&app, &browser);
+    let profile = app._data_dir.path().join(".zshrc");
+    pick_in_save_dialog(&app, &profile);
+    for (format, target, expected) in [
+        (
+            "json",
+            &browser,
+            "Save the export with the file extension .json",
+        ),
+        (
+            "markdown",
+            &profile,
+            "Save the export with the file extension .md",
+        ),
+        (
+            "markdown",
+            &browser,
+            "Save the export with the file extension .md",
+        ),
+    ] {
+        let refused = export_to(format, target);
+        assert_eq!(
+            (refused.code, refused.message.as_str()),
+            (ErrorCode::InvalidInput, expected)
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&browser).unwrap(), "binary");
+    assert!(!profile.exists());
+
+    // A picked path that is not absolute cannot be redirected by the working directory.
+    pick_in_save_dialog(&app, std::path::Path::new("report.json"));
+    assert_eq!(
+        export_to("json", std::path::Path::new("report.json")).code,
+        ErrorCode::InvalidInput
+    );
+
+    let picked = app._data_dir.path().join("Report.JSON");
+    pick_in_save_dialog(&app, &picked);
+    let document: String = invoke(
+        &app,
+        "export_scan",
+        json!({ "scanId": started.id, "format": "json", "path": picked.to_str().unwrap() }),
+    );
+    assert_eq!(std::fs::read_to_string(&picked).unwrap(), document);
 }

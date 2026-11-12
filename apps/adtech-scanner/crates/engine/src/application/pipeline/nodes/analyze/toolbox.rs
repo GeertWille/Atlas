@@ -17,8 +17,14 @@ const MAX_SEARCH_MATCHES: usize = 40;
 const SEARCH_CONTEXT_LINES: usize = 2;
 const MAX_TOOL_OUTPUT_CHARS: usize = 24_000;
 const MAX_EVIDENCE_CHARS: usize = 600;
-/// The model may have joined or split lines differently from the beautifier.
-const CITATION_EXTRA_LINES: usize = 2;
+/// Patterns and excerpts come from the model. The regex engine is linear in
+/// the text and its compiled size is capped; these bounds keep the inputs
+/// themselves small.
+const MAX_PATTERN_CHARS: usize = 300;
+const REGEX_SIZE_LIMIT: usize = 1 << 20;
+const MAX_EXCERPT_CHARS: usize = 2_000;
+/// Shorter excerpts (`}`, `else {`) match almost anywhere and prove nothing.
+const MIN_EXCERPT_CHARS: usize = 8;
 
 pub struct ScriptSource {
     pub id: String,
@@ -230,7 +236,16 @@ impl Toolbox {
         if args.pattern.is_empty() {
             return ToolOutcome::error("`pattern` must not be empty.");
         }
-        let (regex, literal_fallback) = compile_pattern(&args.pattern);
+        if args.pattern.chars().count() > MAX_PATTERN_CHARS {
+            return ToolOutcome::error(format!(
+                "`pattern` is longer than {MAX_PATTERN_CHARS} characters. Search for a short, distinctive token instead."
+            ));
+        }
+        let Some((regex, literal_fallback)) = compile_pattern(&args.pattern) else {
+            return ToolOutcome::error(
+                "`pattern` is too complex to search with. Use a simpler expression or plain text.",
+            );
+        };
         let mut out = String::new();
         let mut shown = 0;
         let mut total = 0;
@@ -348,8 +363,16 @@ impl Toolbox {
             .find(|script| script.id.eq_ignore_ascii_case(citation.script_id.trim()))
             .ok_or_else(|| format!("There is no script `{}`.", citation.script_id))?;
         let needle = squash(&citation.excerpt);
-        if needle.is_empty() {
-            return Err("The excerpt is empty.".into());
+        let needle_chars = needle.chars().count();
+        if needle_chars < MIN_EXCERPT_CHARS {
+            return Err(format!(
+                "The excerpt is too short to verify; quote at least {MIN_EXCERPT_CHARS} non-whitespace characters."
+            ));
+        }
+        if needle_chars > MAX_EXCERPT_CHARS {
+            return Err(format!(
+                "The excerpt is too long; quote the few most telling lines (at most {MAX_EXCERPT_CHARS} characters)."
+            ));
         }
         let total = script.lines.len();
         if citation.line < 1 || citation.line as usize > total {
@@ -359,11 +382,7 @@ impl Toolbox {
             ));
         }
         let cited = citation.line as usize;
-        let span = citation.excerpt.lines().count().max(1) + CITATION_EXTRA_LINES;
-        let located = std::iter::once(cited)
-            .chain(1..=total)
-            .find_map(|start| tightest_match(script, start, span, &needle));
-        let Some((line, end)) = located else {
+        let Some((line, end)) = locate(&script.lines, &needle, cited) else {
             return Err(format!(
                 "The excerpt does not appear in {} (checked at line {cited} and in the whole script).",
                 script.id
@@ -400,20 +419,21 @@ fn with_input<T: for<'de> Deserialize<'de>>(
     }
 }
 
-fn compile_pattern(pattern: &str) -> (Regex, bool) {
+/// The pattern as a regex, or as literal text when it is not a valid one
+/// (the flag says which). `None` when it compiles to more than the size limit.
+fn compile_pattern(pattern: &str) -> Option<(Regex, bool)> {
     let build = |source: &str| {
         RegexBuilder::new(source)
             .case_insensitive(true)
-            .size_limit(1 << 20)
+            .size_limit(REGEX_SIZE_LIMIT)
             .build()
     };
     match build(pattern) {
-        Ok(regex) => (regex, false),
-        Err(_) => (
-            build(&regex::escape(pattern))
-                .unwrap_or_else(|_| Regex::new("$^").expect("static regex")),
-            true,
-        ),
+        Ok(regex) => Some((regex, false)),
+        Err(regex::Error::CompiledTooBig(_)) => None,
+        Err(_) => build(&regex::escape(pattern))
+            .ok()
+            .map(|regex| (regex, true)),
     }
 }
 
@@ -437,28 +457,22 @@ fn shorten(line: &str) -> String {
     }
 }
 
-/// The smallest line range inside `start..start+span` whose text contains the
-/// excerpt, ignoring whitespace.
-fn tightest_match(
-    script: &ScriptSource,
-    start: usize,
-    span: usize,
-    needle: &str,
-) -> Option<(usize, usize)> {
-    let contains =
-        |from: usize, to: usize| squash(&script.lines[from - 1..to].join("\n")).contains(needle);
-    let mut first = start;
-    let mut last = (start + span - 1).min(script.lines.len());
-    if !contains(first, last) {
-        return None;
-    }
-    while first < last && contains(first + 1, last) {
-        first += 1;
-    }
-    while last > first && contains(first, last - 1) {
-        last -= 1;
-    }
-    Some((first, last))
+/// First and last line (1-based) of the occurrence of `needle` that starts
+/// closest to the cited line, comparing without whitespace because the model
+/// may have joined or split lines differently from the beautifier.
+fn locate(lines: &[String], needle: &str, cited: usize) -> Option<(usize, usize)> {
+    let mut text = String::new();
+    let line_ends: Vec<usize> = lines
+        .iter()
+        .map(|line| {
+            text.extend(line.chars().filter(|c| !c.is_whitespace()));
+            text.len()
+        })
+        .collect();
+    let line_at = |offset: usize| line_ends.partition_point(|&end| end <= offset) + 1;
+    text.match_indices(needle)
+        .map(|(start, matched)| (line_at(start), line_at(start + matched.len() - 1)))
+        .min_by_key(|&(first, _)| first.abs_diff(cited))
 }
 
 /// Whitespace-insensitive comparison form.
@@ -685,6 +699,79 @@ mod tests {
                 .content
                 .contains("at least one code citation")
         );
+    }
+
+    #[test]
+    fn a_repeated_excerpt_is_attributed_to_the_occurrence_nearest_the_cited_line() {
+        let mut toolbox = toolbox();
+        toolbox.scripts[0].lines = (0..300)
+            .map(|n| {
+                if n % 100 == 50 {
+                    "  googletag.pubads().refresh();".to_string()
+                } else {
+                    format!("step{n}();")
+                }
+            })
+            .collect();
+        let outcome = toolbox.execute(
+            "report_finding",
+            &finding_input(249, "googletag.pubads().refresh();"),
+        );
+        let ToolEffect::Finding(draft) = outcome.effect else {
+            panic!("expected a finding: {}", outcome.content);
+        };
+        assert_eq!(draft.evidence[0].line, Some(251));
+        assert_eq!(draft.evidence[0].body, "  googletag.pubads().refresh();");
+    }
+
+    #[test]
+    fn an_excerpt_split_across_lines_is_located_and_stored_as_those_lines() {
+        let outcome = toolbox().execute(
+            "report_finding",
+            &finding_input(1, "if (isMobile()) { window.addEventListener('scroll'"),
+        );
+        let ToolEffect::Finding(draft) = outcome.effect else {
+            panic!("expected a finding: {}", outcome.content);
+        };
+        assert_eq!(draft.evidence[0].line, Some(4));
+        assert_eq!(
+            draft.evidence[0].body,
+            "if (isMobile()) {\n  window.addEventListener('scroll', startAuction, { once: true });"
+        );
+    }
+
+    #[test]
+    fn excerpts_too_short_to_prove_anything_or_too_long_are_rejected() {
+        let toolbox = toolbox();
+        let trivial = toolbox.execute("report_finding", &finding_input(3, "}"));
+        assert!(trivial.is_error);
+        assert_eq!(trivial.effect, ToolEffect::None);
+        assert!(trivial.content.contains("too short to verify"));
+
+        let whole_file = toolbox.execute(
+            "report_finding",
+            &finding_input(1, &"startAuction();".repeat(500)),
+        );
+        assert!(whole_file.is_error);
+        assert!(whole_file.content.contains("too long"));
+    }
+
+    #[test]
+    fn oversized_and_explosive_patterns_are_refused_without_searching() {
+        let toolbox = toolbox();
+        let long = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "a".repeat(MAX_PATTERN_CHARS + 1), "script_id": null }),
+        );
+        assert!(long.is_error);
+        assert!(long.content.contains("longer than 300 characters"));
+
+        let explosive = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "(\\w{1000}){1000}", "script_id": null }),
+        );
+        assert!(explosive.is_error);
+        assert!(explosive.content.contains("too complex"));
     }
 
     #[test]

@@ -19,8 +19,8 @@ pub const NODES: [PipelineNode; 8] = [
 
 /// Phase 2 reads scripts on demand, so the cap bounds beautify time and the
 /// size of the script index rather than prompt size.
-pub const MAX_ANALYZED_SCRIPTS: usize = 12;
-pub const MAX_ANALYZED_BYTES: f64 = 4_000_000.0;
+const MAX_ANALYZED_SCRIPTS: usize = 12;
+const MAX_ANALYZED_BYTES: f64 = 4_000_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnFailure {

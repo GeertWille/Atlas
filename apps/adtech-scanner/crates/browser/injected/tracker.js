@@ -8,17 +8,17 @@
   'use strict';
 
   var win = window;
+  // The binding exists in every frame of the tab; none of them may keep it.
+  var send = win['__adscan_emit'];
+  try {
+    delete win['__adscan_emit'];
+  } catch (ignored) {}
+  if (typeof send !== 'function') return;
   try {
     if (win.top !== win) return;
   } catch (crossOriginParent) {
     return;
   }
-
-  var send = win['__adscan_emit'];
-  if (typeof send !== 'function') return;
-  try {
-    delete win['__adscan_emit'];
-  } catch (ignored) {}
 
   // Pages replace these; keep the originals.
   var doc = win.document;
@@ -32,6 +32,7 @@
   var MAX_BATCH = 200;
   var MAX_EVENTS = 40000;
   var MAX_TEXT = 1000;
+  var MAX_LIST = 200;
   var FAST_POLL_MS = 50;
   var SLOW_POLL_MS = 1000;
   var FAST_POLL_WINDOW_MS = 30000;
@@ -84,7 +85,7 @@
   // ------------------------------------------------------------------ values
 
   function str(value) {
-    if (typeof value === 'string') return value ? value : null;
+    if (typeof value === 'string') return value ? clip(value) : null;
     if (typeof value === 'number' && isFinite(value)) return String(value);
     return null;
   }
@@ -98,7 +99,7 @@
   }
 
   function pushUnique(list, value) {
-    if (value !== null && list.indexOf(value) < 0) list.push(value);
+    if (value !== null && list.length < MAX_LIST && list.indexOf(value) < 0) list.push(value);
   }
 
   function sizeText(width, height) {
@@ -206,13 +207,15 @@
           return undefined;
         },
         set: function (value) {
-          Object.defineProperty(win, name, {
-            configurable: true,
-            enumerable: true,
-            writable: true,
-            value: value,
-          });
-          guard(onValue)(value);
+          try {
+            Object.defineProperty(win, name, {
+              configurable: true,
+              enumerable: true,
+              writable: true,
+              value: value,
+            });
+            onValue(value);
+          } catch (ignored) {}
         },
       });
     } catch (ignored) {}
@@ -238,7 +241,9 @@
     'bidderTimeout',
     'timeoutBuffer',
     'priceGranularity',
+    'customPriceBucket',
     'mediaTypePriceGranularity',
+    'auctionOptions',
     'currency',
     'floors',
     'userSync',
@@ -348,7 +353,7 @@
     var data = payload || {};
     switch (eventType) {
       case 'auctionInit':
-        reportPrebidConfig(instance, at);
+        guard(reportPrebidConfig)(instance, at);
         emit(
           'auctionInit',
           { auctionId: str(data.auctionId) || 'unknown', timeout: num(data.timeout), adUnits: adUnitsOf(data.adUnits) },
@@ -388,20 +393,9 @@
         break;
       case 'bidderError':
         var request = data.bidderRequest || data;
-        var error = data.error || {};
         emit(
           'bidderError',
-          {
-            auctionId: str(request.auctionId),
-            bidder: bidderOf(request),
-            message:
-              str(error.message) ||
-              str(error.statusText) ||
-              str(error.responseText) ||
-              (error.status ? 'HTTP ' + error.status : null) ||
-              str(error.reason) ||
-              (typeof error === 'string' ? str(error) : null),
-          },
+          { auctionId: str(request.auctionId), bidder: bidderOf(request), message: bidderErrorMessage(data.error) },
           at
         );
         break;
@@ -409,7 +403,13 @@
         emit('auctionEnd', { auctionId: str(data.auctionId) || 'unknown' }, at);
         break;
       case 'setTargeting':
-        emit('setTargeting', { adUnitCodes: Object.keys(data) }, at);
+        // Prebid lists every ad unit it looked at, with `{}` for those that
+        // got no keys.
+        var targeted = [];
+        Object.keys(data).forEach(function (code) {
+          if (hasKeys(data[code])) pushUnique(targeted, str(code));
+        });
+        emit('setTargeting', { adUnitCodes: targeted }, at);
         break;
       case 'bidWon':
         emit(
@@ -449,6 +449,21 @@
     }
   }
 
+  // `error` is the failed request as Prebid's ajax layer reports it (an XHR
+  // or an XHR-shaped object), an Error, or a string.
+  function bidderErrorMessage(error) {
+    if (typeof error === 'string') return str(error);
+    if (!error || typeof error !== 'object') return null;
+    if (error.timedOut === true) return 'request timed out';
+    return (
+      str(error.message) ||
+      str(error.statusText) ||
+      (num(error.status) ? 'HTTP ' + error.status : null) ||
+      str(error.reason) ||
+      str(error.responseText)
+    );
+  }
+
   function bidKey(bid) {
     return {
       auctionId: str(bid.auctionId) || 'unknown',
@@ -459,7 +474,7 @@
 
   function adUnitsOf(adUnits) {
     var units = [];
-    for (var i = 0; isArray(adUnits) && i < adUnits.length; i++) {
+    for (var i = 0; isArray(adUnits) && i < adUnits.length && i < MAX_LIST; i++) {
       var unit = adUnits[i] || {};
       var mediaTypes = unit.mediaTypes || {};
       var sizes = sizesOf(mediaTypes.banner && mediaTypes.banner.sizes);
@@ -670,6 +685,22 @@
     return rect.bottom >= 0 && rect.right >= 0 && rect.top < win.innerHeight && rect.left < win.innerWidth;
   }
 
+  // GPT is retiring the slot's targeting getters in favour of
+  // `getConfig('targeting')`; the getter is used for as long as it exists.
+  function slotTargetingKeys(slot) {
+    if (typeof slot.getTargetingKeys === 'function') {
+      var keys = slot.getTargetingKeys();
+      return isArray(keys) ? keys : [];
+    }
+    var config = typeof slot.getConfig === 'function' ? slot.getConfig('targeting') : null;
+    var targeting = config && config.targeting;
+    if (!targeting || typeof targeting !== 'object') return [];
+    return Object.keys(targeting).filter(function (key) {
+      var value = targeting[key];
+      return isArray(value) ? value.length > 0 : value !== null && value !== undefined;
+    });
+  }
+
   function onSlotEvent(eventType, event) {
     var slot = event.slot;
     var elementId = slotElementId(slot);
@@ -678,9 +709,9 @@
     reportMeasurableSlots(slot);
     var fields = { elementId: elementId };
     if (eventType === 'slotRequested') {
-      var keys = typeof slot.getTargetingKeys === 'function' ? slot.getTargetingKeys() : [];
-      fields.prebidTargetingKeys = (isArray(keys) ? keys : []).filter(function (key) {
-        return typeof key === 'string' && key.indexOf('hb_') === 0;
+      fields.prebidTargetingKeys = [];
+      slotTargetingKeys(slot).forEach(function (key) {
+        if (typeof key === 'string' && key.indexOf('hb_') === 0) pushUnique(fields.prebidTargetingKeys, str(key));
       });
     } else if (eventType === 'slotRenderEnded') {
       fields.isEmpty = event.isEmpty !== false;
@@ -711,7 +742,9 @@
       try {
         // The stub queues calls for the real library, which must not report
         // the same fetch a second time.
-        if (typeof callback !== 'function' || !apsCallbacks.has(callback)) {
+        if (typeof callback !== 'function') {
+          observeApsFetch(config, callback);
+        } else if (!apsCallbacks.has(callback)) {
           args = Array.prototype.slice.call(arguments);
           args[1] = observeApsFetch(config, callback);
         }

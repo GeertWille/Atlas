@@ -32,12 +32,6 @@ impl Default for OxcFormatter {
     }
 }
 
-impl OxcFormatter {
-    pub fn with_limits(max_bytes: usize, timeout: Duration) -> Self {
-        Self { max_bytes, timeout }
-    }
-}
-
 #[async_trait]
 impl SourceFormatter for OxcFormatter {
     async fn format(&self, source: String) -> FormattedSource {
@@ -205,7 +199,10 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_input_is_left_unformatted() {
-        let formatter = OxcFormatter::with_limits(16, FORMAT_TIMEOUT);
+        let formatter = OxcFormatter {
+            max_bytes: 16,
+            timeout: FORMAT_TIMEOUT,
+        };
         let formatted = formatter
             .format("var a=1;\nvar b=2;var c=3;".to_string())
             .await;

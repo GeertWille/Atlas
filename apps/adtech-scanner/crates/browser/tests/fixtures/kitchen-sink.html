@@ -112,6 +112,13 @@
     slots.push(made);
     return made;
   }
+  // A slot of a GPT release without the deprecated targeting getters.
+  function modernSlot(path, elementId, targeting) {
+    var made = slot(path, [], elementId);
+    delete made.getTargetingKeys;
+    made.getConfig = function (key) { return key === 'targeting' ? { targeting: targeting } : {}; };
+    return made;
+  }
   function fire(type, detail) {
     (listeners[type] || []).forEach(function (listener) { listener(detail); });
   }
@@ -121,7 +128,9 @@
     cmd: { push: function (command) { command(); } },
     getVersion: function () { return 20261101; },
     defineSlot: function (path, sizes, elementId) { return slot(path, sizes.map(function (s) { return size(s[0], s[1]); }), elementId); },
-    defineOutOfPageSlot: function (path, elementId) { return slot(path, [], elementId); },
+    defineOutOfPageSlot: function (path, elementId) {
+      return modernSlot(path, elementId, { hb_adid: ['ad-9'], hb_cleared: null, hb_empty: [], section: 'news' });
+    },
     pubads: function () {
       return {
         getSlots: function () { return slots.slice(); },
@@ -164,8 +173,10 @@ setTimeout(function () {
   ]);
   hb.emit('bidderError', { error: { status: 503, statusText: '' }, bidderRequest: { bidderCode: 'broken', auctionId: 'auction-1' } });
   hb.emit('bidderError', { error: new Error('adapter exploded'), bidderRequest: { bidderCode: 'worse' } });
+  hb.emit('bidderError', { error: { timedOut: true, status: 0, statusText: '', responseText: '' }, bidderRequest: { bidderCode: 'stalled', auctionId: 'auction-1' } });
+  hb.emit('bidderError', { error: { status: 500, statusText: '', responseText: new Array(5000).join('<p>') }, bidderRequest: { bidderCode: 'verbose', auctionId: 'auction-1' } });
   hb.emit('auctionEnd', { auctionId: 'auction-1' });
-  hb.emit('setTargeting', { 'unit-a': { hb_bidder: 'foo' }, 'unit-b': { hb_bidder: 'bar' } });
+  hb.emit('setTargeting', { 'unit-a': { hb_bidder: 'foo' }, 'unit-b': { hb_bidder: 'bar' }, 'unit-c': {} });
   hb.emit('bidWon', { auctionId: 'auction-1', bidderCode: 'foo', adUnitCode: 'unit-a', cpm: 1.5 });
   hb.emit('adRenderSucceeded', { doc: document, bid: { bidderCode: 'foo', adUnitCode: 'unit-a' }, adId: 'ad-1' });
   hb.emit('adRenderFailed', { reason: 'cannotFindAd', message: 'Cannot find ad', adId: 'ad-2' });
@@ -193,6 +204,12 @@ setTimeout(function () {
     defineSlotLooksNative: window.defineSlotLooksNative,
     definedSlotsAreUntouched: window.definedSlotsAreUntouched,
     bindingVisible: '__adscan_emit' in window,
+    bindingVisibleInFrame: (function () {
+      var frame = document.body.appendChild(document.createElement('iframe'));
+      var visible = '__adscan_emit' in frame.contentWindow;
+      frame.remove();
+      return visible;
+    })(),
     consoleLooksNative: /\[native code\]/.test(String(console.log)),
     pbjsCreated: 'pbjs' in window,
   }));

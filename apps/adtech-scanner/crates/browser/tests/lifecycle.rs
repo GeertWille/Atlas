@@ -110,3 +110,53 @@ async fn dialogs_and_debugger_statements_do_not_stall_the_scan() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn scripts_from_data_and_blob_urls_are_captured_without_payload_urls() {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(&fixtures.url("odd-scripts.html"), DeviceProfile::Desktop);
+    request.observe_seconds = 1;
+    let capture = support::capture_ok(request).await;
+
+    let script_with = |marker: &str| {
+        capture
+            .scripts
+            .iter()
+            .find(|script| !script.inline && script.body.contains(marker))
+            .unwrap_or_else(|| panic!("no script contains {marker}"))
+    };
+    let from_data = script_with("DATA_URL ran");
+    assert!(from_data.body.len() > 8_000);
+    assert!(
+        from_data.url.starts_with("data:text/javascript,[") && from_data.url.len() < 80,
+        "{}",
+        from_data.url
+    );
+    assert!(script_with("BLOB_URL ran").url.starts_with("blob:http://"));
+}
+
+#[tokio::test]
+async fn a_page_cannot_save_files_to_the_users_disk() {
+    fn saved_files() -> Vec<std::path::PathBuf> {
+        let downloads = std::env::var_os("HOME")
+            .map(|home| std::path::PathBuf::from(home).join("Downloads"))
+            .and_then(|directory| std::fs::read_dir(directory).ok());
+        downloads
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| Some(entry.ok()?.path()))
+            .collect()
+    }
+
+    let before = saved_files();
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(&fixtures.url("downloads.html"), DeviceProfile::Desktop);
+    request.observe_seconds = 2;
+    let capture = support::capture_ok(request).await;
+
+    assert_eq!(
+        capture.page_title.as_deref(),
+        Some("A page that pushes a file at the visitor")
+    );
+    assert_eq!(saved_files(), before, "the download must be refused");
+}

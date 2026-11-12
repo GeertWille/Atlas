@@ -42,8 +42,14 @@ pub(crate) async fn run(
     hooks: CaptureHooks,
 ) -> Result<Capture, BrowserError> {
     let address = parse_address(&request.url).map_err(CaptureError::from)?;
+    // Detection runs the browser for its version, which blocks.
+    let configured_path = request.chrome_path.clone();
     let browser =
-        detect::detect_browser(request.chrome_path.as_deref()).ok_or(BrowserError::NotFound)?;
+        tokio::task::spawn_blocking(move || detect::detect_browser(configured_path.as_deref()))
+            .await
+            .ok()
+            .flatten()
+            .ok_or(BrowserError::NotFound)?;
     let mode = if request.headless {
         "headless"
     } else {
@@ -73,6 +79,13 @@ async fn scan(
     hooks: &CaptureHooks,
 ) -> Result<Capture, CaptureError> {
     let (cdp, events) = Cdp::connect(&chrome.devtools_url().await?).await?;
+    // A scanned page must not be able to put files in the user's Downloads.
+    cdp.send(
+        None,
+        "Browser.setDownloadBehavior",
+        json!({ "behavior": "deny" }),
+    )
+    .await?;
     let version = cdp.send(None, "Browser.getVersion", json!({})).await?;
     let emulation = emulation_for(
         request.device,

@@ -9,12 +9,12 @@ use std::time::Duration;
 
 use adscan_engine::application::AppError;
 use adscan_engine::application::pipeline::graph::NODES;
-use adscan_engine::application::ports::CaptureError;
+use adscan_engine::application::ports::{CaptureError, FormattedSource, SourceFormatter};
 use adscan_engine::application::scans::MAX_CONCURRENT_SCANS;
 use adscan_model::{
-    ApiKeyStatus, DeviceProfile, Effort, EvidenceKind, FindingCategory, FindingSource, LogKind,
-    PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory, SettingsPatch, Severity,
-    StepStatus,
+    ApiKeyStatus, DeviceProfile, Effort, EvidenceKind, FindingCategory, FindingSource, LogEntry,
+    LogKind, PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory, SettingsPatch,
+    Severity, StepStatus,
 };
 use common::*;
 use serde_json::{Value, json};
@@ -1099,6 +1099,156 @@ async fn unknown_model_is_priced_conservatively_and_flagged_in_the_audit_trail()
     );
 }
 
+// -- no raw payloads in the audit trail --------------------------------------------
+
+/// `count` statements that each carry a distinct, countable identifier.
+fn marked_statements(prefix: &str, count: usize) -> String {
+    (0..count)
+        .map(|n| format!("window.{prefix}{n:04}=1;"))
+        .collect()
+}
+
+fn distinct_marks(text: &str, prefix: &str) -> usize {
+    text.match_indices(prefix)
+        .map(|(at, _)| &text[at + prefix.len()..at + prefix.len() + 4])
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+#[tokio::test]
+async fn persisted_audit_trail_holds_bounded_excerpts_never_script_bodies() {
+    const WRAPPER_MARKS: usize = 3000;
+    const LAZY_MARKS: usize = 2000;
+    let mut capture = scroll_gated_capture(DeviceProfile::Desktop);
+    capture.scripts[2]
+        .body
+        .push_str(&marked_statements("wrapperMark", WRAPPER_MARKS));
+    capture.scripts[4]
+        .body
+        .push_str(&marked_statements("lazyMark", LAZY_MARKS));
+
+    // The model reads the whole wrapper in 60 parallel calls, then searches it.
+    let read_everything: Vec<Value> = (0..60)
+        .map(|n| {
+            tool_use(
+                &format!("toolu_read_{n}"),
+                "read_script",
+                json!({ "script_id": "s3", "start_line": n * 50 + 1, "end_line": (n + 1) * 50 }),
+            )
+        })
+        .collect();
+    let server = mock_api(
+        vec![lazy_script_is_a_wrapper()],
+        vec![
+            turn(json!(read_everything), "tool_use"),
+            calls(
+                "toolu_search",
+                "search_scripts",
+                json!({ "pattern": "wrapperMark", "script_id": null }),
+            ),
+            calls(
+                "toolu_console",
+                "get_telemetry",
+                json!({ "section": "prebid_config" }),
+            ),
+            finish("toolu_done"),
+        ],
+    )
+    .await;
+    let harness = harness(
+        CaptureBehavior::Return(Box::new(capture)),
+        &server.uri(),
+        Some(KEY),
+    );
+    harness
+        .settings
+        .update(SettingsPatch {
+            budget_usd: Some(5.0),
+            ..SettingsPatch::default()
+        })
+        .await
+        .unwrap();
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+
+    // The model itself did get the source it asked for.
+    let sonnet = requests_for(&server, SONNET).await;
+    let sent_to_model = sonnet[1]["messages"][2]["content"].to_string();
+    assert!(distinct_marks(&sent_to_model, "wrapperMark") > WRAPPER_MARKS * 9 / 10);
+
+    let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
+    let tool_results: Vec<&LogEntry> = logs
+        .iter()
+        .filter(|entry| entry.kind == LogKind::ToolResult)
+        .collect();
+    assert_eq!(tool_results.len(), 63);
+    const NOTE_ROOM: usize = 120;
+    for entry in &tool_results {
+        assert!(
+            entry.message.chars().count() <= 800 + NOTE_ROOM,
+            "one tool result excerpt is at most 800 characters, got {}",
+            entry.message.chars().count()
+        );
+    }
+    let truncated = tool_results
+        .iter()
+        .filter(|entry| {
+            entry
+                .message
+                .ends_with("characters; tool output is not stored in full]")
+        })
+        .count();
+    assert_eq!(truncated, 62, "every lookup result says it is an excerpt");
+    let stored_tool_output: usize = tool_results
+        .iter()
+        .map(|entry| entry.message.chars().count())
+        .sum();
+    assert!(
+        stored_tool_output <= 24_000 + tool_results.len() * NOTE_ROOM,
+        "all tool result excerpts of a scan stay within the total, got {stored_tool_output}"
+    );
+    assert!(
+        tool_results[61]
+            .message
+            .starts_with("\n[audit excerpt: 0 of"),
+        "once the total is used up nothing more of the captured data is kept"
+    );
+    assert_eq!(tool_results[62].message, "Analysis finished.");
+
+    // Phase 1 logged what it asked, with a short excerpt per script.
+    let filter_request = logs
+        .iter()
+        .find(|entry| {
+            entry.kind == LogKind::LlmRequest && entry.node == PipelineNode::FilterScripts
+        })
+        .unwrap();
+    assert!(filter_request.message.contains("You are Jeff"));
+    assert!(
+        filter_request
+            .message
+            .contains("s5 https://pub.example/js/lazy.js")
+    );
+    assert!(filter_request.message.contains("[excerpt: first 300 of "));
+
+    // Everything the scan left in the database, as one text.
+    let persisted = format!(
+        "{}{}",
+        serde_json::to_string(&detail).unwrap(),
+        serde_json::to_string(&logs).unwrap()
+    );
+    let wrapper_marks = distinct_marks(&persisted, "wrapperMark");
+    assert!(
+        wrapper_marks > 0 && wrapper_marks < WRAPPER_MARKS / 3,
+        "{wrapper_marks} of {WRAPPER_MARKS} wrapper statements were persisted"
+    );
+    let lazy_marks = distinct_marks(&persisted, "lazyMark");
+    assert!(
+        lazy_marks < LAZY_MARKS / 20,
+        "{lazy_marks} of {LAZY_MARKS} statements of the classified script were persisted"
+    );
+}
+
 // -- capture failures and cancellation ------------------------------------------------
 
 #[tokio::test]
@@ -1242,6 +1392,64 @@ async fn cancelling_mid_analysis_keeps_what_was_already_persisted() {
         step(&detail, PipelineNode::Synthesize).status,
         StepStatus::Skipped
     );
+}
+
+struct PanickingFormatter;
+
+#[async_trait::async_trait]
+impl SourceFormatter for PanickingFormatter {
+    async fn format(&self, _source: String) -> FormattedSource {
+        panic!("formatter bug");
+    }
+}
+
+#[tokio::test]
+async fn a_panic_inside_a_node_fails_the_scan_and_leaves_no_step_open() {
+    let server = mock_api(vec![lazy_script_is_a_wrapper()], vec![]).await;
+    let harness = harness_with_formatter(
+        gated_desktop(),
+        &server.uri(),
+        Some(KEY),
+        std::sync::Arc::new(PanickingFormatter),
+    );
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+
+    assert_eq!(detail.summary.status, ScanStatus::Failed);
+    assert_eq!(
+        detail.summary.error.as_deref(),
+        Some("The scan stopped because of an internal error")
+    );
+    assert!(detail.summary.finished_at.is_some());
+    assert!(
+        detail.summary.cost_usd > 0.0,
+        "what was spent before the crash stays on the scan"
+    );
+    assert_eq!(detail.findings.len(), 1, "the heuristic finding is kept");
+    let beautify = step(&detail, PipelineNode::Beautify);
+    assert_eq!(
+        (beautify.status, beautify.summary.as_deref()),
+        (
+            StepStatus::Failed,
+            Some("The scan stopped because of an internal error")
+        )
+    );
+    for node in [PipelineNode::AnalyzeLogic, PipelineNode::Synthesize] {
+        assert_eq!(step(&detail, node).status, StepStatus::Skipped, "{node:?}");
+    }
+    let events = harness.events.events();
+    assert!(
+        matches!(events.last().unwrap(), ScanEvent::ScanUpdated { summary } if summary.status == ScanStatus::Failed)
+    );
+    assert!(events.iter().any(|event| matches!(
+        event,
+        ScanEvent::StepUpdated { step } if step.node == PipelineNode::Beautify && step.status == StepStatus::Failed
+    )));
+
+    // The crashed scan released its slot: the next one runs.
+    let next = harness.scans.start(scan_options(false)).await.unwrap();
+    assert_eq!(next.status, ScanStatus::Running);
+    wait_for_end(&harness, &next.id).await;
 }
 
 // -- scan manager ------------------------------------------------------------------

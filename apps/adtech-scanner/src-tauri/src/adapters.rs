@@ -1,8 +1,6 @@
 //! Adapters from the outside world to the engine's ports: the real browser
 //! and the Tauri event bus.
 
-use std::sync::Arc;
-
 use adscan_browser::{BrowserError, CaptureHooks};
 use adscan_engine::application::ports::{CaptureError, CaptureSource, EventSink, ProgressFn};
 use adscan_model::{BrowserInfo, Capture, CaptureRequest, SCAN_EVENT, ScanEvent};
@@ -30,7 +28,7 @@ impl CaptureSource for ChromeCaptureSource {
     ) -> Result<Capture, CaptureError> {
         let hooks = CaptureHooks {
             cancel,
-            on_progress: Arc::clone(&on_progress),
+            on_progress,
         };
         adscan_browser::capture(request, hooks)
             .await

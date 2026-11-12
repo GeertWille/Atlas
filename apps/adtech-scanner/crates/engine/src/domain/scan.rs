@@ -5,8 +5,8 @@ use url::{Host, Url};
 
 use super::DomainError;
 
-pub const MIN_OBSERVE_SECONDS: u32 = 3;
-pub const MAX_OBSERVE_SECONDS: u32 = 120;
+const MIN_OBSERVE_SECONDS: u32 = 3;
+const MAX_OBSERVE_SECONDS: u32 = 120;
 
 /// An absolute http(s) URL. A bare domain is accepted and upgraded to https.
 #[derive(Debug, Clone, PartialEq)]

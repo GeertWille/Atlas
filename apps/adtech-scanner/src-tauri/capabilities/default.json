@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "What the main window may do: receive scan events, drag the custom title bar, show save/open dialogs and open http(s) links in the browser.",
+  "description": "What the main window may do: listen for scan events, drag the custom title bar, show save/open dialogs and open http(s) links in the browser. It gets no filesystem permission: the fs plugin is only loaded so the backend can tell which paths the user picked in a dialog.",
   "windows": ["main"],
   "permissions": [
-    "core:event:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "core:window:allow-start-dragging",
     "dialog:allow-save",
     "dialog:allow-open",

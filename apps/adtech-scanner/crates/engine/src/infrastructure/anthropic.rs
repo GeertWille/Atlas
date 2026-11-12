@@ -9,6 +9,7 @@ use reqwest::{RequestBuilder, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
+use url::{Host, Url};
 
 use crate::application::llm::{
     AssistantBlock, AssistantTurn, LlmError, LlmMessage, LlmRequest, LlmResponse, StopReason,
@@ -18,11 +19,12 @@ use crate::application::ports::LlmClient;
 use crate::domain::pricing::TokenUsage;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
-pub const BASE_URL_ENV: &str = "ADSCAN_ANTHROPIC_BASE_URL";
 const API_VERSION: &str = "2026-10-21";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Non-streaming turns with thinking can take minutes.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+/// Checking a key is a tiny request the user waits on in Settings.
+const VALIDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy)]
@@ -52,7 +54,16 @@ pub struct AnthropicClient {
 }
 
 impl AnthropicClient {
+    /// The client honours the proxy settings of the environment and, on macOS
+    /// and Windows, of the system. `base_url` must be https unless it points at
+    /// this machine, because every request carries the API key.
     pub fn new(base_url: &str, retry: RetryPolicy) -> Result<Self, LlmError> {
+        if !is_safe_base_url(base_url) {
+            return Err(LlmError::Network(
+                "the API base URL must use https (plain http is only accepted for localhost)"
+                    .into(),
+            ));
+        }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
@@ -144,12 +155,28 @@ impl LlmClient for AnthropicClient {
     async fn validate_key(&self, api_key: &str) -> Result<(), LlmError> {
         let url = format!("{}/v1/models?limit=1", self.base_url);
         self.send_with_retry(
-            || self.authorized(self.http.get(&url), api_key),
+            || {
+                self.authorized(self.http.get(&url), api_key)
+                    .timeout(VALIDATE_TIMEOUT)
+            },
             &CancellationToken::new(),
         )
         .await
         .map(drop)
     }
+}
+
+fn is_safe_base_url(base_url: &str) -> bool {
+    let Ok(url) = Url::parse(base_url) else {
+        return false;
+    };
+    let loopback = match url.host() {
+        Some(Host::Domain(domain)) => domain == "localhost",
+        Some(Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    };
+    url.scheme() == "https" || (url.scheme() == "http" && loopback)
 }
 
 // -- request ------------------------------------------------------------------

@@ -90,7 +90,11 @@ pub struct TrackerEvent {
 /// Tracker event payloads. The injected script emits JSON objects of the shape
 /// `{ "t": 1234.5, "type": "bidResponse", ...fields }`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase", rename_all_fields = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum TrackerEventKind {
     // -- library detection ---------------------------------------------------
     /// `window.pbjs` (or another global registered in `_pbjsGlobals`) appeared.

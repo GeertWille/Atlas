@@ -2,7 +2,7 @@
 
 use super::DomainError;
 
-pub const MAX_BUDGET_USD: f64 = 50.0;
+const MAX_BUDGET_USD: f64 = 50.0;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TokenUsage {

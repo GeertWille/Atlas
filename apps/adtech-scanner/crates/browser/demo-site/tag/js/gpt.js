@@ -113,6 +113,9 @@
   Slot.prototype.getTargetingMap = function () {
     return JSON.parse(JSON.stringify(this.targeting));
   };
+  Slot.prototype.getConfig = function (key) {
+    return key === 'targeting' ? { targeting: this.getTargetingMap() } : {};
+  };
   Slot.prototype.getResponseInformation = function () {
     return this.responseInformation;
   };

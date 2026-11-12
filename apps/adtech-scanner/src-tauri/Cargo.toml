@@ -19,6 +19,7 @@ adscan-model.workspace = true
 async-trait.workspace = true
 tauri = { version = "2.12", features = [] }
 tauri-plugin-dialog = "2.8"
+tauri-plugin-fs = "2.7"
 tauri-plugin-opener = "2.7"
 tokio.workspace = true
 tokio-util.workspace = true

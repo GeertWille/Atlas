@@ -6,7 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adscan_engine::application::pipeline::PipelineDeps;
-use adscan_engine::application::ports::{CaptureError, CaptureSource, EventSink, ProgressFn};
+use adscan_engine::application::ports::{
+    CaptureError, CaptureSource, EventSink, ProgressFn, SourceFormatter,
+};
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, RetryPolicy};
@@ -423,6 +425,20 @@ pub fn harness(
     anthropic_base_url: &str,
     api_key: Option<&str>,
 ) -> Harness {
+    harness_with_formatter(
+        behavior,
+        anthropic_base_url,
+        api_key,
+        Arc::new(OxcFormatter::default()),
+    )
+}
+
+pub fn harness_with_formatter(
+    behavior: CaptureBehavior,
+    anthropic_base_url: &str,
+    api_key: Option<&str>,
+    formatter: Arc<dyn SourceFormatter>,
+) -> Harness {
     let store = SqliteStore::open_in_memory().unwrap();
     let llm = Arc::new(AnthropicClient::new(anthropic_base_url, fast_retry()).unwrap());
     let secrets = Arc::new(match api_key {
@@ -441,7 +457,7 @@ pub fn harness(
         logs: Arc::new(store.clone()),
         llm,
         capture: capture.clone(),
-        formatter: Arc::new(OxcFormatter::default()),
+        formatter,
         events: events.clone(),
         clock: Arc::new(SystemClock),
         ids: Arc::new(UuidGenerator),

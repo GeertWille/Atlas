@@ -72,6 +72,21 @@ async fn short_labels_only_count_inside_a_consent_dialog() {
 }
 
 #[tokio::test]
+async fn accepts_a_google_funding_choices_dialog() {
+    assert_accepted(
+        &scan("consent-funding-choices.html", true).await,
+        "Google Funding Choices",
+    );
+}
+
+#[tokio::test]
+async fn presses_nothing_when_no_button_plainly_means_accept_all() {
+    let clicked = scan("consent-paywall.html", true).await;
+    assert!(!clicked.accepted, "{:#?}", clicked.progress);
+    assert_eq!(clicked.console, Vec::<String>::new());
+}
+
+#[tokio::test]
 async fn leaves_the_banner_alone_when_not_asked_to_accept() {
     let clicked = scan("consent-onetrust.html", false).await;
     assert!(!clicked.accepted);

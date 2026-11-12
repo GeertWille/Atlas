@@ -9,7 +9,8 @@ use crate::domain::finding::FindingDraft;
 use crate::domain::pricing::{TokenUsage, cost_of};
 use crate::domain::synthesis::severity_counts;
 
-/// Audit entries carry excerpts, never whole payloads.
+/// Backstop for every entry. Nodes that log captured data (script source,
+/// tool output) cut it down to short excerpts themselves before it gets here.
 const MAX_LOG_MESSAGE_CHARS: usize = 20_000;
 const MAX_LOG_DATA_STRING_CHARS: usize = 4_000;
 
@@ -158,7 +159,7 @@ impl StepRun<'_> {
     }
 }
 
-pub fn truncate_chars(text: &str, max_chars: usize) -> String {
+fn truncate_chars(text: &str, max_chars: usize) -> String {
     match text.char_indices().nth(max_chars) {
         Some((cut, _)) => format!(
             "{}\n[truncated, {} more characters]",

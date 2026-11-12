@@ -4,26 +4,25 @@ use adscan_model::{
     AdSlot, BidStatus, FindingCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
 };
 
-use super::{HEADER_BIDDING_REVENUE_SHARE_PCT, Rule, RuleContext, heuristic, ms, pct, share};
+use super::{
+    AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
+    RuleContext, estimate_impact, heuristic, ms, pct, share,
+};
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
-use crate::domain::telemetry::slot_matches_code;
+use crate::domain::telemetry::{auction_covers, slot_matches_code};
 
 /// The page was scrolled far enough that every lazy slot had its chance.
 const FULL_SCROLL_DEPTH: f64 = 0.9;
+/// Text taken from the page is quoted in evidence as an excerpt only.
+const MAX_QUOTED_CHARS: usize = 300;
 
 fn ids(slots: &[&AdSlot]) -> Vec<String> {
     slots.iter().map(|slot| slot.element_id.clone()).collect()
 }
 
-fn slot_is_in_an_auction(ctx: &RuleContext, slot: &AdSlot) -> bool {
-    ctx.auctions()
-        .iter()
-        .flat_map(|auction| &auction.ad_units)
-        .any(|unit| slot_matches_code(slot, &unit.code))
-}
-
 /// GPT requested the ad while the Prebid auction for the slot was still
-/// running, so the request carried no hb_* targeting.
+/// running, so the request carried no hb_* targeting. Requests that left
+/// before a scroll-gated auction even began belong to that gate's finding.
 pub struct AdRequestBeforeAuctionEnd;
 
 impl Rule for AdRequestBeforeAuctionEnd {
@@ -32,12 +31,29 @@ impl Rule for AdRequestBeforeAuctionEnd {
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
+        let gated_auction_at = match ctx.auction_gate() {
+            Some(AuctionGate::AfterInteraction { auction_at_ms, .. }) => Some(auction_at_ms),
+            _ => None,
+        };
         let racing: Vec<&AdSlot> = ctx
             .slots()
             .iter()
             .filter(|slot| {
                 slot.requested_before_auction_end == Some(true)
                     && slot.had_prebid_targeting == Some(false)
+            })
+            .filter(|slot| {
+                // The gate's symptom: the request left before the slot's first
+                // auction, the gated one, had even started.
+                let first_auction_at = ctx
+                    .auctions()
+                    .iter()
+                    .find(|auction| auction_covers(auction, slot))
+                    .map(|auction| auction.started_at_ms);
+                let waited_for_the_gate = gated_auction_at.is_some()
+                    && first_auction_at == gated_auction_at
+                    && slot.requested_at_ms < first_auction_at;
+                !waited_for_the_gate
             })
             .collect();
         if racing.is_empty() {
@@ -65,18 +81,11 @@ impl Rule for AdRequestBeforeAuctionEnd {
              `display()` does not fire the request early."
             .into();
         finding.impact = "Header bids for these slots are thrown away; the ad server fills them without bid competition".into();
-        finding.estimated_revenue_impact_pct =
-            Some(affected_share * HEADER_BIDDING_REVENUE_SHARE_PCT);
         for slot in &racing {
             let auction_end = ctx
                 .auctions()
                 .iter()
-                .filter(|auction| {
-                    auction
-                        .ad_units
-                        .iter()
-                        .any(|unit| slot_matches_code(slot, &unit.code))
-                })
+                .filter(|auction| auction_covers(auction, slot))
                 .find_map(|auction| auction.ended_at_ms);
             finding.evidence.push(timeline(
                 format!("Slot {}", slot.element_id),
@@ -88,6 +97,16 @@ impl Rule for AdRequestBeforeAuctionEnd {
             ));
         }
         finding.affected_slots = ids(&racing);
+        estimate_impact(
+            &mut finding,
+            affected_share * HEADER_BIDDING_REVENUE_SHARE_PCT,
+            &format!(
+                "the header bidding revenue of {} of {} slots, taking every slot to earn the same; \
+                 {HEADER_BIDDING_SHARE_ASSUMPTION}",
+                racing.len(),
+                ctx.slots().len(),
+            ),
+        );
         vec![finding]
     }
 }
@@ -139,7 +158,6 @@ impl Rule for SlotsNeverRequested {
              the lazy-load trigger (IntersectionObserver or GPT `enableLazyLoad`) actually fires for them."
             .into();
         finding.impact = "These placements never show an ad".into();
-        finding.estimated_revenue_impact_pct = Some(share(idle.len(), ctx.slots().len()) * 100.0);
         for slot in &idle {
             finding.evidence.push(timeline(
                 format!("Slot {}", slot.element_id),
@@ -152,6 +170,15 @@ impl Rule for SlotsNeverRequested {
             ));
         }
         finding.affected_slots = ids(&idle);
+        estimate_impact(
+            &mut finding,
+            share(idle.len(), ctx.slots().len()) * 100.0,
+            &format!(
+                "{} of {} slots earn nothing, taking every slot to earn the same",
+                idle.len(),
+                ctx.slots().len(),
+            ),
+        );
         vec![finding]
     }
 }
@@ -315,7 +342,11 @@ impl Rule for SlotsOutsideHeaderBidding {
             .slots()
             .iter()
             .filter(|slot| slot.requested_at_ms.is_some() && is_display(slot))
-            .filter(|slot| !slot_is_in_an_auction(ctx, slot))
+            .filter(|slot| {
+                !ctx.auctions()
+                    .iter()
+                    .any(|auction| auction_covers(auction, slot))
+            })
             .collect();
         if outside.is_empty() {
             return Vec::new();
@@ -340,8 +371,6 @@ impl Rule for SlotsOutsideHeaderBidding {
              the slot's div id / ad unit path."
                 .into();
         finding.impact = "No header bidding demand on these placements".into();
-        finding.estimated_revenue_impact_pct =
-            Some(share(outside.len(), ctx.slots().len()) * HEADER_BIDDING_REVENUE_SHARE_PCT);
         finding.evidence.push(metric(
             "Slots without a Prebid ad unit",
             outside
@@ -357,6 +386,16 @@ impl Rule for SlotsOutsideHeaderBidding {
                 .join(", "),
         ));
         finding.affected_slots = ids(&outside);
+        estimate_impact(
+            &mut finding,
+            share(outside.len(), ctx.slots().len()) * HEADER_BIDDING_REVENUE_SHARE_PCT,
+            &format!(
+                "the header bidding revenue of {} of {} slots, taking every slot to earn the same; \
+                 {HEADER_BIDDING_SHARE_ASSUMPTION}",
+                outside.len(),
+                ctx.slots().len(),
+            ),
+        );
         vec![finding]
     }
 }
@@ -407,12 +446,18 @@ impl Rule for WonBidNotRendered {
                     "ad unit {}, bidder {}: {}",
                     code.as_deref().unwrap_or("unknown"),
                     bidder.as_deref().unwrap_or("unknown"),
-                    reason.as_deref().unwrap_or("no reason given"),
+                    reason
+                        .as_deref()
+                        .map_or("no reason given".to_string(), |reason| reason
+                            .chars()
+                            .take(MAX_QUOTED_CHARS)
+                            .collect()),
                 ),
             ));
             finding.affected_slots.extend(code.clone());
             finding.affected_bidders.extend(bidder.clone());
         }
+        finding.affected_slots.sort();
         finding.affected_slots.dedup();
         finding.affected_bidders.sort();
         finding.affected_bidders.dedup();

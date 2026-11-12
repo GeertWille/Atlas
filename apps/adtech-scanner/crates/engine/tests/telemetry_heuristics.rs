@@ -48,6 +48,24 @@ fn only(capture: &Capture, rule: &str) -> FindingDraft {
             && !finding.impact.is_empty()
     );
     assert!(!finding.evidence.is_empty(), "a finding needs evidence");
+    if let Some(pct) = finding.estimated_revenue_impact_pct {
+        assert_eq!(pct, pct.round(), "estimates do not pretend to precision");
+        let basis = finding
+            .evidence
+            .iter()
+            .find(|evidence| evidence.label == "How the revenue impact was estimated")
+            .expect("an estimate states what it rests on");
+        assert!(
+            basis
+                .body
+                .starts_with(&format!("About {pct:.0}% of ad revenue at risk: "))
+        );
+        assert!(
+            basis
+                .body
+                .ends_with("An estimate from one page view, not a measurement.")
+        );
+    }
     finding
 }
 
@@ -408,6 +426,104 @@ fn auction_that_never_starts_is_critical_once_the_page_was_scrolled() {
     assert!(idle.confidence < scrolled.confidence);
 }
 
+/// GPT requests the ads on load, the auction only starts after the first
+/// scroll: the requests without bids are the gate's symptom, not a second bug.
+#[test]
+fn ad_requests_that_left_before_a_scroll_gated_auction_are_not_reported_twice() {
+    let mut events = page_setup();
+    for slot in ["top", "side", "footer"] {
+        events.push(slot_requested(500.0, slot, false));
+        events.push(slot_rendered(700.0, slot, false));
+    }
+    events.push(lifecycle(950.0, "load"));
+    events.extend(scroll_events(4000.0));
+    events.extend(auction_round(4060.0, "auction-1"));
+    let capture = capture_with(DeviceProfile::Desktop, events, 1.0);
+
+    let slots = derived(&capture).slots;
+    assert!(
+        slots
+            .iter()
+            .all(|slot| slot.requested_before_auction_end == Some(true)),
+        "the telemetry still records the race"
+    );
+    assert_eq!(fired(&capture), ["auction-gated-on-interaction"]);
+}
+
+/// A slot with its own auction on load whose ad request races that auction is
+/// a second bug, even on a page that also gates its main auction on scroll.
+#[test]
+fn a_request_racing_its_own_auction_is_still_reported_next_to_a_scroll_gate() {
+    let mut events = page_setup();
+    events.push(slot_defined(210.0, "anchor", false));
+    events.push(ev(
+        400.0,
+        Ev::AuctionInit {
+            auction_id: "anchor-auction".into(),
+            timeout: Some(1500.0),
+            ad_units: vec![TrackedAdUnit {
+                code: "anchor".into(),
+                sizes: strings(&["320x50"]),
+                bidders: strings(&["rubicon"]),
+            }],
+        },
+    ));
+    events.push(slot_requested(410.0, "anchor", false));
+    events.push(ev(
+        700.0,
+        Ev::AuctionEnd {
+            auction_id: "anchor-auction".into(),
+        },
+    ));
+    events.push(slot_rendered(720.0, "anchor", false));
+    events.push(lifecycle(950.0, "load"));
+    events.extend(scroll_events(4000.0));
+    events.extend(auction_round(4060.0, "auction-1"));
+    let capture = capture_with(DeviceProfile::Desktop, events, 1.0);
+
+    assert_eq!(
+        fired(&capture),
+        [
+            "auction-gated-on-interaction",
+            "ad-request-before-auction-end"
+        ]
+    );
+    let hits = evaluate(&capture);
+    assert_eq!(hits[1].1.affected_slots, ["anchor"]);
+}
+
+#[test]
+fn an_unanswered_consent_banner_makes_the_idle_auction_finding_less_certain() {
+    let mut capture = never_started_capture(DeviceProfile::Desktop, true);
+    capture.scripts.push(script(
+        "https://sdk.privacy-center.org/loader.js",
+        "/* didomi */",
+    ));
+    let blocked = only(&capture, "auction-gated-on-interaction");
+    assert_eq!(
+        (blocked.severity, blocked.confidence),
+        (Severity::High, 0.5)
+    );
+    assert!(
+        blocked
+            .description
+            .contains("waiting for the user's consent choice")
+    );
+    assert!(
+        blocked
+            .recommendation
+            .starts_with("First re-scan with consent acceptance turned on")
+    );
+
+    capture.consent_accepted = true;
+    let accepted = only(&capture, "auction-gated-on-interaction");
+    assert_eq!(
+        (accepted.severity, accepted.confidence),
+        (Severity::Critical, 0.8)
+    );
+    assert!(!accepted.description.contains("consent"));
+}
+
 /// An anchor slot is auctioned on load, the on-screen slots only after the
 /// first scroll: the gate is found even though it is not the first auction.
 #[test]
@@ -676,7 +792,12 @@ fn gpt_slot_outside_header_bidding() {
     });
     let finding = only(&capture, "slots-outside-header-bidding");
     assert_eq!(finding.affected_slots, ["sidebar-2"]);
-    assert_eq!(finding.estimated_revenue_impact_pct, Some(7.5));
+    // 1 of 4 slots at the assumed 30% header bidding share is 7.5, reported as a whole percentage.
+    assert_eq!(finding.estimated_revenue_impact_pct, Some(8.0));
+    assert!(finding.evidence.last().unwrap().body.contains(
+        "the header bidding revenue of 1 of 4 slots, taking every slot to earn the same; assumes header bidding \
+         brings in about 30% of ad revenue, a planning figure that was not measured"
+    ));
 }
 
 #[test]

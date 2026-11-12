@@ -658,7 +658,7 @@ async fn mobile_bids_at_page_load_without_any_scroll() {
         leaderboard_sizes,
         Some(vec!["320x100".to_string(), "320x50".to_string()])
     );
-    assert!(capture.user_agent.contains("iPhone"));
+    assert!(capture.user_agent.contains("Android"));
     assert_eq!(capture.device, DeviceProfile::Mobile);
     assert_eq!(
         render_is_empty(&capture, "ad-sticky-footer"),

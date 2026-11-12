@@ -24,6 +24,20 @@ fn console_has(capture: &Capture, text: &str) -> bool {
     capture.console.iter().any(|line| line.text == text)
 }
 
+/// Version of `brand` in a client-hint brand list the page read.
+fn brand_version<'a>(list: &'a Value, brand: &str) -> Option<&'a str> {
+    list.as_array()?
+        .iter()
+        .find(|entry| entry["brand"] == brand)?["version"]
+        .as_str()
+}
+
+/// The Chrome major version in a user agent string.
+fn chrome_major(user_agent: &str) -> &str {
+    let version = user_agent.split("Chrome/").nth(1).unwrap_or_default();
+    version.split('.').next().unwrap_or_default()
+}
+
 #[tokio::test]
 async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
     let (capture, seen) = probe(DeviceProfile::Mobile).await;
@@ -31,31 +45,50 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
     assert_eq!(seen["userAgent"], capture.user_agent.as_str());
     let user_agent = seen["userAgent"].as_str().unwrap();
     assert!(
-        user_agent.contains("iPhone") && user_agent.contains("Mobile/"),
+        user_agent.contains("Android") && user_agent.contains(" Mobile Safari/"),
         "{user_agent}"
     );
-    assert_eq!(seen["platform"], "iPhone");
+    assert!(!user_agent.contains("Headless"), "{user_agent}");
+    assert_eq!(seen["platform"], "Linux armv81");
+
+    // The client hints tell the same story as the user agent string.
     assert_eq!(seen["hintsMobile"], true);
-    assert_eq!(seen["hintsPlatform"], "iOS");
-    assert_eq!(seen["hintsModel"], "iPhone");
+    assert_eq!(seen["hintsPlatform"], "Android");
+    assert_eq!(seen["hintsPlatformVersion"], "14.0.0");
+    assert_eq!(seen["hintsModel"], "Pixel 8");
+    assert_eq!(
+        brand_version(&seen["hintsBrands"], "Google Chrome"),
+        Some(chrome_major(user_agent))
+    );
+    assert_eq!(
+        brand_version(&seen["hintsBrands"], "Chromium"),
+        Some(chrome_major(user_agent))
+    );
+
     assert_eq!(seen["maxTouchPoints"], 5);
     assert_eq!(seen["hasTouchEvents"], true);
-    assert_eq!(seen["innerWidth"], 393);
-    assert_eq!(seen["innerHeight"], 852);
-    assert_eq!(seen["screenWidth"], 393);
-    assert_eq!(seen["devicePixelRatio"], 3.0);
+    assert_eq!(seen["innerWidth"], 412);
+    assert_eq!(seen["innerHeight"], 915);
+    assert_eq!(seen["screenWidth"], 412);
+    assert_eq!(seen["devicePixelRatio"], 2.625);
     assert_eq!(seen["phoneWidth"], true);
     assert_eq!(seen["desktopWidth"], false);
     assert_eq!(seen["coarsePointer"], true);
+    assert_eq!(seen["finePointer"], false);
+    assert_eq!(seen["canHover"], false);
+    assert_eq!(seen["anyHover"], false);
+    assert_eq!(seen["orientation"], "portrait-primary");
+    assert_eq!(seen["portrait"], true);
+    assert_eq!(seen["hasFocus"], true);
     assert_eq!(seen["webdriver"], false);
 
     assert_eq!(capture.device, DeviceProfile::Mobile);
     assert!(capture.viewport.mobile);
     assert_eq!(
         (capture.viewport.width, capture.viewport.height),
-        (393, 852)
+        (412, 915)
     );
-    assert_eq!(capture.viewport.device_scale_factor, 3.0);
+    assert_eq!(capture.viewport.device_scale_factor, 2.625);
 
     assert!(
         console_has(&capture, "INPUT touchstart"),
@@ -81,17 +114,16 @@ async fn desktop_scan_is_an_ordinary_desktop_chrome() {
     );
     assert!(!user_agent.contains("Mobile"));
     assert_eq!(seen["hintsMobile"], false);
-    let brands: Vec<&str> = seen["hintsBrands"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(Value::as_str)
-        .collect();
-    assert!(
-        brands.contains(&"Chromium") && !brands.iter().any(|brand| brand.contains("Headless")),
-        "{brands:?}"
+    assert_eq!(
+        brand_version(&seen["hintsBrands"], "Chromium"),
+        Some(chrome_major(user_agent))
     );
-    let full_version = seen["hintsFullVersions"][1].as_str().unwrap();
+    assert!(
+        !seen["hintsBrands"].to_string().contains("Headless"),
+        "{}",
+        seen["hintsBrands"]
+    );
+    let full_version = brand_version(&seen["hintsFullVersions"], "Chromium").unwrap();
     assert!(
         full_version.split('.').count() == 4 && !full_version.ends_with(".0.0.0"),
         "client hints carry the real full version, got {full_version}"
@@ -104,6 +136,14 @@ async fn desktop_scan_is_an_ordinary_desktop_chrome() {
     assert_eq!(seen["phoneWidth"], false);
     assert_eq!(seen["desktopWidth"], true);
     assert_eq!(seen["coarsePointer"], false);
+    assert_eq!(
+        seen["finePointer"], true,
+        "a desktop has a mouse, also when headless"
+    );
+    assert_eq!(seen["canHover"], true);
+    assert_eq!(seen["anyHover"], true);
+    assert_eq!(seen["orientation"], "landscape-primary");
+    assert_eq!(seen["hasFocus"], true);
     assert_eq!(seen["webdriver"], false);
 
     assert_eq!(capture.device, DeviceProfile::Desktop);

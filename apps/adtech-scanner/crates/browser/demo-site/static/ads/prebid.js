@@ -517,8 +517,16 @@
     return winner ? Object.assign({}, winner.adserverTargeting) : {};
   };
 
+  // Like the real library, every ad unit asked about has an entry, `{}` when
+  // it has no bid to target.
   pbjs.getAdserverTargeting = function (code) {
     var targeting = {};
+    var codes = code ? [].concat(code) : pbjs.adUnits.map(function (unit) {
+      return unit.code;
+    });
+    codes.forEach(function (adUnitCode) {
+      targeting[adUnitCode] = {};
+    });
     pbjs.getHighestCpmBids(code).forEach(function (bid) {
       targeting[bid.adUnitCode] = Object.assign({}, bid.adserverTargeting);
     });
@@ -544,7 +552,6 @@
         if (key.indexOf('hb_') === 0) slot.clearTargeting(key);
       });
       var values = targeting[unitCode];
-      if (!values) return;
       Object.keys(values).forEach(function (key) {
         slot.setTargeting(key, values[key]);
       });

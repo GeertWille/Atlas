@@ -104,6 +104,8 @@ impl ScriptLibrary {
 
     fn store(&mut self, fingerprint: u64, mut entry: Entry) -> Admission {
         truncate_at_char_boundary(&mut entry.body, MAX_SCRIPT_BYTES);
+        entry.url = without_embedded_payload(entry.url);
+        entry.initiator = entry.initiator.map(without_embedded_payload);
         self.total_bytes += entry.body.len();
         self.fingerprints.insert(fingerprint);
         self.entries.push(entry);
@@ -143,6 +145,25 @@ fn truncate_at_char_boundary(text: &mut String, max_bytes: usize) {
         }
         text.truncate(end);
     }
+}
+
+/// A `data:` URL is its own content. URLs outlive the capture as script
+/// metadata, which must stay small and free of raw payloads, so a long one is
+/// reduced to its media type, its length and a fingerprint that keeps it
+/// distinct.
+fn without_embedded_payload(url: String) -> String {
+    const MAX_DATA_URL_BYTES: usize = 120;
+    const MAX_MEDIA_TYPE_BYTES: usize = 60;
+    if !url.starts_with("data:") || url.len() <= MAX_DATA_URL_BYTES {
+        return url;
+    }
+    let mut media_type = url.split(',').next().unwrap_or_default().to_string();
+    truncate_at_char_boundary(&mut media_type, MAX_MEDIA_TYPE_BYTES);
+    format!(
+        "{media_type},[{} bytes, #{:08x}]",
+        url.len(),
+        fingerprint("data:", &url) as u32
+    )
 }
 
 /// Scripts of the browser itself or of extensions say nothing about the page.
@@ -295,6 +316,37 @@ mod tests {
             external(&mut library, "https://a.test/0.js", &body),
             Admission::Duplicate
         );
+    }
+
+    #[test]
+    fn long_data_urls_are_stored_without_their_payload() {
+        let mut library = ScriptLibrary::default();
+        let data_url =
+            |code: &str| format!("data:text/javascript;charset=utf-8,{}", code.repeat(100));
+        external(&mut library, &data_url("a()%3B"), "a();");
+        external(&mut library, &data_url("b()%3B"), "b();");
+        external(&mut library, "data:text/javascript,c()", "c()");
+        library.add_external(
+            "https://a.test/x.js".into(),
+            "x()".into(),
+            None,
+            Some(data_url("a()%3B")),
+        );
+
+        let scripts = library.into_captured(0.0);
+        assert_eq!(
+            scripts[0].url,
+            format!(
+                "data:text/javascript;charset=utf-8,[635 bytes, #{:08x}]",
+                fingerprint("data:", &data_url("a()%3B")) as u32
+            )
+        );
+        assert_ne!(
+            scripts[0].url, scripts[1].url,
+            "different scripts stay distinct"
+        );
+        assert_eq!(scripts[2].url, "data:text/javascript,c()");
+        assert_eq!(scripts[3].initiator.as_ref(), Some(&scripts[0].url));
     }
 
     #[test]

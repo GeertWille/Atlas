@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use adscan_model::BrowserInfo;
 
-use candidates::{Os, family_name, well_known_paths};
+use candidates::{Os, executable_of, family_name, well_known_paths};
 
 /// Overrides every other source; used by tests and local development.
 pub(crate) const CHROME_PATH_ENV: &str = "ADSCAN_CHROME_PATH";
@@ -21,6 +21,7 @@ pub(crate) fn detect_browser(explicit: Option<&str>) -> Option<BrowserInfo> {
     let executable = from_env
         .into_iter()
         .chain(configured)
+        .map(|path| executable_of(&path))
         .chain(well_known_paths(os, &probe::search_roots_from_env()))
         .find(|path| path.is_file())?;
     Some(describe(os, &executable))

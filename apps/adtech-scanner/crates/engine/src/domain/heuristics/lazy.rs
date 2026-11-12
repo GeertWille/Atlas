@@ -1,6 +1,9 @@
-use adscan_model::{FindingCategory, Severity, SlotOutcome};
+use adscan_model::{FindingCategory, ScriptCategory, Severity, SlotOutcome};
 
-use super::{AuctionGate, Rule, RuleContext, heuristic, ms};
+use super::{
+    AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
+    RuleContext, estimate_impact, heuristic, ms,
+};
 use crate::domain::finding::{FindingDraft, timeline};
 
 /// Share of header-bidding revenue assumed lost when bidding waits for a
@@ -41,10 +44,18 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
     let device = ctx.device_name();
     let other = ctx.other_device_name();
     let scrolled = interaction_at_ms.is_some();
-    let (severity, confidence) = if scrolled {
-        (Severity::Critical, 0.8)
-    } else {
-        (Severity::High, 0.6)
+    // A consent banner nobody answered is an equally good reason for Prebid to
+    // sit idle, and waiting for consent is not a bug.
+    let consent_unanswered = !ctx.capture.consent_accepted
+        && ctx
+            .scripts
+            .iter()
+            .any(|script| script.category == ScriptCategory::Cmp);
+    let (severity, confidence) = match (scrolled, consent_unanswered) {
+        (true, false) => (Severity::Critical, 0.8),
+        (false, false) => (Severity::High, 0.6),
+        (true, true) => (Severity::High, 0.5),
+        (false, true) => (Severity::Medium, 0.4),
     };
     let mut finding = heuristic(
         severity,
@@ -73,9 +84,19 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
          Start the auction on page load for slots in the initial viewport. Then **re-scan with the {other} \
          profile**: if auctions start there, the wrapper's device detection is choosing the wrong path on {device}."
     );
+    if consent_unanswered {
+        finding.description.push_str(
+            " A consent platform is on the page and its banner was not accepted during this scan, so bidding \
+             may instead be waiting for the user's consent choice.",
+        );
+        finding.recommendation.insert_str(
+            0,
+            "First re-scan with consent acceptance turned on: if auctions start then, bidding was waiting for \
+             consent and this is expected behaviour. If they still do not start: ",
+        );
+    }
     finding.impact =
         format!("No header bidding demand on {device}: slots are sold without bids or stay empty");
-    finding.estimated_revenue_impact_pct = Some(super::HEADER_BIDDING_REVENUE_SHARE_PCT);
     finding.evidence.push(timeline(
         "Auction timeline",
         format!(
@@ -87,6 +108,11 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
         ),
     ));
     finding.affected_slots = slots_waiting_for_bids(ctx);
+    estimate_impact(
+        &mut finding,
+        HEADER_BIDDING_REVENUE_SHARE_PCT,
+        &format!("all header bidding revenue on {device}; {HEADER_BIDDING_SHARE_ASSUMPTION}"),
+    );
     finding
 }
 
@@ -109,10 +135,15 @@ fn started_after_interaction(
         0.75,
         format!("Bidding waits for the first scroll on {device}"),
     );
+    let auctioned = if in_view.is_empty() {
+        "the first Prebid auction of the page"
+    } else {
+        "the Prebid auction for the slots already on screen"
+    };
     finding.description = format!(
-        "On this **{device}** scan the Prebid auction for the slots already on screen started at {}, {} after the \
-         first scroll / interaction at {}, although Prebid was ready long before. These slots are not auctioned \
-         for users who do not scroll, and above-the-fold slots miss their first impression. Scroll-gated bidding is normally a mobile lazy-load \
+        "On this **{device}** scan {auctioned} started at {}, {} after the first scroll / interaction at {}, \
+         although Prebid was ready long before. Nothing is auctioned for users who do not scroll, and \
+         above-the-fold slots miss their first impression. Scroll-gated bidding is normally a mobile lazy-load \
          optimisation; when it also (or only) runs on the other device class, the wrapper's device detection is wrong.",
         ms(auction_at_ms),
         ms(auction_at_ms - interaction_at_ms),
@@ -126,8 +157,6 @@ fn started_after_interaction(
     finding.impact = format!(
         "No bids before the first scroll on {device}; non-scrolling users are not monetised by header bidding"
     );
-    finding.estimated_revenue_impact_pct =
-        Some(super::HEADER_BIDDING_REVENUE_SHARE_PCT * GATED_AUCTION_HB_LOSS);
     finding.evidence.push(timeline(
         "Auction timeline",
         format!(
@@ -144,6 +173,14 @@ fn started_after_interaction(
         ));
     }
     finding.affected_slots = in_view;
+    estimate_impact(
+        &mut finding,
+        HEADER_BIDDING_REVENUE_SHARE_PCT * GATED_AUCTION_HB_LOSS,
+        &format!(
+            "half of the header bidding revenue on {device}, taking half of its impressions to be served before \
+             the first scroll; {HEADER_BIDDING_SHARE_ASSUMPTION}"
+        ),
+    );
     finding
 }
 

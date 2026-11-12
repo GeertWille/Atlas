@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::application::ports::{SecretError, SecretStore};
 
-pub const KEYCHAIN_SERVICE: &str = "com.webclew.adtech-scanner";
+const KEYCHAIN_SERVICE: &str = "com.webclew.adtech-scanner";
 const KEYCHAIN_ACCOUNT: &str = "anthropic-api-key";
 
 pub struct KeychainSecretStore;

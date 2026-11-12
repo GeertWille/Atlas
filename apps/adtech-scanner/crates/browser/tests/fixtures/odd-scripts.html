@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Scripts that are not ordinary files</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// A script shipped as a data: URL, as tag managers and ad creatives do.
+var padding = new Array(2000).join('pad ');
+var fromData = document.createElement('script');
+fromData.src = 'data:text/javascript,' + encodeURIComponent('console.log("DATA_URL ran"); /* ' + padding + '*/');
+document.head.appendChild(fromData);
+var blob = new Blob(['console.log("BLOB_URL ran"); /* ' + padding + '*/'], { type: 'text/javascript' });
+var fromBlob = document.createElement('script');
+fromBlob.src = URL.createObjectURL(blob);
+document.head.appendChild(fromBlob);
+</script>
+</body></html>

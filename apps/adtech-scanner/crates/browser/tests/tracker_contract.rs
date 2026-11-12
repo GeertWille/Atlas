@@ -252,6 +252,17 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                 bidder: "worse".into(),
                 message: Some("adapter exploded".into())
             },
+            &Kind::BidderError {
+                auction_id: Some("auction-1".into()),
+                bidder: "stalled".into(),
+                message: Some("request timed out".into())
+            },
+            // The status says more than an error page's markup.
+            &Kind::BidderError {
+                auction_id: Some("auction-1".into()),
+                bidder: "verbose".into(),
+                message: Some("HTTP 500".into())
+            },
         ]
     );
     assert_eq!(
@@ -352,7 +363,7 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
         [
             &requested("unit-a", &["hb_bidder", "hb_pb"]),
             &requested("unit-b", &[]),
-            &requested("unit-missing", &[]),
+            &requested("unit-missing", &["hb_adid"]),
         ]
     );
     assert_eq!(
@@ -506,6 +517,10 @@ async fn the_tracker_stays_out_of_the_pages_way() {
     assert_eq!(
         state["bindingVisible"], false,
         "the transport binding is hidden from the page"
+    );
+    assert_eq!(
+        state["bindingVisibleInFrame"], false,
+        "and from the frames the page creates"
     );
     assert_eq!(
         state["pbjsCreated"], false,

@@ -6,7 +6,10 @@ use adscan_model::{
     LogSearchHit, ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanSummary, Settings,
     SettingsPatch,
 };
-use tauri::State;
+use std::path::Path;
+
+use tauri::{AppHandle, Runtime, State};
+use tauri_plugin_fs::FsExt;
 
 use crate::state::AppState;
 
@@ -125,12 +128,16 @@ pub async fn get_dashboard_stats(state: State<'_, AppState>) -> CommandResult<Da
 
 /// Returns the document and, when `path` is given, also writes it there.
 #[tauri::command]
-pub async fn export_scan(
+pub async fn export_scan<R: Runtime>(
+    app: AppHandle<R>,
     state: State<'_, AppState>,
     scan_id: String,
     format: ExportFormat,
     path: Option<String>,
 ) -> CommandResult<String> {
+    if let Some(path) = &path {
+        check_export_target(&app, Path::new(path), format)?;
+    }
     let document = state
         .scans
         .export(&scan_id, format)
@@ -145,4 +152,51 @@ pub async fn export_scan(
             })?;
     }
     Ok(document)
+}
+
+/// `path` comes from the webview and the document contains text taken from
+/// the scanned site, so an unchecked write would let script running in the
+/// webview plant chosen lines in any file the user can write (a shell profile,
+/// a launch agent). The backend cannot see the save dialog, but the dialog
+/// plugin records every path the user picks in the fs plugin's scope, which
+/// the webview cannot extend. So the target must be such a path, and it must
+/// have the export's extension, which rules out paths picked for another
+/// purpose (the Chrome binary).
+fn check_export_target<R: Runtime>(
+    app: &AppHandle<R>,
+    path: &Path,
+    format: ExportFormat,
+) -> CommandResult<()> {
+    let refuse = |message: &str| {
+        Err(CommandError {
+            code: ErrorCode::InvalidInput,
+            message: message.to_string(),
+        })
+    };
+    let extensions: &[&str] = match format {
+        ExportFormat::Json => &["json"],
+        ExportFormat::Markdown => &["md", "markdown"],
+    };
+    let has_export_extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            extensions
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        });
+    if !has_export_extension {
+        return refuse(&format!(
+            "Save the export with the file extension .{}",
+            extensions[0]
+        ));
+    }
+    let picked_in_a_dialog = path.is_absolute()
+        && app
+            .try_fs_scope()
+            .is_some_and(|scope| scope.is_allowed(path));
+    if !picked_in_a_dialog {
+        return refuse("Choose where to save the export in the save dialog first");
+    }
+    Ok(())
 }

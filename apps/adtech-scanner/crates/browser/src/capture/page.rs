@@ -99,8 +99,7 @@ impl Page {
     /// Turns on recording and emulation and installs the tracker, so the first
     /// navigation is already observed from its first byte.
     pub(crate) async fn prepare(&mut self) -> Result<(), CaptureError> {
-        let viewport = self.emulation.viewport;
-        let commands = [
+        let mut commands = vec![
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
             ("Log.enable", json!({})),
@@ -117,22 +116,17 @@ impl Page {
             ),
             (
                 "Emulation.setDeviceMetricsOverride",
-                json!({
-                    "width": viewport.width,
-                    "height": viewport.height,
-                    "deviceScaleFactor": viewport.device_scale_factor,
-                    "mobile": viewport.mobile,
-                    "screenWidth": viewport.width,
-                    "screenHeight": viewport.height,
-                }),
-            ),
-            (
-                "Emulation.setUserAgentOverride",
-                self.emulation.user_agent_override(),
+                self.emulation.device_metrics(),
             ),
             (
                 "Emulation.setTouchEmulationEnabled",
                 json!({ "enabled": self.emulation.touch, "maxTouchPoints": 5 }),
+            ),
+            // A reader's tab has focus; a headless or background window has
+            // none, and viewability scripts hold ads back for unfocused pages.
+            (
+                "Emulation.setFocusEmulationEnabled",
+                json!({ "enabled": true }),
             ),
             ("Runtime.addBinding", json!({ "name": TRACKER_BINDING })),
             (
@@ -140,6 +134,9 @@ impl Page {
                 json!({ "source": TRACKER_SOURCE }),
             ),
         ];
+        if let Some(identity) = self.emulation.user_agent_override() {
+            commands.push(("Emulation.setUserAgentOverride", identity));
+        }
         for (method, params) in commands {
             self.call(method, params).await?;
         }
@@ -245,11 +242,10 @@ impl Page {
             return;
         };
         if params["targetInfo"]["type"] == "iframe" {
-            self.cdp.notify(
-                Some(child),
-                "Emulation.setUserAgentOverride",
-                self.emulation.user_agent_override(),
-            );
+            if let Some(identity) = self.emulation.user_agent_override() {
+                self.cdp
+                    .notify(Some(child), "Emulation.setUserAgentOverride", identity);
+            }
             self.frame_sessions.push(child.to_string());
         }
         self.cdp

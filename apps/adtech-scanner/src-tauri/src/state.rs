@@ -9,16 +9,15 @@ use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{CaptureSource, EventSink, SecretStore};
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
-use adscan_engine::infrastructure::anthropic::{
-    AnthropicClient, BASE_URL_ENV, DEFAULT_BASE_URL, RetryPolicy,
-};
+use adscan_engine::infrastructure::anthropic::{AnthropicClient, DEFAULT_BASE_URL, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::secrets::{KeychainSecretStore, MemorySecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 
-pub const DATA_DIR_ENV: &str = "ADSCAN_DATA_DIR";
-pub const API_KEY_ENV: &str = "ADSCAN_API_KEY";
+const DATA_DIR_ENV: &str = "ADSCAN_DATA_DIR";
+const BASE_URL_ENV: &str = "ADSCAN_ANTHROPIC_BASE_URL";
+const API_KEY_ENV: &str = "ADSCAN_API_KEY";
 
 pub struct AppConfig {
     /// Directory of the SQLite file.

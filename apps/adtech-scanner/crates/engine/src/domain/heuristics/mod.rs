@@ -15,13 +15,14 @@ use adscan_model::{
     ScriptRecord, Severity, TrackerEventKind as Ev,
 };
 
-use super::finding::FindingDraft;
-use super::telemetry::{Telemetry, slot_matches_code};
+use super::finding::{FindingDraft, metric};
+use super::telemetry::{Telemetry, auction_covers};
 
 /// Share of ad revenue assumed to come from header bidding when a rule
 /// estimates the impact of slots that go to the ad server without bids.
-/// A planning figure, not a measurement; findings state it as an estimate.
+/// A planning figure, not a measurement; every estimate built on it says so.
 const HEADER_BIDDING_REVENUE_SHARE_PCT: f64 = 30.0;
+const HEADER_BIDDING_SHARE_ASSUMPTION: &str = "assumes header bidding brings in about 30% of ad revenue, a planning figure that was not measured";
 
 pub trait Rule: Send + Sync {
     fn id(&self) -> &'static str;
@@ -242,13 +243,6 @@ impl<'a> RuleContext<'a> {
     }
 }
 
-fn auction_covers(auction: &Auction, slot: &AdSlot) -> bool {
-    auction
-        .ad_units
-        .iter()
-        .any(|unit| slot_matches_code(slot, &unit.code))
-}
-
 fn device_name(device: DeviceProfile) -> &'static str {
     match device {
         DeviceProfile::Desktop => "desktop",
@@ -276,6 +270,17 @@ pub(crate) fn heuristic(
         affected_slots: Vec::new(),
         affected_bidders: Vec::new(),
     }
+}
+
+/// Attaches a revenue-impact estimate together with what it rests on. One
+/// page view cannot support more precision than a whole percentage.
+pub(crate) fn estimate_impact(finding: &mut FindingDraft, pct: f64, basis: &str) {
+    let pct = pct.clamp(0.0, 100.0).round();
+    finding.estimated_revenue_impact_pct = Some(pct);
+    finding.evidence.push(metric(
+        "How the revenue impact was estimated",
+        format!("About {pct:.0}% of ad revenue at risk: {basis}. An estimate from one page view, not a measurement."),
+    ));
 }
 
 pub(crate) fn ms(value: f64) -> String {

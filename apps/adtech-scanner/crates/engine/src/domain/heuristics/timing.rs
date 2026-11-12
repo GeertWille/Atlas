@@ -1,6 +1,9 @@
 use adscan_model::{FindingCategory, Severity, TrackerEventKind as Ev};
 
-use super::{Rule, RuleContext, heuristic, median, ms, pct};
+use super::{
+    HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule, RuleContext,
+    estimate_impact, heuristic, median, ms, pct,
+};
 use crate::domain::finding::{FindingDraft, metric, timeline};
 
 const LATE_AUCTION_MS: f64 = 3000.0;
@@ -67,8 +70,6 @@ impl Rule for AuctionTimeoutTooShort {
         finding.impact =
             "Bids arriving after the deadline are dropped, lowering auction pressure on every slot"
                 .into();
-        finding.estimated_revenue_impact_pct =
-            Some(metrics.timeout_rate * super::HEADER_BIDDING_REVENUE_SHARE_PCT);
         finding.evidence.push(metric(
             "Timeout rate",
             format!(
@@ -90,6 +91,15 @@ impl Rule for AuctionTimeoutTooShort {
             ));
         }
         finding.affected_bidders = timed_out;
+        estimate_impact(
+            &mut finding,
+            metrics.timeout_rate * HEADER_BIDDING_REVENUE_SHARE_PCT,
+            &format!(
+                "the {} of bid requests that timed out, valued like the bids that arrived; \
+                 {HEADER_BIDDING_SHARE_ASSUMPTION}",
+                pct(metrics.timeout_rate)
+            ),
+        );
         vec![finding]
     }
 }

@@ -10,15 +10,17 @@
     ['Cookiebot', '#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll, #CybotCookiebotDialogBodyButtonAccept'],
     ['Quantcast / InMobi Choice', '.qc-cmp2-summary-buttons button[mode="primary"], .qc-cmp2-footer button[mode="primary"]'],
     ['Usercentrics', '[data-testid="uc-accept-all-button"], button[data-action-type="accept"]'],
-    ['TrustArc', '#truste-consent-button, .trustarc-agree-btn, .truste-button2'],
+    ['TrustArc', '#truste-consent-button, .trustarc-agree-btn'],
     ['Sourcepoint', 'button.sp_choice_type_11, button.sp_choice_type_ACCEPT_ALL, .message-component[title="Accept All"]'],
+    ['Google Funding Choices', '.fc-cta-consent'],
     ['Osano', '.osano-cm-accept-all'],
     ['Iubenda', '.iubenda-cs-accept-btn'],
     ['Complianz', '.cmplz-btn.cmplz-accept'],
     ['CookieYes', '.cky-btn-accept'],
   ];
 
-  // Unambiguous "accept everything" labels: English, Dutch, German, French, Spanish.
+  // Unambiguous "accept everything" labels: English, Dutch, German, French,
+  // Spanish, Italian, Portuguese.
   var ACCEPT_ALL = [
     'accept all', 'accept all cookies', 'allow all', 'allow all cookies', 'agree to all', 'accept & continue',
     'accept and continue', 'agree and proceed', 'agree & proceed', 'yes, i agree', 'i accept all',
@@ -30,6 +32,8 @@
     'tout autoriser',
     'aceptar todo', 'aceptar todas', 'aceptar todas las cookies', 'aceptar y continuar', 'permitir todas',
     'aceptar y cerrar',
+    'accetta tutto', 'accetta tutti', 'accetta tutti i cookie', 'accetta e continua', 'accetta e chiudi',
+    'aceitar tudo', 'aceitar todos', 'aceitar todos os cookies', 'aceitar e continuar', 'aceitar e fechar',
   ];
   // Short labels that only mean consent when they sit inside a consent dialog.
   var ACCEPT_IN_CONTEXT = [
@@ -75,9 +79,12 @@
       .toLowerCase();
   }
 
+  // `<html>` and `<body>` are not a dialog: feature-detection classes such as
+  // Modernizr's "cookies" would put every button of the page in consent context.
   function isInsideConsentDialog(element) {
     for (var node = element, depth = 0; node && depth < 8; depth++) {
       if (node.nodeType === 1) {
+        if (node.tagName === 'BODY' || node.tagName === 'HTML') return false;
         var marker = (node.id || '') + ' ' + (typeof node.className === 'string' ? node.className : '');
         var label = node.getAttribute('aria-label') || '';
         if (CONSENT_CONTEXT.test(marker) || CONSENT_CONTEXT.test(label)) return true;

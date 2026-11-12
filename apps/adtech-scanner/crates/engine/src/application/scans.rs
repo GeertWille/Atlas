@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use adscan_model::{
     BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit, ScanDetail, ScanEvent,
-    ScanList, ScanListQuery, ScanOptions, ScanStatus, ScanSummary, SeverityCounts,
+    ScanList, ScanListQuery, ScanOptions, ScanStatus, ScanSummary, SeverityCounts, StepStatus,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -95,10 +95,9 @@ impl ScanService {
             error: None,
         };
         self.deps.scans.create(&summary, &scan.options).await?;
-        self.deps.events.emit(ScanEvent::ScanUpdated {
-            summary: summary.clone(),
-        });
 
+        // Registered before the first event so a cancel sent in response to
+        // that event already finds the scan.
         let cancel = CancellationToken::new();
         let finished = CancellationToken::new();
         self.lock_active().insert(
@@ -108,6 +107,9 @@ impl ScanService {
                 finished: finished.clone(),
             },
         );
+        self.deps.events.emit(ScanEvent::ScanUpdated {
+            summary: summary.clone(),
+        });
         let job = ScanJob {
             summary: summary.clone(),
             scan,
@@ -246,7 +248,6 @@ async fn supervise(
     job: ScanJob,
     finished: CancellationToken,
 ) {
-    let scan_id = job.summary.id.clone();
     let fallback = job.summary.clone();
     let pipeline_deps = deps.clone();
     let run = tokio::spawn(async move {
@@ -268,24 +269,49 @@ async fn supervise(
         Ok(Some(summary)) => {
             let _ = deps.scans.save_summary(&summary).await;
         }
-        Ok(None) => close_without_pipeline(&deps, fallback, ScanStatus::Cancelled, None).await,
-        Err(_) => {
-            let stored = deps.scans.summary(&scan_id).await.ok().flatten();
-            let error = "The scan stopped because of an internal error".to_string();
-            close_without_pipeline(
-                &deps,
-                stored.unwrap_or(fallback),
-                ScanStatus::Failed,
-                Some(error),
-            )
-            .await;
+        Ok(None) => {
+            close_without_pipeline(&deps, fallback.clone(), ScanStatus::Cancelled, None).await;
         }
+        Err(_) => close_after_crash(&deps, fallback.clone()).await,
     }
     active
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&scan_id);
+        .remove(&fallback.id);
     finished.cancel();
+}
+
+/// The pipeline task panicked. What it had persisted stays; the steps it left
+/// open and the scan itself are closed as failed.
+async fn close_after_crash(deps: &PipelineDeps, fallback: ScanSummary) {
+    const CRASH_MESSAGE: &str = "The scan stopped because of an internal error";
+    let stored = deps.scans.detail(&fallback.id).await.ok().flatten();
+    let (summary, steps) = match stored {
+        Some(detail) => (detail.summary, detail.steps),
+        None => (fallback, Vec::new()),
+    };
+    for mut step in steps {
+        match step.status {
+            StepStatus::Running => {
+                step.status = StepStatus::Failed;
+                step.summary = Some(CRASH_MESSAGE.to_string());
+            }
+            StepStatus::Pending => {
+                step.status = StepStatus::Skipped;
+                step.summary = Some("Not run".to_string());
+            }
+            StepStatus::Completed | StepStatus::Failed | StepStatus::Skipped => continue,
+        }
+        let _ = deps.scans.save_step(&step).await;
+        deps.events.emit(ScanEvent::StepUpdated { step });
+    }
+    close_without_pipeline(
+        deps,
+        summary,
+        ScanStatus::Failed,
+        Some(CRASH_MESSAGE.to_string()),
+    )
+    .await;
 }
 
 async fn close_without_pipeline(

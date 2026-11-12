@@ -31,6 +31,14 @@ pub fn slot_matches_code(slot: &AdSlot, code: &str) -> bool {
     slot.element_id == code || slot.ad_unit_path.as_deref() == Some(code)
 }
 
+/// Whether the auction asked for bids for this slot.
+pub fn auction_covers(auction: &Auction, slot: &AdSlot) -> bool {
+    auction
+        .ad_units
+        .iter()
+        .any(|unit| slot_matches_code(slot, &unit.code))
+}
+
 pub fn prebid_version(capture: &Capture) -> Option<String> {
     capture.events.iter().find_map(|event| match &event.kind {
         Ev::PrebidDetected { version, .. } => version.clone(),
@@ -363,12 +371,7 @@ fn requested_before_auction_end(slot: &AdSlot, auctions: &[Auction]) -> Option<b
     let requested_at = slot.requested_at_ms?;
     let mut covering = auctions
         .iter()
-        .filter(|auction| {
-            auction
-                .ad_units
-                .iter()
-                .any(|unit| slot_matches_code(slot, &unit.code))
-        })
+        .filter(|auction| auction_covers(auction, slot))
         .peekable();
     covering.peek()?;
     let finished_before_request = covering.any(|auction| {

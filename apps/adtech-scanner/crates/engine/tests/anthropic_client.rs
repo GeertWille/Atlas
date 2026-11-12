@@ -543,3 +543,31 @@ async fn key_validation_is_a_cheap_authenticated_models_call() {
         .count();
     assert_eq!(posts, 0, "validation must not spend tokens");
 }
+
+#[test]
+fn the_key_is_never_sent_over_plain_http_to_another_machine() {
+    let retry = RetryPolicy::default();
+    for refused in [
+        "http://api.anthropic.com",
+        "http://10.0.0.5:8080",
+        "ftp://localhost",
+        "not a url",
+    ] {
+        assert!(
+            matches!(
+                AnthropicClient::new(refused, retry),
+                Err(LlmError::Network(_))
+            ),
+            "{refused}"
+        );
+    }
+    for accepted in [
+        "https://api.anthropic.com",
+        "https://gateway.corp.example/anthropic/",
+        "http://127.0.0.1:4010",
+        "http://localhost:4010",
+        "http://[::1]:4010",
+    ] {
+        assert!(AnthropicClient::new(accepted, retry).is_ok(), "{accepted}");
+    }
+}

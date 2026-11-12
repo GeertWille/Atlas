@@ -111,6 +111,7 @@ impl Fixtures {
         let routes = Router::new()
             .route("/status/{code}", get(status))
             .route("/never", get(never))
+            .route("/download", get(download))
             .route("/{file}", get(fixture));
         tokio::spawn(async move {
             let _ = axum::serve(listener, routes)
@@ -152,6 +153,21 @@ async fn status(Path(code): Path<u16>) -> Response {
         status,
         [(header::CONTENT_TYPE, "text/html")],
         format!("<h1>{status}</h1>"),
+    )
+        .into_response()
+}
+
+/// A response the browser saves to disk instead of showing.
+async fn download() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream"),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"adscan-download-probe.bin\"",
+            ),
+        ],
+        "not a page",
     )
         .into_response()
 }

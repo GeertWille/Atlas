@@ -20,8 +20,12 @@ const MAX_BATCH_CHARS: usize = 60_000;
 const HEAD_CHARS: usize = 1_500;
 const MIDDLE_CHARS: usize = 700;
 const TAIL_CHARS: usize = 700;
-const OUTPUT_TOKENS_PER_SCRIPT: u64 = 120;
+const OUTPUT_TOKENS_PER_SCRIPT: u32 = 120;
+/// Room for the model's thinking, which counts towards the output limit.
 const BASE_OUTPUT_TOKENS: u32 = 3_000;
+/// Script source the audit trail keeps per classified script. The model sees
+/// more (head, middle and tail); the log must stay a short excerpt.
+const AUDIT_EXCERPT_CHARS: usize = 300;
 
 const SYSTEM_PROMPT: &str = "\
 You are Jeff, the script triage step of a scanner that finds revenue leaks in publishers' ad stacks.
@@ -99,7 +103,10 @@ struct Verdict {
 
 struct Candidate {
     script_index: usize,
+    /// What the model is sent about the script.
     prompt: String,
+    /// What the audit trail keeps of that.
+    audit: String,
 }
 
 pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
@@ -111,9 +118,11 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
         .enumerate()
         .filter_map(|(script_index, script)| {
             let hints = script.ambiguous_hints.as_ref()?;
+            let captured = &capture.scripts[script_index];
             Some(Candidate {
                 script_index,
-                prompt: describe_for_model(script, &capture.scripts[script_index], hints),
+                prompt: describe_for_model(script, captured, hints),
+                audit: describe_for_audit(script, captured, hints),
             })
         })
         .collect();
@@ -126,17 +135,18 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
     for batch in batches(candidates) {
         run.check_cancelled()?;
         let user_text = batch_prompt(&batch);
+        let max_tokens = BASE_OUTPUT_TOKENS + OUTPUT_TOKENS_PER_SCRIPT * batch.len() as u32;
         if !run
             .state
             .budget
-            .can_afford(projected_cost(&model, &user_text, batch.len()))
+            .can_afford(worst_case_cost(&model, &user_text, max_tokens))
         {
             out_of_budget += batch.len();
             continue;
         }
         let request = LlmRequest {
             model: model.clone(),
-            max_tokens: BASE_OUTPUT_TOKENS + (OUTPUT_TOKENS_PER_SCRIPT as u32) * batch.len() as u32,
+            max_tokens,
             effort: Effort::Low,
             system: SYSTEM_PROMPT.to_string(),
             tools: Vec::new(),
@@ -147,8 +157,12 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
         run.log(
             LogLevel::Debug,
             LogKind::LlmRequest,
-            format!("System:\n{SYSTEM_PROMPT}\n\nUser:\n{user_text}"),
-            Some(json!({ "model": model, "scripts": batch.len() })),
+            audit_prompt(&batch),
+            Some(json!({
+                "model": model,
+                "scripts": batch.len(),
+                "promptChars": SYSTEM_PROMPT.len() + user_text.len(),
+            })),
         )
         .await?;
         let response = run
@@ -217,6 +231,24 @@ fn describe_for_model(
     )
 }
 
+fn describe_for_audit(
+    script: &DescribedScript,
+    captured: &CapturedScript,
+    hints: &[String],
+) -> String {
+    let record = &script.record;
+    let total = captured.body.chars().count();
+    let kept = total.min(AUDIT_EXCERPT_CHARS);
+    let excerpt: String = captured.body.chars().take(kept).collect();
+    format!(
+        "{} {} ({} bytes, hints: {})\n[excerpt: first {kept} of {total} characters]\n{excerpt}",
+        record.id,
+        record.url,
+        record.size_bytes,
+        hints.join(", "),
+    )
+}
+
 /// Head, middle and tail of the body. Never the whole body unless it is short.
 fn excerpt(body: &str) -> String {
     let chars: Vec<char> = body.chars().collect();
@@ -266,10 +298,26 @@ fn batch_prompt(batch: &[Candidate]) -> String {
     )
 }
 
-fn projected_cost(model: &str, user_text: &str, scripts: usize) -> f64 {
+/// The request as the audit trail keeps it: the instructions in full, and of
+/// each script its metadata and a short excerpt instead of what was sent.
+fn audit_prompt(batch: &[Candidate]) -> String {
+    let scripts: Vec<&str> = batch
+        .iter()
+        .map(|candidate| candidate.audit.as_str())
+        .collect();
+    format!(
+        "System:\n{SYSTEM_PROMPT}\n\nUser: classify these {} scripts. The model was sent head, middle and tail excerpts \
+         of each script with its identifier counts; script source is not stored, only the excerpts below.\n\n{}",
+        batch.len(),
+        scripts.join("\n\n")
+    )
+}
+
+/// The most the call can cost: the output limit is spent in full.
+fn worst_case_cost(model: &str, user_text: &str, max_tokens: u32) -> f64 {
     let usage = TokenUsage {
         input: estimate_tokens(SYSTEM_PROMPT.len() + user_text.len()),
-        output: OUTPUT_TOKENS_PER_SCRIPT * scripts as u64,
+        output: u64::from(max_tokens),
         ..TokenUsage::default()
     };
     cost_of(model, usage).usd
@@ -369,10 +417,20 @@ mod tests {
     }
 
     #[test]
+    fn the_budget_check_assumes_the_output_limit_is_spent() {
+        // 3,000,000 prompt chars are estimated at 1M input tokens ($0.10 on the
+        // long-prompt Haiku card is $0.50) plus 4,000 output tokens at $2.50/M.
+        let user_text = "x".repeat(3_000_000 - SYSTEM_PROMPT.len());
+        let cost = worst_case_cost("claude-haiku-5-5", &user_text, 4_000);
+        assert!((cost - (0.50 + 0.01)).abs() < 1e-9, "{cost}");
+    }
+
+    #[test]
     fn candidates_are_batched_by_count_and_size() {
         let candidate = |chars: usize| Candidate {
             script_index: 0,
             prompt: "x".repeat(chars),
+            audit: String::new(),
         };
         let by_count = batches((0..60).map(|_| candidate(10)).collect());
         assert_eq!(
