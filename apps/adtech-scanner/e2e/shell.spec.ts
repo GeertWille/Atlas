@@ -63,7 +63,8 @@ test("command palette: navigate, open a scan, search logs, switch theme, start t
 
   await open();
   await palette.getByRole("option", { name: "Scan the demo site" }).click();
-  await expect(page.getByRole("list", { name: "Pipeline" })).toBeVisible();
+  await expect(page).toHaveURL(/#\/scans\/scan-/);
+  await expect(page.getByRole("heading", { level: 1, name: "127.0.0.1" })).toBeVisible();
 });
 
 test("sidebar: navigation state, recent scans and the running indicator", async ({ page }) => {

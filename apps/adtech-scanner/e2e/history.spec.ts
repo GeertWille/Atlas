@@ -71,7 +71,7 @@ test("open, re-scan and delete from a row; delete everything from the danger zon
   // Re-scan from the row menu.
   await page.getByRole("button", { name: "Actions for www.morningledger.example" }).first().click();
   await page.getByRole("menuitem", { name: "Re-scan" }).click();
-  await expect(page.getByRole("list", { name: "Pipeline" })).toBeVisible();
+  await expect(page).toHaveURL(/#\/scans\/scan-/);
   await expect(reportHealth(page)).toBeVisible({ timeout: 20_000 });
 
   // Delete all.

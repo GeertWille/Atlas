@@ -40,7 +40,7 @@ export function FindingCard({
     <article
       id={`finding-${finding.id}`}
       aria-label={finding.title}
-      className={cn("scroll-mt-4 rounded-xl border bg-card shadow-xs transition-shadow", expanded && "shadow-pop/40")}
+      className="scroll-mt-4 rounded-xl border bg-card shadow-xs"
     >
       <div className="flex items-start gap-1 pr-2">
         <button

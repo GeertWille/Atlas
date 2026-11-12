@@ -35,7 +35,7 @@ export async function expectNoHorizontalOverflow(page: Page) {
   expect(overflow).toEqual({ document: 0, main: 0 });
 }
 
-/** The health ring in the report header (sidebar rows carry small rings too). */
+/** The health ring in the report header (sidebar links and history rows carry small rings too). */
 export function reportHealth(page: Page, name: string | RegExp = /Health score \d+ of 100/) {
-  return page.getByRole("main").getByRole("img", { name });
+  return page.getByRole("main").locator("header").getByRole("img", { name });
 }

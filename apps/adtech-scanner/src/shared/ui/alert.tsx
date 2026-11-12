@@ -8,8 +8,6 @@ const alertVariants = cva(
     variants: {
       tone: {
         neutral: "bg-muted/60 text-foreground [&>svg]:text-muted-foreground",
-        info: "border-blue-line bg-blue-soft text-blue-fg",
-        success: "border-green-line bg-green-soft text-green-fg",
         warning: "border-amber-line bg-amber-soft text-amber-fg",
         danger: "border-red-line bg-red-soft text-red-fg",
       },
