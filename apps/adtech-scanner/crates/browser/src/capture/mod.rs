@@ -30,6 +30,7 @@ use adscan_model::{
 };
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::time::Instant;
 use url::Url;
 
 use crate::cdp::{Cdp, CdpEvent, Chrome, LaunchOptions, ProfileChoice, ProxyServer};
@@ -70,6 +71,7 @@ pub(crate) async fn run(
     request: CaptureRequest,
     hooks: CaptureHooks,
 ) -> Result<Capture, BrowserError> {
+    let started = Instant::now();
     let address = parse_address(&request.url).map_err(CaptureError::from)?;
     let (proxy, proxy_login) = proxy_of(&request, &hooks)?;
     let kept_profile = match (&hooks.scan_profile_dir, request.persistent_profile) {
@@ -133,6 +135,7 @@ pub(crate) async fn run(
                 address: &address,
                 hooks: &hooks,
                 proxy_login,
+                started,
             };
             let outcome = tokio::select! {
                 biased;
@@ -143,7 +146,7 @@ pub(crate) async fn run(
                 // Killed, the browser would lose the cookies it has not
                 // written yet; closing makes it write them.
                 cdp.notify(None, "Browser.close", json!({}));
-                chrome.exited_within(CLOSE_PATIENCE).await;
+                chrome.wait_for_exit(CLOSE_PATIENCE).await;
             }
             outcome
         }
@@ -211,6 +214,8 @@ struct Visit<'a> {
     address: &'a Url,
     hooks: &'a CaptureHooks,
     proxy_login: Option<ProxyLogin>,
+    /// When the capture was asked for.
+    started: Instant,
 }
 
 impl Visit<'_> {
@@ -282,7 +287,9 @@ impl Visit<'_> {
 
         let (consent_accepted, ending) = match request.visitor {
             VisitorBehavior::Manual => {
-                (false, manual::record(&mut page, &self.hooks.finish).await?)
+                let limit = self.started + manual::SESSION_LIMIT;
+                let ending = manual::record(&mut page, &self.hooks.finish, limit).await?;
+                (false, ending)
             }
             VisitorBehavior::Browse => (
                 driver::browse(&mut page, request).await?,
@@ -448,7 +455,10 @@ mod tests {
             }
         });
         let never_finished = tokio_util::sync::CancellationToken::new();
-        let ending = manual::record(&mut page, &never_finished).await.unwrap();
+        let limit = Instant::now() + manual::SESSION_LIMIT;
+        let ending = manual::record(&mut page, &never_finished, limit)
+            .await
+            .unwrap();
         the_person.await.unwrap();
         assert_eq!(ending, Ending::BrowserGone);
 

@@ -233,12 +233,10 @@ impl Chrome {
         }
     }
 
-    /// Waits for a browser that was asked to close (`Browser.close`) to
-    /// finish writing its profile and exit. Returns whether it did in time.
-    pub(crate) async fn exited_within(&mut self, patience: Duration) -> bool {
-        tokio::time::timeout(patience, self.child.wait())
-            .await
-            .is_ok()
+    /// Gives a browser that was asked to close (`Browser.close`) up to
+    /// `patience` to finish writing its profile and exit.
+    pub(crate) async fn wait_for_exit(&mut self, patience: Duration) {
+        let _ = tokio::time::timeout(patience, self.child.wait()).await;
     }
 
     /// Whether the profile of this launch is kept after it.

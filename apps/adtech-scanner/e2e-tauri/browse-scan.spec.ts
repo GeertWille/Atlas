@@ -102,6 +102,7 @@ test("the report of that visit can be narrowed to one page view", async () => {
   const switcher = await seeText(browser, "All pages", { within: PAGE_VIEWS });
   expect(switcher).toContain(`The visit covered ${detail.pages.length} page views`);
   const second = detail.pages[1];
+  if (!second) throw new Error("the visit has a single page view");
   await browser.$(`${PAGE_VIEWS}${button("2")}`).click();
   const facts = await seeText(browser, "into the visit", { within: PAGE_VIEWS });
   expect(facts).toContain(second.title ?? new URL(second.url).pathname);

@@ -21,6 +21,12 @@ afterAll(async () => {
   await api?.close();
 });
 
+function firstProxy(settings: Settings) {
+  const [proxy] = settings.proxies;
+  if (!proxy) throw new Error("the settings hold no proxy profile");
+  return proxy;
+}
+
 const invalid = (message: unknown = expect.any(String)) => ({ rejected: { code: "invalidInput", message } });
 const notFound = { rejected: { code: "notFound", message: expect.any(String) } };
 
@@ -68,7 +74,7 @@ test("proxy profiles are saved, given a password, used as the default and delete
   const { browser } = app;
   const saved = await invokeOk<Settings>(browser, "save_proxy_profile", { profile: BELGIUM });
   expect(saved.proxies).toEqual([{ ...BELGIUM, id: expect.any(String), hasPassword: true }]);
-  const [{ id }] = saved.proxies;
+  const { id } = firstProxy(saved);
 
   const updated = await invokeOk<Settings>(browser, "save_proxy_profile", { profile: { ...BELGIUM, id, port: 8080 } });
   expect(updated.proxies).toEqual([{ ...BELGIUM, id, port: 8080, hasPassword: true }]);
@@ -108,7 +114,7 @@ test("proxy profiles are saved, given a password, used as the default and delete
 test("a scan configuration is saved, run, found in the history and deleted without its scans", async () => {
   const { browser } = app;
   const url = await invokeOk<string>(browser, "get_demo_url");
-  const proxyId = (await invokeOk<Settings>(browser, "save_proxy_profile", { profile: BELGIUM })).proxies[0].id;
+  const proxyId = firstProxy(await invokeOk<Settings>(browser, "save_proxy_profile", { profile: BELGIUM })).id;
   const options = {
     url,
     device: "mobile",

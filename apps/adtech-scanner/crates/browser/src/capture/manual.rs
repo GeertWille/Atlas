@@ -12,8 +12,9 @@ use crate::cdp::CdpError;
 use super::error::CaptureError;
 use super::page::Page;
 
-/// A session nobody finishes ends by itself.
-const SESSION_LIMIT: Duration = Duration::from_secs(15 * 60);
+/// A session nobody finishes ends by itself, this long after the capture was
+/// asked for: the app counts down from the same moment.
+pub(crate) const SESSION_LIMIT: Duration = Duration::from_secs(15 * 60);
 const TICK: Duration = Duration::from_secs(1);
 
 /// How a manual visit ended. Either way, what was recorded is kept.
@@ -26,18 +27,18 @@ pub(crate) enum Ending {
     BrowserGone,
 }
 
-/// Records until `finish` is triggered, the browser is closed, or the session
-/// limit passes.
+/// Records until `finish` is triggered, the browser is closed, or `limit`
+/// passes.
 pub(crate) async fn record(
     page: &mut Page,
     finish: &CancellationToken,
+    limit: Instant,
 ) -> Result<Ending, CaptureError> {
     page.recorder.report(CaptureActivity::progress(format!(
         "Recording. Browse the site in the browser window, then finish the capture in the app \
          (up to {} minutes)",
         SESSION_LIMIT.as_secs() / 60
     )));
-    let limit = Instant::now() + SESSION_LIMIT;
     while Instant::now() < limit {
         let recorded = tokio::select! {
             biased;

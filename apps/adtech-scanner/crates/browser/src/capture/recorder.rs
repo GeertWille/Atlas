@@ -223,15 +223,14 @@ impl Recorder {
 
     fn on_document_committed(&mut self, url: String) {
         self.document_url = url;
-        let Some(site) = Url::parse(&self.document_url)
+        let web_address = Url::parse(&self.document_url)
             .ok()
-            .and_then(|url| Some((Site::of(&url)?, url)))
-        else {
+            .and_then(|url| Some((Site::of(&url)?, url)));
+        let Some((site_of_document, url)) = web_address else {
             // The tab's blank start page, an error page: not part of a visit.
             self.on_site = false;
             return;
         };
-        let (site_of_document, url) = site;
         // Until the entry page has settled, redirects decide which site the
         // visit is on. From then on it is fixed.
         let entry_is_open = self.pages.current().is_none_or(|page| page == 0);

@@ -298,7 +298,7 @@ async fn a_hung_browser_on_the_scan_profile_is_killed_and_the_profile_kept() {
     );
     let browser = Browser::launched_on_kept_profile(app.id, &kept).await;
     let deadline = Instant::now() + Duration::from_secs(20);
-    while browser.live_processes() < 4 {
+    while browser.live_processes() < 4 || !kept.join("Default").is_dir() {
         assert!(Instant::now() < deadline, "the browser did not get going");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

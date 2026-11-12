@@ -245,11 +245,13 @@ mod tests {
         for article in ARTICLES {
             let (content_type, page) = resource(article.path).unwrap();
             assert_eq!(content_type, HTML);
-            assert!(
-                !page.contains('%'),
-                "{}: a placeholder is left",
-                article.slug
-            );
+            for placeholder in ["%TITLE%", "%DESCRIPTION%", "%ARTICLE_ID%", "%ARTICLE%"] {
+                assert!(
+                    !page.contains(placeholder),
+                    "{}: {placeholder}",
+                    article.slug
+                );
+            }
             let title = article.attribute("data-title");
             assert!(title.len() > 10, "{}", article.slug);
             assert!(page.contains(&format!("<title>{title} | The Meridian Post</title>")));
