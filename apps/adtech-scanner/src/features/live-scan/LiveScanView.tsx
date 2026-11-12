@@ -27,7 +27,13 @@ import { BudgetMeter } from "./BudgetMeter";
 import { PipelineStepper } from "./PipelineStepper";
 import { pipelineProgress, runningStep, tokenTotals } from "./progress";
 
-const TEXT_TONE = { red: "text-red-fg", orange: "text-orange-fg", amber: "text-amber-fg", blue: "text-blue-fg", gray: "text-gray-fg" } as const;
+const TEXT_TONE = {
+  red: "text-red-fg",
+  orange: "text-orange-fg",
+  amber: "text-amber-fg",
+  blue: "text-blue-fg",
+  gray: "text-gray-fg",
+} as const;
 
 function CancelScanButton({ scanId }: { scanId: string }) {
   const cancelScan = useCancelScan();
@@ -66,10 +72,10 @@ function CancelScanButton({ scanId }: { scanId: string }) {
 function FindingsSoFar({ detail }: { detail: ScanDetail }) {
   const { findings } = detail;
   return (
-    <Panel aria-label="Findings so far" className="flex min-h-0 flex-col">
+    <Panel aria-label="Findings so far" className="flex min-h-28 flex-1 flex-col">
       <PanelHeader
-        title="Findings so far"
-        actions={findings.length > 0 ? <SeverityCountPills counts={detail.summary.findingCounts} /> : null}
+        title="Findings"
+        actions={findings.length > 0 ? <SeverityCountPills compact counts={detail.summary.findingCounts} /> : null}
       />
       {findings.length === 0 ? (
         <p className="px-4 py-3 text-[13px] text-muted-foreground">Findings appear here as checks report them.</p>
@@ -80,7 +86,11 @@ function FindingsSoFar({ detail }: { detail: ScanDetail }) {
             const tone = SEVERITY_META[finding.severity].tone as keyof typeof TEXT_TONE;
             return (
               <li key={finding.id} className="flex animate-enter items-start gap-2 px-4 py-1.5 text-[13px]">
-                <Icon role="img" aria-label={SEVERITY_META[finding.severity].label} className={cn("mt-0.5 size-3.5 shrink-0", TEXT_TONE[tone])} />
+                <Icon
+                  role="img"
+                  aria-label={SEVERITY_META[finding.severity].label}
+                  className={cn("mt-0.5 size-3.5 shrink-0", TEXT_TONE[tone])}
+                />
                 <span className="text-pretty">{finding.title}</span>
               </li>
             );
@@ -117,20 +127,20 @@ export function LiveScanView({
             </span>
             <ScanIdentity scan={summary} className="text-lg font-semibold tracking-tight" />
           </div>
-          <p className="flex items-center gap-2 text-[13px] text-muted-foreground" aria-live="polite">
+          <p
+            className="flex flex-wrap items-center gap-x-3.5 gap-y-0.5 text-[13px] whitespace-nowrap text-muted-foreground"
+            aria-live="polite"
+          >
             <DeviceLabel device={summary.device} />
-            <span aria-hidden="true">·</span>
             <span>
               Step {Math.min(progress.settled + 1, progress.total)} of {progress.total}
               {current ? `: ${PIPELINE_NODE_META[current.node].label}` : ""}
             </span>
-            <span aria-hidden="true">·</span>
             <span className="tabular-nums">{formatDuration(Math.max(0, now - summary.startedAt))}</span>
             {tokens.input > 0 ? (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="tabular-nums">{formatCompact(tokens.input + tokens.output)} tokens</span>
-              </>
+              <span className="hidden tabular-nums xl:inline">
+                {formatCompact(tokens.input + tokens.output)} tokens
+              </span>
             ) : null}
           </p>
         </div>
@@ -142,7 +152,7 @@ export function LiveScanView({
 
       <div className="grid min-h-0 flex-1 grid-cols-[320px_minmax(0,1fr)] gap-4">
         <div className="flex min-h-0 flex-col gap-4">
-          <Panel className="shrink-0 overflow-y-auto p-4">
+          <Panel className="min-h-0 shrink overflow-y-auto p-4">
             <PipelineStepper steps={steps} now={now} />
           </Panel>
           <FindingsSoFar detail={detail} />

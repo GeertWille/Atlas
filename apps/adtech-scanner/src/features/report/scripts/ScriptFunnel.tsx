@@ -16,10 +16,15 @@ export function ScriptFunnel({
   onScopeChange: (scope: ScriptScope) => void;
 }) {
   return (
-    <div role="group" aria-label="Script volume by stage" className="flex items-stretch gap-1 rounded-xl border bg-card p-1 shadow-xs">
+    <section
+      aria-label="Script volume by stage"
+      className="flex items-stretch gap-1 rounded-xl border bg-card p-1 shadow-xs"
+    >
       {scriptFunnel(scripts).map((stage, index) => (
         <Fragment key={stage.key}>
-          {index > 0 ? <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 self-center text-subtle-foreground" /> : null}
+          {index > 0 ? (
+            <ChevronRightIcon aria-hidden="true" className="size-4 shrink-0 self-center text-subtle-foreground" />
+          ) : null}
           <button
             type="button"
             aria-pressed={scope === stage.key}
@@ -38,11 +43,14 @@ export function ScriptFunnel({
               </span>
             </span>
             <span className="h-1 overflow-hidden rounded-full bg-muted">
-              <span className="block h-full rounded-full bg-violet" style={{ width: `${Math.max(1, stage.shareOfBytes * 100)}%` }} />
+              <span
+                className="block h-full rounded-full bg-violet"
+                style={{ width: `${Math.max(1, stage.shareOfBytes * 100)}%` }}
+              />
             </span>
           </button>
         </Fragment>
       ))}
-    </div>
+    </section>
   );
 }

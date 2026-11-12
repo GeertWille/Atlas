@@ -87,15 +87,7 @@ export const FINDING_SOURCE_LABEL: Record<FindingSource, string> = {
   heuristic: "Deterministic rule",
 };
 
-export const BID_STATUSES: readonly BidStatus[] = [
-  "rendered",
-  "won",
-  "bid",
-  "noBid",
-  "timeout",
-  "error",
-  "pending",
-];
+export const BID_STATUSES: readonly BidStatus[] = ["rendered", "won", "bid", "noBid", "timeout", "error", "pending"];
 
 export const BID_STATUS_META: Record<BidStatus, Meta & { description: string }> = {
   rendered: { label: "Rendered", tone: "green", description: "Won the auction and its creative rendered" },

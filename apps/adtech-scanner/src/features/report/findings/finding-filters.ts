@@ -33,7 +33,10 @@ export function sortFindings(findings: Finding[]): Finding[] {
   );
 }
 
-export function countBy<K extends string>(findings: Finding[], key: (finding: Finding) => K): Partial<Record<K, number>> {
+export function countBy<K extends string>(
+  findings: Finding[],
+  key: (finding: Finding) => K,
+): Partial<Record<K, number>> {
   const counts: Partial<Record<K, number>> = {};
   for (const finding of findings) counts[key(finding)] = (counts[key(finding)] ?? 0) + 1;
   return counts;

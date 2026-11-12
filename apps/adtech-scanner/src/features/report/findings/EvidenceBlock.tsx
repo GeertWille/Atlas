@@ -36,7 +36,12 @@ export function EvidenceBlock({
         <span className="min-w-0 flex-1 truncate font-medium">{evidence.label}</span>
         {scriptUrl ? (
           <Hint label={`Show in Scripts: ${scriptUrl}`}>
-            <Button variant="ghost" size="sm" className="h-6 max-w-64 gap-1 px-1.5 font-mono text-[11px]" onClick={() => onOpenScript(scriptUrl)}>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-6 max-w-64 gap-1 px-1.5 font-mono text-[11px]"
+              onClick={() => onOpenScript(scriptUrl)}
+            >
               <FileCode2Icon className="size-3.5!" />
               <span className="truncate">
                 {fileNameOf(scriptUrl)}

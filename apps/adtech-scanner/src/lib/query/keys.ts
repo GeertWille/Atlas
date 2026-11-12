@@ -8,8 +8,7 @@ export const queryKeys = {
   scans: ["scans"] as const,
   scanLists: ["scans", "list"] as const,
   scanList: (query: ScanListQuery) => ["scans", "list", "page", query] as const,
-  scanHistory: (filters: Omit<ScanListQuery, "limit" | "offset">) =>
-    ["scans", "list", "infinite", filters] as const,
+  scanHistory: (filters: Omit<ScanListQuery, "limit" | "offset">) => ["scans", "list", "infinite", filters] as const,
   scanDetail: (scanId: string) => ["scans", "detail", scanId] as const,
   scanLogs: (scanId: string) => ["scans", "logs", scanId] as const,
   logSearch: (query: string) => ["log-search", query] as const,

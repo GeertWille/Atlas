@@ -18,10 +18,7 @@ function snippetFor(text: string, terms: string[]): string {
   const start = Math.max(0, first - SNIPPET_RADIUS);
   const end = Math.min(text.length, first + SNIPPET_RADIUS * 2);
   const excerpt = text.slice(start, end);
-  const pattern = new RegExp(
-    `(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
-    "gi",
-  );
+  const pattern = new RegExp(`(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "gi");
   const marked = excerpt
     .split(pattern)
     .map((part, index) => (index % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))

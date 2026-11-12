@@ -120,6 +120,12 @@
   --sidebar-accent: oklch(0.21 0.034 264 / 0.06);
   --code: var(--gray-50);
 
+  /*
+   * Solid tone values are chart marks (bid bars, lifecycle marks, rings). Green, violet and blue
+   * identify outcomes and pass the dataviz palette validator against every other pair in both
+   * themes. Amber and red are status colours (warning, failure): amber is under 3:1 on the light
+   * surface, so those marks always carry an icon, a label and, for timeouts, a hatch.
+   */
   --tone-red: oklch(0.6 0.22 27);
   --tone-red-fg: oklch(0.44 0.17 27);
   --tone-red-soft: oklch(0.965 0.018 25);
@@ -128,7 +134,7 @@
   --tone-orange-fg: oklch(0.45 0.13 48);
   --tone-orange-soft: oklch(0.965 0.025 62);
   --tone-orange-line: oklch(0.87 0.08 60);
-  --tone-amber: oklch(0.78 0.16 80);
+  --tone-amber: oklch(0.74 0.16 72);
   --tone-amber-fg: oklch(0.43 0.095 72);
   --tone-amber-soft: oklch(0.97 0.035 92);
   --tone-amber-line: oklch(0.87 0.1 88);
@@ -136,11 +142,11 @@
   --tone-green-fg: oklch(0.4 0.11 155);
   --tone-green-soft: oklch(0.965 0.028 155);
   --tone-green-line: oklch(0.87 0.07 155);
-  --tone-blue: oklch(0.6 0.17 252);
+  --tone-blue: oklch(0.64 0.14 238);
   --tone-blue-fg: oklch(0.43 0.15 257);
   --tone-blue-soft: oklch(0.965 0.018 250);
   --tone-blue-line: oklch(0.87 0.06 250);
-  --tone-violet: oklch(0.52 0.27 280);
+  --tone-violet: oklch(0.5 0.27 292);
   --tone-violet-fg: oklch(0.44 0.26 279);
   --tone-violet-soft: oklch(0.9658 0.0161 262.75);
   --tone-violet-line: oklch(0.8798 0.0568 267.64);
@@ -169,7 +175,7 @@
   --subtle-foreground: oklch(0.66 0.022 261);
   --accent: oklch(0.27 0.02 264);
   --accent-foreground: oklch(0.955 0.004 260);
-  --destructive: oklch(0.6 0.2 25);
+  --destructive: oklch(0.52 0.2 26);
   --border: oklch(1 0 0 / 0.09);
   --border-strong: oklch(1 0 0 / 0.16);
   --input: oklch(1 0 0 / 0.16);
@@ -178,7 +184,7 @@
   --sidebar-accent: oklch(1 0 0 / 0.07);
   --code: oklch(0.15 0.013 266);
 
-  --tone-red: oklch(0.66 0.2 25);
+  --tone-red: oklch(0.64 0.2 25);
   --tone-red-fg: oklch(0.82 0.11 22);
   --tone-red-soft: oklch(0.29 0.06 22);
   --tone-red-line: oklch(0.42 0.1 24);
@@ -186,19 +192,19 @@
   --tone-orange-fg: oklch(0.84 0.1 58);
   --tone-orange-soft: oklch(0.3 0.05 52);
   --tone-orange-line: oklch(0.44 0.09 52);
-  --tone-amber: oklch(0.8 0.15 82);
+  --tone-amber: oklch(0.74 0.15 78);
   --tone-amber-fg: oklch(0.86 0.11 88);
   --tone-amber-soft: oklch(0.3 0.045 85);
   --tone-amber-line: oklch(0.45 0.08 85);
-  --tone-green: oklch(0.7 0.16 152);
+  --tone-green: oklch(0.66 0.16 152);
   --tone-green-fg: oklch(0.84 0.12 155);
   --tone-green-soft: oklch(0.28 0.05 155);
   --tone-green-line: oklch(0.42 0.08 155);
-  --tone-blue: oklch(0.68 0.15 250);
+  --tone-blue: oklch(0.66 0.12 232);
   --tone-blue-fg: oklch(0.83 0.09 248);
   --tone-blue-soft: oklch(0.29 0.055 255);
   --tone-blue-line: oklch(0.43 0.09 255);
-  --tone-violet: oklch(0.66 0.21 282);
+  --tone-violet: oklch(0.6 0.24 298);
   --tone-violet-fg: oklch(0.84 0.1 282);
   --tone-violet-soft: oklch(0.3 0.09 279);
   --tone-violet-line: oklch(0.45 0.14 280);
@@ -228,6 +234,13 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     text-rendering: optimizeLegibility;
+  }
+
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-variant-ligatures: none;
   }
 
   body {
@@ -298,12 +311,7 @@
 }
 
 @utility shimmer {
-  background: linear-gradient(
-    90deg,
-    var(--subtle-foreground) 35%,
-    var(--foreground) 50%,
-    var(--subtle-foreground) 65%
-  );
+  background: linear-gradient(90deg, var(--subtle-foreground) 35%, var(--foreground) 50%, var(--subtle-foreground) 65%);
   background-size: 200% 100%;
   background-clip: text;
   -webkit-background-clip: text;
@@ -314,11 +322,7 @@
 
 /* Diagonal hatch for marks whose state is "did not complete" (timeouts, pending). */
 @utility hatch {
-  background-image: repeating-linear-gradient(
-    135deg,
-    transparent 0 3px,
-    oklch(1 0 0 / 0.45) 3px 5px
-  );
+  background-image: repeating-linear-gradient(135deg, transparent 0 3px, oklch(1 0 0 / 0.45) 3px 5px);
 }
 
 @utility offscreen-auto {

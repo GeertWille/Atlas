@@ -23,19 +23,13 @@ function ToggleGroup<T extends string>({
       onValueChange={(next) => {
         if (next) onValueChange(next as T);
       }}
-      className={cn(
-        "group/toggle inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5",
-        className,
-      )}
+      className={cn("group/toggle inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5", className)}
       {...props}
     />
   );
 }
 
-function ToggleGroupItem({
-  className,
-  ...props
-}: ComponentProps<typeof ToggleGroupPrimitive.Item>) {
+function ToggleGroupItem({ className, ...props }: ComponentProps<typeof ToggleGroupPrimitive.Item>) {
   return (
     <ToggleGroupPrimitive.Item
       data-slot="toggle-group-item"

@@ -50,7 +50,10 @@ export function FindingCard({
           className="flex min-w-0 flex-1 items-start gap-3 rounded-xl py-3.5 pl-4 text-left"
         >
           <ChevronRightIcon
-            className={cn("mt-0.5 size-4 shrink-0 text-subtle-foreground transition-transform", expanded && "rotate-90")}
+            className={cn(
+              "mt-0.5 size-4 shrink-0 text-subtle-foreground transition-transform",
+              expanded && "rotate-90",
+            )}
           />
           <span className="flex min-w-0 flex-1 flex-col gap-1.5">
             <span className="text-sm leading-5 font-semibold text-pretty">{finding.title}</span>
@@ -67,8 +70,8 @@ export function FindingCard({
           <span className="flex shrink-0 flex-col items-end gap-0.5 pt-0.5 text-xs tabular-nums">
             {finding.estimatedRevenueImpactPct !== null ? (
               <span className="flex items-center gap-1 font-medium text-foreground">
-                <TrendingDownIcon className="size-3.5 text-red-fg" />
-                ~{finding.estimatedRevenueImpactPct}% revenue at risk
+                <TrendingDownIcon className="size-3.5 text-red-fg" />~{finding.estimatedRevenueImpactPct}% revenue at
+                risk
               </span>
             ) : null}
             <span className="text-subtle-foreground">{formatPercent(finding.confidence)} confidence</span>
@@ -88,7 +91,11 @@ export function FindingCard({
             <div className="flex flex-col gap-2.5">
               <h3 className="text-xs font-semibold tracking-wide text-subtle-foreground uppercase">Evidence</h3>
               {finding.evidence.map((evidence) => (
-                <EvidenceBlock key={`${evidence.kind}-${evidence.label}`} evidence={evidence} onOpenScript={onOpenScript} />
+                <EvidenceBlock
+                  key={`${evidence.kind}-${evidence.label}`}
+                  evidence={evidence}
+                  onOpenScript={onOpenScript}
+                />
               ))}
             </div>
           ) : null}

@@ -10,13 +10,11 @@ const buttonVariants = cva(
       variant: {
         default:
           "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90 inset-shadow-[0_1px_0_oklch(1_0_0/0.16)]",
-        outline:
-          "border border-border-strong bg-background text-foreground shadow-xs hover:bg-accent",
+        outline: "border border-border-strong bg-background text-foreground shadow-xs hover:bg-accent",
         secondary: "bg-secondary text-secondary-foreground hover:bg-accent",
         ghost: "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
         destructive: "bg-destructive text-white shadow-xs hover:bg-destructive/90",
-        "destructive-outline":
-          "border border-red-line bg-background text-red-fg shadow-xs hover:bg-red-soft",
+        "destructive-outline": "border border-red-line bg-background text-red-fg shadow-xs hover:bg-red-soft",
         link: "text-primary-text underline-offset-4 hover:underline",
       },
       size: {
@@ -31,8 +29,7 @@ const buttonVariants = cva(
   },
 );
 
-type ButtonProps = ComponentProps<"button"> &
-  VariantProps<typeof buttonVariants> & { asChild?: boolean };
+type ButtonProps = ComponentProps<"button"> & VariantProps<typeof buttonVariants> & { asChild?: boolean };
 
 function Button({ className, variant, size, asChild = false, type, ...props }: ButtonProps) {
   const Comp = asChild ? Slot.Root : "button";

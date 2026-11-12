@@ -12,13 +12,7 @@ import type { ApiPort } from "@/lib/api/port";
 import { type FakeConfig, readFakeConfig } from "./config";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
-import {
-  applyBeat,
-  cancelScan,
-  completeScan,
-  createRunningScan,
-  type StoredScan,
-} from "./runtime";
+import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan } from "./runtime";
 import { buildScenario } from "./scenario";
 import { FAKE_BROWSER_VERSION, seedScans } from "./seed";
 
@@ -55,7 +49,8 @@ const latency = (ms = 60) => new Promise<void>((resolve) => setTimeout(resolve, 
 
 class FakeBackend {
   private readonly storageKey: string;
-  private readonly listeners = new Set<(event: ScanEvent) => void>();
+  /** Keyed by subscription, not by handler: the same function may subscribe twice. */
+  private readonly listeners = new Map<symbol, (event: ScanEvent) => void>();
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private settings: Settings;
   private scans: StoredScan[];
@@ -95,7 +90,7 @@ class FakeBackend {
   }
 
   private emit(events: ScanEvent[]) {
-    for (const event of events) for (const listener of this.listeners) listener(event);
+    for (const event of events) for (const listener of this.listeners.values()) listener(event);
   }
 
   private find(scanId: string): StoredScan {
@@ -154,12 +149,12 @@ class FakeBackend {
     },
     updateSettings: async (patch) => {
       await latency();
+      if (patch.budgetUsd !== undefined && patch.budgetUsd <= 0) {
+        throw new ApiError("invalidInput", "The per-scan budget must be greater than zero");
+      }
       const { chromePath, ...rest } = patch;
       this.settings = { ...this.settings, ...rest };
       if (chromePath !== undefined) this.settings.chromePath = chromePath;
-      if (this.settings.budgetUsd <= 0) {
-        throw new ApiError("invalidInput", "The per-scan budget must be greater than zero");
-      }
       this.persist();
       return clone(this.settings);
     },
@@ -255,8 +250,9 @@ class FakeBackend {
       return content;
     },
     subscribeScanEvents: async (handler) => {
-      this.listeners.add(handler);
-      return () => this.listeners.delete(handler);
+      const subscription = Symbol("scan-events");
+      this.listeners.set(subscription, handler);
+      return () => this.listeners.delete(subscription);
     },
     pickExportPath: async (defaultFileName) => defaultFileName,
     pickBrowserExecutable: async () => "/Applications/Chromium.app/Contents/MacOS/Chromium",

@@ -4,7 +4,7 @@ import { normalizeScanUrl } from "./scan-url";
 
 export const OBSERVE_SECONDS = { min: 5, max: 60, step: 5 } as const;
 
-export const scanFormSchema = z.object({
+const scanFormSchema = z.object({
   url: z.string().transform((value, context) => {
     const result = normalizeScanUrl(value);
     if (result.ok) return result.url;

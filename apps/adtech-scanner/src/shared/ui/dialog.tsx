@@ -4,8 +4,6 @@ import type { ComponentProps } from "react";
 import { cn } from "@/shared/lib/cn";
 
 const Dialog = DialogPrimitive.Root;
-const DialogTrigger = DialogPrimitive.Trigger;
-const DialogClose = DialogPrimitive.Close;
 
 function DialogOverlay({ className, ...props }: ComponentProps<typeof DialogPrimitive.Overlay>) {
   return (
@@ -49,43 +47,12 @@ function DialogContent({
   );
 }
 
-function DialogHeader({ className, ...props }: ComponentProps<"div">) {
-  return <div className={cn("flex flex-col gap-1.5", className)} {...props} />;
-}
-
-function DialogFooter({ className, ...props }: ComponentProps<"div">) {
-  return <div className={cn("flex justify-end gap-2", className)} {...props} />;
-}
-
 function DialogTitle({ className, ...props }: ComponentProps<typeof DialogPrimitive.Title>) {
-  return (
-    <DialogPrimitive.Title
-      className={cn("text-base leading-tight font-semibold", className)}
-      {...props}
-    />
-  );
+  return <DialogPrimitive.Title className={cn("text-base leading-tight font-semibold", className)} {...props} />;
 }
 
-function DialogDescription({
-  className,
-  ...props
-}: ComponentProps<typeof DialogPrimitive.Description>) {
-  return (
-    <DialogPrimitive.Description
-      className={cn("text-sm text-muted-foreground", className)}
-      {...props}
-    />
-  );
+function DialogDescription({ className, ...props }: ComponentProps<typeof DialogPrimitive.Description>) {
+  return <DialogPrimitive.Description className={cn("text-sm text-muted-foreground", className)} {...props} />;
 }
 
-export {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogOverlay,
-  DialogTitle,
-  DialogTrigger,
-};
+export { Dialog, DialogContent, DialogDescription, DialogTitle };

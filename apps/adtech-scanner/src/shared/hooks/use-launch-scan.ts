@@ -17,9 +17,7 @@ export function useLaunchScan() {
         const needsSettings = error.code === "browserNotFound" || error.code === "apiKeyMissing";
         toast.error(error.code === "browserNotFound" ? "No browser found" : "Could not start the scan", {
           description: error.message,
-          action: needsSettings
-            ? { label: "Open settings", onClick: () => navigate({ to: "/settings" }) }
-            : undefined,
+          action: needsSettings ? { label: "Open settings", onClick: () => navigate({ to: "/settings" }) } : undefined,
         });
       },
     });

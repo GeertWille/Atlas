@@ -1,4 +1,12 @@
-import { ArrowRightIcon, CheckIcon, CircleDashedIcon, ExternalLinkIcon, FolderOpenIcon, PlayIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  ArrowRightIcon,
+  CheckIcon,
+  CircleDashedIcon,
+  ExternalLinkIcon,
+  FolderOpenIcon,
+  PlayIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import { type FormEvent, type ReactNode, useState } from "react";
 import { toast } from "sonner";
 import type { BrowserInfo, Settings } from "@/bindings";
@@ -16,15 +24,7 @@ const API_KEYS_URL = "https://console.anthropic.com/settings/keys";
 
 type StepState = "done" | "optional" | "required";
 
-function Step({
-  state,
-  title,
-  children,
-}: {
-  state: StepState;
-  title: string;
-  children: ReactNode;
-}) {
+function Step({ state, title, children }: { state: StepState; title: string; children: ReactNode }) {
   const Icon = state === "done" ? CheckIcon : state === "required" ? TriangleAlertIcon : CircleDashedIcon;
   return (
     <li className="flex gap-3.5 border-b p-4 last:border-b-0">
@@ -41,9 +41,7 @@ function Step({
       <div className="flex min-w-0 flex-1 flex-col gap-2">
         <h2 className="flex items-center gap-2 text-sm font-semibold">
           {title}
-          {state === "optional" ? (
-            <span className="text-xs font-normal text-subtle-foreground">Optional</span>
-          ) : null}
+          {state === "optional" ? <span className="text-xs font-normal text-subtle-foreground">Optional</span> : null}
         </h2>
         {children}
       </div>
@@ -56,7 +54,10 @@ function BrowserStep({ browser }: { browser: BrowserInfo | null }) {
   const choose = async () => {
     const path = await api.pickBrowserExecutable();
     if (path) {
-      updateSettings.mutate({ chromePath: path }, { onError: (reason) => notifyError("Could not use that browser", reason) });
+      updateSettings.mutate(
+        { chromePath: path },
+        { onError: (reason) => notifyError("Could not use that browser", reason) },
+      );
     }
   };
   if (browser) {
@@ -183,8 +184,8 @@ export function OnboardingScreen({
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Find the revenue your ad stack is leaking</h1>
         <p className="text-[15px] text-pretty text-muted-foreground">
-          Ad-Tech Scanner loads a page in your own browser, records every Prebid auction and GPT slot, and looks for
-          the logic bugs that leave ad containers empty. Everything stays on this Mac.
+          Ad-Tech Scanner loads a page in your own browser, records every Prebid auction and GPT slot, and looks for the
+          logic bugs that leave ad containers empty. Everything stays on this Mac.
         </p>
       </div>
 

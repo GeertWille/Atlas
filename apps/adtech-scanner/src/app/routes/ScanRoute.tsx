@@ -28,7 +28,11 @@ const TAB_LABEL: Record<ReportTab, string> = {
 };
 
 function TabCount({ value }: { value: number }) {
-  return <span className="rounded-full bg-muted px-1.5 text-[11px] leading-4 font-medium text-muted-foreground tabular-nums">{value}</span>;
+  return (
+    <span className="rounded-full bg-muted px-1.5 text-[11px] leading-4 font-medium text-muted-foreground tabular-nums">
+      {value}
+    </span>
+  );
 }
 
 function Report({ detail }: { detail: ScanDetail }) {
@@ -81,7 +85,12 @@ function Report({ detail }: { detail: ScanDetail }) {
           <ScriptsTab scripts={detail.scripts} focusedScriptUrl={search.script} />
         </TabsContent>
         <TabsContent value="audit">
-          <AuditTrail steps={detail.steps} logs={logs.data} focusedLogId={search.log} />
+          <AuditTrail
+            steps={detail.steps}
+            logs={logs.data}
+            focusedLogId={search.log}
+            onOpenFinding={(finding) => navigate({ search: { tab: "findings", finding } })}
+          />
         </TabsContent>
       </Tabs>
     </PageContent>
@@ -135,7 +144,11 @@ export function ScanRoute() {
         <ReportSkeleton />
       ) : scan.isError ? (
         toApiError(scan.error).code === "notFound" ? (
-          <Empty icon={FileQuestionIcon} title="This scan no longer exists" description="It may have been deleted from history.">
+          <Empty
+            icon={FileQuestionIcon}
+            title="This scan no longer exists"
+            description="It may have been deleted from history."
+          >
             <Button asChild variant="outline" size="sm">
               <Link to="/history">Go to history</Link>
             </Button>

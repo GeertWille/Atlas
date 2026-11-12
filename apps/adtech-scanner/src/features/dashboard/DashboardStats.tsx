@@ -21,10 +21,23 @@ export function DashboardStats({ stats }: { stats: Stats | undefined }) {
   const health = stats.avgHealthScore === null ? null : Math.round(stats.avgHealthScore);
   return (
     <StatGrid className="grid-cols-4">
-      <Stat label="Scans" value={formatInteger(stats.totalScans)} hint={`across ${pluralize(stats.sitesScanned, "site")}`} />
+      <Stat
+        label="Scans"
+        value={formatInteger(stats.totalScans)}
+        hint={`across ${pluralize(stats.sitesScanned, "site")}`}
+      />
       <Stat
         label="Average health"
-        value={health === null ? EMPTY : <>{health}<span className="text-sm font-normal text-subtle-foreground"> / 100</span></>}
+        value={
+          health === null ? (
+            EMPTY
+          ) : (
+            <>
+              {health}
+              <span className="text-sm font-normal text-subtle-foreground"> / 100</span>
+            </>
+          )
+        }
         hint={health === null ? "No completed scans yet" : healthBand(health).label}
       />
       <Stat
@@ -32,7 +45,11 @@ export function DashboardStats({ stats }: { stats: Stats | undefined }) {
         value={formatInteger(stats.openCriticalFindings)}
         hint={`${pluralize(stats.totalFindings, "finding")} in latest scans`}
       />
-      <Stat label="LLM spend" value={formatUsd(stats.totalCostUsd)} hint={`${formatUsd(stats.avgCostUsd)} average per scan`} />
+      <Stat
+        label="LLM spend"
+        value={formatUsd(stats.totalCostUsd)}
+        hint={`${formatUsd(stats.avgCostUsd)} average per scan`}
+      />
     </StatGrid>
   );
 }

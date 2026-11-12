@@ -36,9 +36,7 @@ function Field({
     >
       <div className="flex min-w-0 flex-col gap-1">
         <Label htmlFor={htmlFor}>{label}</Label>
-        {description ? (
-          <p className="text-[13px] text-pretty text-muted-foreground">{description}</p>
-        ) : null}
+        {description ? <div className="text-[13px] text-pretty text-muted-foreground">{description}</div> : null}
         {error ? (
           <p role="alert" className="text-[13px] text-red-fg">
             {error}

@@ -1,5 +1,13 @@
 import { Link } from "@tanstack/react-router";
-import { HistoryIcon, HomeIcon, type LucideIcon, PlusIcon, ScrollTextIcon, SearchIcon, SettingsIcon } from "lucide-react";
+import {
+  HistoryIcon,
+  HomeIcon,
+  type LucideIcon,
+  PlusIcon,
+  ScrollTextIcon,
+  SearchIcon,
+  SettingsIcon,
+} from "lucide-react";
 import type { ScanSummary } from "@/bindings";
 import { HealthRing } from "@/shared/components/health-ring";
 import { DeviceIcon } from "@/shared/components/status";
@@ -12,7 +20,17 @@ import { IS_MAC, MOD_KEY } from "./shortcuts";
 const NAV_ITEM =
   "flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground";
 
-function NavLink({ to, icon: Icon, label, exact = false }: { to: "/" | "/history" | "/logs" | "/settings"; icon: LucideIcon; label: string; exact?: boolean }) {
+function NavLink({
+  to,
+  icon: Icon,
+  label,
+  exact = false,
+}: {
+  to: "/" | "/history" | "/logs" | "/settings";
+  icon: LucideIcon;
+  label: string;
+  exact?: boolean;
+}) {
   return (
     <Link to={to} activeOptions={{ exact }} className={NAV_ITEM}>
       <Icon className="size-4" />
@@ -78,7 +96,13 @@ export function Sidebar({
         <span data-tauri-drag-region className="flex items-center gap-2 text-[13px] font-semibold tracking-tight">
           <span className="flex size-5 items-center justify-center rounded-md bg-primary text-primary-foreground">
             <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">
-              <path d="M3 12V9m3.3 3V5m3.4 7V7.5M13 12V3.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+              <path
+                d="M3 12V9m3.3 3V5m3.4 7V7.5M13 12V3.5"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                fill="none"
+              />
             </svg>
           </span>
           Ad-Tech Scanner
@@ -91,7 +115,7 @@ export function Sidebar({
             <PlusIcon />
             New scan
           </span>
-          <span className="text-xs font-normal text-primary-foreground/75">{MOD_KEY}N</span>
+          <span className="text-xs font-normal">{MOD_KEY}N</span>
         </Button>
         <button
           type="button"
@@ -99,7 +123,7 @@ export function Sidebar({
           className="flex h-8 items-center gap-2 rounded-md border bg-background px-2 text-[13px] text-muted-foreground shadow-xs transition-colors hover:text-foreground"
         >
           <SearchIcon className="size-4" />
-          <span className="flex-1 text-left">Search and commands</span>
+          <span className="flex-1 text-left">Search</span>
           <Kbd>{MOD_KEY}K</Kbd>
         </button>
       </div>

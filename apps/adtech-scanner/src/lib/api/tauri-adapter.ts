@@ -32,15 +32,12 @@ export function createTauriAdapter(): ApiPort {
     searchLogs: (query, limit) => call("search_logs", { query, limit }),
     getDashboardStats: () => call("get_dashboard_stats"),
     exportScan: (scanId, format, path) => call("export_scan", { scanId, format, path }),
-    subscribeScanEvents: (handler) =>
-      listen<ScanEvent>("scan-event", (event) => handler(event.payload)),
+    subscribeScanEvents: (handler) => listen<ScanEvent>("scan-event", (event) => handler(event.payload)),
     pickExportPath: (defaultFileName, format) =>
       save({
         defaultPath: defaultFileName,
         filters: [
-          format === "markdown"
-            ? { name: "Markdown", extensions: ["md"] }
-            : { name: "JSON", extensions: ["json"] },
+          format === "markdown" ? { name: "Markdown", extensions: ["md"] } : { name: "JSON", extensions: ["json"] },
         ],
       }),
     pickBrowserExecutable: () => open({ multiple: false, directory: false }),

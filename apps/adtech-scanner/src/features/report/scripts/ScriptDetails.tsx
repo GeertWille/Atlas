@@ -19,7 +19,10 @@ export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClo
   return (
     <section aria-label="Script details" className="flex animate-enter flex-col gap-3 border-t bg-muted/30 px-4 py-3.5">
       <div className="flex items-start gap-2">
-        <p className="selectable min-w-0 flex-1 font-mono text-xs leading-5 break-all">{script.url}</p>
+        <p className="selectable min-w-0 flex-1 font-mono text-xs leading-5 break-all">
+          {script.url}
+          <span className="ml-2 text-subtle-foreground">sha-256 {script.hash}</span>
+        </p>
         <CopyButton text={script.url} label="Copy URL" />
         <Hint label="Close details">
           <Button variant="ghost" size="icon-sm" aria-label="Close details" onClick={onClose}>
@@ -27,13 +30,16 @@ export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClo
           </Button>
         </Hint>
       </div>
-      <dl className="grid grid-cols-6 gap-4">
+      <dl className="grid grid-cols-3 gap-x-4 gap-y-3 xl:grid-cols-6">
         <Fact label="Category" value={SCRIPT_CATEGORY_META[script.category].label} />
+        <Fact label="Vendor" value={script.vendor ?? EMPTY} />
         <Fact label="Size" value={formatBytes(script.sizeBytes)} />
         <Fact label="Loaded at" value={formatOffset(script.loadedAtMs)} />
         <Fact label="Classified by" value={FINDING_SOURCE_LABEL[script.classifiedBy]} />
-        <Fact label="Confidence" value={script.classificationConfidence === null ? EMPTY : formatPercent(script.classificationConfidence)} />
-        <Fact label="Content hash" value={script.hash} />
+        <Fact
+          label="Confidence"
+          value={script.classificationConfidence === null ? EMPTY : formatPercent(script.classificationConfidence)}
+        />
       </dl>
       <p className="selectable text-[13px] text-pretty text-muted-foreground">
         <span className="font-medium text-foreground">{script.adRelated ? "Ad-related. " : "Not ad-related. "}</span>

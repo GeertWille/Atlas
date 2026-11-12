@@ -2,7 +2,6 @@ import { LayersIcon } from "lucide-react";
 import type { PipelineStep } from "@/bindings";
 import { StepStatusIcon } from "@/shared/components/status";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
-import { cn } from "@/shared/lib/cn";
 import { formatCompact, formatDuration, formatUsd } from "@/shared/lib/format";
 
 const ITEM =
@@ -38,12 +37,14 @@ export function StepList({
             type="button"
             aria-current={selectedStepId === step.id}
             onClick={() => onSelect(step.id)}
-            className={cn(ITEM, step.status === "pending" && "opacity-60")}
+            className={ITEM}
           >
             <span className="flex items-center gap-2 text-[13px] font-medium">
               <StepStatusIcon status={step.status} />
               <span className="flex-1 truncate">{PIPELINE_NODE_META[step.node].label}</span>
-              <span className="text-xs font-normal text-subtle-foreground tabular-nums">{logCounts.get(step.id) ?? 0}</span>
+              <span className="text-xs font-normal text-subtle-foreground tabular-nums">
+                {logCounts.get(step.id) ?? 0}
+              </span>
             </span>
             <span className="truncate pl-6 text-xs text-muted-foreground">
               {step.summary ?? PIPELINE_NODE_META[step.node].description}

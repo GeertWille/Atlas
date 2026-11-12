@@ -16,7 +16,12 @@ function BidTooltip({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
   const rows: [string, string][] = [
     ["Status", BID_STATUS_META[bid.status].label],
     ["Request sent", `+${formatOffset(bar.offsetMs)} (page ${formatOffset(bid.requestedAtMs)})`],
-    ["Response time", bid.responseTimeMs === null ? `none within ${formatDuration(auction.timeoutMs)}` : formatDuration(bid.responseTimeMs)],
+    [
+      "Response time",
+      bid.responseTimeMs === null
+        ? `none within ${formatDuration(auction.timeoutMs)}`
+        : formatDuration(bid.responseTimeMs),
+    ],
   ];
   if (bid.cpm !== null) rows.push(["CPM", formatCpm(bid.cpm, bid.currency)]);
   if (bid.size) rows.push(["Size", bid.size]);
@@ -45,27 +50,41 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div
+        <li
           // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact values on focus
           tabIndex={0}
-          role="listitem"
           aria-label={`${bid.bidder}: ${meta.label}${bid.cpm === null ? "" : `, ${formatCpm(bid.cpm, bid.currency)}`}${bid.responseTimeMs === null ? "" : `, ${formatDuration(bid.responseTimeMs)}`}`}
-          className={cn(GRID, "h-7 items-center rounded-md outline-offset-[-2px] hover:bg-accent/70", bar.isWinner && "bg-primary-soft/50")}
+          className={cn(
+            GRID,
+            "h-7 items-center rounded-md outline-offset-[-2px] hover:bg-accent/70",
+            bar.isWinner && "bg-primary-soft/50",
+          )}
         >
           <span className="flex min-w-0 items-center gap-2 pr-3 pl-3 text-[13px]">
             <Icon aria-hidden="true" className={cn("size-3.5 shrink-0", style.iconTone)} />
-            <span className={cn("truncate", bar.isWinner ? "font-semibold" : "text-muted-foreground")}>{bid.bidder}</span>
+            <span className={cn("truncate", bar.isWinner ? "font-semibold" : "text-muted-foreground")}>
+              {bid.bidder}
+            </span>
           </span>
           <span className="relative h-full">
             <span
-              className={cn("absolute top-1/2 h-3.5 -translate-y-1/2 rounded-[4px]", style.bar, bar.openEnded && "rounded-r-none")}
+              className={cn(
+                "absolute top-1/2 h-3.5 -translate-y-1/2 rounded-[4px]",
+                style.bar,
+                bar.openEnded && "rounded-r-none",
+              )}
               style={{ left: `${bar.startPercent}%`, width: `${bar.widthPercent}%` }}
             />
           </span>
-          <span className={cn("pr-3 text-right text-xs tabular-nums", bid.cpm === null ? "text-subtle-foreground" : "font-medium")}>
+          <span
+            className={cn(
+              "pr-3 text-right text-xs tabular-nums",
+              bid.cpm === null ? "text-subtle-foreground" : "font-medium",
+            )}
+          >
             {bid.cpm === null ? meta.label : formatCpm(bid.cpm, bid.currency)}
           </span>
-        </div>
+        </li>
       </TooltipTrigger>
       <TooltipContent side="top" align="center">
         <BidTooltip bar={bar} auction={auction} />
@@ -76,7 +95,7 @@ function BidRow({ bar, auction }: { bar: WaterfallBar; auction: Auction }) {
 
 function AdUnitGroup({ group, auction }: { group: WaterfallGroup; auction: Auction }) {
   return (
-    <div role="list" aria-label={`Bids for ${group.code}`} className="flex flex-col gap-px">
+    <div className="flex flex-col gap-px">
       <div className={cn(GRID, "h-8 items-end pb-1")}>
         <span className="selectable col-span-2 flex min-w-0 items-baseline gap-2 pl-3">
           <span className="truncate font-mono text-xs font-medium">{group.code}</span>
@@ -86,9 +105,11 @@ function AdUnitGroup({ group, auction }: { group: WaterfallGroup; auction: Aucti
           {group.winningBidder ? "CPM" : "no winner"}
         </span>
       </div>
-      {group.bars.map((bar) => (
-        <BidRow key={bar.bid.bidder} bar={bar} auction={auction} />
-      ))}
+      <ul aria-label={`Bids for ${group.code}`} className="flex flex-col gap-px">
+        {group.bars.map((bar) => (
+          <BidRow key={bar.bid.bidder} bar={bar} auction={auction} />
+        ))}
+      </ul>
     </div>
   );
 }

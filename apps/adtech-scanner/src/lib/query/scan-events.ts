@@ -27,6 +27,16 @@ export function appendLog(logs: LogEntry[], entry: LogEntry): LogEntry[] {
   return logs.some((existing) => existing.id === entry.id) ? logs : [...logs, entry];
 }
 
+/** Entries pushed while a scan's log query was still loading; its response may predate them. */
+const logsMissedWhileLoading = new Map<string, LogEntry[]>();
+
+/** Adds the entries that arrived during the initial load to its response, oldest first. */
+export function withLogsMissedWhileLoading(scanId: string, fetched: LogEntry[]): LogEntry[] {
+  const missed = logsMissedWhileLoading.get(scanId) ?? [];
+  logsMissedWhileLoading.delete(scanId);
+  return missed.reduce(appendLog, fetched).sort((a, b) => a.ts - b.ts);
+}
+
 /** Returns the same list when the scan is not on this page, so callers can detect a miss. */
 export function patchScanList(list: ScanList, summary: ScanSummary): ScanList {
   if (!list.items.some((item) => item.id === summary.id)) return list;
@@ -57,15 +67,23 @@ function eventScanId(event: ScanEvent): string {
 export function applyScanEvent(client: QueryClient, event: ScanEvent) {
   const scanId = eventScanId(event);
   if (event.type === "log") {
-    client.setQueryData<LogEntry[]>(queryKeys.scanLogs(scanId), (logs) =>
-      logs ? appendLog(logs, event.entry) : logs,
-    );
+    const key = queryKeys.scanLogs(scanId);
+    const state = client.getQueryState<LogEntry[]>(key);
+    if (state?.data) {
+      client.setQueryData<LogEntry[]>(key, appendLog(state.data, event.entry));
+    } else if (state?.fetchStatus === "fetching") {
+      logsMissedWhileLoading.set(scanId, [...(logsMissedWhileLoading.get(scanId) ?? []), event.entry]);
+    }
     return;
   }
 
-  client.setQueryData<ScanDetail>(queryKeys.scanDetail(scanId), (detail) =>
-    detail ? applyEventToDetail(detail, event) : detail,
-  );
+  const finished = event.type === "scanUpdated" && !isActive(event.summary.status);
+  // A finished scan keeps showing its live state until the complete report has been fetched.
+  if (!finished) {
+    client.setQueryData<ScanDetail>(queryKeys.scanDetail(scanId), (detail) =>
+      detail ? applyEventToDetail(detail, event) : detail,
+    );
+  }
   if (event.type !== "scanUpdated") return;
 
   let knownEverywhere = true;
@@ -76,7 +94,6 @@ export function applyScanEvent(client: QueryClient, event: ScanEvent) {
     else client.setQueryData(key, patched);
   }
 
-  const finished = !isActive(event.summary.status);
   if (finished) {
     // The final detail carries auctions, slots, scripts and the overview.
     void client.invalidateQueries({ queryKey: queryKeys.scanDetail(scanId) });

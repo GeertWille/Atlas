@@ -15,7 +15,9 @@ export function findingToMarkdown(finding: Finding): string {
     FINDING_CATEGORY_LABEL[finding.category],
     FINDING_SOURCE_LABEL[finding.source],
     `confidence ${formatPercent(finding.confidence)}`,
-    finding.estimatedRevenueImpactPct === null ? null : `est. ${finding.estimatedRevenueImpactPct}% of ad revenue at risk`,
+    finding.estimatedRevenueImpactPct === null
+      ? null
+      : `est. ${finding.estimatedRevenueImpactPct}% of ad revenue at risk`,
   ].filter(Boolean);
   const affected = [
     finding.affectedSlots.length > 0 ? `Slots: ${finding.affectedSlots.join(", ")}` : null,

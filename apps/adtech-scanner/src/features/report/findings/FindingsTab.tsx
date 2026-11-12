@@ -3,12 +3,7 @@ import { useEffect, useState } from "react";
 import type { Finding, FindingSource } from "@/bindings";
 import { FilterMenu } from "@/shared/components/filter-menu";
 import { SEVERITY_ICON } from "@/shared/components/status";
-import {
-  FINDING_CATEGORIES,
-  FINDING_CATEGORY_LABEL,
-  SEVERITIES,
-  SEVERITY_META,
-} from "@/shared/domain/vocabulary";
+import { FINDING_CATEGORIES, FINDING_CATEGORY_LABEL, SEVERITIES, SEVERITY_META } from "@/shared/domain/vocabulary";
 import { pluralize } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
@@ -74,7 +69,12 @@ export function FindingsTab({
           onChange={(severities) => setFilters({ ...filters, severities })}
           options={SEVERITIES.filter((severity) => severityCounts[severity]).map((severity) => {
             const Icon = SEVERITY_ICON[severity];
-            return { value: severity, label: SEVERITY_META[severity].label, icon: <Icon />, count: severityCounts[severity] };
+            return {
+              value: severity,
+              label: SEVERITY_META[severity].label,
+              icon: <Icon />,
+              count: severityCounts[severity],
+            };
           })}
         />
         <FilterMenu
@@ -106,7 +106,12 @@ export function FindingsTab({
 
       {visible.length === 0 ? (
         <Empty icon={FilterXIcon} title="No findings match these filters">
-          <Button variant="outline" size="sm" disabled={!hasActiveFilters(filters)} onClick={() => setFilters(NO_FINDING_FILTERS)}>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!hasActiveFilters(filters)}
+            onClick={() => setFilters(NO_FINDING_FILTERS)}
+          >
             Clear filters
           </Button>
         </Empty>

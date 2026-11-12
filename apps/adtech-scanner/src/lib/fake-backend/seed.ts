@@ -17,13 +17,40 @@ type SeedSpec = {
 const MINUTES_PER_DAY = 1440;
 
 const FEATURED: SeedSpec[] = [
-  { id: "seed-sportsdesk-desktop", url: "https://www.sportsdesk.example/football/transfer-news", device: "desktop", minutesAgo: 34 },
-  { id: "seed-sportsdesk-mobile", url: "https://www.sportsdesk.example/football/transfer-news", device: "mobile", minutesAgo: 29 },
+  {
+    id: "seed-sportsdesk-desktop",
+    url: "https://www.sportsdesk.example/football/transfer-news",
+    device: "desktop",
+    minutesAgo: 34,
+  },
+  {
+    id: "seed-sportsdesk-mobile",
+    url: "https://www.sportsdesk.example/football/transfer-news",
+    device: "mobile",
+    minutesAgo: 29,
+  },
   { id: "seed-morningledger-desktop", url: "https://www.morningledger.example/", device: "desktop", minutesAgo: 190 },
-  { id: "seed-techpulse-desktop", url: "https://www.techpulse.example/reviews/laptops", device: "desktop", minutesAgo: MINUTES_PER_DAY + 40 },
+  {
+    id: "seed-techpulse-desktop",
+    url: "https://www.techpulse.example/reviews/laptops",
+    device: "desktop",
+    minutesAgo: MINUTES_PER_DAY + 40,
+  },
   { id: "seed-unreachable", url: "https://unreachable.example/", device: "desktop", minutesAgo: MINUTES_PER_DAY + 95 },
-  { id: "seed-gardenweekly-cancelled", url: "https://www.gardenweekly.example/spring-planting", device: "mobile", minutesAgo: 2 * MINUTES_PER_DAY + 15, cancelAfterMs: 9_000 },
-  { id: "seed-morningledger-mobile", url: "https://www.morningledger.example/", device: "mobile", minutesAgo: 3 * MINUTES_PER_DAY + 200, aiEnabled: false },
+  {
+    id: "seed-gardenweekly-cancelled",
+    url: "https://www.gardenweekly.example/spring-planting",
+    device: "mobile",
+    minutesAgo: 2 * MINUTES_PER_DAY + 15,
+    cancelAfterMs: 9_000,
+  },
+  {
+    id: "seed-morningledger-mobile",
+    url: "https://www.morningledger.example/",
+    device: "mobile",
+    minutesAgo: 3 * MINUTES_PER_DAY + 200,
+    aiEnabled: false,
+  },
 ];
 
 const ARCHIVE_HOSTS = [

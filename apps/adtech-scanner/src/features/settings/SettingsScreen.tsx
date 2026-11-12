@@ -49,7 +49,15 @@ function Section({ title, description, children }: { title: string; description?
   );
 }
 
-function BrowserField({ browser, settings, save }: { browser: BrowserInfo | null | undefined; settings: Settings; save: (patch: SettingsPatch) => void }) {
+function BrowserField({
+  browser,
+  settings,
+  save,
+}: {
+  browser: BrowserInfo | null | undefined;
+  settings: Settings;
+  save: (patch: SettingsPatch) => void;
+}) {
   const choose = async () => {
     try {
       const path = await api.pickBrowserExecutable();
@@ -66,12 +74,16 @@ function BrowserField({ browser, settings, save }: { browser: BrowserInfo | null
         browser === undefined ? (
           <Skeleton className="h-4 w-64" />
         ) : browser === null ? (
-          <span className="text-amber-fg">No Chrome or Chromium installation was found. Choose an executable to run scans.</span>
+          <span className="text-amber-fg">
+            No Chrome or Chromium installation was found. Choose an executable to run scans.
+          </span>
         ) : (
           <>
             <span className="font-medium text-foreground">{browser.version}</span>
             {settings.chromePath ? " (chosen manually)" : " (detected automatically)"}
-            <span className="selectable mt-1 block truncate font-mono text-xs text-subtle-foreground">{browser.path}</span>
+            <span className="selectable mt-1 block truncate font-mono text-xs text-subtle-foreground">
+              {browser.path}
+            </span>
           </>
         )
       }
@@ -153,7 +165,11 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
           description={
             <>
               Stored in your system keychain, never in the app database or logs.{" "}
-              <button type="button" className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline" onClick={() => void api.openExternal(API_KEYS_URL)}>
+              <button
+                type="button"
+                className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline"
+                onClick={() => void api.openExternal(API_KEYS_URL)}
+              >
                 Get a key
                 <ExternalLinkIcon className="size-3" />
               </button>
@@ -164,14 +180,42 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
             <ApiKeyField hasApiKey={settings.hasApiKey} />
           </div>
         </Field>
-        <Field label="Script filter model" htmlFor={ids.filter} description="Phase 1 classifies which scripts are ad-related. A small, fast model is enough.">
-          <CommitInput id={ids.filter} list={MODEL_SUGGESTIONS_ID} spellCheck={false} className="w-56 font-mono text-[13px]" value={settings.filterModel} parse={parseModelId} onCommit={(filterModel) => save({ filterModel })} />
+        <Field
+          label="Script filter model"
+          htmlFor={ids.filter}
+          description="Phase 1 classifies which scripts are ad-related. A small, fast model is enough."
+        >
+          <CommitInput
+            id={ids.filter}
+            list={MODEL_SUGGESTIONS_ID}
+            spellCheck={false}
+            className="w-56 font-mono text-[13px]"
+            value={settings.filterModel}
+            parse={parseModelId}
+            onCommit={(filterModel) => save({ filterModel })}
+          />
         </Field>
-        <Field label="Logic analysis model" htmlFor={ids.analysis} description="Phase 2 reads the beautified scripts with tools. This is where most of the cost goes.">
-          <CommitInput id={ids.analysis} list={MODEL_SUGGESTIONS_ID} spellCheck={false} className="w-56 font-mono text-[13px]" value={settings.analysisModel} parse={parseModelId} onCommit={(analysisModel) => save({ analysisModel })} />
+        <Field
+          label="Logic analysis model"
+          htmlFor={ids.analysis}
+          description="Phase 2 reads the beautified scripts with tools. This is where most of the cost goes."
+        >
+          <CommitInput
+            id={ids.analysis}
+            list={MODEL_SUGGESTIONS_ID}
+            spellCheck={false}
+            className="w-56 font-mono text-[13px]"
+            value={settings.analysisModel}
+            parse={parseModelId}
+            onCommit={(analysisModel) => save({ analysisModel })}
+          />
         </Field>
         <Field label="Analysis effort" description="Higher effort reads more code and reasons longer, at higher cost.">
-          <ToggleGroup aria-label="Analysis effort" value={settings.analysisEffort} onValueChange={(analysisEffort) => save({ analysisEffort })}>
+          <ToggleGroup
+            aria-label="Analysis effort"
+            value={settings.analysisEffort}
+            onValueChange={(analysisEffort) => save({ analysisEffort })}
+          >
             <ToggleGroupItem value="low">Low</ToggleGroupItem>
             <ToggleGroupItem value="medium">Medium</ToggleGroupItem>
             <ToggleGroupItem value="high">High</ToggleGroupItem>
@@ -182,23 +226,40 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
           htmlFor={ids.budget}
           description={`Hard cap on LLM spend. Analysis stops and reports partial results when it is reached. $${BUDGET_USD.min.toFixed(2)} to $${BUDGET_USD.max.toFixed(2)}.`}
         >
-          <div className="relative">
-            <span className="pointer-events-none absolute top-[7px] left-2.5 text-sm text-subtle-foreground">$</span>
-            <CommitInput id={ids.budget} inputMode="decimal" className="w-24 pl-6 text-right tabular-nums" value={settings.budgetUsd} parse={parseBudgetUsd} onCommit={(budgetUsd) => save({ budgetUsd })} />
-          </div>
+          <CommitInput
+            leading="$"
+            id={ids.budget}
+            inputMode="decimal"
+            className="w-24 pl-6 text-right tabular-nums"
+            value={settings.budgetUsd}
+            parse={parseBudgetUsd}
+            format={(budget) => budget.toFixed(2)}
+            onCommit={(budgetUsd) => save({ budgetUsd })}
+          />
         </Field>
       </Section>
 
-      <Section title="Browser" description="Scans drive a Chromium-based browser on this computer over the DevTools protocol.">
+      <Section
+        title="Browser"
+        description="Scans drive a Chromium-based browser on this computer over the DevTools protocol."
+      >
         <BrowserField browser={browser} settings={settings} save={save} />
-        <Field label="Run headless" htmlFor={ids.headless} description="Hide the browser window during scans. Turn off to watch the page being captured.">
+        <Field
+          label="Run headless"
+          htmlFor={ids.headless}
+          description="Hide the browser window during scans. Turn off to watch the page being captured."
+        >
           <Switch id={ids.headless} checked={settings.headless} onCheckedChange={(headless) => save({ headless })} />
         </Field>
       </Section>
 
       <Section title="Scan defaults" description="Starting values for the new-scan composer.">
         <Field label="Device">
-          <ToggleGroup aria-label="Default device" value={settings.defaultDevice} onValueChange={(defaultDevice) => save({ defaultDevice })}>
+          <ToggleGroup
+            aria-label="Default device"
+            value={settings.defaultDevice}
+            onValueChange={(defaultDevice) => save({ defaultDevice })}
+          >
             <ToggleGroupItem value="desktop">
               <MonitorIcon />
               Desktop
@@ -209,11 +270,20 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
             </ToggleGroupItem>
           </ToggleGroup>
         </Field>
-        <Field label="Observe after load" htmlFor={ids.observe} description={`Seconds to keep watching the page, ${OBSERVE_SECONDS.min} to ${OBSERVE_SECONDS.max}.`}>
-          <div className="relative">
-            <CommitInput id={ids.observe} inputMode="numeric" className="w-24 pr-7 text-right tabular-nums" value={settings.defaultObserveSeconds} parse={parseObserveSeconds} onCommit={(defaultObserveSeconds) => save({ defaultObserveSeconds })} />
-            <span className="pointer-events-none absolute top-[7px] right-2.5 text-sm text-subtle-foreground">s</span>
-          </div>
+        <Field
+          label="Observe after load"
+          htmlFor={ids.observe}
+          description={`Seconds to keep watching the page, ${OBSERVE_SECONDS.min} to ${OBSERVE_SECONDS.max}.`}
+        >
+          <CommitInput
+            trailing="s"
+            id={ids.observe}
+            inputMode="numeric"
+            className="w-24 pr-7 text-right tabular-nums"
+            value={settings.defaultObserveSeconds}
+            parse={parseObserveSeconds}
+            onCommit={(defaultObserveSeconds) => save({ defaultObserveSeconds })}
+          />
         </Field>
       </Section>
 
@@ -236,7 +306,10 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
         </Field>
       </Section>
 
-      <Section title="Data" description="Everything is stored locally. Nothing is uploaded except the model requests you enable.">
+      <Section
+        title="Data"
+        description="Everything is stored locally. Nothing is uploaded except the model requests you enable."
+      >
         <Field
           label="What is stored"
           description="Reports keep findings with short code excerpts, derived auctions, slots, metrics, script metadata and the audit trail. Script bodies and raw network payloads are held in memory during a scan and then discarded."

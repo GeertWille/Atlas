@@ -9,7 +9,10 @@ import { BID_STATUS_STYLE } from "./bid-status-style";
 
 function Legend() {
   return (
-    <ul aria-label="Bid status legend" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+    <ul
+      aria-label="Bid status legend"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground"
+    >
       {BID_STATUSES.map((status) => {
         const style = BID_STATUS_STYLE[status];
         const Icon = style.icon;

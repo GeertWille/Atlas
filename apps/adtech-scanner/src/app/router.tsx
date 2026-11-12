@@ -1,14 +1,17 @@
-import { createHashHistory, createRootRoute, createRoute, createRouter, Link } from "@tanstack/react-router";
+import {
+  createHashHistory,
+  createRootRoute,
+  createRoute,
+  createRouter,
+  Link,
+  lazyRouteComponent,
+} from "@tanstack/react-router";
 import { CompassIcon } from "lucide-react";
 import { z } from "zod";
 import { Page } from "@/shared/components/page";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
-import { HistoryRoute } from "./routes/HistoryRoute";
 import { HomeRoute } from "./routes/HomeRoute";
-import { LogSearchRoute } from "./routes/LogSearchRoute";
-import { ScanRoute } from "./routes/ScanRoute";
-import { SettingsRoute } from "./routes/SettingsRoute";
 import { AppShell } from "./shell/AppShell";
 
 export const REPORT_TABS = ["findings", "auctions", "slots", "scripts", "audit"] as const;
@@ -44,19 +47,27 @@ export const scanRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/scans/$scanId",
   validateSearch: scanSearchSchema,
-  component: ScanRoute,
+  component: lazyRouteComponent(() => import("./routes/ScanRoute"), "ScanRoute"),
 });
 
-const historyRoute = createRoute({ getParentRoute: () => rootRoute, path: "/history", component: HistoryRoute });
+const historyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/history",
+  component: lazyRouteComponent(() => import("./routes/HistoryRoute"), "HistoryRoute"),
+});
 
 export const logSearchRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/logs",
   validateSearch: logSearchSchema,
-  component: LogSearchRoute,
+  component: lazyRouteComponent(() => import("./routes/LogSearchRoute"), "LogSearchRoute"),
 });
 
-const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: "/settings", component: SettingsRoute });
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/settings",
+  component: lazyRouteComponent(() => import("./routes/SettingsRoute"), "SettingsRoute"),
+});
 
 const routeTree = rootRoute.addChildren([homeRoute, scanRoute, historyRoute, logSearchRoute, settingsRoute]);
 

@@ -10,7 +10,7 @@ import { SearchInput } from "@/shared/components/search-input";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { LOG_KIND_LABEL } from "@/shared/domain/vocabulary";
 import { useDebouncedValue } from "@/shared/hooks/use-debounced-value";
-import { formatDateTime, pluralize } from "@/shared/lib/format";
+import { formatClock, formatDateTime, pluralize } from "@/shared/lib/format";
 import { pathOf } from "@/shared/lib/url";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
@@ -53,7 +53,7 @@ function HitRow({ hit }: { hit: LogSearchHit }) {
         <Icon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-subtle-foreground" />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="text-xs text-subtle-foreground">
-            {LOG_KIND_LABEL[entry.kind]} · {PIPELINE_NODE_META[entry.node].label} · {formatDateTime(entry.ts)}
+            {LOG_KIND_LABEL[entry.kind]} · {PIPELINE_NODE_META[entry.node].label} · {formatClock(entry.ts)}
           </span>
           <Snippet snippet={hit.snippet} />
         </span>
@@ -71,9 +71,12 @@ function GroupPanel({ group }: { group: HitGroup }) {
         <h2 className="min-w-0 truncate text-sm">
           <span className="font-semibold">{hostname}</span>
           <span className="text-subtle-foreground">{pathOf(group.scanUrl)}</span>
+          <span className="ml-2 text-xs text-subtle-foreground">scanned {formatDateTime(group.firstEntryAt)}</span>
         </h2>
         <div className="flex shrink-0 items-center gap-3">
-          <span className="text-xs text-muted-foreground tabular-nums">{pluralize(group.hits.length, "match", "matches")}</span>
+          <span className="text-xs text-muted-foreground tabular-nums">
+            {pluralize(group.hits.length, "match", "matches")}
+          </span>
           <Button asChild variant="ghost" size="sm">
             <Link to="/scans/$scanId" params={{ scanId: group.scanId }} search={{ tab: "audit" }}>
               Open audit trail
@@ -147,7 +150,13 @@ export function LogSearchScreen({
           description="Full-text search across the audit trail of all scans: progress messages, model prompts and responses, tool calls and reported findings."
         >
           {EXAMPLES.map((example) => (
-            <Button key={example} variant="outline" size="sm" className="font-mono text-xs" onClick={() => setDraft(example)}>
+            <Button
+              key={example}
+              variant="outline"
+              size="sm"
+              className="font-mono text-xs"
+              onClick={() => setDraft(example)}
+            >
               {example}
             </Button>
           ))}
@@ -157,7 +166,11 @@ export function LogSearchScreen({
       ) : search.isError ? (
         <QueryError title="Search failed" error={search.error} onRetry={() => void search.refetch()} />
       ) : groups.length === 0 ? (
-        <Empty icon={SearchXIcon} title={`No matches for “${query}”`} description="Try fewer or different words. Search matches whole audit-trail entries, including their structured data." />
+        <Empty
+          icon={SearchXIcon}
+          title={`No matches for “${query}”`}
+          description="Try fewer or different words. Search matches whole audit-trail entries, including their structured data."
+        />
       ) : (
         groups.map((group) => <GroupPanel key={group.scanId} group={group} />)
       )}

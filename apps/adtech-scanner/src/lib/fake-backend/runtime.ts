@@ -1,11 +1,4 @@
-import type {
-  LogEntry,
-  PipelineStep,
-  ScanDetail,
-  ScanEvent,
-  ScanOptions,
-  ScanSummary,
-} from "@/bindings";
+import type { LogEntry, PipelineStep, ScanDetail, ScanEvent, ScanOptions, ScanSummary } from "@/bindings";
 import { PIPELINE_NODES } from "@/shared/domain/pipeline";
 import type { Beat, ScanResult } from "./scenario";
 
@@ -69,7 +62,17 @@ export function createRunningScan(id: string, options: ScanOptions, startedAt: n
     error: null,
   };
   return {
-    detail: { summary, options, metrics: EMPTY_METRICS, findings: [], auctions: [], slots: [], scripts: [], steps, overview: null },
+    detail: {
+      summary,
+      options,
+      metrics: EMPTY_METRICS,
+      findings: [],
+      auctions: [],
+      slots: [],
+      scripts: [],
+      steps,
+      overview: null,
+    },
     logs: [],
   };
 }
@@ -168,11 +171,30 @@ export function completeScan(scan: StoredScan, result: ScanResult, now: number):
 }
 
 export function cancelScan(scan: StoredScan, now: number): ScanEvent[] {
+  const { steps } = scan.detail;
+  const running = steps.find((step) => step.status === "running");
+  // Between two steps nothing is running; the note then belongs to the step that just finished.
+  const current = running ?? steps.findLast((step) => step.status !== "pending") ?? steps[0];
   const events: ScanEvent[] = [];
-  const running = scan.detail.steps.find((step) => step.status === "running");
+  if (current) {
+    events.push(
+      ...applyBeat(
+        scan,
+        {
+          at: 0,
+          type: "log",
+          node: current.node,
+          level: "warn",
+          kind: "message",
+          message: "Scan cancelled by user",
+          data: null,
+        },
+        now,
+      ),
+    );
+  }
   if (running) {
     events.push(
-      ...applyBeat(scan, { at: 0, type: "log", node: running.node, level: "warn", kind: "message", message: "Scan cancelled by user", data: null }, now),
       ...applyBeat(scan, { at: 0, type: "stepEnd", node: running.node, status: "failed", summary: "Cancelled" }, now),
     );
   }

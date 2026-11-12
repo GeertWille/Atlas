@@ -6,10 +6,7 @@ import { buttonVariants } from "./button";
 const AlertDialog = AlertDialogPrimitive.Root;
 const AlertDialogTrigger = AlertDialogPrimitive.Trigger;
 
-function AlertDialogContent({
-  className,
-  ...props
-}: ComponentProps<typeof AlertDialogPrimitive.Content>) {
+function AlertDialogContent({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Content>) {
   return (
     <AlertDialogPrimitive.Portal>
       <AlertDialogPrimitive.Overlay className="fixed inset-0 z-50 bg-gray-950/40 backdrop-blur-[2px] data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 dark:bg-black/60" />
@@ -33,28 +30,12 @@ function AlertDialogFooter({ className, ...props }: ComponentProps<"div">) {
   return <div className={cn("flex justify-end gap-2", className)} {...props} />;
 }
 
-function AlertDialogTitle({
-  className,
-  ...props
-}: ComponentProps<typeof AlertDialogPrimitive.Title>) {
-  return (
-    <AlertDialogPrimitive.Title
-      className={cn("text-base leading-tight font-semibold", className)}
-      {...props}
-    />
-  );
+function AlertDialogTitle({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Title>) {
+  return <AlertDialogPrimitive.Title className={cn("text-base leading-tight font-semibold", className)} {...props} />;
 }
 
-function AlertDialogDescription({
-  className,
-  ...props
-}: ComponentProps<typeof AlertDialogPrimitive.Description>) {
-  return (
-    <AlertDialogPrimitive.Description
-      className={cn("text-sm text-muted-foreground", className)}
-      {...props}
-    />
-  );
+function AlertDialogDescription({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Description>) {
+  return <AlertDialogPrimitive.Description className={cn("text-sm text-muted-foreground", className)} {...props} />;
 }
 
 function AlertDialogAction({
@@ -70,16 +51,8 @@ function AlertDialogAction({
   );
 }
 
-function AlertDialogCancel({
-  className,
-  ...props
-}: ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
-  return (
-    <AlertDialogPrimitive.Cancel
-      className={cn(buttonVariants({ variant: "outline" }), className)}
-      {...props}
-    />
-  );
+function AlertDialogCancel({ className, ...props }: ComponentProps<typeof AlertDialogPrimitive.Cancel>) {
+  return <AlertDialogPrimitive.Cancel className={cn(buttonVariants({ variant: "outline" }), className)} {...props} />;
 }
 
 export {

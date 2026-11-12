@@ -23,7 +23,15 @@ export function summarizeBidders(auctions: Auction[]): BidderSummary[] {
   for (const auction of auctions) {
     for (const unit of auction.adUnits) {
       for (const bid of unit.bids) {
-        const tally = tallies.get(bid.bidder) ?? { bidder: bid.bidder, requests: 0, bids: 0, wins: 0, timeouts: 0, latencies: [], cpms: [] };
+        const tally = tallies.get(bid.bidder) ?? {
+          bidder: bid.bidder,
+          requests: 0,
+          bids: 0,
+          wins: 0,
+          timeouts: 0,
+          latencies: [],
+          cpms: [],
+        };
         tally.requests += 1;
         if (bid.status === "bid" || bid.status === "won" || bid.status === "rendered") tally.bids += 1;
         if (bid.status === "won" || bid.status === "rendered") tally.wins += 1;

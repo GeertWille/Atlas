@@ -2,11 +2,7 @@ import { Slider as SliderPrimitive } from "radix-ui";
 import type { ComponentProps } from "react";
 import { cn } from "@/shared/lib/cn";
 
-function Slider({
-  className,
-  "aria-label": ariaLabel,
-  ...props
-}: ComponentProps<typeof SliderPrimitive.Root>) {
+function Slider({ className, "aria-label": ariaLabel, ...props }: ComponentProps<typeof SliderPrimitive.Root>) {
   return (
     <SliderPrimitive.Root
       data-slot="slider"

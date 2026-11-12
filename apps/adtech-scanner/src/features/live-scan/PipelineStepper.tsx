@@ -5,6 +5,11 @@ import { cn } from "@/shared/lib/cn";
 import { formatCompact, formatDuration, formatUsd } from "@/shared/lib/format";
 import { stepElapsedMs } from "./progress";
 
+/** Keeps the running step visible when the stepper itself has to scroll (small windows). */
+function scrollIntoViewOnMount(element: HTMLLIElement | null) {
+  element?.scrollIntoView({ block: "nearest" });
+}
+
 function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; now: number }) {
   const meta = PIPELINE_NODE_META[step.node];
   const elapsed = stepElapsedMs(step, now);
@@ -12,8 +17,9 @@ function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; 
   const usedModel = step.inputTokens + step.outputTokens > 0;
   return (
     <li
+      ref={running ? scrollIntoViewOnMount : undefined}
       aria-current={running ? "step" : undefined}
-      className={cn("relative flex gap-3 pb-4", isLast && "pb-0", step.status === "pending" && "opacity-60")}
+      className={cn("relative flex gap-3 pb-3.5", isLast && "pb-0")}
     >
       {isLast ? null : (
         <span
@@ -29,17 +35,33 @@ function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; 
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex items-baseline justify-between gap-2">
-          <span className={cn("truncate text-[13px] font-medium", running && "text-primary-text")}>{meta.label}</span>
+          <span
+            className={cn(
+              "truncate text-[13px] font-medium",
+              running && "text-primary-text",
+              step.status === "pending" && "text-muted-foreground",
+            )}
+          >
+            {meta.label}
+          </span>
           <span className="shrink-0 text-xs text-subtle-foreground tabular-nums">
             {elapsed === null ? "" : formatDuration(elapsed)}
           </span>
         </div>
-        <p className={cn("text-xs text-pretty text-muted-foreground", running && !step.summary && "shimmer")}>
-          {step.summary ?? meta.description}
-        </p>
+        {step.status === "pending" ? null : (
+          <p
+            title={step.summary ?? undefined}
+            className={cn("truncate text-xs text-muted-foreground", running && !step.summary && "shimmer")}
+          >
+            {step.summary ?? meta.description}
+          </p>
+        )}
         {usedModel ? (
-          <p className="text-xs text-subtle-foreground tabular-nums">
-            {step.model} · {formatCompact(step.inputTokens)} in / {formatCompact(step.outputTokens)} out ·{" "}
+          <p
+            className="truncate text-xs text-subtle-foreground tabular-nums"
+            title={`${formatCompact(step.inputTokens)} input, ${formatCompact(step.outputTokens)} output tokens`}
+          >
+            {step.model} · {formatCompact(step.inputTokens + step.outputTokens)} tokens ·{" "}
             <span className="text-muted-foreground">{formatUsd(step.costUsd)}</span>
           </p>
         ) : null}

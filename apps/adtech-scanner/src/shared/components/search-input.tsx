@@ -2,6 +2,7 @@ import { SearchIcon, XIcon } from "lucide-react";
 import type { ComponentProps } from "react";
 import { cn } from "@/shared/lib/cn";
 import { Input } from "@/shared/ui/input";
+import { Hint } from "@/shared/ui/tooltip";
 
 export function SearchInput({
   value,
@@ -25,14 +26,16 @@ export function SearchInput({
         {...props}
       />
       {value ? (
-        <button
-          type="button"
-          aria-label="Clear search"
-          onClick={() => onValueChange("")}
-          className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-subtle-foreground hover:bg-accent hover:text-foreground"
-        >
-          <XIcon className="size-3.5" />
-        </button>
+        <Hint label="Clear search">
+          <button
+            type="button"
+            aria-label="Clear search"
+            onClick={() => onValueChange("")}
+            className="absolute top-1/2 right-1.5 flex size-5 -translate-y-1/2 items-center justify-center rounded-sm text-subtle-foreground hover:bg-accent hover:text-foreground"
+          >
+            <XIcon className="size-3.5" />
+          </button>
+        </Hint>
       ) : null}
     </div>
   );

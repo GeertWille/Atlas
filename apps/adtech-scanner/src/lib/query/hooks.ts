@@ -1,13 +1,8 @@
-import {
-  keepPreviousData,
-  useInfiniteQuery,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ExportFormat, ScanListQuery, ScanOptions, Settings, SettingsPatch } from "@/bindings";
 import { api } from "@/lib/api";
 import { queryKeys } from "./keys";
+import { withLogsMissedWhileLoading } from "./scan-events";
 
 export function useSettings() {
   return useQuery({ queryKey: queryKeys.settings, queryFn: api.getSettings, staleTime: Number.POSITIVE_INFINITY });
@@ -74,7 +69,7 @@ export function useScanList(query: ScanListQuery) {
   return useQuery({ queryKey: queryKeys.scanList(query), queryFn: () => api.listScans(query) });
 }
 
-export const HISTORY_PAGE_SIZE = 20;
+const HISTORY_PAGE_SIZE = 20;
 
 export function useScanHistory(filters: Omit<ScanListQuery, "limit" | "offset">) {
   return useInfiniteQuery({
@@ -94,7 +89,10 @@ export function useScan(scanId: string) {
 }
 
 export function useScanLogs(scanId: string) {
-  return useQuery({ queryKey: queryKeys.scanLogs(scanId), queryFn: () => api.getLogs(scanId) });
+  return useQuery({
+    queryKey: queryKeys.scanLogs(scanId),
+    queryFn: async () => withLogsMissedWhileLoading(scanId, await api.getLogs(scanId)),
+  });
 }
 
 export function useLogSearch(query: string) {
@@ -139,7 +137,8 @@ export function useDeleteAllScans() {
   return useMutation({
     mutationFn: api.deleteAllScans,
     onSuccess: () => {
-      client.removeQueries({ queryKey: queryKeys.scans });
+      client.removeQueries({ queryKey: queryKeys.scans, type: "inactive" });
+      void client.invalidateQueries({ queryKey: queryKeys.scans });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
     },
   });

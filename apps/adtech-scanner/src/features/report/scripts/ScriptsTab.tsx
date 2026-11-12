@@ -33,16 +33,28 @@ export function ScriptsTab({
   }, [focusedScriptUrl, scripts]);
 
   if (scripts.length === 0) {
-    return <Empty icon={FileSearchIcon} title="No scripts captured" description="The page loaded no JavaScript while it was observed." />;
+    return (
+      <Empty
+        icon={FileSearchIcon}
+        title="No scripts captured"
+        description="The page loaded no JavaScript while it was observed."
+      />
+    );
   }
 
   const visible = sortScripts(filterScripts(scripts, filters), sort);
   const selected = scripts.find((script) => script.id === selectedId) ?? null;
-  const presentCategories = SCRIPT_CATEGORIES.filter((category) => scripts.some((script) => script.category === category));
+  const presentCategories = SCRIPT_CATEGORIES.filter((category) =>
+    scripts.some((script) => script.category === category),
+  );
 
   return (
     <div className="flex flex-col gap-3">
-      <ScriptFunnel scripts={scripts} scope={filters.scope} onScopeChange={(scope) => setFilters({ ...filters, scope })} />
+      <ScriptFunnel
+        scripts={scripts}
+        scope={filters.scope}
+        onScopeChange={(scope) => setFilters({ ...filters, scope })}
+      />
       <div className="flex items-center gap-2">
         <SearchInput
           aria-label="Search scripts"
@@ -62,7 +74,9 @@ export function ScriptsTab({
           }))}
         />
         <span className="ml-auto text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
-          {visible.length === scripts.length ? pluralize(scripts.length, "script") : `${visible.length} of ${pluralize(scripts.length, "script")}`}
+          {visible.length === scripts.length
+            ? pluralize(scripts.length, "script")
+            : `${visible.length} of ${pluralize(scripts.length, "script")}`}
         </span>
       </div>
       <Panel className="flex flex-col overflow-hidden">

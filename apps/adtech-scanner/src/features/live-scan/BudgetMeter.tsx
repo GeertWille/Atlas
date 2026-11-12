@@ -26,6 +26,7 @@ export function BudgetMeter({ costUsd, budgetUsd }: { costUsd: number; budgetUsd
           <span className="text-subtle-foreground"> / {formatUsd(budgetUsd)}</span>
         </span>
       </div>
+      {/* biome-ignore lint/a11y/useSemanticElements: <meter> cannot be styled consistently across WebKit and Chromium */}
       <div
         role="meter"
         aria-label="LLM cost against the per-scan budget"

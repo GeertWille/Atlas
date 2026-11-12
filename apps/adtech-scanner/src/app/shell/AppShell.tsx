@@ -1,7 +1,7 @@
 import { Outlet, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import type { ThemePreference } from "@/bindings";
-import { SCAN_URL_INPUT_ID } from "@/features/scan-composer";
+import { requestComposerFocus } from "@/features/scan-composer";
 import { useDemoUrl, useScanList, useSettings, useUpdateSettings } from "@/lib/query/hooks";
 import { defaultScanOptions } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
@@ -27,7 +27,7 @@ export function AppShell() {
 
   const newScan = async () => {
     await navigate({ to: "/" });
-    requestAnimationFrame(() => document.getElementById(SCAN_URL_INPUT_ID)?.focus());
+    requestComposerFocus();
   };
 
   const actions: PaletteActions = {
@@ -39,7 +39,10 @@ export function AppShell() {
     openScan: (scanId) => navigate({ to: "/scans/$scanId", params: { scanId } }),
     searchLogs: (q) => navigate({ to: "/logs", search: { q } }),
     setTheme: (preference: ThemePreference) =>
-      updateSettings.mutate({ theme: preference }, { onError: (reason) => notifyError("Could not change the theme", reason) }),
+      updateSettings.mutate(
+        { theme: preference },
+        { onError: (reason) => notifyError("Could not change the theme", reason) },
+      ),
   };
 
   useGlobalShortcuts({

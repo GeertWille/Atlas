@@ -11,7 +11,9 @@ import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
 
-const RECENT_LIMIT = 6;
+/** Same query as the sidebar, so both share one cache entry; the dashboard shows the first six. */
+const RECENT_QUERY = { limit: 8 };
+const RECENT_SHOWN = 6;
 
 export function HomeRoute() {
   const navigate = useNavigate();
@@ -19,7 +21,7 @@ export function HomeRoute() {
   const browser = useBrowser();
   const stats = useDashboardStats();
   const running = useScanList({ status: "running" });
-  const recent = useScanList({ limit: RECENT_LIMIT });
+  const recent = useScanList(RECENT_QUERY);
   const [dismissed, setDismissed] = useState(isOnboardingDismissed);
 
   if (settings.isError) {
@@ -75,7 +77,7 @@ export function HomeRoute() {
         </div>
         <RunningScans scans={running.data?.items ?? []} />
         <DashboardStats stats={stats.data} />
-        <RecentScans scans={recent.data?.items.filter((scan) => scan.status !== "running")} />
+        <RecentScans scans={recent.data?.items.filter((scan) => scan.status !== "running").slice(0, RECENT_SHOWN)} />
       </PageContent>
     </Page>
   );

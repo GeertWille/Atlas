@@ -9,8 +9,9 @@ export function ScanOutcomeNotice({ summary }: { summary: ScanSummary }) {
       <Alert tone="danger">
         <XCircleIcon />
         <AlertTitle>This scan failed</AlertTitle>
-        <AlertDescription>
-          {summary.error ?? "The scan stopped with an unknown error."} The audit trail below shows how far it got.
+        <AlertDescription className="flex flex-col gap-1">
+          <span className="font-mono text-xs">{summary.error ?? "The scan stopped with an unknown error."}</span>
+          <span>The audit trail below shows how far it got.</span>
         </AlertDescription>
       </Alert>
     );

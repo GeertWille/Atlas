@@ -1,16 +1,36 @@
-const usd2 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const usd3 = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 3, maximumFractionDigits: 3 });
+const usd2 = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
+});
+const usd3 = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  minimumFractionDigits: 3,
+  maximumFractionDigits: 3,
+});
 const integer = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 const compact = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 });
-const dateTime = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
-const clock = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+const dateTime = new Intl.DateTimeFormat("en-US", {
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
+const clock = new Intl.DateTimeFormat("en-US", {
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+});
 
 export const EMPTY = "–";
 
-/** LLM spend: sub-dollar amounts keep a third decimal so cents-level steps stay visible. */
+/** LLM spend: amounts under ten cents keep a third decimal so sub-cent steps stay visible. */
 export function formatUsd(amount: number): string {
-  if (amount === 0) return "$0.00";
-  return amount < 1 ? usd3.format(amount) : usd2.format(amount);
+  if (amount > 0 && amount < 0.001) return "<$0.001";
+  return amount > 0 && amount < 0.1 ? usd3.format(amount) : usd2.format(amount);
 }
 
 export function formatCpm(cpm: number | null, currency: string | null = "USD"): string {

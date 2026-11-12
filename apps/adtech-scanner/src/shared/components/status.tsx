@@ -45,17 +45,31 @@ export function SeverityBadge({ severity, className }: { severity: Severity; cla
 }
 
 /** Compact per-severity tally, most severe first; zero counts are omitted. */
-export function SeverityCountPills({ counts, className }: { counts: SeverityCounts; className?: string }) {
+export function SeverityCountPills({
+  counts,
+  compact = false,
+  className,
+}: {
+  counts: SeverityCounts;
+  /** Tighter pills for table cells. */
+  compact?: boolean;
+  className?: string;
+}) {
   if (totalFindings(counts) === 0) {
     return <span className={cn("text-[13px] text-subtle-foreground", className)}>No findings</span>;
   }
   return (
-    <span className={cn("inline-flex items-center gap-1", className)}>
+    <span className={cn("inline-flex items-center", compact ? "gap-0.5" : "gap-1", className)}>
       {SEVERITIES.filter((severity) => counts[severity] > 0).map((severity) => {
         const Icon = SEVERITY_ICON[severity];
         const meta = SEVERITY_META[severity];
         return (
-          <Badge key={severity} tone={meta.tone} className="tabular-nums" title={`${counts[severity]} ${meta.label.toLowerCase()}`}>
+          <Badge
+            key={severity}
+            tone={meta.tone}
+            className={cn("tabular-nums", compact && "gap-0.5 px-1.5")}
+            title={`${counts[severity]} ${meta.label.toLowerCase()}`}
+          >
             <Icon />
             <span className="sr-only">{meta.label}: </span>
             {counts[severity]}

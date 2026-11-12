@@ -1,4 +1,12 @@
-import { CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, HourglassIcon, LayoutPanelTopIcon, type LucideIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  CircleCheckIcon,
+  CircleDashedIcon,
+  CircleSlashIcon,
+  HourglassIcon,
+  LayoutPanelTopIcon,
+  type LucideIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import type { AdSlot, ScanMetrics, SlotOutcome } from "@/bindings";
 import { Panel } from "@/shared/components/panel";
 import { SLOT_OUTCOME_META } from "@/shared/domain/vocabulary";
@@ -55,12 +63,19 @@ function SlotTooltip({ row }: { row: SlotRow }) {
                 {SLOT_PHASE_LABEL[mark.phase]}
               </dt>
               <dd className="text-right">{formatOffset(mark.atMs)}</dd>
-              <dd className="text-right text-muted-foreground">{previous ? `+${formatDuration(mark.atMs - previous.atMs)}` : ""}</dd>
+              <dd className="text-right text-muted-foreground">
+                {previous ? `+${formatDuration(mark.atMs - previous.atMs)}` : ""}
+              </dd>
             </div>
           );
         })}
       </dl>
-      {slot.renderedSize ? <p className="text-muted-foreground">Rendered {slot.renderedSize}{slot.lineItemId ? `, line item ${slot.lineItemId}` : ""}</p> : null}
+      {slot.renderedSize ? (
+        <p className="text-muted-foreground">
+          Rendered {slot.renderedSize}
+          {slot.lineItemId ? `, line item ${slot.lineItemId}` : ""}
+        </p>
+      ) : null}
       <p className="text-muted-foreground">{SLOT_OUTCOME_META[slot.outcome].description}</p>
     </div>
   );
@@ -78,19 +93,16 @@ function SlotLabel({ slot, flags }: Pick<SlotRow, "slot" | "flags">) {
           {outcome.label}
         </Badge>
       </div>
-      <span className="selectable truncate text-xs text-subtle-foreground">
-        {slot.adUnitPath ?? "No ad unit path"} · {slot.sizes.join(", ")}
-      </span>
-      {flags.length > 0 ? (
-        <div className="flex flex-wrap gap-1">
-          {flags.map((flag) => (
-            <Badge key={flag.key} tone={flag.warning ? "amber" : "outline"} title={flag.description}>
-              {flag.warning ? <TriangleAlertIcon /> : null}
-              {flag.label}
-            </Badge>
-          ))}
-        </div>
-      ) : null}
+      <span className="selectable truncate text-xs text-subtle-foreground">{slot.adUnitPath ?? "No ad unit path"}</span>
+      <div className="flex flex-wrap items-center gap-1">
+        <span className="mr-1 text-xs text-subtle-foreground tabular-nums">{slot.sizes.join(", ")}</span>
+        {flags.map((flag) => (
+          <Badge key={flag.key} tone={flag.warning ? "amber" : "outline"} title={flag.description}>
+            {flag.warning ? <TriangleAlertIcon /> : null}
+            {flag.label}
+          </Badge>
+        ))}
+      </div>
     </div>
   );
 }
@@ -105,10 +117,12 @@ function SlotTrack({ row }: { row: SlotRow }) {
             style={{ left: `${row.unfinishedFromPercent}%` }}
           />
           <span
-            className="absolute top-1/2 -translate-y-[160%] pl-3 text-[11px] whitespace-nowrap text-subtle-foreground"
+            className="absolute top-1/2 ml-3 -translate-y-[150%] rounded-sm bg-card px-1 text-[11px] whitespace-nowrap text-muted-foreground"
             style={{ left: `${row.unfinishedFromPercent}%` }}
           >
-            {row.slot.outcome === "neverRequested" ? "no ad request during observation" : "no response during observation"}
+            {row.slot.outcome === "neverRequested"
+              ? "no ad request during observation"
+              : "no response during observation"}
           </span>
         </>
       ) : null}
@@ -119,7 +133,11 @@ function SlotTrack({ row }: { row: SlotRow }) {
         />
       ) : null}
       {row.marks.map((mark) => (
-        <span key={mark.phase} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${mark.percent}%` }}>
+        <span
+          key={mark.phase}
+          className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2"
+          style={{ left: `${mark.percent}%` }}
+        >
           <PhaseMark phase={mark.phase} />
         </span>
       ))}
@@ -130,21 +148,26 @@ function SlotTrack({ row }: { row: SlotRow }) {
 function Axis({ timeline }: { timeline: SlotTimeline }) {
   return (
     <div aria-hidden="true" className={cn("pointer-events-none absolute inset-y-0", PLOT_INSET)}>
-      {timeline.scale.ticks.map((tick) => (
+      {timeline.scale.ticks.map((tick, index) => (
         <div key={tick} className="absolute inset-y-0" style={{ left: `${timeline.scale.toPercent(tick)}%` }}>
-          <span className="absolute top-12 bottom-0 w-px bg-border" />
-          <span className="absolute top-[30px] -translate-x-1/2 text-[11px] whitespace-nowrap text-subtle-foreground tabular-nums">
+          <span className="absolute top-14 bottom-0 w-px bg-border" />
+          <span
+            className={cn(
+              "absolute top-9 text-[11px] whitespace-nowrap text-subtle-foreground tabular-nums",
+              index === timeline.scale.ticks.length - 1 ? "-translate-x-full" : "-translate-x-1/2",
+            )}
+          >
             {tick === 0 ? "0" : formatDuration(tick)}
           </span>
         </div>
       ))}
       {timeline.markers.map((marker) => (
         <div key={marker.label} className="absolute inset-y-0" style={{ left: `${marker.percent}%` }}>
-          <span className="absolute top-12 bottom-0 w-px bg-violet/70" />
+          <span className="absolute top-1 bottom-0 w-px bg-violet/60" />
           <span
             className={cn(
               "absolute left-1 rounded-sm bg-card px-1 text-[11px] font-medium whitespace-nowrap text-violet-fg",
-              marker.labelRow === 0 ? "top-1" : "top-4",
+              marker.labelRow === 0 ? "top-1" : "top-[18px]",
             )}
           >
             {marker.label} {formatDuration(marker.atMs)}
@@ -157,7 +180,10 @@ function Axis({ timeline }: { timeline: SlotTimeline }) {
 
 function Legend() {
   return (
-    <ul aria-label="Lifecycle legend" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+    <ul
+      aria-label="Lifecycle legend"
+      className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground"
+    >
       {SLOT_PHASES.map((phase) => (
         <li key={phase} className="flex items-center gap-1.5">
           <PhaseMark phase={phase} className="ring-0" />
@@ -191,7 +217,7 @@ export function SlotsTab({ slots, metrics }: { slots: AdSlot[]; metrics: ScanMet
         </p>
         <Legend />
       </div>
-      <Panel className="relative overflow-hidden pt-12">
+      <Panel className="relative overflow-hidden pt-14">
         <Axis timeline={timeline} />
         <ul className="relative">
           {timeline.rows.map((row) => (
@@ -201,7 +227,6 @@ export function SlotsTab({ slots, metrics }: { slots: AdSlot[]; metrics: ScanMet
                   <div
                     // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact timings on focus
                     tabIndex={0}
-                    aria-label={`${row.slot.elementId}: ${SLOT_OUTCOME_META[row.slot.outcome].label}`}
                     className={cn(GRID, "items-stretch pr-5 outline-offset-[-2px] hover:bg-accent/50")}
                   >
                     <SlotLabel slot={row.slot} flags={row.flags} />

@@ -1,1 +1,2 @@
-export { SCAN_URL_INPUT_ID, ScanComposer } from "./ScanComposer";
+export { requestComposerFocus } from "./composer-focus";
+export { ScanComposer } from "./ScanComposer";

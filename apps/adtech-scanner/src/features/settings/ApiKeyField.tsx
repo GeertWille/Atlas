@@ -25,8 +25,7 @@ function SavedKey() {
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-green-line bg-green-soft/60 px-3.5 py-2.5">
       <p className="flex items-center gap-2 text-[13px] text-green-fg">
-        <CheckCircle2Icon className="size-4" />
-        A validated key is stored in your system keychain.
+        <CheckCircle2Icon className="size-4" />A validated key is stored in your system keychain.
       </p>
       <AlertDialog>
         <AlertDialogTrigger asChild>

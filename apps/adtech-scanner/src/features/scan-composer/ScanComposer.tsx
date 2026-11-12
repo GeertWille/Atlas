@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, GlobeIcon, MonitorIcon, ScanSearchIcon, SmartphoneIcon, SparklesIcon } from "lucide-react";
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, useEffect, useId, useState } from "react";
 import type { Settings } from "@/bindings";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
@@ -11,10 +11,9 @@ import { Label } from "@/shared/ui/label";
 import { Slider } from "@/shared/ui/slider";
 import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
+import { SCAN_URL_INPUT_ID, takePendingComposerFocus } from "./composer-focus";
 import { estimateScanCost } from "./cost-estimate";
 import { OBSERVE_SECONDS, type ScanForm, validateScanForm } from "./scan-form";
-
-export const SCAN_URL_INPUT_ID = "scan-url";
 
 function OptionSwitch({
   label,
@@ -60,8 +59,8 @@ function AiSummary({ settings, aiEnabled }: { settings: Settings; aiEnabled: boo
   return (
     <p className="text-xs text-muted-foreground">
       <SparklesIcon className="mr-1 inline size-3.5 -translate-y-px text-primary-text" />
-      Estimated <span className="font-medium text-foreground tabular-nums">{formatUsd(estimate.expectedUsd)}</span>{" "}
-      with {settings.analysisModel}, hard cap {formatUsd(settings.budgetUsd)} per scan
+      Estimated <span className="font-medium text-foreground tabular-nums">{formatUsd(estimate.expectedUsd)}</span> with{" "}
+      {settings.analysisModel}, hard cap {formatUsd(settings.budgetUsd)} per scan
       {estimate.cappedByBudget ? ". Analysis may stop early at the cap." : "."}
     </p>
   );
@@ -82,6 +81,10 @@ export function ScanComposer({ settings }: { settings: Settings }) {
   const [urlError, setUrlError] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
   const aiEnabled = form.aiEnabled && settings.hasApiKey;
+
+  useEffect(() => {
+    if (takePendingComposerFocus()) document.getElementById(SCAN_URL_INPUT_ID)?.focus();
+  }, []);
 
   const update = (patch: Partial<ScanForm>) => setForm((current) => ({ ...current, ...patch }));
 
@@ -174,7 +177,9 @@ export function ScanComposer({ settings }: { settings: Settings }) {
                   if (observeSeconds !== undefined) update({ observeSeconds });
                 }}
               />
-              <p className="text-xs text-muted-foreground">Longer windows catch refreshes and late lazy-loaded auctions.</p>
+              <p className="text-xs text-muted-foreground">
+                Longer windows catch refreshes and late lazy-loaded auctions.
+              </p>
             </div>
             <OptionSwitch
               label="AI logic analysis"

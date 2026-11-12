@@ -18,14 +18,8 @@ const alertVariants = cva(
   },
 );
 
-function Alert({
-  className,
-  tone,
-  ...props
-}: ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
-  return (
-    <div data-slot="alert" role="alert" className={cn(alertVariants({ tone }), className)} {...props} />
-  );
+function Alert({ className, tone, ...props }: ComponentProps<"div"> & VariantProps<typeof alertVariants>) {
+  return <div data-slot="alert" role="alert" className={cn(alertVariants({ tone }), className)} {...props} />;
 }
 
 function AlertTitle({ className, ...props }: ComponentProps<"p">) {

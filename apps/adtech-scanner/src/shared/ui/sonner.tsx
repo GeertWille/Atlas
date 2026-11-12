@@ -8,8 +8,7 @@ function Toaster({ theme }: { theme: NonNullable<ToasterProps["theme"]> }) {
       closeButton
       toastOptions={{
         classNames: {
-          toast:
-            "!rounded-lg !border-border !bg-popover !text-popover-foreground !shadow-pop !font-sans",
+          toast: "!rounded-lg !border-border !bg-popover !text-popover-foreground !shadow-pop !font-sans",
           description: "!text-muted-foreground",
           actionButton: "!bg-primary !text-primary-foreground",
         },

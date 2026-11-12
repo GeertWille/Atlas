@@ -16,9 +16,9 @@ export function buildKeyMetrics(metrics: ScanMetrics): KeyMetric[] {
   const requestedSlots = metrics.slotCount > 0;
   return [
     {
-      label: "Fill rate",
+      label: "Requested slots filled",
       value: requestedSlots ? formatPercent(metrics.fillRate) : EMPTY,
-      hint: `${metrics.emptySlotCount} of ${pluralize(metrics.slotCount, "slot")} not filled`,
+      hint: `${metrics.emptySlotCount} of ${pluralize(metrics.slotCount, "slot")} empty`,
     },
     {
       label: "Bid timeout rate",

@@ -8,7 +8,8 @@ function findingMarkdown(finding: Finding, index: number): string {
       return `**${item.label}**${source}\n\n${body}`;
     })
     .join("\n\n");
-  const impact = finding.estimatedRevenueImpactPct === null ? "" : ` · est. ${finding.estimatedRevenueImpactPct}% of revenue`;
+  const impact =
+    finding.estimatedRevenueImpactPct === null ? "" : ` · est. ${finding.estimatedRevenueImpactPct}% of revenue`;
   return [
     `### ${index + 1}. ${finding.title}`,
     `*${finding.severity.toUpperCase()} · ${finding.category} · ${finding.source} · confidence ${Math.round(finding.confidence * 100)}%${impact}*`,

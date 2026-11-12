@@ -14,7 +14,12 @@ export const SLOT_PHASE_LABEL: Record<SlotPhase, string> = {
 
 export type SlotMark = { phase: SlotPhase; atMs: number; percent: number };
 
-export type SlotFlag = { key: "earlyRequest" | "noPrebidTargeting" | "belowFold"; label: string; description: string; warning: boolean };
+export type SlotFlag = {
+  key: "earlyRequest" | "noPrebidTargeting" | "belowFold";
+  label: string;
+  description: string;
+  warning: boolean;
+};
 
 export type SlotRow = {
   slot: AdSlot;
@@ -45,13 +50,28 @@ const AXIS_HEADROOM = 1.05;
 export function slotFlags(slot: AdSlot): SlotFlag[] {
   const flags: SlotFlag[] = [];
   if (slot.requestedBeforeAuctionEnd) {
-    flags.push({ key: "earlyRequest", label: "Requested before auction end", description: "The ad request left while Prebid bidders were still answering.", warning: true });
+    flags.push({
+      key: "earlyRequest",
+      label: "Requested before auction end",
+      description: "The ad request left while Prebid bidders were still answering.",
+      warning: true,
+    });
   }
   if (slot.hadPrebidTargeting === false) {
-    flags.push({ key: "noPrebidTargeting", label: "No Prebid targeting", description: "The request carried no hb_* key-values, so header bids could not compete.", warning: true });
+    flags.push({
+      key: "noPrebidTargeting",
+      label: "No Prebid targeting",
+      description: "The request carried no hb_* key-values, so header bids could not compete.",
+      warning: true,
+    });
   }
   if (slot.inInitialViewport === false) {
-    flags.push({ key: "belowFold", label: "Below the fold", description: "The container was outside the initial viewport.", warning: false });
+    flags.push({
+      key: "belowFold",
+      label: "Below the fold",
+      description: "The container was outside the initial viewport.",
+      warning: false,
+    });
   }
   return flags;
 }
@@ -97,7 +117,10 @@ export function layoutSlotTimeline(slots: AdSlot[], metrics: ScanMetrics): SlotT
     return {
       slot,
       marks,
-      span: first && last && last !== first ? { startPercent: first.percent, widthPercent: last.percent - first.percent } : null,
+      span:
+        first && last && last !== first
+          ? { startPercent: first.percent, widthPercent: last.percent - first.percent }
+          : null,
       unfinishedFromPercent: unfinished && last ? last.percent : null,
       flags: slotFlags(slot),
     };

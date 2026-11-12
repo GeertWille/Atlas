@@ -1,4 +1,14 @@
-import { ChevronDownIcon, DownloadIcon, FileJsonIcon, FileTextIcon, RotateCwIcon, SparklesIcon } from "lucide-react";
+import {
+  CalendarIcon,
+  ChevronDownIcon,
+  CoinsIcon,
+  DownloadIcon,
+  FileJsonIcon,
+  FileTextIcon,
+  RotateCwIcon,
+  SparklesIcon,
+  TimerIcon,
+} from "lucide-react";
 import { toast } from "sonner";
 import type { ExportFormat, ScanDetail } from "@/bindings";
 import { useExportScan } from "@/lib/query/hooks";
@@ -19,6 +29,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/shared/ui/dropdown-menu";
+import { Hint } from "@/shared/ui/tooltip";
 import { exportFileName } from "./export-file-name";
 
 function ExportMenu({ detail }: { detail: ScanDetail }) {
@@ -73,39 +84,53 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
             <ScanIdentity scan={summary} className="selectable text-xl font-semibold tracking-tight" />
             {completed ? null : <ScanStatusBadge status={summary.status} />}
           </div>
-          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-muted-foreground">
+          <p className="flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[13px] text-muted-foreground [&_svg]:size-3.5">
             {summary.healthScore !== null ? (
-              <>
-                <span className="font-medium text-foreground">{healthBand(summary.healthScore).label}</span>
-                <span aria-hidden="true">·</span>
-              </>
+              <span className="font-medium text-foreground">{healthBand(summary.healthScore).label}</span>
             ) : null}
             <DeviceLabel device={summary.device} />
-            <span aria-hidden="true">·</span>
-            <time dateTime={new Date(summary.startedAt).toISOString()}>{formatDateTime(summary.startedAt)}</time>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{formatDuration(summary.durationMs)}</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{formatUsd(summary.costUsd)} LLM cost</span>
+            <span className="inline-flex items-center gap-1.5">
+              <CalendarIcon aria-hidden="true" />
+              <time dateTime={new Date(summary.startedAt).toISOString()}>{formatDateTime(summary.startedAt)}</time>
+            </span>
+            <span className="inline-flex items-center gap-1.5 tabular-nums">
+              <TimerIcon aria-hidden="true" />
+              {formatDuration(summary.durationMs)}
+            </span>
+            <span className="inline-flex items-center gap-1.5 tabular-nums">
+              <CoinsIcon aria-hidden="true" />
+              {formatUsd(summary.costUsd)} LLM cost
+            </span>
           </p>
           <div className="flex items-center gap-2">
             <SeverityCountPills counts={summary.findingCounts} />
-            <Badge tone={summary.aiUsed ? "violet" : "outline"}>
-              {summary.aiUsed ? <SparklesIcon /> : null}
-              {summary.aiUsed ? "AI analysis" : "Deterministic checks only"}
-            </Badge>
+            {completed ? (
+              <Badge tone={summary.aiUsed ? "violet" : "outline"}>
+                {summary.aiUsed ? <SparklesIcon /> : null}
+                {summary.aiUsed ? "AI analysis" : "Deterministic checks only"}
+              </Badge>
+            ) : null}
           </div>
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
-        <Button variant="outline" disabled={isPending} onClick={() => launch(options)}>
-          <RotateCwIcon />
-          Re-scan
-        </Button>
-        <Button variant="outline" disabled={isPending} onClick={() => launch({ ...options, device: other })}>
-          <DeviceIcon device={other} className="size-4" />
-          Scan on {DEVICE_LABEL[other].toLowerCase()}
-        </Button>
+        <Hint label="Scan this page again with the same options">
+          <Button variant="outline" disabled={isPending} onClick={() => launch(options)}>
+            <RotateCwIcon />
+            Re-scan
+          </Button>
+        </Hint>
+        <Hint label={`Scan the same page as a ${DEVICE_LABEL[other].toLowerCase()} visitor`}>
+          <Button
+            variant="outline"
+            disabled={isPending}
+            aria-label={`Scan on ${DEVICE_LABEL[other].toLowerCase()}`}
+            onClick={() => launch({ ...options, device: other })}
+          >
+            <DeviceIcon device={other} className="size-4" />
+            <span className="hidden xl:inline">Scan on {DEVICE_LABEL[other].toLowerCase()}</span>
+          </Button>
+        </Hint>
         {completed ? <ExportMenu detail={detail} /> : null}
       </div>
     </header>

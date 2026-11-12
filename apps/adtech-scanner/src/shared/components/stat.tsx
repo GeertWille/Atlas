@@ -24,12 +24,7 @@ export function Stat({
 
 export function StatGrid({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <dl
-      className={cn(
-        "grid overflow-hidden rounded-xl border bg-border shadow-xs [&>*]:bg-card gap-px",
-        className,
-      )}
-    >
+    <dl className={cn("grid overflow-hidden rounded-xl border bg-border shadow-xs [&>*]:bg-card gap-px", className)}>
       {children}
     </dl>
   );

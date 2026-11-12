@@ -48,3 +48,9 @@ export function logEntryAsText(entry: LogEntry): string {
   const { text, json } = logPayload(entry);
   return [entry.message, text, json].filter(Boolean).join("\n\n");
 }
+
+/** Id of the finding a `finding` log entry reported, when the backend recorded it. */
+export function reportedFindingId(entry: LogEntry): string | null {
+  const id = entry.kind === "finding" && isRecord(entry.data) ? entry.data.findingId : null;
+  return typeof id === "string" ? id : null;
+}

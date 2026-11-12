@@ -29,6 +29,7 @@ export function createTimeScale(maxMs: number, maxTicks = 6): TimeScale {
   return {
     domainMs,
     ticks,
-    toPercent: (ms) => Math.min(100, Math.max(0, (ms / domainMs) * 100)),
+    // Multiply first: (ms * 100) / domain stays exact for the round numbers charts are made of.
+    toPercent: (ms) => Math.min(100, Math.max(0, (ms * 100) / domainMs)),
   };
 }

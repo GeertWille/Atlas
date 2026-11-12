@@ -40,30 +40,107 @@ const ROUND = (value: number) => Math.round(value);
 const CPM = (value: number) => Math.round(value * 100) / 100;
 
 const DESKTOP_SLOTS: SlotPlan[] = [
-  { elementId: "div-gpt-top-leaderboard", pathSuffix: "top", sizes: ["970x250", "728x90"], bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo", "openx"], lazy: false, inInitialViewport: true },
-  { elementId: "div-gpt-sidebar-1", pathSuffix: "sidebar_1", sizes: ["300x250", "300x600"], bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo", "triplelift"], lazy: true, inInitialViewport: true },
-  { elementId: "div-gpt-incontent-1", pathSuffix: "incontent_1", sizes: ["728x90", "300x250"], bidders: ["appnexus", "rubicon", "pubmatic", "criteo", "triplelift"], lazy: false, inInitialViewport: false },
-  { elementId: "div-gpt-sidebar-2", pathSuffix: "sidebar_2", sizes: ["300x600"], bidders: ["appnexus", "rubicon", "ix", "openx"], lazy: true, inInitialViewport: false },
-  { elementId: "div-gpt-incontent-2", pathSuffix: "incontent_2", sizes: ["300x250"], bidders: ["appnexus", "pubmatic", "criteo", "sovrn"], lazy: false, inInitialViewport: false },
-  { elementId: "div-gpt-footer", pathSuffix: "footer", sizes: ["970x90", "728x90"], bidders: ["appnexus", "rubicon", "openx", "sovrn"], lazy: true, inInitialViewport: false },
+  {
+    elementId: "div-gpt-top-leaderboard",
+    pathSuffix: "top",
+    sizes: ["970x250", "728x90"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo", "openx"],
+    lazy: false,
+    inInitialViewport: true,
+  },
+  {
+    elementId: "div-gpt-sidebar-1",
+    pathSuffix: "sidebar_1",
+    sizes: ["300x250", "300x600"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo", "triplelift"],
+    lazy: true,
+    inInitialViewport: true,
+  },
+  {
+    elementId: "div-gpt-incontent-1",
+    pathSuffix: "incontent_1",
+    sizes: ["728x90", "300x250"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "criteo", "triplelift"],
+    lazy: false,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-sidebar-2",
+    pathSuffix: "sidebar_2",
+    sizes: ["300x600"],
+    bidders: ["appnexus", "rubicon", "ix", "openx"],
+    lazy: true,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-incontent-2",
+    pathSuffix: "incontent_2",
+    sizes: ["300x250"],
+    bidders: ["appnexus", "pubmatic", "criteo", "sovrn"],
+    lazy: false,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-footer",
+    pathSuffix: "footer",
+    sizes: ["970x90", "728x90"],
+    bidders: ["appnexus", "rubicon", "openx", "sovrn"],
+    lazy: true,
+    inInitialViewport: false,
+  },
 ];
 
 const MOBILE_SLOTS: SlotPlan[] = [
-  { elementId: "div-gpt-top-banner", pathSuffix: "m_top", sizes: ["320x50", "320x100"], bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo"], lazy: false, inInitialViewport: true },
-  { elementId: "div-gpt-incontent-1", pathSuffix: "m_incontent_1", sizes: ["300x250"], bidders: ["appnexus", "rubicon", "pubmatic", "criteo", "triplelift"], lazy: false, inInitialViewport: false },
-  { elementId: "div-gpt-incontent-2", pathSuffix: "m_incontent_2", sizes: ["300x250", "336x280"], bidders: ["appnexus", "rubicon", "ix", "sharethrough"], lazy: true, inInitialViewport: false },
-  { elementId: "div-gpt-incontent-3", pathSuffix: "m_incontent_3", sizes: ["300x250"], bidders: ["appnexus", "pubmatic", "criteo", "sovrn"], lazy: true, inInitialViewport: false },
-  { elementId: "div-gpt-sticky-footer", pathSuffix: "m_sticky", sizes: ["320x50"], bidders: ["appnexus", "rubicon", "pubmatic", "openx"], lazy: false, inInitialViewport: true },
+  {
+    elementId: "div-gpt-top-banner",
+    pathSuffix: "m_top",
+    sizes: ["320x50", "320x100"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "ix", "criteo"],
+    lazy: false,
+    inInitialViewport: true,
+  },
+  {
+    elementId: "div-gpt-incontent-1",
+    pathSuffix: "m_incontent_1",
+    sizes: ["300x250"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "criteo", "triplelift"],
+    lazy: false,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-incontent-2",
+    pathSuffix: "m_incontent_2",
+    sizes: ["300x250", "336x280"],
+    bidders: ["appnexus", "rubicon", "ix", "sharethrough"],
+    lazy: true,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-incontent-3",
+    pathSuffix: "m_incontent_3",
+    sizes: ["300x250"],
+    bidders: ["appnexus", "pubmatic", "criteo", "sovrn"],
+    lazy: true,
+    inInitialViewport: false,
+  },
+  {
+    elementId: "div-gpt-sticky-footer",
+    pathSuffix: "m_sticky",
+    sizes: ["320x50"],
+    bidders: ["appnexus", "rubicon", "pubmatic", "openx"],
+    lazy: false,
+    inInitialViewport: true,
+  },
 ];
 
-export function archetypeFor(hostname: string): Archetype {
+function archetypeFor(hostname: string): Archetype {
   if (/sportsdesk|localhost|127\.0\.0\.1/.test(hostname)) return "leak";
   if (/ledger/.test(hostname)) return "healthy";
   if (/techpulse/.test(hostname)) return "slow";
   return (["healthy", "leak", "slow"] as const)[hashString(hostname) % 3] ?? "healthy";
 }
 
-export function siteSlug(hostname: string): string {
+function siteSlug(hostname: string): string {
   return hostname.replace(/^www\./, "").split(".")[0] ?? "site";
 }
 
@@ -102,9 +179,7 @@ function buildBid(rng: Rng, bidderCode: string, unit: SlotPlan, spec: AuctionSpe
 function buildAuction(rng: Rng, spec: AuctionSpec): Auction {
   const adUnits: AuctionAdUnit[] = spec.units.map((unit) => {
     const bids = unit.bidders.map((bidder) => buildBid(rng, bidder, unit, spec));
-    const winner = bids
-      .filter((bid) => bid.status === "bid")
-      .sort((a, b) => (b.cpm ?? 0) - (a.cpm ?? 0))[0];
+    const winner = bids.filter((bid) => bid.status === "bid").sort((a, b) => (b.cpm ?? 0) - (a.cpm ?? 0))[0];
     if (winner) winner.status = "won";
     return {
       code: unit.elementId,
@@ -116,9 +191,7 @@ function buildAuction(rng: Rng, spec: AuctionSpec): Auction {
   });
   const allBids = adUnits.flatMap((unit) => unit.bids);
   const timedOut = allBids.some((bid) => bid.status === "timeout");
-  const lastResponse = Math.max(
-    ...allBids.map((bid) => (bid.requestedAtMs ?? 0) + (bid.responseTimeMs ?? 0)),
-  );
+  const lastResponse = Math.max(...allBids.map((bid) => (bid.requestedAtMs ?? 0) + (bid.responseTimeMs ?? 0)));
   const endedAtMs = timedOut ? spec.startedAtMs + spec.timeoutMs : lastResponse + 6;
   return {
     id: spec.id,
@@ -204,7 +277,14 @@ export function captureSite(hostname: string, device: DeviceProfile): CapturedSi
 
   if (archetype === "leak") {
     const timeoutMs = 1500;
-    const first = buildAuction(rng, { id: "a1", startedAtMs: firstAuctionAt, timeoutMs, units: eager, latencyFactor: 1, alwaysTimeout: ["ix"] });
+    const first = buildAuction(rng, {
+      id: "a1",
+      startedAtMs: firstAuctionAt,
+      timeoutMs,
+      units: eager,
+      latencyFactor: 1,
+      alwaysTimeout: ["ix"],
+    });
     auctions.push(first);
     for (const plan of eager) fates.set(plan.elementId, { auction: first, fate: { outcome: "filled" } });
     // The wrapper's 800 ms failsafe fires GPT for the leaderboard before bids are back.
@@ -213,7 +293,14 @@ export function captureSite(hostname: string, device: DeviceProfile): CapturedSi
       // The reference bug: lazy units wait for a scroll offset a desktop page never reaches.
       for (const plan of lazy) fates.set(plan.elementId, { fate: { outcome: "neverRequested" } });
     } else {
-      const second = buildAuction(rng, { id: "a2", startedAtMs: scrollAuctionAt, timeoutMs, units: lazy, latencyFactor: 1.1, alwaysTimeout: [] });
+      const second = buildAuction(rng, {
+        id: "a2",
+        startedAtMs: scrollAuctionAt,
+        timeoutMs,
+        units: lazy,
+        latencyFactor: 1.1,
+        alwaysTimeout: [],
+      });
       auctions.push(second);
       lazy.forEach((plan, index) => {
         fates.set(plan.elementId, { auction: second, fate: { outcome: index === 1 ? "empty" : "filled" } });
@@ -224,23 +311,61 @@ export function captureSite(hostname: string, device: DeviceProfile): CapturedSi
 
   if (archetype === "slow") {
     const timeoutMs = 3000;
-    const first = buildAuction(rng, { id: "a1", startedAtMs: firstAuctionAt, timeoutMs, units: eager, latencyFactor: 3.4, alwaysTimeout: ["triplelift", "sovrn"] });
+    const first = buildAuction(rng, {
+      id: "a1",
+      startedAtMs: firstAuctionAt,
+      timeoutMs,
+      units: eager,
+      latencyFactor: 3.4,
+      alwaysTimeout: ["triplelift", "sovrn"],
+    });
     // A second Prebid instance re-auctions the same units 40 ms later.
-    const duplicate = buildAuction(rng, { id: "a2", startedAtMs: firstAuctionAt + 40, timeoutMs, units: eager.slice(0, 2), latencyFactor: 3.1, alwaysTimeout: ["ix"] });
-    const second = buildAuction(rng, { id: "a3", startedAtMs: scrollAuctionAt, timeoutMs, units: lazy, latencyFactor: 3.2, alwaysTimeout: ["openx"] });
+    const duplicate = buildAuction(rng, {
+      id: "a2",
+      startedAtMs: firstAuctionAt + 40,
+      timeoutMs,
+      units: eager.slice(0, 2),
+      latencyFactor: 3.1,
+      alwaysTimeout: ["ix"],
+    });
+    const second = buildAuction(rng, {
+      id: "a3",
+      startedAtMs: scrollAuctionAt,
+      timeoutMs,
+      units: lazy,
+      latencyFactor: 3.2,
+      alwaysTimeout: ["openx"],
+    });
     auctions.push(first, duplicate, second);
     eager.forEach((plan, index) => {
       fates.set(plan.elementId, { auction: first, fate: { outcome: index === 2 ? "empty" : "filled" } });
     });
     lazy.forEach((plan, index) => {
-      fates.set(plan.elementId, { auction: second, fate: { outcome: index === lazy.length - 1 ? "pending" : "filled" } });
+      fates.set(plan.elementId, {
+        auction: second,
+        fate: { outcome: index === lazy.length - 1 ? "pending" : "filled" },
+      });
     });
     return finish(PREBID_VERSIONS.recent, timeoutMs);
   }
 
   const timeoutMs = 1200;
-  const first = buildAuction(rng, { id: "a1", startedAtMs: firstAuctionAt, timeoutMs, units: eager, latencyFactor: 0.9, alwaysTimeout: [] });
-  const second = buildAuction(rng, { id: "a2", startedAtMs: scrollAuctionAt, timeoutMs, units: lazy, latencyFactor: 0.95, alwaysTimeout: ["triplelift"] });
+  const first = buildAuction(rng, {
+    id: "a1",
+    startedAtMs: firstAuctionAt,
+    timeoutMs,
+    units: eager,
+    latencyFactor: 0.9,
+    alwaysTimeout: [],
+  });
+  const second = buildAuction(rng, {
+    id: "a2",
+    startedAtMs: scrollAuctionAt,
+    timeoutMs,
+    units: lazy,
+    latencyFactor: 0.95,
+    alwaysTimeout: ["triplelift"],
+  });
   auctions.push(first, second);
   for (const plan of eager) fates.set(plan.elementId, { auction: first, fate: { outcome: "filled" } });
   for (const plan of lazy) fates.set(plan.elementId, { auction: second, fate: { outcome: "filled" } });
@@ -251,7 +376,17 @@ export function captureSite(hostname: string, device: DeviceProfile): CapturedSi
       const entry = fates.get(plan.elementId) ?? { fate: { outcome: "neverRequested" as const } };
       return buildSlot(rng, site, plan, entry.auction, entry.fate);
     });
-    return { archetype, hostname, device, prebidVersion, timeoutMs: siteTimeoutMs, pageLoadMs, slotPlans, auctions, slots };
+    return {
+      archetype,
+      hostname,
+      device,
+      prebidVersion,
+      timeoutMs: siteTimeoutMs,
+      pageLoadMs,
+      slotPlans,
+      auctions,
+      slots,
+    };
   }
 }
 
@@ -279,9 +414,7 @@ export function buildScripts(site: CapturedSite, aiRan: boolean): ScriptRecord[]
   let loadedAt = 180;
 
   return templates.map((template, index) => {
-    const url = template.url
-      .replace("cdn.{host}", cdnHost)
-      .replaceAll("{host}", site.hostname);
+    const url = template.url.replace("cdn.{host}", cdnHost).replaceAll("{host}", site.hostname);
     const hostname = scriptHostname(url);
     loadedAt += rng.between(20, 190);
     const adCategories = ["prebid", "wrapper", "adServer", "bidder", "cmp", "adQuality"];
@@ -314,8 +447,7 @@ export function buildScripts(site: CapturedSite, aiRan: boolean): ScriptRecord[]
 
 export function computeMetrics(site: CapturedSite, scripts: ScriptRecord[]): ScanMetrics {
   const bids = site.auctions.flatMap((auction) => auction.adUnits.flatMap((unit) => unit.bids));
-  const count = (...statuses: Bid["status"][]) =>
-    bids.filter((bid) => statuses.includes(bid.status)).length;
+  const count = (...statuses: Bid["status"][]) => bids.filter((bid) => statuses.includes(bid.status)).length;
   const winners = site.auctions.flatMap((auction) =>
     auction.adUnits.flatMap((unit) => (unit.winningCpm === null ? [] : [unit.winningCpm])),
   );

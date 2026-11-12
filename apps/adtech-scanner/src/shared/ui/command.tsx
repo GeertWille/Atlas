@@ -38,9 +38,7 @@ function CommandList({ className, ...props }: ComponentProps<typeof CommandPrimi
 }
 
 function CommandEmpty(props: ComponentProps<typeof CommandPrimitive.Empty>) {
-  return (
-    <CommandPrimitive.Empty className="py-8 text-center text-sm text-muted-foreground" {...props} />
-  );
+  return <CommandPrimitive.Empty className="py-8 text-center text-sm text-muted-foreground" {...props} />;
 }
 
 function CommandGroup({ className, ...props }: ComponentProps<typeof CommandPrimitive.Group>) {
@@ -68,17 +66,7 @@ function CommandItem({ className, ...props }: ComponentProps<typeof CommandPrimi
 }
 
 function CommandShortcut({ className, ...props }: ComponentProps<"span">) {
-  return (
-    <span className={cn("ml-auto text-xs tracking-wide text-subtle-foreground", className)} {...props} />
-  );
+  return <span className={cn("ml-auto text-xs tracking-wide text-subtle-foreground", className)} {...props} />;
 }
 
-export {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-  CommandShortcut,
-};
+export { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandShortcut };

@@ -32,11 +32,13 @@ export function AuditTrail({
   steps,
   logs,
   focusedLogId,
+  onOpenFinding,
 }: {
   steps: PipelineStep[];
   logs: LogEntry[] | undefined;
   /** Deep link target from log search: revealed, expanded and highlighted. */
   focusedLogId?: string;
+  onOpenFinding: (findingId: string) => void;
 }) {
   const [filters, setFilters] = useState<LogFilters>(NO_LOG_FILTERS);
   const focusedLoaded = Boolean(focusedLogId && logs?.some((entry) => entry.id === focusedLogId));
@@ -83,7 +85,12 @@ export function AuditTrail({
             onChange={(kinds) => setFilters({ ...filters, kinds })}
             options={kindsPresent.map((kind) => {
               const Icon = LOG_KIND_ICON[kind];
-              return { value: kind, label: LOG_KIND_LABEL[kind], icon: <Icon />, count: all.filter((entry) => entry.kind === kind).length };
+              return {
+                value: kind,
+                label: LOG_KIND_LABEL[kind],
+                icon: <Icon />,
+                count: all.filter((entry) => entry.kind === kind).length,
+              };
             })}
           />
           <FilterMenu
@@ -97,7 +104,9 @@ export function AuditTrail({
             }))}
           />
           <span className="ml-auto text-[13px] text-muted-foreground tabular-nums" aria-live="polite">
-            {filtered ? `${visible.length} of ${pluralize(all.length, "entry", "entries")}` : pluralize(all.length, "entry", "entries")}
+            {filtered
+              ? `${visible.length} of ${pluralize(all.length, "entry", "entries")}`
+              : pluralize(all.length, "entry", "entries")}
           </span>
           <CopyButton text={() => logsAsText(visible)} label="Copy visible entries" />
         </div>
@@ -107,7 +116,11 @@ export function AuditTrail({
             <LogListSkeleton />
           ) : visible.length === 0 ? (
             all.length === 0 ? (
-              <Empty icon={ScrollTextIcon} title="No log entries" description="This scan did not record an audit trail." />
+              <Empty
+                icon={ScrollTextIcon}
+                title="No log entries"
+                description="This scan did not record an audit trail."
+              />
             ) : (
               <Empty icon={FilterXIcon} title="No entries match these filters">
                 <Button variant="outline" size="sm" onClick={() => setFilters(NO_LOG_FILTERS)}>
@@ -123,6 +136,7 @@ export function AuditTrail({
                 showNode={filters.stepId === null}
                 highlighted={entry.id === focusedLogId}
                 defaultExpanded={entry.id === focusedLogId}
+                onOpenFinding={onOpenFinding}
               />
             ))
           )}

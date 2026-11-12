@@ -141,7 +141,11 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
         {history.isPending ? (
           <HistoryTableSkeleton />
         ) : history.isError ? (
-          <QueryError title="Could not load scan history" error={history.error} onRetry={() => void history.refetch()} />
+          <QueryError
+            title="Could not load scan history"
+            error={history.error}
+            onRetry={() => void history.refetch()}
+          />
         ) : scans.length === 0 ? (
           filtering ? (
             <Empty icon={SearchXIcon} title="No scans match" description="Try a different search, status or device.">
@@ -150,7 +154,11 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
               </Button>
             </Empty>
           ) : (
-            <Empty icon={HistoryIcon} title="No scans yet" description="Scans you run are kept here, on this computer only." />
+            <Empty
+              icon={HistoryIcon}
+              title="No scans yet"
+              description="Scans you run are kept here, on this computer only."
+            />
           )
         ) : (
           <HistoryTable
@@ -177,7 +185,10 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
       <div ref={sentinel} aria-hidden="true" />
 
       {total > 0 && !filtering ? (
-        <section aria-label="Danger zone" className="mt-4 flex items-center justify-between gap-6 rounded-xl border border-red-line px-4 py-3.5">
+        <section
+          aria-label="Danger zone"
+          className="mt-4 flex items-center justify-between gap-6 rounded-xl border border-red-line px-4 py-3.5"
+        >
           <div className="flex flex-col gap-0.5">
             <h2 className="text-sm font-semibold">Delete all scans</h2>
             <p className="text-[13px] text-muted-foreground">
@@ -194,7 +205,9 @@ export function HistoryScreen({ settings }: { settings: Settings }) {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>
-              {confirmation?.kind === "all" ? `Delete all ${total} scans?` : `Delete the scan of ${confirmation?.kind === "one" ? confirmation.scan.hostname : ""}?`}
+              {confirmation?.kind === "all"
+                ? `Delete all ${total} scans?`
+                : `Delete the scan of ${confirmation?.kind === "one" ? confirmation.scan.hostname : ""}?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
               {confirmation?.kind === "all"

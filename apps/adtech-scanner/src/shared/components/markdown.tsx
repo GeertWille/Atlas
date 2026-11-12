@@ -23,7 +23,9 @@ const COMPONENTS: Components = {
 /** Renders trusted-shape markdown from findings. Raw HTML is not parsed (react-markdown default). */
 export function Markdown({ children, className }: { children: string; className?: string }) {
   return (
-    <div className={cn("selectable flex flex-col gap-2.5 text-[13px] leading-relaxed text-muted-foreground", className)}>
+    <div
+      className={cn("selectable flex flex-col gap-2.5 text-[13px] leading-relaxed text-muted-foreground", className)}
+    >
       <ReactMarkdown components={COMPONENTS}>{children}</ReactMarkdown>
     </div>
   );

@@ -13,8 +13,9 @@ export type ScriptFilters = {
 export const NO_SCRIPT_FILTERS: ScriptFilters = { search: "", categories: [], scope: "all" };
 
 function matchesSearch(script: ScriptRecord, needle: string): boolean {
-  return [script.url, script.vendor, script.classificationReason]
-    .some((field) => field?.toLowerCase().includes(needle));
+  return [script.url, script.vendor, script.classificationReason].some((field) =>
+    field?.toLowerCase().includes(needle),
+  );
 }
 
 export function filterScripts(scripts: ScriptRecord[], filters: ScriptFilters): ScriptRecord[] {
@@ -47,7 +48,15 @@ export function scriptFunnel(scripts: ScriptRecord[]): FunnelStage[] {
   };
   return [
     stage("all", "Scripts loaded", scripts),
-    stage("adRelated", "Ad-related", scripts.filter((script) => script.adRelated)),
-    stage("analyzed", "Analysed in Phase 2", scripts.filter((script) => script.analyzed)),
+    stage(
+      "adRelated",
+      "Ad-related",
+      scripts.filter((script) => script.adRelated),
+    ),
+    stage(
+      "analyzed",
+      "Analysed in Phase 2",
+      scripts.filter((script) => script.analyzed),
+    ),
   ];
 }

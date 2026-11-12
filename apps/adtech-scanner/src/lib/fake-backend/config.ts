@@ -25,6 +25,13 @@ export function readFakeConfig(): FakeConfig {
   const speedParam = params.get("fakeSpeed");
   if (isProfile(profileParam)) localStorage.setItem(PROFILE_KEY, profileParam);
   if (speedParam && Number(speedParam) > 0) localStorage.setItem(SPEED_KEY, speedParam);
+  if (profileParam !== null || speedParam !== null) {
+    // Hash routing owns the URL from here on; a lingering query string would shadow route search params.
+    params.delete("fakeProfile");
+    params.delete("fakeSpeed");
+    const query = params.size > 0 ? `?${params}` : "";
+    window.history.replaceState(null, "", `${window.location.pathname}${query}${window.location.hash}`);
+  }
 
   const storedProfile = localStorage.getItem(PROFILE_KEY);
   const storedSpeed = Number(localStorage.getItem(SPEED_KEY));

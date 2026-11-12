@@ -29,7 +29,9 @@ export function RunningScans({ scans }: { scans: ScanSummary[] }) {
             </span>
           </div>
           <DeviceLabel device={scan.device} className="text-[13px]" />
-          <span className="w-16 text-right text-[13px] text-muted-foreground tabular-nums">{formatUsd(scan.costUsd)}</span>
+          <span className="w-16 text-right text-[13px] text-muted-foreground tabular-nums">
+            {formatUsd(scan.costUsd)}
+          </span>
           <span className="flex items-center gap-1 text-[13px] font-medium text-primary-text">
             View live
             <ArrowRightIcon className="size-3.5 transition-transform group-hover:translate-x-0.5" />

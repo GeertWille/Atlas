@@ -10,22 +10,25 @@ import { Badge } from "@/shared/ui/badge";
 import type { ScriptSort } from "./script-filters";
 
 const ROW_HEIGHT = 52;
-const COLUMNS = "grid grid-cols-[minmax(0,1fr)_112px_120px_84px_92px_128px] items-center gap-x-3 px-4";
+const COLUMNS =
+  "grid grid-cols-[minmax(0,1fr)_104px_72px_84px_100px] items-center gap-x-3 px-4 xl:grid-cols-[minmax(0,1fr)_112px_120px_84px_92px_128px]";
 
-function SortHeader({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
+function SortHeader({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
   return (
-    <span role="columnheader" aria-sort={active ? (label === "Size" ? "descending" : "ascending") : "none"} className="flex justify-end">
-      <button type="button" onClick={onClick} className={cn("flex items-center gap-1 rounded-sm hover:text-foreground", active && "text-foreground")}>
+    <span
+      role="columnheader"
+      aria-sort={active ? (label === "Size" ? "descending" : "ascending") : "none"}
+      className="flex justify-end"
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        className={cn("flex items-center gap-1 rounded-sm hover:text-foreground", active && "text-foreground")}
+      >
         {label}
-        <ArrowDownIcon className={cn("size-3", active ? "opacity-100" : "opacity-0", label !== "Size" && "rotate-180")} />
+        <ArrowDownIcon
+          className={cn("size-3", active ? "opacity-100" : "opacity-0", label !== "Size" && "rotate-180")}
+        />
       </button>
     </span>
   );
@@ -35,7 +38,6 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
   const category = SCRIPT_CATEGORY_META[script.category];
   const ClassifierIcon = script.classifiedBy === "ai" ? SparklesIcon : CpuIcon;
   return (
-    // biome-ignore lint/a11y/useSemanticElements: virtualised rows are absolutely positioned divs
     <div
       role="row"
       tabIndex={0}
@@ -47,13 +49,23 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
           onSelect();
         }
       }}
-      className={cn(COLUMNS, "h-full border-b text-[13px] outline-offset-[-2px] hover:bg-accent/60", selected && "bg-primary-soft/60 hover:bg-primary-soft/60")}
+      className={cn(
+        COLUMNS,
+        "h-full border-b text-[13px] outline-offset-[-2px] hover:bg-accent/60",
+        selected && "bg-primary-soft/60 hover:bg-primary-soft/60",
+      )}
     >
       <span role="cell" className="flex min-w-0 flex-col">
         <span className="flex min-w-0 items-center gap-1.5">
-          {script.adRelated ? <MegaphoneIcon role="img" aria-label="Ad-related" className="size-3.5 shrink-0 text-violet-fg" /> : null}
+          {script.adRelated ? (
+            <MegaphoneIcon role="img" aria-label="Ad-related" className="size-3.5 shrink-0 text-violet-fg" />
+          ) : null}
           <span className="truncate font-medium">{fileNameOf(script.url)}</span>
-          {script.analyzed ? <Badge tone="violet" className="h-4 px-1.5 text-[10px]">Phase 2</Badge> : null}
+          {script.analyzed ? (
+            <Badge tone="violet" className="h-4 px-1.5 text-[10px]">
+              Phase 2
+            </Badge>
+          ) : null}
         </span>
         <span className="truncate text-xs text-subtle-foreground">
           {script.inline ? "inline" : script.hostname}
@@ -64,9 +76,15 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
       <span role="cell">
         <Badge tone={category.tone}>{category.label}</Badge>
       </span>
-      <span role="cell" className="truncate text-muted-foreground">{script.vendor ?? EMPTY}</span>
-      <span role="cell" className="text-right tabular-nums">{formatBytes(script.sizeBytes)}</span>
-      <span role="cell" className="text-right text-muted-foreground tabular-nums">{formatOffset(script.loadedAtMs)}</span>
+      <span role="cell" className="hidden truncate text-muted-foreground xl:block">
+        {script.vendor ?? EMPTY}
+      </span>
+      <span role="cell" className="text-right tabular-nums">
+        {formatBytes(script.sizeBytes)}
+      </span>
+      <span role="cell" className="text-right text-muted-foreground tabular-nums">
+        {formatOffset(script.loadedAtMs)}
+      </span>
       <span role="cell" className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground tabular-nums">
         <ClassifierIcon className="size-3.5 text-subtle-foreground" />
         {script.classifiedBy === "ai" ? "AI" : "Rule"}
@@ -105,19 +123,22 @@ export function ScriptsTable({
   }, [selectedIndex, virtualizer]);
 
   return (
-    // biome-ignore lint/a11y/useSemanticElements: a virtualised grid cannot be a <table>
     <div role="table" aria-label="Scripts" aria-rowcount={scripts.length + 1} className="flex min-h-0 flex-col">
       <div role="rowgroup">
         <div role="row" className={cn(COLUMNS, "h-9 border-b text-xs font-medium text-muted-foreground")}>
           <span role="columnheader">Script</span>
           <span role="columnheader">Category</span>
-          <span role="columnheader">Vendor</span>
+          <span role="columnheader" className="hidden xl:block">
+            Vendor
+          </span>
           <SortHeader label="Size" active={sort === "sizeDesc"} onClick={() => onSortChange("sizeDesc")} />
           <SortHeader label="Loaded" active={sort === "loadOrder"} onClick={() => onSortChange("loadOrder")} />
-          <span role="columnheader" className="text-right">Classified by</span>
+          <span role="columnheader" className="text-right">
+            Classified by
+          </span>
         </div>
       </div>
-      <div ref={scroller} role="rowgroup" className="max-h-[520px] min-h-0 overflow-y-auto">
+      <div ref={scroller} role="rowgroup" className="max-h-[min(728px,70vh)] min-h-0 overflow-y-auto">
         <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
           {virtualizer.getVirtualItems().map((item) => {
             const script = scripts[item.index];

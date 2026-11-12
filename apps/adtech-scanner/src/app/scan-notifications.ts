@@ -3,7 +3,11 @@ import type { ScanEvent } from "@/bindings";
 import { isActive } from "@/shared/domain/vocabulary";
 
 /** Toasts the outcome of scans the user is not currently looking at. */
-export function announceScanOutcome(event: ScanEvent, isViewing: (scanId: string) => boolean, open: (scanId: string) => void) {
+export function announceScanOutcome(
+  event: ScanEvent,
+  isViewing: (scanId: string) => boolean,
+  open: (scanId: string) => void,
+) {
   if (event.type !== "scanUpdated") return;
   const { summary } = event;
   if (isActive(summary.status) || summary.status === "cancelled" || isViewing(summary.id)) return;
