@@ -156,6 +156,7 @@ impl ScriptLibrary {
                     loaded_at_ms: first_load.map(|(_, since_page_start)| since_page_start),
                     initiator: entry.initiator,
                     pages,
+                    request_seq: None,
                 }
             })
             .collect()

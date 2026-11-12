@@ -1,6 +1,7 @@
 //! SQLite persistence. One connection in WAL mode, used only from blocking
 //! threads so the async runtime's workers never wait on disk.
 
+mod archive;
 mod configurations;
 mod logs;
 mod scans;
@@ -142,6 +143,92 @@ const MIGRATIONS: &[&str] = &[
         '$.persistentProfile', json('false'),
         '$.proxies', json('[]'),
         '$.defaultProxy', json('{\"kind\":\"system\"}')
+    );
+    ",
+    // The scan archive: one bookkeeping row per scan, the byte range of every
+    // kept body in the scan's pack file, and one row per request. A request
+    // row has no query string, no header and no body: those are in the pack.
+    // `scan_no` keeps a 36-character scan id out of every row and index.
+    "
+    CREATE TABLE scan_archives (
+        scan_no INTEGER PRIMARY KEY,
+        scan_id TEXT NOT NULL UNIQUE REFERENCES scans (id) ON DELETE CASCADE,
+        state TEXT NOT NULL,
+        format INTEGER NOT NULL,
+        pack_file TEXT,
+        pack_bytes INTEGER NOT NULL DEFAULT 0,
+        request_count INTEGER NOT NULL DEFAULT 0,
+        body_count INTEGER NOT NULL DEFAULT 0,
+        headers_mode TEXT NOT NULL,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        created_at REAL NOT NULL
+    );
+    CREATE INDEX scan_archives_by_age ON scan_archives (state, created_at);
+
+    CREATE TABLE hosts (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        site TEXT NOT NULL
+    );
+    CREATE INDEX hosts_by_site ON hosts (site);
+
+    CREATE TABLE scan_bodies (
+        scan_no INTEGER NOT NULL REFERENCES scan_archives (scan_no) ON DELETE CASCADE,
+        body_no INTEGER NOT NULL,
+        sha256 BLOB NOT NULL,
+        kind INTEGER NOT NULL,
+        raw_len INTEGER NOT NULL,
+        pack_off INTEGER NOT NULL,
+        pack_len INTEGER NOT NULL,
+        truncated INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (scan_no, body_no)
+    ) WITHOUT ROWID;
+    CREATE UNIQUE INDEX scan_bodies_by_sha ON scan_bodies (sha256, scan_no);
+
+    CREATE TABLE requests (
+        scan_no INTEGER NOT NULL REFERENCES scan_archives (scan_no) ON DELETE CASCADE,
+        seq INTEGER NOT NULL,
+        page INTEGER NOT NULL,
+        context INTEGER NOT NULL,
+        started_ms REAL NOT NULL,
+        ttfb_ms REAL,
+        duration_ms REAL,
+        method INTEGER NOT NULL,
+        scheme INTEGER NOT NULL,
+        host_id INTEGER NOT NULL REFERENCES hosts (id),
+        path TEXT NOT NULL,
+        query_len INTEGER NOT NULL,
+        resource_type INTEGER NOT NULL,
+        mime TEXT,
+        status INTEGER,
+        outcome INTEGER NOT NULL,
+        error TEXT,
+        flags INTEGER NOT NULL DEFAULT 0,
+        served_from INTEGER NOT NULL,
+        encoded_bytes INTEGER NOT NULL,
+        body_bytes INTEGER NOT NULL,
+        post_bytes INTEGER NOT NULL,
+        initiator_type INTEGER NOT NULL,
+        redirect_from INTEGER,
+        preflight_of INTEGER,
+        bidder TEXT,
+        category INTEGER NOT NULL,
+        body_state INTEGER NOT NULL,
+        body_no INTEGER,
+        record_off INTEGER NOT NULL,
+        record_len INTEGER NOT NULL,
+        record_idx INTEGER NOT NULL,
+        ad TEXT,
+        PRIMARY KEY (scan_no, seq)
+    ) WITHOUT ROWID;
+    CREATE INDEX requests_by_host ON requests (host_id, scan_no);
+
+    UPDATE settings
+    SET data = json_set(
+        data,
+        '$.keepNetworkData', json('true'),
+        '$.archiveLimitBytes', 5368709120,
+        '$.storeFullHeaders', json('false')
     );
     ",
 ];

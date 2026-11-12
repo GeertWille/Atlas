@@ -560,6 +560,9 @@ mod tests {
             vendor: None,
             loaded_at_ms: None,
             first_party: true,
+            initiator: None,
+            request_id: None,
+            sha256: None,
         }
     }
 

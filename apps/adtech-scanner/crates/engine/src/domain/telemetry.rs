@@ -367,6 +367,7 @@ fn bid_entry<'a>(auction: &'a mut Auction, code: &str, bidder: &str) -> &'a mut 
                 requested_at_ms: None,
                 response_time_ms: None,
                 deal_id: None,
+                exchange: None,
             });
             unit.bids.len() - 1
         }
@@ -478,6 +479,7 @@ fn derive_slots(timeline: &[Timed], pages: &[CapturedPage], auctions: &[Auction]
                     at_ms: t,
                     had_prebid_targeting,
                     prebid_ad_id: prebid_ad_id.clone().filter(|id| !id.is_empty()),
+                    request_id: None,
                 });
             }
             Ev::SlotResponseReceived { element_id } => {

@@ -3,6 +3,7 @@ import type { AdSlot } from "./AdSlot";
 import type { Auction } from "./Auction";
 import type { BidderDiagnostics } from "./BidderDiagnostics";
 import type { Finding } from "./Finding";
+import type { NetworkArchiveInfo } from "./NetworkArchiveInfo";
 import type { PageView } from "./PageView";
 import type { PipelineStep } from "./PipelineStep";
 import type { ScanEnvironment } from "./ScanEnvironment";
@@ -33,4 +34,9 @@ pages: Array<PageView>,
  * `None` for scans stored before it was recorded, and for scans that
  * ended before the capture did.
  */
-environment: ScanEnvironment | null, };
+environment: ScanEnvironment | null, 
+/**
+ * The scan's network record. `None` reads as `notRecorded`: scans
+ * stored before the archive existed.
+ */
+network: NetworkArchiveInfo | null, };

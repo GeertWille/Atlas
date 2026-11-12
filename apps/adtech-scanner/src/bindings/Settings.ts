@@ -75,4 +75,19 @@ proxies: Array<ProxyProfile>,
 /**
  * The proxy a scan uses unless its options say otherwise.
  */
-defaultProxy: ProxyChoice, };
+defaultProxy: ProxyChoice, 
+/**
+ * Keep each new scan's network data (requests, headers, scripts,
+ * documents, JSON and bid payloads) in a local archive.
+ */
+keepNetworkData: boolean, 
+/**
+ * Together all archives stay under this many bytes; the oldest
+ * scans lose their network data first.
+ */
+archiveLimitBytes: number, 
+/**
+ * Store cookie and authorization header values as sent instead of
+ * their lengths. Applies to new scans.
+ */
+storeFullHeaders: boolean, };

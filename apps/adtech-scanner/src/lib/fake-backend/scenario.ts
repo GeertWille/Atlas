@@ -1,4 +1,5 @@
 import type {
+  Evidence,
   Finding,
   LogKind,
   LogLevel,
@@ -17,7 +18,14 @@ import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { proxyUseLabel } from "@/shared/domain/proxy";
 import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import { buildDiagnostics } from "./diagnostics";
-import { aiInvestigations, type FindingDraft, healthScore, heuristicFindings, overviewFor } from "./findings";
+import {
+  aiInvestigations,
+  type EvidenceDraft,
+  type FindingDraft,
+  healthScore,
+  heuristicFindings,
+  overviewFor,
+} from "./findings";
 import { buildScripts, computeMetrics, JEV_THRESHOLDS, jevParts, jevPublisherSpecific, jevRule } from "./site";
 import { type CapturedVisit, captureVisit, type VisitedPage, visitMetrics } from "./visit";
 import { visitFindings } from "./visit-findings";
@@ -217,6 +225,17 @@ const MANUAL_SESSION_PAGES = 3;
 /** Simulated time the person spends on a page of a manual session before moving on. */
 const MANUAL_PAGE_MS = 5_000;
 
+/** Names the script an excerpt came from and the lines it spans, as the backend does when it verifies a citation. */
+function completeEvidence(evidence: EvidenceDraft, scripts: ScriptRecord[]): Evidence {
+  const script = evidence.scriptUrl ? scripts.find((candidate) => candidate.url === evidence.scriptUrl) : undefined;
+  return {
+    ...evidence,
+    endLine: evidence.line === null ? null : evidence.line + evidence.body.split("\n").length - 1,
+    scriptId: script?.id ?? null,
+    requestId: null,
+  };
+}
+
 export type ScenarioContext = {
   scanId: string;
   /** As the backend stores them: visitor, pages, seed, browser window, profile and budget are resolved. */
@@ -365,7 +384,13 @@ export function buildScenario({
   const findings: Finding[] = [];
   const addFinding = (draft: FindingDraft) => {
     // Findings about what one page did belong to the entry page unless they say otherwise.
-    const finding = { pages: [0], ...draft, id: `${scanId}-f${findings.length + 1}`, scanId };
+    const finding = {
+      pages: [0],
+      ...draft,
+      evidence: draft.evidence.map((evidence) => completeEvidence(evidence, scripts)),
+      id: `${scanId}-f${findings.length + 1}`,
+      scanId,
+    };
     findings.push(finding);
     timeline.wait(140);
     timeline.finding(finding);

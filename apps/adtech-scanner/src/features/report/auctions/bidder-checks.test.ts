@@ -17,6 +17,7 @@ const check = (status: DiagnosticCheck["status"], code: string): DiagnosticCheck
   excerpt: null,
   adUnits: [],
   pages: [],
+  requestIds: [],
 });
 
 const bidder = (name: string, checks: DiagnosticCheck[]): BidderDiagnosis => ({

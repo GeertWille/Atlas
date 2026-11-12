@@ -247,6 +247,8 @@ fn an_auction_that_outlives_a_route_change_stays_one_auction_of_its_first_page()
             gdpr_applies: None,
             has_consent_string: None,
             schain: vec![],
+            bidder_request_id: None,
+            bids: Vec::new(),
         },
     ));
     // The route changes 9.1 s into the scan; the answers arrive after it.

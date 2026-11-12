@@ -50,4 +50,18 @@ loadedAtMs: number | null, firstParty: boolean,
  * Page views that loaded the script, ascending. Empty for scans
  * stored before multi-page visits existed.
  */
-pages: Array<number>, };
+pages: Array<number>, 
+/**
+ * URL of the script or document that loaded it, when known.
+ */
+initiator: string | null, 
+/**
+ * The request that delivered it (`NetworkRow.id`). `None` for
+ * inline scripts and without an archive.
+ */
+requestId: string | null, 
+/**
+ * Full hex sha-256 of the body: the key of its source in the
+ * archive. `None` for scans stored before sources were kept.
+ */
+sha256: string | null, };

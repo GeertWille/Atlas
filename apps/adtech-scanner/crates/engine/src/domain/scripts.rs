@@ -85,6 +85,9 @@ fn describe_one(
         loaded_at_ms: script.loaded_at_ms,
         first_party,
         pages: script.pages.clone(),
+        initiator: None,
+        request_id: None,
+        sha256: None,
     };
     let ambiguous_hints = match verdict {
         Verdict::Decided(classification) => {
@@ -242,6 +245,7 @@ mod tests {
             body: body.into(),
             loaded_at_ms: Some(120.0),
             initiator: None,
+            request_seq: None,
         }
     }
 

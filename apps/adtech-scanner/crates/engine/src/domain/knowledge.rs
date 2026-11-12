@@ -410,7 +410,8 @@ fn decided(
     })
 }
 
-fn known_host(hostname: &str) -> Option<(&'static str, ScriptCategory)> {
+/// Vendor and script category of a host the knowledge base knows.
+pub fn known_host(hostname: &str) -> Option<(&'static str, ScriptCategory)> {
     KNOWN_HOSTS
         .iter()
         .find(|(suffix, _, _)| {

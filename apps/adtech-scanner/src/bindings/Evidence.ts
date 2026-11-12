@@ -17,4 +17,16 @@ scriptUrl: string | null,
 /**
  * 1-based line in the beautified source, when known.
  */
-line: number | null, };
+line: number | null, 
+/**
+ * Last line of the excerpt, inclusive.
+ */
+endLine: number | null, 
+/**
+ * The scan's script the excerpt came from (`ScriptRecord.id`).
+ */
+scriptId: string | null, 
+/**
+ * The request this evidence is about (`NetworkRow.id`).
+ */
+requestId: string | null, };

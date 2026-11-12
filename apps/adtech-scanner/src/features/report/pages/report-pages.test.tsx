@@ -107,9 +107,9 @@ test("slots are grouped per page view, each on its own timeline with that page's
 test("refreshes of a slot are extra request marks, and one that re-used a bid is flagged", () => {
   const refreshed = makeSlot({
     requests: [
-      { atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b" },
-      { atMs: 9000, hadPrebidTargeting: true, prebidAdId: "1a2b" },
-      { atMs: 14_000, hadPrebidTargeting: false, prebidAdId: null },
+      { atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b", requestId: null },
+      { atMs: 9000, hadPrebidTargeting: true, prebidAdId: "1a2b", requestId: null },
+      { atMs: 14_000, hadPrebidTargeting: false, prebidAdId: null, requestId: null },
     ],
   });
   const [row] = layoutSlotTimeline([refreshed], makeDetail().metrics).rows;
@@ -126,15 +126,17 @@ test("refreshes of a slot are extra request marks, and one that re-used a bid is
 
   const fresh = makeSlot({
     requests: [
-      { atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b" },
-      { atMs: 32_000, hadPrebidTargeting: true, prebidAdId: "9f9f" },
+      { atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b", requestId: null },
+      { atMs: 32_000, hadPrebidTargeting: true, prebidAdId: "9f9f", requestId: null },
     ],
   });
   expect(slotFlags(fresh).find((flag) => flag.key === "refreshed")).toMatchObject({
     label: "Refreshed once",
     warning: false,
   });
-  expect(slotFlags(makeSlot({ requests: [{ atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b" }] }))).toEqual([]);
+  expect(
+    slotFlags(makeSlot({ requests: [{ atMs: 2000, hadPrebidTargeting: true, prebidAdId: "1a2b", requestId: null }] })),
+  ).toEqual([]);
   expect(layoutSlotTimeline([makeSlot()], makeDetail().metrics).rows[0]?.refreshes).toEqual([]);
 });
 

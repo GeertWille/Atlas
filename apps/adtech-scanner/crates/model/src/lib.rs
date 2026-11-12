@@ -24,6 +24,9 @@ macro_rules! contract {
     };
 }
 
+pub mod network;
+pub use network::*;
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -173,6 +176,15 @@ contract! {
         pub proxies: Vec<ProxyProfile>,
         /// The proxy a scan uses unless its options say otherwise.
         pub default_proxy: ProxyChoice,
+        /// Keep each new scan's network data (requests, headers, scripts,
+        /// documents, JSON and bid payloads) in a local archive.
+        pub keep_network_data: bool,
+        /// Together all archives stay under this many bytes; the oldest
+        /// scans lose their network data first.
+        pub archive_limit_bytes: f64,
+        /// Store cookie and authorization header values as sent instead of
+        /// their lengths. Applies to new scans.
+        pub store_full_headers: bool,
     }
 
     /// Partial update; omitted fields keep their current value.
@@ -214,6 +226,15 @@ contract! {
         #[ts(optional)]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub default_proxy: Option<ProxyChoice>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub keep_network_data: Option<bool>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub archive_limit_bytes: Option<f64>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub store_full_headers: Option<bool>,
     }
 
     pub struct BrowserInfo {
@@ -283,6 +304,9 @@ impl Default for Settings {
             persistent_profile: false,
             proxies: Vec::new(),
             default_proxy: ProxyChoice::System,
+            keep_network_data: true,
+            archive_limit_bytes: DEFAULT_ARCHIVE_LIMIT_BYTES,
+            store_full_headers: false,
         }
     }
 }
@@ -449,6 +473,10 @@ contract! {
         /// ended before the capture did.
         #[serde(default)]
         pub environment: Option<ScanEnvironment>,
+        /// The scan's network record. `None` reads as `notRecorded`: scans
+        /// stored before the archive existed.
+        #[serde(default)]
+        pub network: Option<NetworkArchiveInfo>,
     }
 
     /// Counts are sums over all page views. `page_load_ms`,
@@ -668,6 +696,15 @@ contract! {
         pub script_url: Option<String>,
         /// 1-based line in the beautified source, when known.
         pub line: Option<u32>,
+        /// Last line of the excerpt, inclusive.
+        #[serde(default)]
+        pub end_line: Option<u32>,
+        /// The scan's script the excerpt came from (`ScriptRecord.id`).
+        #[serde(default)]
+        pub script_id: Option<String>,
+        /// The request this evidence is about (`NetworkRow.id`).
+        #[serde(default)]
+        pub request_id: Option<String>,
     }
 
     #[derive(Copy, Eq, Hash)]
@@ -735,6 +772,9 @@ contract! {
         /// Round-trip latency.
         pub response_time_ms: Option<f64>,
         pub deal_id: Option<String>,
+        /// The bid's request on the network. `None` without an archive.
+        #[serde(default)]
+        pub exchange: Option<BidExchange>,
     }
 
     #[derive(Copy, Eq, Hash)]
@@ -756,6 +796,10 @@ contract! {
         pub had_prebid_targeting: bool,
         /// `hb_adid` on the slot when the request went out.
         pub prebid_ad_id: Option<String>,
+        /// The ad-server call that carried it (`NetworkRow.id`), when it
+        /// could be told.
+        #[serde(default)]
+        pub request_id: Option<String>,
     }
 
     pub struct AdSlot {
@@ -791,8 +835,8 @@ contract! {
 }
 
 // ---------------------------------------------------------------------------
-// Bidder diagnostics (derived results only - ads.txt, sellers.json and bid
-// responses are never persisted)
+// Bidder diagnostics (derived results; ads.txt and sellers.json are never
+// persisted)
 // ---------------------------------------------------------------------------
 
 contract! {
@@ -906,11 +950,14 @@ contract! {
         /// to a page.
         #[serde(default)]
         pub pages: Vec<u32>,
+        /// The requests the outcome was read from (`NetworkRow.id`).
+        #[serde(default)]
+        pub request_ids: Vec<String>,
     }
 }
 
 // ---------------------------------------------------------------------------
-// Scripts (metadata only - bodies are never persisted)
+// Scripts (metadata; the bodies are in the scan's archive)
 // ---------------------------------------------------------------------------
 
 contract! {
@@ -971,6 +1018,17 @@ contract! {
         /// stored before multi-page visits existed.
         #[serde(default)]
         pub pages: Vec<u32>,
+        /// URL of the script or document that loaded it, when known.
+        #[serde(default)]
+        pub initiator: Option<String>,
+        /// The request that delivered it (`NetworkRow.id`). `None` for
+        /// inline scripts and without an archive.
+        #[serde(default)]
+        pub request_id: Option<String>,
+        /// Full hex sha-256 of the body: the key of its source in the
+        /// archive. `None` for scans stored before sources were kept.
+        #[serde(default)]
+        pub sha256: Option<String>,
     }
 }
 

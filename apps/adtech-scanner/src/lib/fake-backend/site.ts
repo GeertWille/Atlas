@@ -159,7 +159,15 @@ function buildBid(rng: Rng, bidderCode: string, unit: SlotPlan, spec: AuctionSpe
   if (!profile) throw new Error(`Unknown bidder ${bidderCode}`);
   const requestedAtMs = ROUND(spec.startedAtMs + rng.between(4, 26));
   const latency = ROUND(rng.between(...profile.latency) * spec.latencyFactor);
-  const base = { bidder: bidderCode, currency: null, size: null, cpm: null, dealId: null, requestedAtMs };
+  const base = {
+    bidder: bidderCode,
+    currency: null,
+    size: null,
+    cpm: null,
+    dealId: null,
+    requestedAtMs,
+    exchange: null,
+  };
 
   if (spec.alwaysTimeout.includes(bidderCode) || latency >= spec.timeoutMs) {
     return { ...base, status: "timeout", responseTimeMs: null };
@@ -258,6 +266,7 @@ function buildSlot(
         winner && slot.hadPrebidTargeting
           ? hashString(`${site.hostname}|${plan.elementId}|${auction.id}`).toString(16).padStart(8, "0")
           : null,
+      requestId: null,
     },
   ];
   if (fate.outcome === "pending") return slot;
@@ -517,6 +526,9 @@ export function buildScripts(site: CapturedSite, plan: TriagePlan, documentPages
       firstParty: hostname.endsWith(rootDomain),
       // The inline bootstrap differs per document, so later documents carry their own copy.
       pages: template.inline ? documentPages.slice(0, 1) : documentPages,
+      initiator: null,
+      requestId: null,
+      sha256: null,
     };
     const byTemplate = {
       category: template.category,

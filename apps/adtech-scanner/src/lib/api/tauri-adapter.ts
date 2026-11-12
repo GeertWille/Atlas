@@ -43,6 +43,20 @@ export function createTauriAdapter(): ApiPort {
     listScanConfigurations: () => call("list_scan_configurations"),
     saveScanConfiguration: (configuration) => call("save_scan_configuration", { configuration }),
     deleteScanConfiguration: (id) => call("delete_scan_configuration", { id }),
+    getNetworkSummary: (scanId) => call("get_network_summary", { scanId }),
+    listNetworkRequests: (scanId, query) => call("list_network_requests", { scanId, ...query }),
+    getNetworkRequest: (scanId, requestId) => call("get_network_request", { scanId, requestId }),
+    getNetworkBody: (scanId, requestId, query) => call("get_network_body", { scanId, requestId, ...query }),
+    getScriptSource: (scanId, scriptId, view, original) =>
+      call("get_script_source", {
+        scanId,
+        scriptId,
+        view,
+        originalLine: original?.line,
+        originalColumn: original?.column,
+      }),
+    getArchiveStorage: () => call("get_archive_storage"),
+    clearArchive: () => call("clear_archive"),
     subscribeScanEvents: (handler) => listen<ScanEvent>("scan-event", (event) => handler(event.payload)),
     pickExportPath: (defaultFileName, format) =>
       save({

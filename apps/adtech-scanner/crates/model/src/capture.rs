@@ -1,13 +1,17 @@
 //! Raw, in-memory output of one page capture.
 //!
 //! This is the hand-off between the browser crate (which produces it) and the
-//! engine (which derives auctions, slots, metrics and findings from it). It is
-//! deliberately **never persisted**: script bodies and raw telemetry are dropped
-//! once the scan finishes.
+//! engine (which derives auctions, slots, metrics and findings from it). The
+//! [`Capture`] itself is never persisted as a whole. What a scan keeps of
+//! the raw data goes through [`NetworkSink`] while the capture runs, and
+//! from there into the scan's archive.
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DeviceProfile, FollowedLink, PageReach, ProxyScheme, VisitorBehavior};
+use crate::{
+    DeviceProfile, FollowedLink, InitiatorKind, PageReach, ProxyScheme, RequestContext,
+    ResourceKind, ServedFrom, VisitorBehavior,
+};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -258,6 +262,9 @@ pub struct ObservedBidResponse {
     /// The endpoint's own explanation for not bidding, or the network error.
     /// At most 200 characters.
     pub reason: Option<String>,
+    /// `NetworkRecord.seq` of the request that was answered.
+    #[serde(default)]
+    pub request_seq: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -285,6 +292,11 @@ pub struct CapturedScript {
     /// Page views that loaded the script, ascending.
     #[serde(default)]
     pub pages: Vec<u32>,
+    /// `NetworkRecord.seq` of the request that delivered the script (the
+    /// first one, when it was loaded more than once). `None` for inline and
+    /// runtime scripts.
+    #[serde(default)]
+    pub request_seq: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -389,6 +401,14 @@ pub enum TrackerEventKind {
         /// Supply chain nodes Prebid passed to the bidder.
         #[serde(default)]
         schain: Vec<SchainNode>,
+        /// Prebid's `bidderRequestId`. Adapters put it, the auction id or
+        /// the bid ids into what they send, which is how the request on the
+        /// network is told apart from the bidder's other requests.
+        #[serde(default)]
+        bidder_request_id: Option<String>,
+        /// Prebid's `bidId` per ad unit of this bidder request.
+        #[serde(default)]
+        bids: Vec<TrackedBidRequest>,
     },
     BidResponse {
         auction_id: String,
@@ -550,9 +570,18 @@ pub struct TrackedBid {
     pub params: serde_json::Value,
 }
 
-/// One node of an OpenRTB supply chain object.
+/// One bid Prebid asked a bidder for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct TrackedBidRequest {
+    pub bid_id: String,
+    pub ad_unit_code: String,
+}
+
+/// One node of an OpenRTB supply chain object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../src/bindings/")]
 pub struct SchainNode {
     /// Canonical domain of the advertising system.
     pub asi: String,
@@ -560,4 +589,237 @@ pub struct SchainNode {
     pub sid: String,
     /// Whether the node takes part in the flow of payment.
     pub hp: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// Network hand-over: every request of the visit, streamed while it happens
+// ---------------------------------------------------------------------------
+
+/// POST bodies are handed over up to this many bytes. Also the value of
+/// `maxPostDataSize` for `Network.enable`.
+pub const MAX_POST_DATA_BYTES: usize = 1024 * 1024;
+
+/// An initiator stack is handed over up to this many frames, innermost first.
+pub const MAX_INITIATOR_FRAMES: usize = 32;
+
+/// Where the capture hands over the visit's requests while it runs, so that
+/// neither side has to hold all bodies in memory. The engine provides it.
+///
+/// Both methods are called from the capture's own task: they never block and
+/// never fail. Every call happens before `capture` returns; after that the
+/// sink is not used again.
+pub trait NetworkSink: Send + Sync {
+    /// Asked once per finished response, before its body is read from the
+    /// browser. The answer is the sink's whole policy: which kinds of body
+    /// are kept, the per-body and per-scan caps, and back-pressure when it
+    /// cannot write as fast as bodies arrive. After `Read` the capture must
+    /// hand over a record for `offer.seq`, whatever becomes of the read.
+    fn admit_body(&self, offer: &BodyOffer<'_>) -> BodyAdmission;
+
+    /// One request, complete: called exactly once per `seq`, when the request
+    /// has ended (finished, failed, redirected) or, for requests still open,
+    /// when the capture ends. Order of calls is order of ending, not of `seq`.
+    fn record(&self, record: NetworkRecord);
+}
+
+/// What the sink is told about a body before it is read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyOffer<'a> {
+    pub seq: u32,
+    pub kind: ResourceKind,
+    pub mime_type: Option<&'a str>,
+    pub status: Option<u16>,
+    /// Best guess of the decoded size: bytes received so far, else the
+    /// encoded length; 0 when unknown.
+    pub expected_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyAdmission {
+    /// Read the body and hand over at most `max_bytes` of it.
+    Read { max_bytes: usize },
+    /// Do not read it; report `CapturedBody::Skipped` with this reason.
+    Skip(BodySkip),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodySkip {
+    /// This kind of content is recorded as metadata only.
+    Type,
+    /// The scan has reached its archive size cap.
+    ScanLimit,
+    /// The sink holds as many unwritten bytes as it may.
+    Backlog,
+}
+
+/// The response body of a request as handed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CapturedBody {
+    /// There was nothing to read: the request failed, was cancelled, never
+    /// finished, or is a redirect hop.
+    Absent,
+    /// The response finished with a body of zero bytes.
+    Empty,
+    /// The sink declined it.
+    Skipped(BodySkip),
+    /// The sink admitted it but the browser could not provide it (already
+    /// discarded, the frame is gone). The browser's reason, at most 200
+    /// characters.
+    Unavailable(String),
+    /// The decoded body. `bytes` holds the first `max_bytes` the sink
+    /// admitted; `total_bytes` is the length before that cut.
+    Read { bytes: Vec<u8>, total_bytes: u64 },
+}
+
+/// The request body (`postData`) as handed over.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedPostData {
+    /// At most [`MAX_POST_DATA_BYTES`].
+    pub bytes: Vec<u8>,
+    /// Length before that cut.
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawHeader {
+    /// As the browser reports it, case included.
+    pub name: String,
+    /// As the browser reports it. Several values of one name may be joined
+    /// with a line feed, as CDP does for `Set-Cookie`.
+    pub value: String,
+}
+
+/// How a request ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestEnd {
+    /// `Network.loadingFinished`.
+    Finished,
+    /// Answered with a redirect; the next hop is its own record.
+    Redirected,
+    /// `Network.loadingFailed`.
+    Failed {
+        /// `errorText`, e.g. `net::ERR_CONNECTION_REFUSED`.
+        error: String,
+        cancelled: bool,
+        /// `blockedReason` or `corsErrorStatus.corsError`, when there is one.
+        blocked_reason: Option<String>,
+    },
+    /// Still open when the capture ended.
+    Pending,
+}
+
+/// CDP `ResourceTiming`, each value in ms after the request's own start
+/// (`requestTime`), `None` where CDP reports -1 or nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ResourceTiming {
+    pub dns_start: Option<f64>,
+    pub dns_end: Option<f64>,
+    pub connect_start: Option<f64>,
+    pub connect_end: Option<f64>,
+    pub ssl_start: Option<f64>,
+    pub ssl_end: Option<f64>,
+    pub send_start: Option<f64>,
+    pub send_end: Option<f64>,
+    pub receive_headers_start: Option<f64>,
+    pub receive_headers_end: Option<f64>,
+    pub worker_start: Option<f64>,
+    pub worker_ready: Option<f64>,
+}
+
+/// One frame of the stack that made a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitiatorFrame {
+    pub function: Option<String>,
+    /// As CDP reports it; empty for code without a URL.
+    pub url: String,
+    /// `CapturedScript.url` of the script the frame runs in, when the
+    /// capture kept that script: the URL itself for an external script,
+    /// `inline:<n>` for an inline or runtime one.
+    pub script_url: Option<String>,
+    /// 0-based, as CDP reports them.
+    pub line: u32,
+    pub column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NetworkInitiator {
+    pub kind: InitiatorKind,
+    /// `initiator.url`: the document or script, when CDP names one.
+    pub url: Option<String>,
+    /// 0-based, as CDP reports it (parser initiators).
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    /// Innermost first, async parents appended, at most
+    /// [`MAX_INITIATOR_FRAMES`].
+    pub stack: Vec<InitiatorFrame>,
+}
+
+/// One request of the visit, from every frame and worker of the scanned tab,
+/// with everything the browser said about it. In memory only; what is stored
+/// of it, and how, is the sink's decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NetworkRecord {
+    /// The capture's number for the request: counted from 0 in the order the
+    /// requests were first seen, across all frames and workers. Each redirect
+    /// hop has its own.
+    pub seq: u32,
+    /// Page view the request started on.
+    pub page: u32,
+    pub context: RequestContext,
+    /// CDP frame id, when the request belongs to a frame.
+    pub frame_id: Option<String>,
+    /// CDP target id of the out-of-process iframe or worker that made it;
+    /// `None` for the page's own target.
+    pub target_id: Option<String>,
+    pub method: String,
+    /// Full URL with query and fragment. `data:` and `blob:` URLs without
+    /// their payload.
+    pub url: String,
+    pub kind: ResourceKind,
+    /// CDP `initialPriority`.
+    pub priority: Option<String>,
+    /// What was sent: `requestWillBeSentExtraInfo` where it fired, else the
+    /// provisional headers of `requestWillBeSent`.
+    pub request_headers: Vec<RawHeader>,
+    /// `None` when the request has no body.
+    pub post_data: Option<CapturedPostData>,
+    /// The request has a body that could not be read.
+    pub post_data_missing: bool,
+    pub initiator: NetworkInitiator,
+    /// The hop that redirected to this request.
+    pub redirect_from: Option<u32>,
+    /// For a preflight: the request it was sent for.
+    pub preflight_of: Option<u32>,
+    /// `None` when no response arrived.
+    pub status: Option<u16>,
+    pub mime_type: Option<String>,
+    /// e.g. "h2", "http/1.1", "h3".
+    pub protocol: Option<String>,
+    /// `ip:port`.
+    pub remote_address: Option<String>,
+    /// What was received: `responseReceivedExtraInfo` where it fired, else
+    /// the headers of `responseReceived`.
+    pub response_headers: Vec<RawHeader>,
+    pub served_from: ServedFrom,
+    /// ms since the start of page view `page` when the request was made
+    /// (`requestWillBeSent`), on the same clock as the tracker's `t`. With
+    /// `Capture.navigation_start` and the page view's `started_at_ms` this
+    /// gives the wall-clock time.
+    pub started_at_ms: f64,
+    /// Same clock: when the response's headers arrived.
+    pub response_at_ms: Option<f64>,
+    /// Same clock: when the request ended. `None` while `end` is `Pending`.
+    pub ended_at_ms: Option<f64>,
+    /// ms between the request being made and the browser starting work on
+    /// it (`timing.requestTime` minus the event's timestamp).
+    pub queued_ms: Option<f64>,
+    pub timing: Option<ResourceTiming>,
+    /// Bytes on the wire, headers included (`encodedDataLength`).
+    pub encoded_bytes: u64,
+    /// Decoded body bytes received (`dataReceived`).
+    pub decoded_bytes: u64,
+    pub end: RequestEnd,
+    /// Prebid bidder code when the request is a recognised bid request.
+    pub bidder: Option<String>,
+    pub body: CapturedBody,
 }

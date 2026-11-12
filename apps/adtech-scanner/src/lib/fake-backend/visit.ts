@@ -94,7 +94,7 @@ function withoutBids(site: CapturedSite): CapturedSite {
       renderedSize: filled ? (slot.sizes[0] ?? null) : null,
       hadPrebidTargeting: false,
       requestedBeforeAuctionEnd: false,
-      requests: [{ atMs: requestedAtMs, hadPrebidTargeting: false, prebidAdId: null }],
+      requests: [{ atMs: requestedAtMs, hadPrebidTargeting: false, prebidAdId: null, requestId: null }],
     };
   });
   return { ...site, auctions: [], slots };
@@ -149,7 +149,12 @@ function refreshWithStaleBid(site: CapturedSite): AdSlot | null {
   const slot = site.slots.find((candidate) => candidate.viewableAtMs !== null && candidate.requests[0]?.prebidAdId);
   const first = slot?.requests[0];
   if (!slot || !first || slot.viewableAtMs === null) return null;
-  slot.requests.push({ atMs: slot.viewableAtMs + 5200, hadPrebidTargeting: true, prebidAdId: first.prebidAdId });
+  slot.requests.push({
+    atMs: slot.viewableAtMs + 5200,
+    hadPrebidTargeting: true,
+    prebidAdId: first.prebidAdId,
+    requestId: null,
+  });
   return slot;
 }
 

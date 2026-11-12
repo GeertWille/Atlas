@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use adscan_model::{BrowserInfo, Capture, CaptureActivity, CaptureRequest, ScanProfileInfo};
+use adscan_model::{
+    BrowserInfo, Capture, CaptureActivity, CaptureRequest, NetworkSink, ScanProfileInfo,
+};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +51,9 @@ pub struct CaptureHooks {
     /// when it asks, over the DevTools connection. Never logged, never put on
     /// a command line.
     pub proxy_password: Option<String>,
+    /// Where every request of the visit is handed over while it happens.
+    /// `None`: the scan keeps no network data and no body is read for it.
+    pub network: Option<Arc<dyn NetworkSink>>,
 }
 
 /// Find a usable browser. `explicit` is the user's configured path, if any.

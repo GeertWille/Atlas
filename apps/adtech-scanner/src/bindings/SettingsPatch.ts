@@ -12,4 +12,4 @@ export type SettingsPatch = { filterModel?: string, analysisModel?: string, anal
 /**
  * `Some(None)` clears the explicit path and returns to auto-detect.
  */
-chromePath?: string | null, headless?: boolean, defaultDevice?: DeviceProfile, defaultObserveSeconds?: number, theme?: ThemePreference, jevEnabled?: boolean, checkSellersJson?: boolean, defaultVisitor?: VisitorBehavior, defaultExtraPages?: number, persistentProfile?: boolean, defaultProxy?: ProxyChoice, };
+chromePath?: string | null, headless?: boolean, defaultDevice?: DeviceProfile, defaultObserveSeconds?: number, theme?: ThemePreference, jevEnabled?: boolean, checkSellersJson?: boolean, defaultVisitor?: VisitorBehavior, defaultExtraPages?: number, persistentProfile?: boolean, defaultProxy?: ProxyChoice, keepNetworkData?: boolean, archiveLimitBytes?: number, storeFullHeaders?: boolean, };

@@ -1,11 +1,17 @@
 import type {
   ApiKeyStatus,
   ApiProvider,
+  ArchiveStorage,
+  BodySide,
   BrowserInfo,
   DashboardStats,
   ExportFormat,
   LogEntry,
   LogSearchHit,
+  NetworkBodyChunk,
+  NetworkRequestDetail,
+  NetworkRowChunk,
+  NetworkSummary,
   ProxyProfileDraft,
   ScanConfiguration,
   ScanConfigurationDraft,
@@ -16,11 +22,31 @@ import type {
   ScanOptions,
   ScanProfileInfo,
   ScanSummary,
+  ScriptSource,
   Settings,
   SettingsPatch,
+  SourceView,
 } from "@/bindings";
 
 export type Unsubscribe = () => void;
+
+export type NetworkRowsQuery = {
+  /** Page views to list; omitted for the whole visit. */
+  pages?: number[];
+  /** `nextCursor` of the previous chunk. */
+  cursor?: string;
+  limit?: number;
+};
+
+export type NetworkBodyQuery = {
+  side: BodySide;
+  /** Byte offset into the stored body. */
+  offset?: number;
+  maxBytes?: number;
+};
+
+/** A position in a script as captured (1-based), to be mapped onto the text that is returned. */
+export type SourcePosition = { line: number; column?: number };
 
 /**
  * Everything the UI may ask of the outside world. Two adapters implement it:
@@ -61,6 +87,18 @@ export interface ApiPort {
   saveScanConfiguration(configuration: ScanConfigurationDraft): Promise<ScanConfiguration>;
   /** Scans started from the configuration are kept. */
   deleteScanConfiguration(id: string): Promise<void>;
+  /** The digest of a scan's network record. Answers for every scan; `archive.availability` says why it is empty. */
+  getNetworkSummary(scanId: string): Promise<NetworkSummary>;
+  /** One chunk of the request list, ordered by page view, start time and sequence. */
+  listNetworkRequests(scanId: string, query?: NetworkRowsQuery): Promise<NetworkRowChunk>;
+  getNetworkRequest(scanId: string, requestId: string): Promise<NetworkRequestDetail>;
+  /** A stretch of a stored body as text. `text` is `null` whenever the state is not `kept` or `truncated`. */
+  getNetworkBody(scanId: string, requestId: string, query: NetworkBodyQuery): Promise<NetworkBodyChunk>;
+  /** A script's text from the scan's archive. Unavailability is data (`availability`), never an error. */
+  getScriptSource(scanId: string, scriptId: string, view: SourceView, original?: SourcePosition): Promise<ScriptSource>;
+  getArchiveStorage(): Promise<ArchiveStorage>;
+  /** Removes the network data of every finished scan. The reports stay. */
+  clearArchive(): Promise<ArchiveStorage>;
   subscribeScanEvents(handler: (event: ScanEvent) => void): Promise<Unsubscribe>;
 
   /** Native save dialog. Resolves to `null` when the user cancels. */

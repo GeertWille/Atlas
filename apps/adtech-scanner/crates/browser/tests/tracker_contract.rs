@@ -233,6 +233,8 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                         hp: Some(false),
                     },
                 ],
+                bidder_request_id: None,
+                bids: Vec::new(),
             },
             &Kind::BidRequested {
                 auction_id: "auction-1".into(),
@@ -245,6 +247,8 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                     sid: "s-2".into(),
                     hp: None,
                 }],
+                bidder_request_id: None,
+                bids: Vec::new(),
             },
         ]
     );

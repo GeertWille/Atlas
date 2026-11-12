@@ -63,5 +63,8 @@ fn evidence(kind: EvidenceKind, label: impl Into<String>, body: impl Into<String
         body: body.into(),
         script_url: None,
         line: None,
+        end_line: None,
+        request_id: None,
+        script_id: None,
     }
 }

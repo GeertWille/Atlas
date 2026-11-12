@@ -1,6 +1,7 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   ApiProvider,
+  BodySide,
   ExportFormat,
   ProxyProfileDraft,
   ScanConfigurationDraft,
@@ -9,8 +10,10 @@ import type {
   ScanSummary,
   Settings,
   SettingsPatch,
+  SourceView,
 } from "@/bindings";
 import { api } from "@/lib/api";
+import type { SourcePosition } from "@/lib/api/port";
 import { queryKeys } from "./keys";
 import { fetchScanDetail, fetchScanLogs } from "./scan-events";
 
@@ -123,6 +126,87 @@ export function useScanLogs(scanId: string) {
   return useQuery({
     queryKey: queryKeys.scanLogs(scanId),
     queryFn: () => fetchScanLogs(scanId, () => api.getLogs(scanId)),
+  });
+}
+
+/**
+ * The archive of a finished scan only changes when it is evicted or cleared, and both invalidate
+ * these queries: there is nothing to refetch in between. Large answers are dropped from memory a few
+ * minutes after their screen closes.
+ */
+const ARCHIVE_QUERY = { staleTime: Number.POSITIVE_INFINITY, gcTime: 5 * 60_000, structuralSharing: false } as const;
+
+export function useNetworkSummary(scanId: string, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.networkSummary(scanId),
+    queryFn: () => api.getNetworkSummary(scanId),
+    enabled,
+    ...ARCHIVE_QUERY,
+  });
+}
+
+export const NETWORK_CHUNK_ROWS = 2000;
+/** Beyond this many requests the list is cut, and the screen says so. */
+export const NETWORK_ROW_LIMIT = 50_000;
+
+/** The request list of a scan, in chunks so the first rows paint before the last arrive. */
+export function useNetworkRowChunks(scanId: string, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.networkRows(scanId),
+    queryFn: ({ pageParam }) => api.listNetworkRequests(scanId, { cursor: pageParam, limit: NETWORK_CHUNK_ROWS }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage, pages) => {
+      const loaded = pages.reduce((sum, page) => sum + page.rows.length, 0);
+      return loaded >= NETWORK_ROW_LIMIT ? undefined : (lastPage.nextCursor ?? undefined);
+    },
+    enabled,
+    ...ARCHIVE_QUERY,
+  });
+}
+
+export function useNetworkRequest(scanId: string, requestId: string | undefined) {
+  return useQuery({
+    queryKey: queryKeys.networkRequest(scanId, requestId ?? ""),
+    queryFn: () => api.getNetworkRequest(scanId, requestId ?? ""),
+    enabled: requestId !== undefined,
+    ...ARCHIVE_QUERY,
+  });
+}
+
+/** A stored body, read 2 MiB at a time; the next stretch is fetched when the reader asks for more. */
+export function useNetworkBody(scanId: string, requestId: string, side: BodySide, enabled = true) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.networkBody(scanId, requestId, side),
+    queryFn: ({ pageParam }) => api.getNetworkBody(scanId, requestId, { side, offset: pageParam }),
+    initialPageParam: 0,
+    getNextPageParam: (lastPage) => lastPage.nextOffset ?? undefined,
+    enabled,
+    ...ARCHIVE_QUERY,
+  });
+}
+
+/** `original`: a position in the script as captured, answered as `focusLine` of the text returned. */
+export function useScriptSource(scanId: string, scriptId: string, view: SourceView, original?: SourcePosition) {
+  return useQuery({
+    queryKey: [...queryKeys.scriptSource(scanId, scriptId, view), original?.line ?? null, original?.column ?? null],
+    queryFn: () => api.getScriptSource(scanId, scriptId, view, original),
+    ...ARCHIVE_QUERY,
+  });
+}
+
+export function useArchiveStorage() {
+  return useQuery({ queryKey: queryKeys.archiveStorage, queryFn: api.getArchiveStorage });
+}
+
+export function useClearArchive() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.clearArchive,
+    onSuccess: (storage) => {
+      client.setQueryData(queryKeys.archiveStorage, storage);
+      // Every report now says that its network data is gone.
+      void client.invalidateQueries({ queryKey: queryKeys.scans });
+    },
   });
 }
 
@@ -241,6 +325,8 @@ export function useDeleteScan() {
     onSuccess: (_result, scanId) => {
       client.removeQueries({ queryKey: queryKeys.scanDetail(scanId) });
       client.removeQueries({ queryKey: queryKeys.scanLogs(scanId) });
+      client.removeQueries({ queryKey: queryKeys.scanArchive(scanId) });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStorage });
       void client.invalidateQueries({ queryKey: queryKeys.scanLists });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
       void client.invalidateQueries({ queryKey: queryKeys.logSearches });
@@ -256,6 +342,7 @@ export function useDeleteAllScans() {
     onSuccess: () => {
       client.removeQueries({ queryKey: queryKeys.scans, type: "inactive" });
       void client.invalidateQueries({ queryKey: queryKeys.scans });
+      void client.invalidateQueries({ queryKey: queryKeys.archiveStorage });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
       void client.invalidateQueries({ queryKey: queryKeys.logSearches });
       void client.invalidateQueries({ queryKey: queryKeys.configurations });

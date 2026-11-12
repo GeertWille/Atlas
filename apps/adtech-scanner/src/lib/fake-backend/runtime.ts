@@ -92,6 +92,7 @@ export function createRunningScan(
       bidderDiagnostics: null,
       pages: [],
       environment: null,
+      network: null,
     },
     logs: [],
   };

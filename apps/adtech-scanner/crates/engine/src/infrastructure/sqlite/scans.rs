@@ -219,6 +219,7 @@ impl ScanRepository for SqliteStore {
                     .transpose()?
                     .unwrap_or_default(),
                 environment: environment.as_deref().map(from_json).transpose()?,
+                network: super::archive::network_info(connection, &scan_id)?,
             }))
         })
         .await

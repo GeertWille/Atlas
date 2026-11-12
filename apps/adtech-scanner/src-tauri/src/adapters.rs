@@ -47,6 +47,7 @@ impl CaptureSource for ChromeCaptureSource {
             on_activity: session.on_activity,
             scan_profile_dir: Some(self.scan_profile_dir.clone()),
             proxy_password: session.proxy_password,
+            network: session.network,
         };
         adscan_browser::capture(request, hooks)
             .await

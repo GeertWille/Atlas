@@ -104,6 +104,8 @@ fn page(bidders: &[Bidder], extra: Vec<TrackerEvent>) -> Capture {
                 gdpr_applies: bidder.gdpr_applies,
                 has_consent_string: bidder.has_consent_string,
                 schain: bidder.schain.clone(),
+                bidder_request_id: None,
+                bids: Vec::new(),
             },
         ));
         for (index, code) in units {
@@ -428,6 +430,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
             host: "ib.adnxs.com".into(),
             status: Some(200),
             reason: Some("tag error: Invalid placement".into()),
+            request_seq: None,
         },
         ObservedBidResponse {
             page: 0,
@@ -436,6 +439,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
             host: "ib.adnxs.com".into(),
             status: Some(400),
             reason: None,
+            request_seq: None,
         },
         ObservedBidResponse {
             page: 0,
@@ -444,6 +448,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
             host: "ib.adnxs.com".into(),
             status: None,
             reason: Some("net::ERR_BLOCKED_BY_CLIENT".into()),
+            request_seq: None,
         },
     ];
     let diagnosed = diagnose(&capture, &found(HEALTHY_ADS_TXT));
@@ -710,6 +715,7 @@ fn test_ids_and_failing_requests_of_bidders_that_do_bid_are_reported() {
         host: "rtb.openx.net".into(),
         status: Some(403),
         reason: Some("error: account suspended".into()),
+        request_seq: None,
     }];
     let diagnosed = diagnose(
         &capture,
@@ -1145,6 +1151,7 @@ fn stored_text_is_always_short() {
         host: "fastlane.rubiconproject.com".into(),
         status: Some(200),
         reason: Some(long_reason),
+        request_seq: None,
     }];
     let ads_txt = format!(
         "rubiconproject.com, {}, DIRECT\n{}\n",
@@ -1451,6 +1458,7 @@ fn endpoint_answers_name_the_page_views_they_failed_on() {
             host: "ib.adnxs.com".into(),
             status: Some(200),
             reason: None,
+            request_seq: None,
         },
         ObservedBidResponse {
             page: 1,
@@ -1459,6 +1467,7 @@ fn endpoint_answers_name_the_page_views_they_failed_on() {
             host: "ib.adnxs.com".into(),
             status: Some(503),
             reason: None,
+            request_seq: None,
         },
     ];
     let diagnosed = diagnose(&capture, &found(HEALTHY_ADS_TXT));

@@ -1,0 +1,37 @@
+/*
+ * Syntax colours for the code editor. CodeMirror's class highlighter emits `tok-*` classes; they map
+ * onto the same `--syn-*` tokens as the report's code excerpts, so both themes work without telling
+ * the editor that the theme changed.
+ */
+.tok-comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+.tok-keyword,
+.tok-atom,
+.tok-bool,
+.tok-literal {
+  color: var(--syn-keyword);
+}
+.tok-string,
+.tok-string2 {
+  color: var(--syn-string);
+}
+.tok-number {
+  color: var(--syn-number);
+}
+.tok-propertyName,
+.tok-typeName,
+.tok-className,
+.tok-labelName,
+.tok-macroName {
+  color: var(--syn-function);
+}
+.tok-punctuation,
+.tok-operator,
+.tok-meta {
+  color: var(--syn-punctuation);
+}
+.tok-invalid {
+  color: var(--tone-red-fg);
+}

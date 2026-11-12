@@ -24,4 +24,8 @@ adUnits: Array<string>,
  * Page views the outcome was seen on; empty when it is not specific
  * to a page.
  */
-pages: Array<number>, };
+pages: Array<number>, 
+/**
+ * The requests the outcome was read from (`NetworkRow.id`).
+ */
+requestIds: Array<string>, };

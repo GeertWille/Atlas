@@ -11,4 +11,9 @@ atMs: number, hadPrebidTargeting: boolean,
 /**
  * `hb_adid` on the slot when the request went out.
  */
-prebidAdId: string | null, };
+prebidAdId: string | null, 
+/**
+ * The ad-server call that carried it (`NetworkRow.id`), when it
+ * could be told.
+ */
+requestId: string | null, };

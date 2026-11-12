@@ -24,6 +24,8 @@ tokio.workspace = true
 tokio-util.workspace = true
 url = "2"
 uuid = { version = "1", features = ["v4"] }
+# Scan archives: one frame per body, the codec and level of the owner's data lake.
+zstd = "0.14"
 
 [dev-dependencies]
 tempfile = "3"

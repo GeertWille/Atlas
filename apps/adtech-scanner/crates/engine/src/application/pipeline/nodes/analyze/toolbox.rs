@@ -630,6 +630,9 @@ impl Toolbox {
                 body: body.chars().take(MAX_EVIDENCE_CHARS).collect(),
                 script_url: Some(script.url.clone()),
                 line: Some(line as u32),
+                end_line: None,
+                request_id: None,
+                script_id: None,
             },
         })
     }
@@ -1228,6 +1231,7 @@ mod tests {
                     summary: "ads.txt has no entry for seedtag.com".into(),
                     excerpt: None,
                     ad_units: vec![],
+                    request_ids: Vec::new(),
                 }],
             }],
         };

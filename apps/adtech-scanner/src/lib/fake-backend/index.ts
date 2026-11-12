@@ -44,6 +44,9 @@ const DEFAULT_SETTINGS: Settings = {
   persistentProfile: false,
   proxies: [],
   defaultProxy: { kind: "system" },
+  keepNetworkData: true,
+  archiveLimitBytes: 5 * 1024 ** 3,
+  storeFullHeaders: false,
 };
 
 /** What one scan adds to the kept profile (cache, cookies, storage), and where Chrome's cache cap stops it. */

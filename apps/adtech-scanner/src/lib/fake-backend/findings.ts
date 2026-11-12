@@ -1,4 +1,4 @@
-import type { Finding, ScanMetrics } from "@/bindings";
+import type { Evidence, Finding, ScanMetrics } from "@/bindings";
 import type { CapturedSite } from "./site";
 
 /** One model-driven investigation: what it thought, which tools it ran, what it reported. */
@@ -8,8 +8,14 @@ export type Investigation = {
   finding: FindingDraft;
 };
 
+/** Evidence as an investigation words it; the scan adds the ids of the script and the request it points at. */
+export type EvidenceDraft = Pick<Evidence, "kind" | "label" | "body" | "scriptUrl" | "line">;
+
 /** A finding before the scan gives it an id. `pages` is left out for findings of the entry page. */
-export type FindingDraft = Omit<Finding, "id" | "scanId" | "pages"> & { pages?: number[] };
+export type FindingDraft = Omit<Finding, "id" | "scanId" | "pages" | "evidence"> & {
+  pages?: number[];
+  evidence: EvidenceDraft[];
+};
 
 const WRAPPER_DEVICE_CHECK = `var MOBILE_LAZY_OFFSET = 2400;
 

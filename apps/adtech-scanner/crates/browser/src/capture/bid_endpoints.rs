@@ -244,6 +244,7 @@ impl BidResponseLog {
                     host: observation.request.host,
                     status: observation.status,
                     reason: observation.reason,
+                    request_seq: None,
                 })
             })
             .collect();
@@ -477,6 +478,7 @@ mod tests {
                     host: "rtb.openx.net".into(),
                     status: None,
                     reason: Some("net::ERR_FAILED".into()),
+                    request_seq: None,
                 },
                 ObservedBidResponse {
                     page: 0,
@@ -485,6 +487,7 @@ mod tests {
                     host: "rtb.openx.net".into(),
                     status: Some(200),
                     reason: Some("no-bid reason 7".into()),
+                    request_seq: None,
                 },
             ]
         );

@@ -44,6 +44,7 @@ const diagnostics: BidderDiagnostics = {
           excerpt: "appnexus.com, 958, DIRECT",
           adUnits: [],
           pages: [],
+          requestIds: [],
         },
       ],
     },
@@ -60,6 +61,7 @@ const diagnostics: BidderDiagnostics = {
           excerpt: null,
           adUnits: [],
           pages: [],
+          requestIds: [],
         },
         {
           area: "params",
@@ -69,6 +71,7 @@ const diagnostics: BidderDiagnostics = {
           excerpt: "adUnitId: 27",
           adUnits: ["div-gpt-top", "div-gpt-rail"],
           pages: [],
+          requestIds: [],
         },
         {
           area: "consent",
@@ -78,6 +81,7 @@ const diagnostics: BidderDiagnostics = {
           excerpt: null,
           adUnits: [],
           pages: [],
+          requestIds: [],
         },
       ],
     },

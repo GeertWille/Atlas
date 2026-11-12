@@ -75,6 +75,9 @@ fn finding(id: &str, scan_id: &str, severity: Severity) -> Finding {
             body: "return window.innerWidth > 768;".into(),
             script_url: Some("https://pub.example/ads.js".into()),
             line: Some(14),
+            end_line: None,
+            request_id: None,
+            script_id: None,
         }],
         affected_slots: vec!["top".into()],
         affected_bidders: vec![],
@@ -305,6 +308,7 @@ async fn scan_round_trips_through_summary_and_detail() {
                 summary: "ads.txt has no entry for appnexus.com".into(),
                 excerpt: Some("xandr.example, 1, DIRECT".into()),
                 ad_units: vec!["top".into()],
+                request_ids: Vec::new(),
             }],
         }],
     };

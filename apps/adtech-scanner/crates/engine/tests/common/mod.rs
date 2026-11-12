@@ -47,6 +47,7 @@ pub fn script(url: &str, body: &str) -> CapturedScript {
         body: body.into(),
         loaded_at_ms: Some(100.0),
         initiator: Some("https://pub.example/".into()),
+        request_seq: None,
     }
 }
 
@@ -174,6 +175,8 @@ pub fn auction_round(start: f64, auction: &str) -> Vec<TrackerEvent> {
                 gdpr_applies: None,
                 has_consent_string: None,
                 schain: vec![],
+                bidder_request_id: None,
+                bids: Vec::new(),
             },
         ));
     }

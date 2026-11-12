@@ -46,6 +46,9 @@ const legacy: ScanDetail = makeDetail({
           body: "var IS_MOBILE = screen.width < 1440;",
           scriptUrl: "https://www.example.com/ads/hb.js",
           line: 211,
+          endLine: null,
+          scriptId: null,
+          requestId: null,
         },
         {
           kind: "timeline",
@@ -53,6 +56,9 @@ const legacy: ScanDetail = makeDetail({
           body: "slotDefined at 450 ms, never requested",
           scriptUrl: null,
           line: null,
+          endLine: null,
+          scriptId: null,
+          requestId: null,
         },
       ],
       affectedSlots: ["div-gpt-side"],
@@ -171,7 +177,14 @@ test("a single-page scan renders exactly like one stored without pages", async (
       requests:
         slot.requestedAtMs === null
           ? []
-          : [{ atMs: slot.requestedAtMs, hadPrebidTargeting: slot.hadPrebidTargeting ?? false, prebidAdId: null }],
+          : [
+              {
+                atMs: slot.requestedAtMs,
+                hadPrebidTargeting: slot.hadPrebidTargeting ?? false,
+                prebidAdId: null,
+                requestId: null,
+              },
+            ],
     })),
   };
   expect(await reportHtml(singlePage)).toBe(await reportHtml(legacy));

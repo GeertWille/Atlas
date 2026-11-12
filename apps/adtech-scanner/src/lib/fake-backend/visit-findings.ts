@@ -1,8 +1,7 @@
-import type { Evidence } from "@/bindings";
-import type { FindingDraft } from "./findings";
+import type { EvidenceDraft, FindingDraft } from "./findings";
 import type { CapturedVisit, VisitedPage } from "./visit";
 
-const timeline = (label: string, body: string): Evidence => ({
+const timeline = (label: string, body: string): EvidenceDraft => ({
   kind: "timeline",
   label,
   body,
@@ -119,7 +118,7 @@ function consentAskedAgain(pages: VisitedPage[]): FindingDraft {
   };
 }
 
-const metric = (label: string, body: string): Evidence => ({
+const metric = (label: string, body: string): EvidenceDraft => ({
   kind: "metric",
   label,
   body,

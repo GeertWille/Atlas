@@ -84,6 +84,7 @@ impl Reported {
                 on_activity: Arc::new(move |activity| sink.lock().unwrap().push(activity)),
                 scan_profile_dir: None,
                 proxy_password: None,
+                network: None,
             },
             activities,
         }

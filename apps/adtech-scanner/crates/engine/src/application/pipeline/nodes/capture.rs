@@ -56,6 +56,7 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
         finish,
         on_activity,
         proxy_password: run.job.proxy_password.clone(),
+        network: None,
     };
     let source = Arc::clone(&run.deps.capture);
     let capture = source.capture(request, session);

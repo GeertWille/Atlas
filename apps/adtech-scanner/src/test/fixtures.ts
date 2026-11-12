@@ -34,6 +34,9 @@ export const settingsFixture: Settings = {
   persistentProfile: false,
   proxies: [],
   defaultProxy: { kind: "system" },
+  keepNetworkData: true,
+  archiveLimitBytes: 5 * 1024 ** 3,
+  storeFullHeaders: false,
 };
 
 export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
@@ -89,6 +92,7 @@ export function makeBid(overrides: Partial<Bid> = {}): Bid {
     requestedAtMs: 1000,
     responseTimeMs: 200,
     dealId: null,
+    exchange: null,
     ...overrides,
   };
 }
@@ -158,6 +162,9 @@ export function makeScript(overrides: Partial<ScriptRecord> = {}): ScriptRecord 
     loadedAtMs: 500,
     firstParty: true,
     pages: [],
+    initiator: null,
+    requestId: null,
+    sha256: null,
     ...overrides,
   };
 }
@@ -240,6 +247,7 @@ export function makeDetail(overrides: Partial<ScanDetail> = {}): ScanDetail {
     bidderDiagnostics: null,
     pages: [],
     environment: null,
+    network: null,
     ...overrides,
   };
 }

@@ -115,6 +115,7 @@ pub(crate) fn check(
         excerpt: None,
         ad_units: Vec::new(),
         pages: Vec::new(),
+        request_ids: Vec::new(),
     }
 }
 
