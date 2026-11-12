@@ -1,4 +1,4 @@
-//! The scan profile that is kept between scans: what it remembers, who may
+//! The browser profile that is kept between scans: what it remembers, who may
 //! use it, and when it can be deleted.
 
 mod support;
@@ -110,7 +110,7 @@ async fn one_scan_at_a_time_uses_the_kept_profile_and_it_is_not_cleared_under_a_
     );
     assert_eq!(
         BrowserError::ProfileBusy.to_string(),
-        "The scan profile is in use by another scan"
+        "The browser profile is in use by another scan"
     );
     assert!(matches!(
         clear_scan_profile(&root),
@@ -134,7 +134,7 @@ async fn the_kept_profile_cannot_be_asked_for_without_a_place_to_keep_it() {
     request.persistent_profile = true;
     let outcome = support::run(request).await;
     assert!(
-        matches!(&outcome.result, Err(BrowserError::Other(message)) if message.contains("scan profile")),
+        matches!(&outcome.result, Err(BrowserError::Other(message)) if message.contains("browser profile")),
         "{:?}",
         outcome.result.err()
     );

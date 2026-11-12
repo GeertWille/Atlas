@@ -19,9 +19,8 @@ import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatBytes, formatDuration } from "@/shared/lib/format";
 import { fileNameOf } from "@/shared/lib/url";
 import { type OutcomeKind, rowOutcome } from "../ad-outcome";
-import { KIND_LABEL, OUTCOME_LABEL, SERVED_FROM_NOTE } from "../labels";
+import { KIND_LABEL, OUTCOME_LABEL, SERVED_FROM_NOTE, vendorLabel } from "../labels";
 import { type ColumnKey, splitName } from "./columns";
-import { siteOf } from "./grouping";
 
 /** A request that did not simply succeed gets an icon and a word: never colour alone. */
 const OUTCOME_MARK: Record<Exclude<RequestOutcome, "ok">, { icon: LucideIcon; word: string; tone: string }> = {
@@ -94,10 +93,6 @@ function NameCell({ row }: { row: NetworkRow }) {
   );
 }
 
-export function vendorLabel(row: Pick<NetworkRow, "vendor" | "firstParty" | "host">): string {
-  return row.vendor ?? (row.firstParty ? "Site" : siteOf(row.host));
-}
-
 /** What one cell shows. The waterfall is drawn by the grid, which knows the time axis. */
 export function CellContent({ column, row }: { column: Exclude<ColumnKey, "waterfall">; row: NetworkRow }) {
   switch (column) {
@@ -106,7 +101,11 @@ export function CellContent({ column, row }: { column: Exclude<ColumnKey, "water
     case "name":
       return <NameCell row={row} />;
     case "vendor":
-      return <span className={cn("truncate", !row.vendor && "text-muted-foreground")}>{vendorLabel(row)}</span>;
+      return (
+        <span className={cn("truncate", !row.vendor && !row.bidder && "text-muted-foreground")}>
+          {vendorLabel(row)}
+        </span>
+      );
     case "outcome":
       return <AdOutcome row={row} />;
     case "type":
@@ -128,7 +127,11 @@ export function CellContent({ column, row }: { column: Exclude<ColumnKey, "water
     case "decoded":
       return <span className="truncate tabular-nums">{formatBytes(row.decodedBytes)}</span>;
     case "time":
-      return <span className="truncate tabular-nums">{formatDuration(row.durationMs)}</span>;
+      return (
+        <span className="truncate tabular-nums">
+          {formatDuration(row.durationMs === null ? null : Math.max(0, row.durationMs))}
+        </span>
+      );
     case "start":
       return <span className="truncate tabular-nums">{formatDuration(row.startedAtMs)}</span>;
     case "method":

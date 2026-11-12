@@ -208,22 +208,22 @@ const EMPTY_ARCHIVE: NetworkArchiveInfo = {
   truncated: false,
 };
 
+/** As the backend picks them: failed bid calls, late and unanswered ones, blocked requests, the slowest before the first auction. */
 function notableRows(rows: NetworkRow[], detail: ScanDetail): NetworkRow[] {
-  const firstAuction = detail.auctions.find((auction) => auction.page === 0)?.startedAtMs;
-  const beforeAuction = rows
-    .filter(
-      (row) =>
-        row.page === 0 && row.kind !== "webSocket" && (firstAuction === undefined || row.startedAtMs < firstAuction),
-    )
-    .sort((a, b) => (b.durationMs ?? 0) - (a.durationMs ?? 0))[0];
+  const auctionStarts = detail.auctions.filter((auction) => auction.page === 0).map((auction) => auction.startedAtMs);
+  const firstAuction = auctionStarts.length > 0 ? Math.min(...auctionStarts) : undefined;
+  let slowest: NetworkRow | undefined;
+  if (firstAuction !== undefined) {
+    for (const row of rows) {
+      if (row.page !== 0 || row.startedAtMs >= firstAuction || row.durationMs === null) continue;
+      if (!slowest || row.durationMs > (slowest.durationMs ?? 0)) slowest = row;
+    }
+  }
   const picks = [
-    ...rows.filter((row) => row.category === "bid" && (row.outcome === "failed" || row.outcome === "httpError")),
-    ...rows.filter((row) => row.category === "bid" && row.ad?.verdict === "lateOnNetwork"),
-    ...rows.filter((row) => row.category === "bid" && row.ad?.verdict === "neverAnswered"),
-    ...rows.filter((row) => row.category === "adServer" && row.noHbTargeting),
+    ...rows.filter((row) => row.category === "bid" && ["failed", "httpError", "blocked"].includes(row.outcome)),
+    ...rows.filter((row) => row.ad?.verdict === "lateOnNetwork" || row.ad?.verdict === "neverAnswered"),
     ...rows.filter((row) => row.outcome === "blocked"),
-    ...(beforeAuction ? [beforeAuction] : []),
-    ...rows.filter((row) => row.outcome === "httpError" || row.outcome === "failed"),
+    ...(slowest ? [slowest] : []),
   ];
   return [...new Set(picks)].slice(0, 8);
 }

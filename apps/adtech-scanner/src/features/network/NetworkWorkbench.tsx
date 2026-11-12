@@ -1,4 +1,4 @@
-import { InfoIcon, SearchXIcon } from "lucide-react";
+import { InboxIcon, InfoIcon, SearchXIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ScanDetail } from "@/bindings";
 import { QueryError } from "@/shared/components/query-error";
@@ -28,7 +28,8 @@ import { axisStart, buildAxis, inWindow, lifecycleMarks, normalizeWindow, type T
 import { CategoryChips, ColumnsMenu, GroupMenu, LifecycleMenu, RecipesMenu, StateChips } from "./Toolbar";
 import { formatSort, isColumnChoices, nextSort, parseSort, visibleColumns } from "./table/columns";
 import { buildGrid, initiallyCollapsed } from "./table/grouping";
-import { itemKey, RequestGrid, ROW_HEIGHT, type WaterfallScale } from "./table/RequestGrid";
+import { itemKey, RequestGrid, ROW_HEIGHT } from "./table/RequestGrid";
+import { buildWaterfallScale } from "./table/waterfall-scale";
 import { useNetworkRows } from "./use-network-rows";
 
 /** Typing filters at once; the URL follows when the typing pauses. */
@@ -178,24 +179,9 @@ export function NetworkWorkbench({
   const columns = visibleColumns({ choices, listWidth, detailBeside });
   const activeKey = activeChoice ?? selected?.row.id ?? (items[0] ? itemKey(items[0]) : null);
 
-  const scale: WaterfallScale = useMemo(
-    () => ({
-      startMs: windowFrom ?? 0,
-      endMs: windowTo ?? axis.endMs,
-      startOf: (indexed) => axisStart(indexed, axis),
-      closeOf: (indexed) => {
-        const { row } = indexed;
-        const auction =
-          row.category === "bid" && row.ad ? context.auctions.get(row.ad.auctionId.toLowerCase()) : undefined;
-        return auction ? (axis.offsets.get(row.page) ?? 0) + auction.closeMs : null;
-      },
-      bands: marks.auctions.map((auction) => ({
-        id: auction.id,
-        startMs: auction.startMs,
-        endMs: auction.endMs,
-        timeoutAtMs: auction.timeoutAtMs,
-      })),
-    }),
+  const scale = useMemo(
+    () => buildWaterfallScale({ axis, context, marks, window: windowFrom === undefined ? null : timeWindow }),
+    // biome-ignore lint/correctness/useExhaustiveDependencies: the window is its two numbers
     [axis, context, marks, windowFrom, windowTo],
   );
 
@@ -314,6 +300,23 @@ export function NetworkWorkbench({
         selectedId={selected?.row.id}
         onOpen={(requestId) => openRequest(requestId)}
       />
+    );
+  } else if (pageRows.length === 0 && page !== undefined) {
+    const reachedInPage = detail.pages.find((candidate) => candidate.index === page)?.reachedBy === "routeChange";
+    list = (
+      <Empty
+        icon={InboxIcon}
+        title="No requests on this page view"
+        description={
+          reachedInPage
+            ? "It was reached by an in-page navigation and loaded no document. What the page requested afterwards can be listed under the page view that loaded it."
+            : "Nothing was requested while this page was shown."
+        }
+      >
+        <Button variant="outline" size="sm" onClick={() => setPage(undefined)}>
+          Show all pages
+        </Button>
+      </Empty>
     );
   } else if (items.length === 0) {
     list = (

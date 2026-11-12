@@ -92,6 +92,15 @@ test("find shows how many matches there are and which one the caret is on", asyn
   await expect(find).toBeHidden();
   await expect(page.getByText(/^Find:/)).toBeHidden();
 
+  // Typed key by key, the query grows: jumping to the first match must not select what is typed so far.
+  await code(page).locator(".cm-content").click();
+  await page.keyboard.press(`${MOD}+f`);
+  await find.getByRole("textbox", { name: "Find" }).fill("");
+  await page.keyboard.type("requestBids");
+  await expect(find.getByRole("textbox", { name: "Find" })).toHaveValue("requestBids");
+  await expect(find.getByRole("status")).toHaveText(/of 5$/);
+  await page.keyboard.press("Escape");
+
   // Find also opens when the focus is somewhere else on the screen.
   await page.getByRole("searchbox", { name: "Filter scripts" }).focus();
   await page.keyboard.press(`${MOD}+f`);

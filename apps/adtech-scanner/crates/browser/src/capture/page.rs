@@ -121,6 +121,18 @@ impl TabSetup {
     }
 }
 
+/// Chrome sends a command again when the tab moves to another process while
+/// the command is on its way (the page went to another site just then). The
+/// first run removed the script; the second finds none and says so. Either
+/// way the script is gone, which is what was asked for.
+fn was_replayed_removal(error: &CdpError) -> bool {
+    matches!(
+        error,
+        CdpError::Rejected { method: "Page.removeScriptToEvaluateOnNewDocument", message }
+            if message == "Script not found"
+    )
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ScrollPosition {
     pub top: f64,
@@ -709,11 +721,16 @@ impl Page {
         };
         self.interception.confine_to_site();
         if let Some(identifier) = self.tracker_script_id.take() {
-            self.call(
-                "Page.removeScriptToEvaluateOnNewDocument",
-                json!({ "identifier": identifier }),
-            )
-            .await?;
+            let removed = self
+                .call(
+                    "Page.removeScriptToEvaluateOnNewDocument",
+                    json!({ "identifier": identifier }),
+                )
+                .await;
+            match removed {
+                Err(CaptureError::Protocol(error)) if was_replayed_removal(&error) => {}
+                other => drop(other?),
+            }
         }
         self.call(
             "Page.addScriptToEvaluateOnNewDocument",
@@ -919,5 +936,31 @@ pub(super) fn tolerate_rejection(
         Ok(value) => Ok(Some(value)),
         Err(CaptureError::Protocol(CdpError::Rejected { .. } | CdpError::Timeout(_))) => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_answer_to_a_replayed_removal_is_taken_for_done() {
+        let rejected = |method: &'static str, message: &str| CdpError::Rejected {
+            method,
+            message: message.to_string(),
+        };
+        assert!(was_replayed_removal(&rejected(
+            "Page.removeScriptToEvaluateOnNewDocument",
+            "Script not found"
+        )));
+        assert!(!was_replayed_removal(&rejected(
+            "Page.removeScriptToEvaluateOnNewDocument",
+            "Session closed"
+        )));
+        assert!(!was_replayed_removal(&rejected(
+            "Page.addScriptToEvaluateOnNewDocument",
+            "Script not found"
+        )));
+        assert!(!was_replayed_removal(&CdpError::Closed));
     }
 }

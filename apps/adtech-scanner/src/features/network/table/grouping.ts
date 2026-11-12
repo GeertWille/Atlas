@@ -1,6 +1,6 @@
 import type { PageView } from "@/bindings";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
-import { KIND_LABEL } from "../labels";
+import { KIND_LABEL, vendorLabel } from "../labels";
 import type { IndexedRow } from "../query/match";
 import type { NetworkGrouping } from "../search";
 import { compareRows, type SortState } from "./columns";
@@ -22,15 +22,10 @@ export type GridGroup = {
 
 export type GridItem = { kind: "group"; group: GridGroup } | { kind: "row"; indexed: IndexedRow };
 
-/** The registrable part of a host, near enough for a label: the last two labels. */
-export function siteOf(host: string): string {
-  return host.split(".").slice(-2).join(".");
-}
-
 function groupKey(indexed: IndexedRow, grouping: Exclude<NetworkGrouping, "none">): string {
   const { row } = indexed;
   if (grouping === "page") return `page:${row.page}`;
-  if (grouping === "vendor") return `vendor:${row.vendor ?? (row.firstParty ? "Site" : siteOf(row.host))}`;
+  if (grouping === "vendor") return `vendor:${vendorLabel(row)}`;
   return `type:${KIND_LABEL[row.kind]}`;
 }
 

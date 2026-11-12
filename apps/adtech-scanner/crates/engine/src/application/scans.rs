@@ -43,7 +43,7 @@ pub struct ScanService {
     configurations: Arc<dyn ScanConfigurationRepository>,
     active: ActiveScans,
     capacity: Arc<Semaphore>,
-    /// One browser at a time in the persistent scan profile: Chrome refuses
+    /// One browser at a time in the persistent browser profile: Chrome refuses
     /// to share a profile directory, so a second scan waits its turn.
     scan_profile: Arc<Semaphore>,
 }

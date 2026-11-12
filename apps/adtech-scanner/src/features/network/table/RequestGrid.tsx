@@ -9,23 +9,12 @@ import { CellContent } from "./cells";
 import { type ColumnDef, type ColumnKey, gridTemplate, type SortState } from "./columns";
 import type { GridGroup, GridItem } from "./grouping";
 import { barBackground, describeBar, layoutBar } from "./waterfall-bar";
+import type { WaterfallScale } from "./waterfall-scale";
 
 /** Row heights of the two densities. */
 export const ROW_HEIGHT = { compact: 28, comfortable: 36 } as const;
 const HEADER_HEIGHT = 28;
 const OVERSCAN = 8;
-
-/** What the waterfall column needs: the window on the axis, and where each row and auction falls on it. */
-export type WaterfallScale = {
-  startMs: number;
-  endMs: number;
-  /** A row's start on the axis. */
-  startOf: (indexed: IndexedRow) => number;
-  /** For a bid call: when its auction closed, on the axis. */
-  closeOf: (indexed: IndexedRow) => number | null;
-  /** Auction windows and their timeouts on the axis, drawn behind the rows. */
-  bands: { id: string; startMs: number; endMs: number; timeoutAtMs: number | null }[];
-};
 
 export function itemKey(item: GridItem): string {
   return item.kind === "group" ? `group:${item.group.key}` : item.indexed.row.id;
@@ -294,9 +283,14 @@ export function RequestGrid({
     return () => observer.disconnect();
   }, [template]);
 
+  const arrived = useRef(false);
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll when the active item changes, not when the list does
   useEffect(() => {
-    if (activeIndex >= 0) virtualizer.scrollToIndex(activeIndex, { align: "auto" });
+    if (activeIndex < 0) return;
+    // On arrival (a link to a request) the list is still settling into its height: the row is centred,
+    // so it stays in view when the details open beside or below it.
+    virtualizer.scrollToIndex(activeIndex, { align: arrived.current ? "auto" : "center" });
+    arrived.current = true;
   }, [activeKey]);
 
   const move = (index: number) => {
@@ -395,7 +389,7 @@ export function RequestGrid({
             column={column}
             sort={sort}
             onSort={onSort}
-            range={`${formatDuration(scale.startMs)} to ${formatDuration(scale.endMs)}`}
+            range={scale.label}
           />
         ))}
       </div>

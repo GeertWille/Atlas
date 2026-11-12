@@ -3,7 +3,7 @@ import { CornerDownRightIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import type { Header, NetworkRequestDetail, NetworkRow, ScanDetail } from "@/bindings";
 import { SearchInput } from "@/shared/components/search-input";
-import { EXCHANGE_VERDICT_LABEL, verdictSentence } from "@/shared/domain/exchange-verdict";
+import { verdictSentence } from "@/shared/domain/exchange-verdict";
 import { pageLabel } from "@/shared/domain/page-views";
 import { BID_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
@@ -12,8 +12,8 @@ import { fileNameOf } from "@/shared/lib/url";
 import { Badge } from "@/shared/ui/badge";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { rowOutcome } from "../ad-outcome";
-import { CATEGORY_META, OUTCOME_LABEL, SERVED_FROM_LABEL } from "../labels";
-import { AdOutcome, StatusMark, vendorLabel } from "../table/cells";
+import { CATEGORY_META, OUTCOME_LABEL, SERVED_FROM_LABEL, vendorLabel } from "../labels";
+import { AdOutcome, OUTCOME_STYLE, StatusMark } from "../table/cells";
 import { BodyView } from "./BodyView";
 import { DecodedRequest, DecodedResponse } from "./Decoded";
 import { parseQueryParams } from "./query-params";
@@ -41,6 +41,14 @@ const REDACTION_REASON = {
   cookie: "cookie values are not stored",
   credential: "credentials are not stored",
 } as const;
+
+/** The mark the Ad outcome column gives a bid call that did not simply answer in time. */
+function VerdictIcon({ row }: { row: NetworkRow }) {
+  const outcome = rowOutcome(row);
+  if (!outcome || row.ad?.verdict === "inTime") return null;
+  const { icon: Icon, tone, label } = OUTCOME_STYLE[outcome.kind];
+  return <Icon role="img" aria-label={label} className={cn("mt-px size-3.5 shrink-0", tone)} />;
+}
 
 function AdContextFacts({
   scan,
@@ -79,18 +87,7 @@ function AdContextFacts({
     );
   const { ad } = row;
   // A preflight is filed with the bid call it clears the way for, and has no outcome of its own.
-  if (isBid && row.kind === "preflight") {
-    return (
-      <>
-        <Heading>Ad context</Heading>
-        <dl>
-          <Fact label="Role">
-            The browser's permission check (CORS preflight) before a bid request to this endpoint.
-          </Fact>
-        </dl>
-      </>
-    );
-  }
+  if (isBid && row.kind === "preflight") return null;
   return (
     <>
       <Heading>Ad context</Heading>
@@ -150,8 +147,8 @@ function AdContextFacts({
               : "The request carried hb_ targeting"}
           </Fact>
         ) : null}
-        {isBid && rowOutcome(row) ? (
-          <Fact label="Outcome">
+        {isBid && ad?.verdict === "inTime" ? (
+          <Fact label="Result">
             <AdOutcome row={row} />
           </Fact>
         ) : null}
@@ -170,15 +167,17 @@ function AdContextFacts({
         ) : null}
         {isBid && ad ? (
           <Fact label="Verdict">
-            <span data-testid="verdict" className="font-medium">
-              {verdictSentence({
-                verdict: ad.verdict,
-                lateByMs: ad.lateByMs,
-                networkMs: row.durationMs,
-                error: row.error,
-              })}
+            <span className="flex items-start gap-1.5">
+              <VerdictIcon row={row} />
+              <span data-testid="verdict" className="min-w-0 font-medium">
+                {verdictSentence({
+                  verdict: ad.verdict,
+                  lateByMs: ad.lateByMs,
+                  networkMs: row.durationMs,
+                  error: row.error,
+                })}
+              </span>
             </span>
-            <span className="text-muted-foreground"> · {EXCHANGE_VERDICT_LABEL[ad.verdict]}</span>
           </Fact>
         ) : null}
         {findings.length > 0 || checks.length > 0 ? (
@@ -277,6 +276,19 @@ export function SummaryTab({
         ) : null}
         {row.kind === "webSocket" || row.kind === "eventSource" ? (
           <Fact label="Messages">Frames are not recorded: one entry stands for the whole connection.</Fact>
+        ) : null}
+        {row.kind === "preflight" ? (
+          <Fact label="Role">
+            The browser's permission check (CORS preflight) before{" "}
+            {row.preflightOf ? (
+              <button type="button" onClick={() => onOpenRequest(row.preflightOf ?? "")} className={linkClass}>
+                the request it clears the way for
+              </button>
+            ) : (
+              "a request to this endpoint"
+            )}
+            .
+          </Fact>
         ) : null}
         {row.outcome === "cancelled" ? (
           <Fact label="Note">Cancelled, usually because the page navigated away.</Fact>
@@ -555,7 +567,7 @@ export function TimingTab({ detail }: { detail: NetworkRequestDetail }) {
           );
         })}
       </ul>
-      {present.length < phases.length ? (
+      {timing.dnsMs === null && timing.connectMs === null && timing.tlsMs === null ? (
         <p className="px-3 pt-1 text-[11px] text-muted-foreground">
           No DNS, connection or TLS time: the request used a connection that was already open.
         </p>
@@ -565,8 +577,8 @@ export function TimingTab({ detail }: { detail: NetworkRequestDetail }) {
         {end !== null ? <Fact label="Finished">{formatDuration(end)} into the page view</Fact> : null}
         {detail.preflightMs !== null ? (
           <Fact label="Preflight">
-            The browser asked permission first (CORS preflight): +{formatDuration(detail.preflightMs)} before this
-            request could start
+            The browser asked permission first (CORS preflight): +{formatDuration(Math.max(0, detail.preflightMs))}{" "}
+            before this request could start
           </Fact>
         ) : null}
         {close !== null && row.category === "bid" && row.ad ? (

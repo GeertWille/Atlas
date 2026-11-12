@@ -268,6 +268,8 @@ test("an auction's bid opens its exchange with the verdict, and Back returns to 
   await expect(details(page).getByTestId("verdict")).toHaveText("Response arrived after the auction closed (+84 ms)");
   await expect(details(page)).toContainText("matched by an id in the request");
   await expect(grid(page).getByRole("row", { name: /late \+84 ms/ })).toHaveAttribute("aria-selected", "true");
+  // The row the link names is in sight, wherever in the list it is.
+  await expect(grid(page).getByRole("row", { name: /late \+84 ms/ })).toBeInViewport();
   // And from the request back to its auction.
   await details(page).getByRole("link", { name: "Auction 1" }).click();
   await expect(page).toHaveURL(/tab=auctions/);

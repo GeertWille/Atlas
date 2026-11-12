@@ -411,7 +411,7 @@ pub struct FakeCaptureSource {
     pub proxy_passwords: Mutex<Vec<Option<String>>>,
     /// Reported, in order, after the first progress line of every capture.
     pub activities: Mutex<Vec<CaptureActivity>>,
-    /// Whether a browser holds the scan profile, as the browser crate's own
+    /// Whether a browser holds the browser profile, as the browser crate's own
     /// lock would say.
     pub profile_in_use: Mutex<bool>,
     pub profile_clears: Mutex<u32>,

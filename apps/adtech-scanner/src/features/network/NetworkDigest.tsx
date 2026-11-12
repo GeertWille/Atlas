@@ -8,11 +8,11 @@ import { QueryError } from "@/shared/components/query-error";
 import { formatBytes, formatDuration, formatInteger, pluralize } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
-import { CATEGORIES, CATEGORY_META } from "./labels";
+import { CATEGORIES, CATEGORY_META, vendorLabel } from "./labels";
 import { NetworkUnavailable, networkState } from "./NetworkUnavailable";
 import type { NetworkSearch } from "./search";
 import { buildAxis, lifecycleMarks } from "./strip/strip-layout";
-import { AdOutcome, StatusMark, vendorLabel } from "./table/cells";
+import { AdOutcome, StatusMark } from "./table/cells";
 import { splitName } from "./table/columns";
 
 function WorkbenchLink({
@@ -278,7 +278,7 @@ export function NetworkDigest({ detail, page }: { detail: ScanDetail; page: numb
       <Panel className="overflow-hidden">
         <PanelHeader
           title="Worth opening"
-          description="Bid calls that failed, came late or were never answered, ad requests without Prebid keys, blocked requests and the slowest request before the first auction"
+          description="Bid calls that failed, came late or were never answered, blocked requests and the slowest request before the first auction"
         />
         {notable.length === 0 ? (
           <p className="px-4 py-3 text-[13px] text-muted-foreground">

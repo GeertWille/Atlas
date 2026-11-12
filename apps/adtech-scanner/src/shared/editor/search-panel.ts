@@ -72,7 +72,11 @@ export function createSearchPanel(view: EditorView): Panel {
       // Collapsing to the start keeps the match under the caret selected while the query still fits it.
       selection: EditorSelection.cursor(main.from),
     });
-    if (query.valid) findNext(view);
+    if (!query.valid) return;
+    // `findNext` selects the whole field, as it should after Enter; while typing, the caret stays where it is.
+    const { selectionStart, selectionEnd } = input;
+    findNext(view);
+    input.setSelectionRange(selectionStart, selectionEnd);
   };
 
   const toggle = (flag: keyof typeof flags, label: string, glyph: string) => {

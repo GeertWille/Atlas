@@ -1,7 +1,7 @@
 //! A browser must not outlive the process that launched it, however that
 //! process ends, and what a killed process leaves on disk must not stay.
 //!
-//! The one thing a killed process may leave is the scan profile the user
+//! The one thing a killed process may leave is the browser profile the user
 //! keeps, which nothing but the user removes.
 //!
 //! The process that gets killed is this test binary, started a second time to
@@ -24,7 +24,7 @@ use tokio::process::{Child, Command};
 
 const URL_ENV: &str = "ADSCAN_TEST_CAPTURE_URL";
 const OBSERVE_SECONDS_ENV: &str = "ADSCAN_TEST_CAPTURE_OBSERVE_SECONDS";
-/// Root of the kept scan profile to scan on; a throwaway profile when unset.
+/// Root of the kept browser profile to scan on; a throwaway profile when unset.
 const SCAN_PROFILE_ENV: &str = "ADSCAN_TEST_CAPTURE_SCAN_PROFILE";
 
 /// Not a test of its own: the body of the process the tests below start, and

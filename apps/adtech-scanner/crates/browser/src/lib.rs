@@ -28,7 +28,7 @@ pub enum BrowserError {
     Navigation(String),
     #[error("The scan was cancelled")]
     Cancelled,
-    #[error("The scan profile is in use by another scan")]
+    #[error("The browser profile is in use by another scan")]
     ProfileBusy,
     #[error("{0}")]
     Other(String),
@@ -43,7 +43,7 @@ pub struct CaptureHooks {
     pub finish: CancellationToken,
     /// Everything the capture does and refuses to do, as it happens.
     pub on_activity: Arc<dyn Fn(CaptureActivity) + Send + Sync>,
-    /// Root of the scan profile that is kept between scans; the profile of
+    /// Root of the browser profile that is kept between scans; the profile of
     /// each device is a directory below it. Needed when the request asks for
     /// the persistent profile.
     pub scan_profile_dir: Option<PathBuf>,
@@ -82,7 +82,7 @@ pub async fn capture(
     })
 }
 
-/// What is on disk for the kept scan profile under `root`: the profiles of
+/// What is on disk for the kept browser profile under `root`: the profiles of
 /// both devices together. Reads the disk; call it off the async runtime.
 pub fn scan_profile_info(root: &Path) -> ScanProfileInfo {
     let profiles = capture::scan_profile_directories(root)
@@ -104,7 +104,7 @@ pub fn scan_profile_info(root: &Path) -> ScanProfileInfo {
     }
 }
 
-/// Deletes the kept scan profile under `root`, for both devices. While a
+/// Deletes the kept browser profile under `root`, for both devices. While a
 /// scan uses either, nothing is deleted and the error is
 /// [`BrowserError::ProfileBusy`]. Blocking.
 pub fn clear_scan_profile(root: &Path) -> Result<(), BrowserError> {
@@ -112,7 +112,7 @@ pub fn clear_scan_profile(root: &Path) -> Result<(), BrowserError> {
         match error {
             cdp::PersistentProfileError::Busy => BrowserError::ProfileBusy,
             cdp::PersistentProfileError::Io(error) => {
-                BrowserError::Other(format!("The scan profile could not be deleted: {error}"))
+                BrowserError::Other(format!("The browser profile could not be deleted: {error}"))
             }
         }
     })
@@ -121,7 +121,7 @@ pub fn clear_scan_profile(root: &Path) -> Result<(), BrowserError> {
 /// Removes the throwaway browser profiles that scans which crashed, or were
 /// killed, left in the temporary directory, and returns how many. Profiles
 /// of scans that are running, here or in another instance of the app, and
-/// the kept scan profile are never touched. Blocking; meant for app start.
+/// the kept browser profile are never touched. Blocking; meant for app start.
 pub fn sweep_stale_profiles() -> usize {
     cdp::remove_abandoned_profiles(&std::env::temp_dir())
 }

@@ -30,7 +30,7 @@ pub struct ScanJob {
     pub proxy_password: Option<String>,
     pub cancel: CancellationToken,
     pub finish: FinishSignal,
-    /// One permit: the turn to run a browser in the persistent scan profile.
+    /// One permit: the turn to run a browser in the persistent browser profile.
     pub scan_profile: Arc<Semaphore>,
 }
 

@@ -676,7 +676,7 @@ impl Rule for BiddingWaitedForConsent {
         finding.description = format!("{}.", accounts.join(". "));
         finding.recommendation = "Nothing to fix on the site for this alone. To see these page views as a \
              visitor with a stored choice gets them, scan again: the audit trail of the Capture step says why \
-             the dialog was not accepted automatically, and a kept scan profile or \"I'll browse myself\" with \
+             the dialog was not accepted automatically, and a kept browser profile or \"I'll browse myself\" with \
              the dialog answered right away gives the ad stack the whole page view."
             .into();
         finding.impact =

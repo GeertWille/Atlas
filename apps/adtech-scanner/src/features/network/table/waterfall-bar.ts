@@ -20,7 +20,7 @@ export type BarGeometry = {
 };
 
 /** A bar is never thinner than this, and a phase that took any time at all gets at least one pixel. */
-export const MIN_BAR_PX = 2;
+export const MIN_BAR_PX = 3;
 const MIN_PHASE_PX = 1;
 const PHASES: readonly Phase[] = ["queue", "connect", "wait", "receive"];
 

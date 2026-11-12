@@ -1,6 +1,6 @@
 //! No capture may leave a Chrome process or a throwaway profile directory
 //! behind: not when cancelled, in whatever state the visit is, not when its
-//! future is dropped, not when it fails. The scan profile the user keeps is
+//! future is dropped, not when it fails. The browser profile the user keeps is
 //! the one thing that stays, on all of those paths.
 //!
 //! These tests find "their" browser as the only one this test binary runs, so

@@ -1,4 +1,4 @@
-import type { NetworkCategory, RequestOutcome, ResourceKind, ServedFrom } from "@/bindings";
+import type { NetworkCategory, NetworkRow, RequestOutcome, ResourceKind, ServedFrom } from "@/bindings";
 
 /** Categories in the order the chips show them. `token` is the value of `cat:` in a filter. */
 export const CATEGORIES: readonly NetworkCategory[] = [
@@ -101,3 +101,13 @@ export const SERVED_FROM_LABEL: Record<ServedFrom, string> = {
   serviceWorker: "A service worker",
   prefetch: "The prefetch cache",
 };
+
+/** The registrable part of a host, near enough for a label: the last two labels. */
+export function siteOf(host: string): string {
+  return host.split(".").slice(-2).join(".");
+}
+
+/** The vendor's name; for a host the app has no name for, the bidder it was recognised as, the site itself or the host. */
+export function vendorLabel(row: Pick<NetworkRow, "vendor" | "bidder" | "firstParty" | "host">): string {
+  return row.vendor ?? row.bidder ?? (row.firstParty ? "Site" : siteOf(row.host));
+}

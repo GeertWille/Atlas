@@ -931,3 +931,41 @@ async fn without_a_sink_nothing_is_read_for_one_and_the_capture_is_as_before() {
         outcome.progress
     );
 }
+
+/// The tab moves to another site's process while the scanner is settling on
+/// the page it opened. Chrome then runs a command twice that was on its way,
+/// and the second run of removing the tracker finds nothing to remove; the
+/// scan used to fail with that answer. Several visits at once, because the
+/// moment is only hit now and then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scanned() {
+    let visits: Vec<_> = [30, 40, 50, 60, 70, 80, 90, 100]
+        .into_iter()
+        .map(|after| {
+            tokio::spawn(async move {
+                let fixtures = Fixtures::start().await;
+                let mut request = support::request(
+                    &fixtures.url(&format!("network-leaves-at-once.html?after={after}")),
+                    DeviceProfile::Desktop,
+                );
+                request.observe_seconds = 2;
+                let outcome = support::run(request).await;
+                let capture = outcome.result.unwrap_or_else(|error| {
+                    panic!("leaving after {after} ms: {error}\n{:#?}", outcome.progress)
+                });
+                assert_eq!(capture.pages.len(), 1, "{:#?}", outcome.progress);
+                assert!(
+                    outcome
+                        .progress
+                        .iter()
+                        .any(|line| line.starts_with("Left the scanned site")),
+                    "{:#?}",
+                    outcome.progress
+                );
+            })
+        })
+        .collect();
+    for visit in visits {
+        visit.await.unwrap();
+    }
+}

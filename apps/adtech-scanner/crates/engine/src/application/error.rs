@@ -27,7 +27,7 @@ pub enum AppError {
     Storage(String),
     #[error("The scan was cancelled")]
     Cancelled,
-    #[error("The scan profile is in use by a running scan. Try again when that scan has finished.")]
+    #[error("The browser profile is in use by a running scan. Try again when that scan has finished.")]
     ProfileBusy,
     #[error("{0}")]
     Internal(String),

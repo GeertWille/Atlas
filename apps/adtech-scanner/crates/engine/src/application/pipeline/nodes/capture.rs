@@ -30,14 +30,14 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     run.info(start).await?;
 
     // Listening from here on: a visit that is finished while it waits for
-    // the scan profile ends as soon as its page has loaded, instead of
+    // the browser profile ends as soon as its page has loaded, instead of
     // losing the request.
     let finish = run.job.finish.arm();
     // Held until the browser is gone, so the next scan finds the profile free.
     let _profile_turn = if request.persistent_profile {
         let scan_profile = Arc::clone(&run.job.scan_profile);
         if scan_profile.available_permits() == 0 {
-            run.info("Waiting for another scan to release the scan profile")
+            run.info("Waiting for another scan to release the browser profile")
                 .await?;
         }
         tokio::select! {

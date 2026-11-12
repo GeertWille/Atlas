@@ -8,7 +8,7 @@
 //!
 //! A capture normally runs on a throwaway profile, which goes with the
 //! browser: removed at shutdown, by the watchdog, or by the next launch when
-//! both were prevented. A capture on the scan profile the user keeps leaves
+//! both were prevented. A capture on the browser profile the user keeps leaves
 //! that directory alone on every one of those paths.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
@@ -78,7 +78,7 @@ pub(crate) struct LaunchOptions<'a> {
 pub(crate) enum ProfileChoice<'a> {
     /// A fresh profile, deleted with the browser.
     Throwaway,
-    /// The scan profile at this path, kept.
+    /// The browser profile at this path, kept.
     Persistent(&'a Path),
 }
 
@@ -381,7 +381,7 @@ fn group_is_running(group: u32) -> bool {
     i32::try_from(group).is_ok_and(|group| killpg(Pid::from_raw(group), None).is_ok())
 }
 
-/// The scan profile's HTTP cache may grow to this size on disk.
+/// The browser profile's HTTP cache may grow to this size on disk.
 const KEPT_PROFILE_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 
 fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> {

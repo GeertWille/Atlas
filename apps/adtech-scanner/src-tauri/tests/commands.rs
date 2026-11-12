@@ -99,7 +99,7 @@ fn no_scan_profile() -> ScanProfileInfo {
 }
 
 /// A browser a person drives: every capture records until it is finished,
-/// and its scan profile exists until it is cleared.
+/// and its browser profile exists until it is cleared.
 #[derive(Default)]
 struct ManualBrowser {
     requests: Mutex<Vec<CaptureRequest>>,
@@ -787,7 +787,7 @@ fn export_only_writes_where_the_user_picked_and_only_export_files() {
     assert_eq!(std::fs::read_to_string(&picked).unwrap(), document);
 }
 
-// -- visitors, the scan profile, proxies and saved configurations -----------------
+// -- visitors, the browser profile, proxies and saved configurations -----------------
 
 fn belgium() -> Value {
     json!({ "profile": {

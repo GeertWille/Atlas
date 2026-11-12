@@ -1,6 +1,6 @@
 //! Chrome profiles: the throwaway profile of one launch, the removal of
 //! throwaway profiles whose owning process died before it could remove them,
-//! and the scan profile a user chose to keep between scans.
+//! and the browser profile a user chose to keep between scans.
 //!
 //! A profile is owned through an advisory lock on a file inside it. The
 //! operating system releases the lock when the owning process ends, however it
@@ -73,9 +73,9 @@ pub(crate) struct PersistentProfile {
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PersistentProfileError {
-    #[error("the scan profile is in use by another scan")]
+    #[error("the browser profile is in use by another scan")]
     Busy,
-    #[error("the scan profile could not be opened: {0}")]
+    #[error("the browser profile could not be opened: {0}")]
     Io(#[from] std::io::Error),
 }
 

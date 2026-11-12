@@ -89,7 +89,7 @@ impl Browser {
         browser
     }
 
-    /// The same for a capture on the scan profile that is kept.
+    /// The same for a capture on the browser profile that is kept.
     pub async fn launched_on_kept_profile(parent: u32, profile: &Path) -> Self {
         let browser = Self::child_of(parent).await;
         assert_eq!(browser.profile, profile);

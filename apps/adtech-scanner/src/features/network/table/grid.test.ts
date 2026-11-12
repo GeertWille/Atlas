@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { makePage } from "@/test/fixtures";
 import { makeAdLink, makeRow } from "@/test/network-fixtures";
+import { siteOf, vendorLabel } from "../labels";
 import { indexRow } from "../query/match";
 import {
   compareRows,
@@ -13,7 +14,7 @@ import {
   splitName,
   visibleColumns,
 } from "./columns";
-import { buildGrid, initiallyCollapsed, siteOf } from "./grouping";
+import { buildGrid, initiallyCollapsed } from "./grouping";
 
 const keys = (input: Parameters<typeof visibleColumns>[0]) => visibleColumns(input).map((column) => column.key);
 
@@ -255,5 +256,16 @@ describe("siteOf", () => {
   it("is the last two labels of a host", () => {
     expect(siteOf("securepubads.g.doubleclick.net")).toBe("doubleclick.net");
     expect(siteOf("localhost")).toBe("localhost");
+  });
+});
+
+describe("vendorLabel", () => {
+  it("names a bid endpoint on an unknown host by its bidder, before falling back to the site or the host", () => {
+    expect(vendorLabel(makeRow({ vendor: "PubMatic", bidder: "pubmatic" }))).toBe("PubMatic");
+    expect(vendorLabel(makeRow({ vendor: null, bidder: "pubmatic", firstParty: true }))).toBe("pubmatic");
+    expect(vendorLabel(makeRow({ vendor: null, bidder: null, firstParty: true }))).toBe("Site");
+    expect(vendorLabel(makeRow({ vendor: null, bidder: null, firstParty: false, host: "cdn.example.net" }))).toBe(
+      "example.net",
+    );
   });
 });

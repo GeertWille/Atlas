@@ -72,7 +72,7 @@ impl CaptureSource for ChromeCaptureSource {
         tokio::task::spawn_blocking(move || adscan_browser::clear_scan_profile(&dir))
             .await
             .map_err(|error| {
-                CaptureError::Other(format!("clearing the scan profile failed: {error}"))
+                CaptureError::Other(format!("clearing the browser profile failed: {error}"))
             })?
             .map_err(capture_error)
     }

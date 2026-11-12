@@ -1,6 +1,6 @@
 //! Visits through the whole pipeline and the use cases around them: page
 //! views and the environment in the stored scan, visitor activity in the
-//! audit trail, finishing a manual visit, the shared scan profile, proxy
+//! audit trail, finishing a manual visit, the shared browser profile, proxy
 //! profiles with their passwords, and saved scan configurations.
 
 mod common;
@@ -534,7 +534,7 @@ async fn cancelling_a_manual_visit_discards_it() {
     assert_eq!(detail.environment, None);
 }
 
-// -- the persistent scan profile ---------------------------------------------------------
+// -- the persistent browser profile ---------------------------------------------------------
 
 fn persistent_options() -> ScanOptions {
     ScanOptions {
@@ -554,7 +554,7 @@ async fn scans_in_the_persistent_profile_run_one_at_a_time() {
 
     // The second scan gets as far as its capture step and waits there.
     let second = harness.scans.start(persistent_options()).await.unwrap();
-    let waiting = "Waiting for another scan to release the scan profile";
+    let waiting = "Waiting for another scan to release the browser profile";
     let mut waited = false;
     for _ in 0..400 {
         let logs = harness.scans.logs(&second.id, None).await.unwrap();
@@ -600,7 +600,7 @@ async fn finishing_a_visit_that_waits_for_the_profile_is_remembered_until_its_ca
     let holder = harness.scans.start(persistent_options()).await.unwrap();
     wait_for_capture(&harness, 1).await;
     let queued = harness.scans.start(persistent_options()).await.unwrap();
-    let waiting = "Waiting for another scan to release the scan profile";
+    let waiting = "Waiting for another scan to release the browser profile";
     for _ in 0..400 {
         let logs = harness.scans.logs(&queued.id, None).await.unwrap();
         if logs.iter().any(|entry| entry.message == waiting) {

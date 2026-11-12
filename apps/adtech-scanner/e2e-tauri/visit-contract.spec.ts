@@ -62,7 +62,7 @@ test("settings carry the visitor defaults and take patches for them", async () =
   });
 });
 
-test("the scan profile is reported and cleared", async () => {
+test("the browser profile is reported and cleared", async () => {
   const { browser } = app;
   const info = await invokeOk<ScanProfileInfo>(browser, "get_scan_profile");
   expect(info).toEqual({ exists: false, sizeBytes: 0, lastUsedAt: null, inUse: false });

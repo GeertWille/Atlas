@@ -179,7 +179,7 @@ pub enum CaptureError {
     Navigation(String),
     #[error("The scan was cancelled")]
     Cancelled,
-    #[error("The scan profile is in use by a running scan")]
+    #[error("The browser profile is in use by a running scan")]
     ProfileBusy,
     #[error("{0}")]
     Other(String),

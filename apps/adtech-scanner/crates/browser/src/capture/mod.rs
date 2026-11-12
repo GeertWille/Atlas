@@ -49,14 +49,14 @@ use pages::{PageLog, ViewFacts};
 use recorder::{Recorder, epoch_ms_now};
 
 const BODY_PATIENCE: Duration = Duration::from_secs(3);
-/// A browser on the kept scan profile is asked to close and given this long
+/// A browser on the kept browser profile is asked to close and given this long
 /// to write its cookies before it is killed.
 const CLOSE_PATIENCE: Duration = Duration::from_secs(5);
 /// Page views of one visit. A person browsing gets more than a script.
 const MAX_PAGE_VIEWS: usize = 8;
 const MAX_PAGE_VIEWS_MANUAL: usize = 25;
 
-/// The directory of the kept scan profile of a device, under the root the
+/// The directory of the kept browser profile of a device, under the root the
 /// app chose. A phone and a desktop browser never share cookies.
 pub(crate) fn scan_profile_directories(root: &Path) -> [PathBuf; 2] {
     [DeviceProfile::Desktop, DeviceProfile::Mobile].map(|device| scan_profile_of(root, device))
@@ -80,7 +80,7 @@ pub(crate) async fn run(
         (Some(root), true) => Some(scan_profile_of(root, request.device)),
         (None, true) => {
             return Err(BrowserError::Other(
-                "No directory was given for the scan profile".into(),
+                "No directory was given for the browser profile".into(),
             ));
         }
         (_, false) => None,
@@ -102,7 +102,7 @@ pub(crate) async fn run(
             "visible"
         },
         if kept_profile.is_some() {
-            ", scan profile"
+            ", browser profile"
         } else {
             ""
         },
