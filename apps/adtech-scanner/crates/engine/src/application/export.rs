@@ -3,7 +3,8 @@
 use std::fmt::Write;
 
 use adscan_model::{
-    EvidenceKind, Finding, LogEntry, LogKind, PipelineNode, ScanDetail, ScanMetrics, ScriptRecord,
+    EvidenceKind, Finding, LogEntry, LogKind, PipelineNode, ScanDetail, ScanMetrics,
+    ScriptCategory, ScriptRecord,
 };
 
 use super::AppError;
@@ -258,14 +259,23 @@ fn scripts_section(out: &mut String, detail: &ScanDetail) {
     for script in ad_scripts {
         let _ = writeln!(
             out,
-            "| {} | {:?} | {} | {:.0} | {} | {} |",
+            "| {} | {} | {} | {:.0} | {} | {} |",
             cell(&script.url),
-            script.category,
+            category_label(script),
             cell(script.vendor.as_deref().unwrap_or("-")),
             script.size_bytes,
             cell(&classified_by(script)),
             if script.analyzed { "yes" } else { "no" },
         );
+    }
+}
+
+/// Only ad-related scripts are listed, so one whose kind of ad code the
+/// classifier could not name is not an unknown script.
+fn category_label(script: &ScriptRecord) -> String {
+    match script.category {
+        ScriptCategory::Unknown => "Other ad code".into(),
+        category => format!("{category:?}"),
     }
 }
 
@@ -343,7 +353,7 @@ fn cell(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use adscan_model::{FindingSource, ScriptCategory};
+    use adscan_model::FindingSource;
 
     fn script(classifier_model: Option<&str>, ad_probability: Option<f64>) -> ScriptRecord {
         ScriptRecord {
@@ -369,6 +379,14 @@ mod tests {
             loaded_at_ms: None,
             first_party: true,
         }
+    }
+
+    #[test]
+    fn an_ad_script_of_no_named_kind_is_not_listed_as_unknown() {
+        let mut unnamed = script(Some("jev-1.14.0"), Some(0.62));
+        unnamed.category = ScriptCategory::Unknown;
+        assert_eq!(category_label(&unnamed), "Other ad code");
+        assert_eq!(category_label(&script(None, None)), "Wrapper");
     }
 
     #[test]

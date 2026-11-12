@@ -80,7 +80,12 @@ function FindingsSoFar({ detail }: { detail: ScanDetail }) {
       {findings.length === 0 ? (
         <p className="px-4 py-3 text-[13px] text-muted-foreground">Findings appear here as checks report them.</p>
       ) : (
-        <ul className="min-h-0 overflow-y-auto py-1.5">
+        <ul
+          // Scrollable regions must be keyboard reachable.
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: scroll container
+          tabIndex={0}
+          className="min-h-0 overflow-y-auto py-1.5"
+        >
           {findings.map((finding) => {
             const Icon = SEVERITY_ICON[finding.severity];
             const tone = SEVERITY_META[finding.severity].tone as keyof typeof TEXT_TONE;

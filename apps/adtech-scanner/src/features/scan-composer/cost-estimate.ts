@@ -6,11 +6,15 @@ import { costOf, JEV_MODEL } from "@/shared/domain/model-pricing";
 const FILTER_TOKENS = { input: 15_000, output: 1_300 };
 const ANALYSIS_TOKENS = { input: 145_000, output: 7_000 };
 /**
- * Jev reads the ad-relevant chunks of every undecided script, and, when logic analysis follows, the
- * selected scripts again for the reading guide. Modelled for an ad-heavy page, not measured.
+ * Jev reads the parts of every undecided script that name an ad identifier: 33,847 input tokens on the
+ * first real publisher page (2026-11-12, 15 requests, about 2.2 characters of minified JavaScript per token).
  */
-const JEV_TRIAGE_TOKENS = 150_000;
-const JEV_READING_GUIDE_TOKENS = 135_000;
+const JEV_TRIAGE_TOKENS = 35_000;
+/**
+ * When logic analysis follows, Jev reads the selected scripts again for the reading guide. Not measured
+ * yet: the modelled volume, rescaled to the measured characters per token.
+ */
+const JEV_READING_GUIDE_TOKENS = 195_000;
 /** The backend lets the analysis loop run 12, 20 or 30 turns. */
 const EFFORT_SCALE: Record<Effort, number> = { low: 0.6, medium: 1, high: 1.5 };
 

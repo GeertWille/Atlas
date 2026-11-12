@@ -321,7 +321,7 @@ pub fn ad_identifiers(text: &str) -> Vec<&'static str> {
         .iter()
         .chain(WEAK_IDENTIFIERS)
         .copied()
-        .filter(|needle| *needle != ACCIDENTAL_IDENTIFIER && text.contains(needle))
+        .filter(|needle| *needle != ACCIDENTAL_IDENTIFIER && occurrences(text, needle) > 0)
         .collect()
 }
 
@@ -341,7 +341,7 @@ pub fn identifier_counts(body: &str) -> Vec<(&'static str, usize)> {
     STRONG_SIGNATURES
         .iter()
         .chain(WEAK_IDENTIFIERS)
-        .map(|needle| (*needle, body.matches(needle).count()))
+        .map(|needle| (*needle, occurrences(body, needle)))
         .filter(|(_, count)| *count > 0)
         .collect()
 }
@@ -397,8 +397,26 @@ fn present<'a>(body: &str, needles: &[&'a str]) -> Vec<&'a str> {
     needles
         .iter()
         .copied()
-        .filter(|needle| body.contains(needle))
+        .filter(|needle| occurrences(body, needle) > 0)
         .collect()
+}
+
+/// An identifier followed by this is a different name: `googletagmanager` is
+/// Google Tag Manager, an analytics loader, and not the `googletag` of GPT.
+/// (`googletagservices`, the host GPT is loaded from, still counts.)
+const LONGER_NAMES: &[(&str, &str)] = &[("googletag", "manager")];
+
+/// How often `needle` occurs in `text` as the identifier it stands for.
+fn occurrences(text: &str, needle: &str) -> usize {
+    let other_name = LONGER_NAMES
+        .iter()
+        .find(|(identifier, _)| *identifier == needle)
+        .map(|(_, rest)| *rest);
+    text.match_indices(needle)
+        .filter(|(at, _)| {
+            other_name.is_none_or(|rest| !text[at + needle.len()..].starts_with(rest))
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -583,6 +601,34 @@ mod tests {
             2
         );
         assert!(has_call_site("a.requestBids({})") && !has_call_site("requestBids"));
+    }
+
+    #[test]
+    fn google_tag_manager_is_not_taken_for_the_gpt_global() {
+        let loader = "(function(w,d,s,l,i){j.src='https://www.googletagmanager.com/gtm.js?id='+i})(window,document,'script','dataLayer','GTM-X')";
+        assert!(ad_identifiers(loader).is_empty());
+        assert!(identifier_counts(loader).is_empty());
+        let verdict = classify(&ScriptFacts {
+            url: "inline:3",
+            hostname: "pub.example",
+            first_party: true,
+            inline: true,
+            body: loader,
+        });
+        assert_eq!(
+            decided_as(verdict).category,
+            Application,
+            "a tag manager loader is no triage candidate"
+        );
+        // GPT itself, next to the tag manager and by its loading host, still counts.
+        assert_eq!(
+            identifier_counts("googletagmanager.com;window.googletag=window.googletag||{}"),
+            [("googletag", 2)]
+        );
+        assert_eq!(
+            ad_identifiers("s.src='https://www.googletagservices.com/tag/js/gpt.js'"),
+            ["googletag"]
+        );
     }
 
     #[test]

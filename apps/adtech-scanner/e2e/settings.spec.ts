@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openApp } from "./app";
+import { openApp, reportTab, startScan } from "./app";
 
 const VALID_KEY = "sk-ant-api03-abcdefghijklmnopqrstuv";
 const TYPESAFE_KEY = "typesafe-e2e-key-0123456789";
@@ -119,7 +119,7 @@ test("TypeSafe key and the Jev switch: rejected key, stored key, enable, reload,
   await page.reload();
   await expect(jev).toBeChecked();
   await expect(triage).toContainText("Jev System One");
-  await expect(page.getByText(/api\.anthropic\.com and, when Jev is enabled, api\.typesafe\.ai/)).toBeVisible();
+  await expect(page.getByText(/api\.anthropic\.com, api\.typesafe\.ai when Jev is enabled and,/)).toBeVisible();
 
   await page.getByRole("button", { name: "Remove TypeSafe key" }).click();
   const dialog = page.getByRole("alertdialog", { name: "Remove the TypeSafe key?" });
@@ -160,6 +160,43 @@ test("theme: light, dark and system, applied before first paint after a reload",
   await expect(html).toHaveClass(/dark/);
   await page.emulateMedia({ colorScheme: "light" });
   await expect(html).not.toHaveClass(/dark/);
+});
+
+test("the sellers.json check is opt-in, survives a reload and shows in the next report", async ({ page }) => {
+  await openApp(page, "/settings");
+  const sellersJson = page.getByRole("switch", { name: "Check sellers.json at ad exchanges" });
+  await expect(sellersJson).not.toBeChecked();
+  await expect(page.getByText(/Off: only the scanned site is contacted\./)).toBeVisible();
+  await expect(
+    page.getByText(/when the sellers\.json check is on, the ad exchanges that ads\.txt names\./),
+  ).toBeVisible();
+
+  await sellersJson.focus();
+  await page.keyboard.press("Space");
+  await expect(sellersJson).toBeChecked();
+  await expect(page.getByText("Settings saved")).toBeVisible();
+  await page.reload();
+  await expect(sellersJson).toBeChecked();
+
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await startScan(page, "sportsdesk.example");
+  await expect(reportTab(page, "Auctions")).toBeVisible({ timeout: 20_000 });
+  await reportTab(page, "Auctions").click();
+  const checks = page.getByRole("heading", { name: "Bidder checks" }).locator("xpath=ancestor::section[1]");
+  await expect(checks.getByText("https://sportsdesk.example/ads.txt", { exact: false })).toBeVisible();
+  await expect(checks.getByText("Looked up at the exchanges that ads.txt names")).toBeVisible();
+  const openx = checks.getByRole("listitem", { name: "openx" });
+  await expect(openx.getByRole("img", { name: "Notice" })).toBeVisible();
+  await expect(openx).toContainText("sellers.json: ads.txt lists seller id 544096208 at openx.com as DIRECT");
+  await expect(openx.getByText("openx.com, 544096208, DIRECT", { exact: true })).toBeVisible();
+
+  // The audit trail names the extra requests.
+  await reportTab(page, "Audit trail").click();
+  await expect(
+    page
+      .getByRole("region", { name: "Log entries" })
+      .getByText("Requesting sellers.json from the exchanges that ads.txt names"),
+  ).toBeVisible();
 });
 
 test("delete all scans from settings", async ({ page }) => {

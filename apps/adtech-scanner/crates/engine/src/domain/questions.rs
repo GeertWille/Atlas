@@ -9,9 +9,15 @@
 
 pub const QUESTION_SET_VERSION: &str = "jev-questions-v1";
 
-/// What a request costs before any state or question is counted. Inferred
-/// from the usage of the documentation's smallest examples; uncalibrated.
+/// What a request costs before any state or question is counted. The first
+/// real run (2026-11-12, 15 requests) put it at about 250; kept a little
+/// above so the budget check errs on the dear side.
 pub const REQUEST_OVERHEAD_TOKENS: u64 = 300;
+
+/// Characters of minified JavaScript per Jev input token. Measured on that
+/// run at 2.1 to 2.3 (parts of 6,000 characters were billed 2,470 to 3,110
+/// tokens including the overhead); rounded down so estimates run high.
+pub const CHARS_PER_TOKEN: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct YesNoQuestion {

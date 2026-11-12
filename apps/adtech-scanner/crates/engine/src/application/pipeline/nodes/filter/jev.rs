@@ -222,6 +222,7 @@ async fn log_decision(
     let outcome = match decision.route {
         Route::Analyse => "ad-related, Phase 2 candidate",
         Route::Unsure => "kept for analysis, ranked last",
+        Route::Generic => "not ad-related, generic library",
         Route::Drop => "not ad-related",
     };
     let message = format!(

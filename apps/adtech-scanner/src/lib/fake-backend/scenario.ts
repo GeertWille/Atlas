@@ -142,6 +142,7 @@ const JEV_QUESTION_SET = "jev-questions-v1";
 const JEV_OUTCOME = {
   "jev-yes": "ad-related, Phase 2 candidate",
   "jev-unsure": "kept for analysis, ranked last",
+  "jev-generic": "not ad-related, generic library",
   "jev-no": "not ad-related",
 } as const;
 /** Stand-ins for the (at most 300-character) excerpt of the best-scoring part that an audit entry keeps. */
@@ -150,6 +151,8 @@ const JEV_EXCERPT = {
     "var IS_MOBILE = window.screen.width < 1440; pbjs.que.push(function () { pbjs.addAdUnits(adUnits); if (!IS_MOBILE) { pbjs.requestBids({ timeout: PREBID_TIMEOUT, bidsBackHandler: sendAdServerRequest }); } });",
   "jev-unsure":
     "window.dataLayer = window.dataLayer || []; dataLayer.push({ event: 'page_view', adSlotsOnPage: document.querySelectorAll('[id^=div-gpt-]').length });",
+  "jev-generic":
+    "!function(w,d,t){w.TrackerObject=t;var q=w[t]=w[t]||[];q.methods=['page','track','identify'];q.load=function(id){var s=d.createElement('script');s.async=!0;s.src='https://analytics.example/events.js?id='+id;d.head.appendChild(s)}}(window,document,'tq');",
   "jev-no":
     "function hydrate(root, routes) { var match = routes.find(function (route) { return route.test(location.pathname); }); return match ? match.render(root) : null; }",
 } as const;
@@ -413,7 +416,8 @@ export function buildScenario({
     );
     for (const [index, script] of toClassify.entries()) {
       const adProbability = script.adProbability ?? 0;
-      const rule = jevRule(adProbability);
+      const publisherSpecific = jevPublisherSpecific(script.firstParty, adProbability);
+      const rule = jevRule(adProbability, publisherSpecific);
       const { total, judged } = parts[index] ?? { total: 1, judged: 1 };
       timeline.log(
         `${script.id} ${script.url}: ad orchestration ${adProbability.toFixed(2)} (analyse >= 0.50, drop < 0.15) over ${judged} of ${total} parts -> ${JEV_OUTCOME[rule]} [${rule}]`,
@@ -428,7 +432,7 @@ export function buildScenario({
             questionSet: JEV_QUESTION_SET,
             answers: [
               { questionId: "ad_orchestration", pYes: adProbability },
-              { questionId: "publisher_specific", pYes: jevPublisherSpecific(script.firstParty, adProbability) },
+              { questionId: "publisher_specific", pYes: publisherSpecific },
             ],
             thresholds: JEV_THRESHOLDS,
             decision: { adRelated: script.adRelated, category: script.category, route: rule },

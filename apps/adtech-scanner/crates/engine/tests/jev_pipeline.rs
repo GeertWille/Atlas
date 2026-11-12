@@ -505,7 +505,10 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
         judged(request, |code, question| match question {
             _ if code.contains("innerWidth") => 0.9,
             "ad_orchestration" if code.contains("maybeAds") => 0.3,
+            "publisher_specific" if code.contains("maybeAds") => 0.9,
             "ad_orchestration" if code.contains("carousel") => 0.05,
+            "ad_orchestration" if code.contains("trackPixel") => 0.2,
+            "publisher_specific" if code.contains("trackPixel") => 0.1,
             _ => page_scoring(code, question),
         })
     })
@@ -518,6 +521,10 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
         (
             "https://cdn.widgets.example/carousel.js",
             "carousel({bidder:null})",
+        ),
+        (
+            "https://cdn.pixel.example/events.js",
+            "trackPixel({adunit:location.pathname})",
         ),
     ]);
     let harness = jev_harness(page, Some(&claude), &jev).await;
@@ -549,6 +556,24 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
     assert_eq!(dropped.classification_confidence, Some(0.95));
     assert_eq!(dropped.classifier_model.as_deref(), Some(JEV));
 
+    // Not ruled out by its ad score, but generic third-party code: dropped.
+    let generic = script_record(&detail, "s8");
+    assert_eq!(
+        (generic.category, generic.ad_related, generic.analyzed),
+        (ScriptCategory::Library, false, false)
+    );
+    assert_eq!(generic.ad_probability, Some(0.2));
+    assert_eq!(generic.classification_confidence, Some(0.8));
+    assert!(
+        generic
+            .classification_reason
+            .as_ref()
+            .unwrap()
+            .contains("rule jev-generic"),
+        "{:?}",
+        generic.classification_reason
+    );
+
     // A strong knowledge-base signature is never put to Jev's vote.
     let triaged: Vec<String> = triage_requests(&judged_requests(&jev).await)
         .iter()
@@ -559,7 +584,7 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
                 .to_string()
         })
         .collect();
-    assert_eq!(triaged.len(), 3);
+    assert_eq!(triaged.len(), 4);
     assert!(
         !triaged.iter().any(|url| url.ends_with("/ads.js")),
         "{triaged:?}"
@@ -590,7 +615,7 @@ async fn probabilities_route_scripts_to_analysis_to_the_end_of_the_queue_or_out(
                 .unwrap()
         })
         .collect();
-    assert_eq!(routes, ["jev-yes", "jev-unsure", "jev-no"]);
+    assert_eq!(routes, ["jev-yes", "jev-unsure", "jev-no", "jev-generic"]);
 }
 
 #[tokio::test]
@@ -1122,7 +1147,13 @@ async fn persisted_audit_trail_of_a_jev_scan_holds_bounded_excerpts_never_script
     let claude = anthropic(None).await;
     // Unsure about everything: no part settles the script, and it goes on to
     // the analysis, where the reading guide asks about its chunks again.
-    let jev = typesafe(|request| judged(request, |_, _| 0.3)).await;
+    let jev = typesafe(|request| {
+        judged(request, |_, question| match question {
+            "publisher_specific" => 0.9,
+            _ => 0.3,
+        })
+    })
+    .await;
     let page = page_with(&[("https://pub.example/js/bundle.js", undecided.as_str())]);
     let harness = jev_harness(page, Some(&claude), &jev).await;
 

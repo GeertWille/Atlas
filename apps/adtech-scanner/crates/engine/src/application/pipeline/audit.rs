@@ -143,12 +143,12 @@ impl StepRun<'_> {
             LogLevel::Debug,
             LogKind::Message,
             format!(
-                "Token usage: {} in ({} cached), {} out, ${:.4} (scan total ${:.4} of ${:.2})",
+                "Token usage: {} in ({} cached), {} out, {} (scan total {} of ${:.2})",
                 usage.prompt_tokens(),
                 usage.cache_read,
                 usage.output,
-                cost.usd,
-                self.state.budget.spent_usd(),
+                usd(cost.usd),
+                usd(self.state.budget.spent_usd()),
                 self.state.budget.limit_usd(),
             ),
             Some(json!({
@@ -246,6 +246,40 @@ fn cap_strings(value: Value) -> Value {
     }
 }
 
+/// A cost for the audit trail. A decision-model call costs a few thousandths
+/// of a cent, which four decimals would print as $0.0000, so small amounts
+/// keep two significant digits.
+fn usd(amount: f64) -> String {
+    if amount <= 0.0 || amount >= 0.01 {
+        return format!("${amount:.4}");
+    }
+    let decimals = (1.0 - amount.log10().floor()) as usize;
+    format!("${amount:.decimals$}")
+}
+
 fn saturating_u32(value: u64) -> u32 {
     u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sub_cent_costs_keep_two_significant_digits() {
+        assert_eq!(usd(0.0), "$0.0000");
+        assert_eq!(usd(0.000_095_8), "$0.000096");
+        assert_eq!(usd(0.000_131), "$0.00013");
+        assert_eq!(usd(0.001_42), "$0.0014");
+        assert_eq!(usd(0.01), "$0.0100");
+        assert_eq!(usd(0.3456), "$0.3456");
+    }
+
+    #[test]
+    fn excerpts_stop_at_the_per_entry_limit_and_at_the_allowance() {
+        let mut excerpts = AuditExcerpts::new(7);
+        assert_eq!(excerpts.excerpt("ééééé", 3), "ééé");
+        assert_eq!(excerpts.excerpt("abcdefgh", 5), "abcd");
+        assert_eq!(excerpts.excerpt("more", 5), "");
+    }
 }

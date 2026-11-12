@@ -5,9 +5,13 @@
 //! Only scripts the knowledge base left undecided get here, so a script with
 //! a strong ad signature can never be dropped by a probability.
 //!
-//! Every number is a recall-biased starting value that has not been
-//! calibrated: wrongly keeping a script costs a little analysis time, wrongly
-//! dropping a publisher's wrapper loses the findings the scan exists for.
+//! The numbers are recall-biased: wrongly keeping a script costs a little
+//! analysis time, wrongly dropping a publisher's wrapper loses the findings
+//! the scan exists for. They were checked against one real publisher page
+//! (2026-11-12, jev-1.14.0) and are still provisional. On that page scripts
+//! with no ad role scored 0.09 to 0.25 on ad orchestration, so that number
+//! alone cannot rule a script out below the analyse threshold; whether the
+//! code is the publisher's own decides the scripts in between.
 
 use adscan_model::ScriptCategory;
 
@@ -18,7 +22,10 @@ use super::questions::{AD_ORCHESTRATION, PUBLISHER_SPECIFIC};
 pub const ANALYSE_THRESHOLD: f64 = 0.50;
 /// Below this on every screened part the script is dropped.
 pub const DROP_THRESHOLD: f64 = 0.15;
-/// At or above this an ad-related script counts as the publisher's own code.
+/// At or above this a script counts as the publisher's own code: an
+/// ad-related one is a wrapper, and one in the unsure band is kept. Below it
+/// an unsure script is a generic third-party library and is dropped (measured:
+/// analytics pixels 0.12 to 0.29, a consent config and a video embed 0.95+).
 pub const PUBLISHER_SPECIFIC_THRESHOLD: f64 = 0.50;
 /// Keeps one identifier-dense bundle from using up the calls of a scan.
 pub const MAX_SCREENED_PARTS: usize = 24;
@@ -26,8 +33,11 @@ pub const MAX_SCREENED_PARTS: usize = 24;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Route {
     Analyse,
-    /// Neither confirmed nor ruled out: kept for analysis, ranked last.
+    /// Neither confirmed nor ruled out, and the publisher's own code: kept
+    /// for analysis, ranked last.
     Unsure,
+    /// Neither confirmed nor ruled out, and generic library code: dropped.
+    Generic,
     Drop,
 }
 
@@ -37,6 +47,7 @@ impl Route {
         match self {
             Self::Analyse => "jev-yes",
             Self::Unsure => "jev-unsure",
+            Self::Generic => "jev-generic",
             Self::Drop => "jev-no",
         }
     }
@@ -113,8 +124,8 @@ pub struct TriageDecision {
     /// to certainty.
     pub ad_probability: f64,
     /// How site-specific the script's ad code is: the highest such probability
-    /// among the parts that count as ad code, or of the best-scoring part when
-    /// none does.
+    /// among the parts that count as ad code, or, when none does, among the
+    /// parts that could not be ruled out.
     pub publisher_specific: f64,
     /// Probability that `ad_related` is right.
     pub confidence: f64,
@@ -134,12 +145,21 @@ pub fn decide(
         .max_by(|a, b| a.ad_orchestration.total_cmp(&b.ad_orchestration))?;
     let p = best.ad_orchestration;
     let screened = scores.len();
-    let publisher_specific = scores
-        .iter()
-        .filter(|score| score.ad_orchestration >= ANALYSE_THRESHOLD)
-        .map(|score| score.publisher_specific)
-        .reduce(f64::max)
+    let publisher_specific_from = |floor: f64| {
+        scores
+            .iter()
+            .filter(|score| score.ad_orchestration >= floor)
+            .map(|score| score.publisher_specific)
+            .reduce(f64::max)
+    };
+    let publisher_specific = publisher_specific_from(ANALYSE_THRESHOLD)
+        .or_else(|| publisher_specific_from(DROP_THRESHOLD))
         .unwrap_or(best.publisher_specific);
+    let not_ad_code = if first_party {
+        ScriptCategory::Application
+    } else {
+        ScriptCategory::Library
+    };
     let decision = if p >= ANALYSE_THRESHOLD {
         // The publisher's own code is what the analysis looks for first.
         let category = if publisher_specific >= PUBLISHER_SPECIFIC_THRESHOLD {
@@ -159,7 +179,7 @@ pub fn decide(
                 Route::Analyse.rule()
             ),
         }
-    } else if p >= DROP_THRESHOLD {
+    } else if p >= DROP_THRESHOLD && publisher_specific >= PUBLISHER_SPECIFIC_THRESHOLD {
         TriageDecision {
             route: Route::Unsure,
             ad_related: true,
@@ -168,19 +188,28 @@ pub fn decide(
             publisher_specific,
             confidence: p,
             reason: format!(
-                "Jev: ad orchestration {p:.2} at most over {screened} screened parts of {total_parts}; rule {} ({DROP_THRESHOLD:.2} to {ANALYSE_THRESHOLD:.2}), kept for analysis and ranked last",
+                "Jev: ad orchestration {p:.2} at most over {screened} screened parts of {total_parts}, publisher-specific {publisher_specific:.2}; rule {} ({DROP_THRESHOLD:.2} to {ANALYSE_THRESHOLD:.2} and site-specific), kept for analysis and ranked last",
                 Route::Unsure.rule()
+            ),
+        }
+    } else if p >= DROP_THRESHOLD {
+        TriageDecision {
+            route: Route::Generic,
+            ad_related: false,
+            category: not_ad_code,
+            ad_probability: p,
+            publisher_specific,
+            confidence: 1.0 - p,
+            reason: format!(
+                "Jev: ad orchestration {p:.2} at most over {screened} screened parts of {total_parts}, publisher-specific {publisher_specific:.2}; rule {} ({DROP_THRESHOLD:.2} to {ANALYSE_THRESHOLD:.2} and a generic library, publisher-specific < {PUBLISHER_SPECIFIC_THRESHOLD:.2})",
+                Route::Generic.rule()
             ),
         }
     } else {
         TriageDecision {
             route: Route::Drop,
             ad_related: false,
-            category: if first_party {
-                ScriptCategory::Application
-            } else {
-                ScriptCategory::Library
-            },
+            category: not_ad_code,
             ad_probability: p,
             publisher_specific,
             confidence: 1.0 - p,
@@ -206,13 +235,19 @@ mod tests {
 
     #[test]
     fn routing_follows_the_thresholds_at_their_boundaries() {
-        let route = |p: f64| decide(&[score(p, 0.0)], 1, true).unwrap().route;
+        let route = |p: f64| decide(&[score(p, 0.9)], 1, true).unwrap().route;
         assert_eq!(route(0.50), Route::Analyse);
         assert_eq!(route(0.4999), Route::Unsure);
         assert_eq!(route(0.15), Route::Unsure);
         assert_eq!(route(0.1499), Route::Drop);
         assert_eq!(route(0.0), Route::Drop);
         assert_eq!(route(1.0), Route::Analyse);
+        let generic = |p: f64, own: f64| decide(&[score(p, own)], 1, true).unwrap().route;
+        assert_eq!(generic(0.4999, 0.4999), Route::Generic);
+        assert_eq!(generic(0.15, 0.0), Route::Generic);
+        assert_eq!(generic(0.15, 0.50), Route::Unsure);
+        assert_eq!(generic(0.50, 0.0), Route::Analyse);
+        assert_eq!(generic(0.1499, 0.0), Route::Drop);
         assert_eq!(decide(&[], 3, true), None);
     }
 
@@ -234,7 +269,7 @@ mod tests {
         let generic = decide(&[score(0.9, 0.49)], 1, true).unwrap();
         assert_eq!(generic.category, ScriptCategory::Unknown);
         // A site-specific part that is not ad code does not make a wrapper.
-        let elsewhere = decide(&[score(0.9, 0.1), score(0.1, 0.95)], 2, true).unwrap();
+        let elsewhere = decide(&[score(0.9, 0.1), score(0.4, 0.95)], 2, true).unwrap();
         assert_eq!(elsewhere.category, ScriptCategory::Unknown);
         assert_eq!(elsewhere.publisher_specific, 0.1);
     }
@@ -246,6 +281,47 @@ mod tests {
         assert_eq!(unsure.category, ScriptCategory::Unknown);
         assert_eq!(unsure.confidence, 0.3);
         assert!(unsure.reason.contains("jev-unsure"));
+    }
+
+    /// The scores of the first real page (2026-11-12): what each script got
+    /// as its highest ad-orchestration and publisher-specific probability.
+    #[test]
+    fn the_scripts_of_the_first_real_page_are_routed_as_a_person_would() {
+        let route = |ad: f64, own: f64| decide(&[score(ad, own)], 1, false).unwrap().route;
+        assert_eq!(route(0.98, 0.98), Route::Analyse, "inline wrapper");
+        assert_eq!(route(0.25, 0.95), Route::Unsure, "consent platform config");
+        assert_eq!(
+            route(0.24, 0.97),
+            Route::Unsure,
+            "video embed with ad units"
+        );
+        assert_eq!(route(0.25, 0.29), Route::Generic, "analytics library");
+        assert_eq!(route(0.18, 0.12), Route::Generic, "analytics pixel bundle");
+        assert_eq!(route(0.21, 0.15), Route::Generic, "analytics pixel bundle");
+        assert_eq!(route(0.12, 0.85), Route::Drop, "tag manager loader");
+        assert_eq!(route(0.14, 0.24), Route::Drop, "analytics library");
+        // Slot-mapping code: one part scored 0.20, the other 0.62 / 0.48.
+        let mapping = decide(&[score(0.20, 0.30), score(0.62, 0.48)], 2, true).unwrap();
+        assert_eq!(mapping.route, Route::Analyse);
+        assert_eq!(mapping.category, ScriptCategory::Unknown);
+    }
+
+    #[test]
+    fn an_unsure_script_that_is_generic_library_code_is_dropped_and_says_why() {
+        let pixel = decide(&[score(0.05, 0.9), score(0.21, 0.15)], 92, false).unwrap();
+        assert!(!pixel.ad_related);
+        assert_eq!(pixel.category, ScriptCategory::Library);
+        assert_eq!(pixel.ad_probability, 0.21);
+        // A site-specific part that is plainly not ad code does not keep the script.
+        assert_eq!(pixel.publisher_specific, 0.15);
+        assert!((pixel.confidence - 0.79).abs() < 1e-12);
+        assert_eq!(
+            pixel.reason,
+            "Jev: ad orchestration 0.21 at most over 2 screened parts of 92, publisher-specific 0.15; rule jev-generic (0.15 to 0.50 and a generic library, publisher-specific < 0.50)"
+        );
+        // Any part in the band that is the publisher's own keeps it.
+        let kept = decide(&[score(0.21, 0.15), score(0.16, 0.7)], 2, false).unwrap();
+        assert_eq!(kept.route, Route::Unsure);
     }
 
     #[test]

@@ -22,7 +22,7 @@ test("first run: onboarding → demo scan → live view → report with every ta
   // Live view: pipeline, streaming activity, sidebar indicator.
   await expect(page).toHaveURL(/#\/scans\/scan-/);
   const pipeline = page.getByRole("list", { name: "Pipeline" });
-  await expect(pipeline.getByRole("listitem")).toHaveCount(8);
+  await expect(pipeline.getByRole("listitem")).toHaveCount(9);
   await expect(pipeline.locator('[aria-current="step"]')).toBeVisible();
   await expect(page.getByRole("region", { name: "Running", exact: true }).getByRole("link")).toHaveCount(1);
   await expect(
@@ -52,6 +52,17 @@ test("first run: onboarding → demo scan → live view → report with every ta
   await auction.getByRole("listitem", { name: /^ix: Timeout/ }).hover();
   await expect(page.getByRole("tooltip")).toContainText("none within 1.50 s");
   await expect(page.getByRole("table").getByRole("rowheader", { name: "appnexus" })).toBeVisible();
+
+  // Bidder checks: the site's own ads.txt, and only the bidder that needs attention spelled out
+  const checks = page.getByRole("heading", { name: "Bidder checks" }).locator("xpath=ancestor::section[1]");
+  await expect(checks.getByText(/^http:\/\/127\.0\.0\.1:47615\/ads\.txt: \d+ seller records$/)).toBeVisible();
+  await expect(checks.getByText("Not looked up for this scan")).toBeVisible();
+  const flagged = checks.getByRole("list", { name: "Bidders that need attention" });
+  await expect(flagged.getByRole("listitem", { name: "sovrn" })).toContainText(
+    "ads.txt: ads.txt has no entry for sovrn.com",
+  );
+  await expect(flagged.getByRole("img", { name: "Problem" })).toHaveCount(1);
+  await expect(checks.getByText(/^Nothing found for /)).toContainText("appnexus");
 
   // Ad slots: lifecycle timeline with outcomes and flags
   await reportTab(page, "Ad slots").click();

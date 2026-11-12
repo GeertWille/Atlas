@@ -398,16 +398,18 @@ function scriptHostname(url: string): string {
 /** Jev routing cut-offs, mirroring the backend's (uncalibrated) triage constants. */
 export const JEV_THRESHOLDS = { analyse: 0.5, drop: 0.15, publisherSpecific: 0.5 } as const;
 
-export type JevRule = "jev-yes" | "jev-unsure" | "jev-no";
+export type JevRule = "jev-yes" | "jev-unsure" | "jev-generic" | "jev-no";
 
-export function jevRule(adProbability: number): JevRule {
+/** Between the two cut-offs, the publisher's own code is kept and generic library code is dropped. */
+export function jevRule(adProbability: number, publisherSpecific: number): JevRule {
   if (adProbability >= JEV_THRESHOLDS.analyse) return "jev-yes";
-  return adProbability < JEV_THRESHOLDS.drop ? "jev-no" : "jev-unsure";
+  if (adProbability < JEV_THRESHOLDS.drop) return "jev-no";
+  return publisherSpecific >= JEV_THRESHOLDS.publisherSpecific ? "jev-unsure" : "jev-generic";
 }
 
-/** No script bodies exist here: the publisher's own ad code scores as its own, everything else as generic. */
+/** No script bodies exist here: first-party code scores as the publisher's own, everything else as generic. */
 export function jevPublisherSpecific(firstParty: boolean, adProbability: number): number {
-  return ROUND((firstParty ? Math.min(0.97, adProbability + 0.02) : adProbability / 3) * 100) / 100;
+  return ROUND((firstParty ? Math.max(0.55, Math.min(0.97, adProbability + 0.02)) : adProbability / 3) * 100) / 100;
 }
 
 /** How many parts of a script Jev was asked about, out of how many it was split into. */
@@ -419,14 +421,15 @@ export function jevParts(sizeBytes: number): { total: number; judged: number } {
 function jevVerdict(script: Pick<ScriptRecord, "firstParty" | "sizeBytes">, adProbability: number) {
   const p = adProbability.toFixed(2);
   const { total, judged } = jevParts(script.sizeBytes);
-  const rule = jevRule(adProbability);
+  const publisherSpecific = jevPublisherSpecific(script.firstParty, adProbability);
+  const own = publisherSpecific.toFixed(2);
+  const rule = jevRule(adProbability, publisherSpecific);
   if (rule === "jev-yes") {
-    const publisherSpecific = jevPublisherSpecific(script.firstParty, adProbability);
     return {
       category: publisherSpecific >= JEV_THRESHOLDS.publisherSpecific ? "wrapper" : "unknown",
       adRelated: true,
       classificationConfidence: adProbability,
-      classificationReason: `Jev: ad orchestration ${p} in its best-scoring part, publisher-specific ${publisherSpecific.toFixed(2)}; rule jev-yes (>= 0.50)`,
+      classificationReason: `Jev: ad orchestration ${p} in its best-scoring part, publisher-specific ${own}; rule jev-yes (>= 0.50)`,
     } as const;
   }
   const screened = `Jev: ad orchestration ${p} at most over ${judged} screened parts of ${total}`;
@@ -435,14 +438,17 @@ function jevVerdict(script: Pick<ScriptRecord, "firstParty" | "sizeBytes">, adPr
       category: "unknown",
       adRelated: true,
       classificationConfidence: adProbability,
-      classificationReason: `${screened}; rule jev-unsure (0.15 to 0.50), kept for analysis and ranked last`,
+      classificationReason: `${screened}, publisher-specific ${own}; rule jev-unsure (0.15 to 0.50 and site-specific), kept for analysis and ranked last`,
     } as const;
   }
   return {
     category: script.firstParty ? "application" : "library",
     adRelated: false,
     classificationConfidence: ROUND((1 - adProbability) * 100) / 100,
-    classificationReason: `${screened}; rule jev-no (< 0.15)`,
+    classificationReason:
+      rule === "jev-generic"
+        ? `${screened}, publisher-specific ${own}; rule jev-generic (0.15 to 0.50 and a generic library, publisher-specific < 0.50)`
+        : `${screened}; rule jev-no (< 0.15)`,
   } as const;
 }
 
@@ -515,7 +521,10 @@ export function buildScripts(site: CapturedSite, plan: TriagePlan): ScriptRecord
         classifiedBy: "ai",
         classifierModel: plan.jev.model,
         adProbability,
-        analyzed: plan.logicAnalysis && (Boolean(template.analyzed) || jevRule(adProbability) === "jev-unsure"),
+        analyzed:
+          plan.logicAnalysis &&
+          (Boolean(template.analyzed) ||
+            jevRule(adProbability, jevPublisherSpecific(base.firstParty, adProbability)) === "jev-unsure"),
       };
     }
     if (plan.claudeModel) {

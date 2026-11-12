@@ -4,8 +4,8 @@
 
 use serde_json::{Value, json};
 
-use crate::domain::pricing::{TokenUsage, estimate_tokens};
-use crate::domain::questions::{REQUEST_OVERHEAD_TOKENS, YesNoQuestion};
+use crate::domain::pricing::TokenUsage;
+use crate::domain::questions::{CHARS_PER_TOKEN, REQUEST_OVERHEAD_TOKENS, YesNoQuestion};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JudgeRequest {
@@ -24,7 +24,8 @@ impl JudgeRequest {
             .map(|question| question.instructions.len() + question.yes.len() + question.no.len())
             .sum();
         TokenUsage {
-            input: estimate_tokens(self.state.to_string().len() + question_chars)
+            input: ((self.state.to_string().len() + question_chars) as u64)
+                .div_ceil(CHARS_PER_TOKEN)
                 + REQUEST_OVERHEAD_TOKENS,
             ..TokenUsage::default()
         }
@@ -55,4 +56,26 @@ pub struct JudgeResponse {
     pub usage: TokenUsage,
     /// False when the API reported no usage and the caller has to estimate it.
     pub usage_reported: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::chunks::TEXT_CHUNK_CHARS;
+    use crate::domain::questions::triage_questions;
+
+    #[test]
+    fn a_full_triage_part_is_estimated_no_lower_than_it_was_billed() {
+        let request = JudgeRequest {
+            model: "jev-1.14.0".into(),
+            state: json!({
+                "script": { "url": "https://pub.example/a.js", "firstParty": false },
+                "code": "x".repeat(TEXT_CHUNK_CHARS),
+            }),
+            questions: triage_questions(),
+        };
+        // The real run billed 6,000-character parts at 2,470 to 3,110 tokens.
+        let estimate = request.estimated_usage().input;
+        assert!((3_110..4_500).contains(&estimate), "{estimate}");
+    }
 }
