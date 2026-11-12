@@ -1,5 +1,13 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExportFormat, ScanListQuery, ScanOptions, ScanSummary, Settings, SettingsPatch } from "@/bindings";
+import type {
+  ApiProvider,
+  ExportFormat,
+  ScanListQuery,
+  ScanOptions,
+  ScanSummary,
+  Settings,
+  SettingsPatch,
+} from "@/bindings";
 import { api } from "@/lib/api";
 import { queryKeys } from "./keys";
 import { fetchScanDetail, fetchScanLogs } from "./scan-events";
@@ -38,7 +46,7 @@ export function useUpdateSettings() {
 export function useSetApiKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (key: string) => api.setApiKey(key),
+    mutationFn: ({ key, provider }: { key: string; provider: ApiProvider }) => api.setApiKey(key, provider),
     onSuccess: (status) => {
       if (status.valid) void client.invalidateQueries({ queryKey: queryKeys.settings });
     },
@@ -48,7 +56,7 @@ export function useSetApiKey() {
 export function useClearApiKey() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: api.clearApiKey,
+    mutationFn: (provider: ApiProvider) => api.clearApiKey(provider),
     onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.settings }),
   });
 }

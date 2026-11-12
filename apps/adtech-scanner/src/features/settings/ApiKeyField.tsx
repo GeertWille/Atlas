@@ -1,5 +1,6 @@
 import { CheckCircle2Icon } from "lucide-react";
 import { toast } from "sonner";
+import type { ApiProvider } from "@/bindings";
 import { useClearApiKey } from "@/lib/query/hooks";
 import { ApiKeyForm } from "@/shared/components/api-key-form";
 import { notifyError } from "@/shared/lib/notify-error";
@@ -16,38 +17,53 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 
-function SavedKey() {
+const COPY: Record<ApiProvider, { stored: string; remove: string; confirmTitle: string; consequence: string }> = {
+  anthropic: {
+    stored: "A validated key is stored in your system keychain.",
+    remove: "Remove key",
+    confirmTitle: "Remove the API key?",
+    consequence: "Scans keep working with the deterministic checks only.",
+  },
+  typesafe: {
+    stored: "A validated TypeSafe key is stored in your system keychain.",
+    remove: "Remove TypeSafe key",
+    confirmTitle: "Remove the TypeSafe key?",
+    consequence: "Jev is turned off and script triage goes back to the script filter model.",
+  },
+};
+
+function SavedKey({ provider }: { provider: ApiProvider }) {
   const clearApiKey = useClearApiKey();
+  const copy = COPY[provider];
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-green-line bg-green-soft/60 px-3.5 py-2.5">
       <p className="flex items-center gap-2 text-[13px] text-green-fg">
-        <CheckCircle2Icon className="size-4" />A validated key is stored in your system keychain.
+        <CheckCircle2Icon className="size-4 shrink-0" />
+        {copy.stored}
       </p>
       <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button variant="outline" size="sm" disabled={clearApiKey.isPending}>
-            Remove key
+            {copy.remove}
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove the API key?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The key is deleted from your keychain. Scans keep working with the deterministic checks only.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{copy.confirmTitle}</AlertDialogTitle>
+            <AlertDialogDescription>The key is deleted from your keychain. {copy.consequence}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               destructive
               onClick={() =>
-                clearApiKey.mutate(undefined, {
+                clearApiKey.mutate(provider, {
                   onSuccess: () => toast.success("API key removed"),
                   onError: (reason) => notifyError("Could not remove the API key", reason),
                 })
               }
             >
-              Remove key
+              {copy.remove}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -56,6 +72,6 @@ function SavedKey() {
   );
 }
 
-export function ApiKeyField({ hasApiKey }: { hasApiKey: boolean }) {
-  return hasApiKey ? <SavedKey /> : <ApiKeyForm submitLabel="Validate and save" />;
+export function ApiKeyField({ provider, stored }: { provider: ApiProvider; stored: boolean }) {
+  return stored ? <SavedKey provider={provider} /> : <ApiKeyForm provider={provider} submitLabel="Validate and save" />;
 }

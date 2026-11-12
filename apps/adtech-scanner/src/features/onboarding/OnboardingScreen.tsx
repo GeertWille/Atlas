@@ -100,7 +100,7 @@ function ApiKeyStep({ hasApiKey }: { hasApiKey: boolean }) {
       </p>
       <ApiKeyForm submitLabel="Save key" submitVariant="outline" />
       <div>
-        <Button variant="link" size="sm" className="h-auto p-0" onClick={openApiKeysPage}>
+        <Button variant="link" size="sm" className="h-auto p-0" onClick={() => openApiKeysPage("anthropic")}>
           Get a key from the Anthropic Console
           <ExternalLinkIcon />
         </Button>

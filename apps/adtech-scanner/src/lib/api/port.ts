@@ -1,5 +1,6 @@
 import type {
   ApiKeyStatus,
+  ApiProvider,
   BrowserInfo,
   DashboardStats,
   ExportFormat,
@@ -24,8 +25,9 @@ export type Unsubscribe = () => void;
 export interface ApiPort {
   getSettings(): Promise<Settings>;
   updateSettings(patch: SettingsPatch): Promise<Settings>;
-  setApiKey(key: string): Promise<ApiKeyStatus>;
-  clearApiKey(): Promise<void>;
+  /** `provider` defaults to Anthropic. The key is stored only when the provider accepts it. */
+  setApiKey(key: string, provider?: ApiProvider): Promise<ApiKeyStatus>;
+  clearApiKey(provider?: ApiProvider): Promise<void>;
   detectBrowser(): Promise<BrowserInfo | null>;
   getDemoUrl(): Promise<string>;
   startScan(options: ScanOptions): Promise<ScanSummary>;

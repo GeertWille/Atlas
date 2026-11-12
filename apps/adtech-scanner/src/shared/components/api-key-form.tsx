@@ -2,6 +2,7 @@ import { EyeIcon, EyeOffIcon, KeyRoundIcon } from "lucide-react";
 import { type FormEvent, useId, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
+import type { ApiProvider } from "@/bindings";
 import { useSetApiKey } from "@/lib/query/hooks";
 import { notifyError } from "@/shared/lib/notify-error";
 import { Button } from "@/shared/ui/button";
@@ -14,14 +15,23 @@ const apiKeySchema = z
   .min(1, "Paste your API key.")
   .refine((value) => !/\s/.test(value), "An API key cannot contain spaces.");
 
-/** Validates an Anthropic API key against the API and stores it in the keychain when it is accepted. */
+const PROVIDER_COPY: Record<ApiProvider, { name: string; placeholder: string }> = {
+  anthropic: { name: "Anthropic", placeholder: "sk-ant-…" },
+  // TypeSafe does not document a key format, so there is no prefix to hint at.
+  typesafe: { name: "TypeSafe", placeholder: "Paste your key" },
+};
+
+/** Validates an API key against its provider and stores it in the keychain when it is accepted. */
 export function ApiKeyForm({
+  provider = "anthropic",
   submitLabel,
   submitVariant = "default",
 }: {
+  provider?: ApiProvider;
   submitLabel: string;
   submitVariant?: "default" | "outline";
 }) {
+  const { name, placeholder } = PROVIDER_COPY[provider];
   const setApiKey = useSetApiKey();
   const errorId = useId();
   const [key, setKey] = useState("");
@@ -36,17 +46,20 @@ export function ApiKeyForm({
       return;
     }
     setError(null);
-    setApiKey.mutate(parsed.data, {
-      onSuccess: (status) => {
-        if (status.valid) {
-          setKey("");
-          toast.success("API key validated and saved to your keychain");
-        } else {
-          setError(status.message ?? "Anthropic did not accept this key.");
-        }
+    setApiKey.mutate(
+      { key: parsed.data, provider },
+      {
+        onSuccess: (status) => {
+          if (status.valid) {
+            setKey("");
+            toast.success("API key validated and saved to your keychain");
+          } else {
+            setError(status.message ?? `${name} did not accept this key.`);
+          }
+        },
+        onError: (reason) => notifyError("Could not save the API key", reason),
       },
-      onError: (reason) => notifyError("Could not save the API key", reason),
-    });
+    );
   };
 
   return (
@@ -58,9 +71,9 @@ export function ApiKeyForm({
             type={revealed ? "text" : "password"}
             autoComplete="off"
             spellCheck={false}
-            placeholder="sk-ant-…"
+            placeholder={placeholder}
             value={key}
-            aria-label="Anthropic API key"
+            aria-label={`${name} API key`}
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? errorId : undefined}
             onChange={(event) => {

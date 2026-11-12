@@ -1,11 +1,12 @@
 import type { DeviceProfile, ScanOptions, Settings } from "@/bindings";
+import { anyAiAvailable } from "./ai-availability";
 
 /** What the composer and the settings accept; the backend tolerates a wider range. */
 export const OBSERVE_SECONDS = { min: 5, max: 60, step: 5 } as const;
 
 /** Options for a scan started without the composer (re-scan, demo, other device). */
 export function defaultScanOptions(
-  settings: Pick<Settings, "defaultObserveSeconds" | "hasApiKey">,
+  settings: Pick<Settings, "defaultObserveSeconds" | "hasApiKey" | "hasTypesafeKey" | "jevEnabled">,
   url: string,
   device: DeviceProfile,
 ): ScanOptions {
@@ -15,6 +16,6 @@ export function defaultScanOptions(
     observeSeconds: settings.defaultObserveSeconds,
     autoScroll: true,
     acceptConsent: true,
-    aiEnabled: settings.hasApiKey,
+    aiEnabled: anyAiAvailable(settings),
   };
 }

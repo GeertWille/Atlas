@@ -18,8 +18,8 @@ export function createTauriAdapter(): ApiPort {
   return {
     getSettings: () => call("get_settings"),
     updateSettings: (patch) => call("update_settings", { patch }),
-    setApiKey: (key) => call("set_api_key", { key }),
-    clearApiKey: () => call("clear_api_key"),
+    setApiKey: (key, provider) => call("set_api_key", { key, provider }),
+    clearApiKey: (provider) => call("clear_api_key", { provider }),
     detectBrowser: () => call("detect_browser"),
     getDemoUrl: () => call("get_demo_url"),
     startScan: (options) => call("start_scan", { options }),
