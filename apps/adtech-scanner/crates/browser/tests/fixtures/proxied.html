@@ -1,0 +1,13 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>A page behind a proxy</title><link rel="icon" href="data:,">
+<script src="http://cdn.adscan-cdn.test/browse-shared.js"></script></head>
+<body>
+<script>
+console.log('PROXIED page at ' + location.host);
+// A secure address: the browser asks the proxy for a tunnel to it.
+fetch('https://secure.adscan-tls.test/pixel').then(
+  function () { console.log('TUNNEL answered'); },
+  function () { console.log('TUNNEL failed'); }
+);
+</script>
+</body></html>

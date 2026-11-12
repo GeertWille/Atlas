@@ -93,6 +93,11 @@ impl Reported {
         self.activities.lock().unwrap().clone()
     }
 
+    /// What the capture has reported, to watch while it runs.
+    pub fn activities(&self) -> Arc<Mutex<Vec<CaptureActivity>>> {
+        self.activities.clone()
+    }
+
     pub async fn run(self, request: CaptureRequest) -> Outcome {
         let result = capture(request, self.hooks.clone()).await;
         let activities = self.so_far();

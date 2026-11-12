@@ -154,12 +154,12 @@ async function reportHtml(detail: ScanDetail): Promise<string> {
 }
 
 /**
- * `legacy-report.snapshot.html` was produced by the report as it was before visits, pages, proxies and
+ * `legacy-report.reference.txt` was produced by the report as it was before visits, pages, proxies and
  * configurations existed (commit 21e4856), from this same fixture. It is a reference, not a snapshot
  * to update: a difference means an old scan no longer renders as it did.
  */
 test("a scan stored before page views renders exactly as it did before they existed", async () => {
-  await expect(await reportHtml(legacy)).toMatchFileSnapshot("./legacy-report.snapshot.html");
+  await expect(await reportHtml(legacy)).toMatchFileSnapshot("./legacy-report.reference.txt");
 });
 
 test("a single-page scan renders exactly like one stored without pages", async () => {

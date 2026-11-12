@@ -1,7 +1,7 @@
 //! Finds the browser a capture started, and everything that browser spawned,
 //! by what they leave in `/proc`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const PROFILE_FLAG: &str = "--user-data-dir=";
@@ -74,25 +74,38 @@ pub struct Browser {
 }
 
 impl Browser {
-    /// Waits for a capture running in the process `parent` to launch its browser.
+    /// Waits for a capture running in the process `parent` to launch its
+    /// browser, on a throwaway profile.
     pub async fn launched_by(parent: u32) -> Self {
+        let browser = Self::child_of(parent).await;
+        assert!(
+            browser
+                .profile
+                .to_string_lossy()
+                .contains("adscan-profile-"),
+            "{:?}",
+            browser.profile
+        );
+        browser
+    }
+
+    /// The same for a capture on the scan profile that is kept.
+    pub async fn launched_on_kept_profile(parent: u32, profile: &Path) -> Self {
+        let browser = Self::child_of(parent).await;
+        assert_eq!(browser.profile, profile);
+        browser
+    }
+
+    async fn child_of(parent: u32) -> Self {
         for _ in 0..1000 {
             let children = processes()
                 .into_iter()
                 .filter(|process| process.parent == parent);
-            if let Some(browser) = children
+            if let Some((group, profile)) = children
                 .filter_map(|process| Some((process.pid, profile_of(process.pid)?)))
                 .next()
             {
-                assert!(
-                    browser.1.to_string_lossy().contains("adscan-profile-"),
-                    "{:?}",
-                    browser.1
-                );
-                return Self {
-                    group: browser.0,
-                    profile: browser.1,
-                };
+                return Self { group, profile };
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -110,6 +123,33 @@ impl Browser {
             .count()
     }
 
+    /// The command line of every live process of the browser, each as one
+    /// string.
+    pub fn command_lines(&self) -> Vec<String> {
+        let profile = self.profile.to_string_lossy();
+        processes()
+            .iter()
+            .filter(|process| !process.is_zombie)
+            .filter(|process| process.group == self.group || mentions(process.pid, &profile))
+            .map(|process| command_line(process.pid).join(" "))
+            .collect()
+    }
+
+    /// Waits for every process of the browser to be gone. Says nothing
+    /// about the profile.
+    pub async fn assert_exited(&self, within: Duration) {
+        let deadline = Instant::now() + within;
+        while self.live_processes() > 0 {
+            assert!(
+                Instant::now() < deadline,
+                "{} Chrome processes are still alive",
+                self.live_processes()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Waits for the processes and the throwaway profile to be gone.
     pub async fn assert_gone(&self, within: Duration) {
         let deadline = Instant::now() + within;
         loop {

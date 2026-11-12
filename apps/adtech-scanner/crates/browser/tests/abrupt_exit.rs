@@ -1,6 +1,9 @@
 //! A browser must not outlive the process that launched it, however that
 //! process ends, and what a killed process leaves on disk must not stay.
 //!
+//! The one thing a killed process may leave is the scan profile the user
+//! keeps, which nothing but the user removes.
+//!
 //! The process that gets killed is this test binary, started a second time to
 //! run only [`capture_in_a_process_of_its_own`]. Every test gives its captures
 //! a temporary directory of their own, so that the profiles it counts are its.
@@ -21,6 +24,8 @@ use tokio::process::{Child, Command};
 
 const URL_ENV: &str = "ADSCAN_TEST_CAPTURE_URL";
 const OBSERVE_SECONDS_ENV: &str = "ADSCAN_TEST_CAPTURE_OBSERVE_SECONDS";
+/// Root of the kept scan profile to scan on; a throwaway profile when unset.
+const SCAN_PROFILE_ENV: &str = "ADSCAN_TEST_CAPTURE_SCAN_PROFILE";
 
 /// Not a test of its own: the body of the process the tests below start, and
 /// kill. It does nothing when run with the other tests.
@@ -33,7 +38,15 @@ async fn capture_in_a_process_of_its_own() {
     let mut request = support::request(&url, DeviceProfile::Desktop);
     request.observe_seconds = std::env::var(OBSERVE_SECONDS_ENV).unwrap().parse().unwrap();
     request.visitor = VisitorBehavior::Scroll;
-    support::capture_ok(request).await;
+    let mut reported = support::Reported::new();
+    if let Some(scan_profile) = std::env::var_os(SCAN_PROFILE_ENV) {
+        request.persistent_profile = true;
+        reported.hooks.scan_profile_dir = Some(scan_profile.into());
+    }
+    let outcome = reported.run(request).await;
+    outcome.result.unwrap_or_else(|error| {
+        panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress)
+    });
 }
 
 /// A stand-in for the app: a process that scans the demo site.
@@ -44,7 +57,20 @@ struct App {
 
 impl App {
     fn start(site: &DemoSite, temporary_files: &Path, observe_seconds: u32) -> Self {
-        let process = Command::new(std::env::current_exe().unwrap())
+        Self::start_on(site, temporary_files, observe_seconds, None)
+    }
+
+    fn start_on(
+        site: &DemoSite,
+        temporary_files: &Path,
+        observe_seconds: u32,
+        scan_profile: Option<&Path>,
+    ) -> Self {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        if let Some(scan_profile) = scan_profile {
+            command.env(SCAN_PROFILE_ENV, scan_profile);
+        }
+        let process = command
             .args(["capture_in_a_process_of_its_own", "--exact", "--ignored"])
             .env(URL_ENV, &site.url)
             .env(OBSERVE_SECONDS_ENV, observe_seconds.to_string())
@@ -212,4 +238,78 @@ async fn the_browser_is_driven_over_a_private_pipe_not_a_network_port() {
 
     app.kill().await;
     browser.assert_gone(Duration::from_secs(5)).await;
+}
+
+/// The profile the user keeps is not the app's to delete, however the app
+/// ends: the browser goes, the profile stays and can be used again.
+#[tokio::test]
+async fn killing_the_app_leaves_no_browser_and_keeps_the_scan_profile() {
+    let site = adscan_browser::start_demo_site().await.unwrap();
+    let temporary_files = tempfile::tempdir().unwrap();
+    let scan_profile = tempfile::tempdir().unwrap();
+    let kept = scan_profile.path().join("desktop");
+    let app = App::start_on(
+        &site,
+        temporary_files.path(),
+        120,
+        Some(scan_profile.path()),
+    );
+    let browser = Browser::launched_on_kept_profile(app.id, &kept).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while browser.live_processes() < 4 {
+        assert!(Instant::now() < deadline, "the browser did not get going");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(adscan_browser::scan_profile_info(scan_profile.path()).in_use);
+
+    app.kill().await;
+
+    browser.assert_exited(Duration::from_secs(5)).await;
+    // Longer than the watchdog takes to remove a throwaway profile.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        kept.join("Default").is_dir(),
+        "the kept profile was removed"
+    );
+    assert_eq!(profiles_in(temporary_files.path()), Vec::<PathBuf>::new());
+    let left = adscan_browser::scan_profile_info(scan_profile.path());
+    assert!(left.exists && !left.in_use, "{left:?}");
+
+    // What the killed browser left in the profile does not stop the next scan.
+    App::start_on(&site, temporary_files.path(), 1, Some(scan_profile.path()))
+        .finish()
+        .await;
+    assert!(kept.join("Default").is_dir());
+}
+
+/// A hung browser on the kept profile is killed like any other.
+#[tokio::test]
+async fn a_hung_browser_on_the_scan_profile_is_killed_and_the_profile_kept() {
+    let site = adscan_browser::start_demo_site().await.unwrap();
+    let temporary_files = tempfile::tempdir().unwrap();
+    let scan_profile = tempfile::tempdir().unwrap();
+    let kept = scan_profile.path().join("desktop");
+    let app = App::start_on(
+        &site,
+        temporary_files.path(),
+        120,
+        Some(scan_profile.path()),
+    );
+    let browser = Browser::launched_on_kept_profile(app.id, &kept).await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while browser.live_processes() < 4 {
+        assert!(Instant::now() < deadline, "the browser did not get going");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    signal(browser.group, Signal::SIGSTOP);
+
+    app.kill().await;
+
+    browser.assert_exited(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        kept.join("Default").is_dir(),
+        "the kept profile was removed"
+    );
 }

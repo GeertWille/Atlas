@@ -181,18 +181,14 @@ export function LiveScanView({
           <Panel className="min-h-0 shrink overflow-y-auto p-4">
             <PipelineStepper steps={steps} now={now} />
           </Panel>
+          {/* Beside the feed, not above it: the feed follows its newest line and must not change height mid-scan. */}
+          <VisitPanel visit={visit} />
           <FindingsSoFar detail={detail} />
         </div>
-        <div className="flex min-h-0 flex-col gap-4">
-          <VisitPanel visit={visit} />
-          <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <PanelHeader
-              title="Activity"
-              description="Live audit trail: progress, model calls, tool use and findings"
-            />
-            {activity}
-          </Panel>
-        </div>
+        <Panel className="flex min-h-0 flex-col overflow-hidden">
+          <PanelHeader title="Activity" description="Live audit trail: progress, model calls, tool use and findings" />
+          {activity}
+        </Panel>
       </div>
     </div>
   );

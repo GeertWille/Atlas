@@ -383,3 +383,108 @@ async fn collect(
         environment,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use adscan_model::PageReach;
+
+    use super::*;
+
+    /// A page cannot close the tab it was opened in, so what a person does
+    /// when they close the window is done here over the DevTools connection,
+    /// which only code inside this crate can reach.
+    #[tokio::test]
+    async fn closing_the_last_tab_ends_a_manual_visit_and_keeps_what_was_recorded() {
+        let Some(browser) = detect::detect_browser(None) else {
+            return;
+        };
+        let site = crate::demo::start().await.unwrap();
+        let mut chrome = Chrome::spawn(LaunchOptions {
+            executable: Path::new(&browser.path),
+            headless: true,
+            window_size: window_size(DeviceProfile::Desktop),
+            profile: ProfileChoice::Throwaway,
+            proxy: &ProxyServer::System,
+            driven_by_a_person: true,
+        })
+        .unwrap();
+        let (cdp, events) = crate::cdp::connect(&mut chrome).await.unwrap();
+        let cdp = Arc::new(cdp);
+        let emulation = emulation_for(DeviceProfile::Desktop, "Chrome/1.0", "Chrome/1.0");
+        let setup = TabSetup {
+            emulation,
+            override_viewport: true,
+            visitor: VisitorBehavior::Manual,
+        };
+        let mut page = Page::attach(
+            cdp.clone(),
+            events,
+            setup,
+            Interception::new(None, false),
+            |main_frame_id| {
+                let pages = PageLog::new(MAX_PAGE_VIEWS_MANUAL, true);
+                Recorder::new(main_frame_id, pages, Arc::new(|_| {}))
+            },
+        )
+        .await
+        .unwrap();
+        let address = Url::parse(&site.url).unwrap();
+        driver::open(&mut page, &address, None).await.unwrap();
+
+        let the_person = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1_500)).await;
+            let targets = cdp
+                .send(None, "Target.getTargets", json!({}))
+                .await
+                .unwrap();
+            for target in targets["targetInfos"].as_array().unwrap() {
+                if target["type"] == "page" {
+                    cdp.notify(
+                        None,
+                        "Target.closeTarget",
+                        json!({ "targetId": target["targetId"] }),
+                    );
+                }
+            }
+        });
+        let never_finished = tokio_util::sync::CancellationToken::new();
+        let ending = manual::record(&mut page, &never_finished).await.unwrap();
+        the_person.await.unwrap();
+        assert_eq!(ending, Ending::BrowserGone);
+
+        let request = CaptureRequest {
+            url: site.url.clone(),
+            device: DeviceProfile::Desktop,
+            observe_seconds: 1,
+            visitor: VisitorBehavior::Manual,
+            extra_pages: 0,
+            seed: 1,
+            accept_consent: false,
+            headless: true,
+            persistent_profile: false,
+            proxy: CaptureProxy::System,
+            chrome_path: None,
+        };
+        let capture = collect(
+            page,
+            &request,
+            Observed::default(),
+            CaptureEnvironment::default(),
+            false,
+            ending,
+        )
+        .await
+        .unwrap();
+        chrome.shutdown().await;
+
+        assert_eq!(capture.pages.len(), 1);
+        assert_eq!(capture.pages[0].reached_by, PageReach::Entry);
+        assert_eq!(capture.final_url, site.url);
+        assert!(
+            capture.page_title.is_some(),
+            "the title was read while the page was there"
+        );
+        assert!(capture.pages[0].ended_at_ms >= 1_000.0);
+        assert!(!capture.events.is_empty() && !capture.scripts.is_empty());
+    }
+}

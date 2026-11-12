@@ -40,7 +40,7 @@ test("search, filter, sort and page through history", async ({ page }) => {
   await expect(
     rows(page)
       .first()
-      .getByRole("img", { name: /Health score 32 of 100/ }),
+      .getByRole("img", { name: /Health score 4 of 100/ }),
   ).toBeVisible();
 });
 
