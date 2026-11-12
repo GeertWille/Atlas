@@ -4,6 +4,7 @@ import { Panel, PanelHeader } from "@/shared/components/panel";
 import { cn } from "@/shared/lib/cn";
 import {
   describeAdsTxt,
+  describeBids,
   describeConsent,
   describeRemainder,
   describeSellersJson,
@@ -62,7 +63,7 @@ function BidderBlock({ bidder }: { bidder: FlaggedBidder }) {
       <div className="flex items-baseline justify-between gap-3">
         <h3 className="font-medium">{bidder.bidder}</h3>
         <span className="text-xs text-muted-foreground tabular-nums">
-          {bidder.bids} of {bidder.requests} requests answered with a bid
+          {describeBids(bidder)}
         </span>
       </div>
       <ul className="flex flex-col gap-2">

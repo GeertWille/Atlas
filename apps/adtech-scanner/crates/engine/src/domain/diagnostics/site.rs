@@ -61,8 +61,8 @@ pub fn sellers_json_url(ad_system_domain: &str) -> Option<String> {
                 && !label.ends_with('-')
                 && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
         });
-    let is_registrable = psl::domain(domain.as_bytes())
-        .is_some_and(|registrable| registrable.suffix().is_known());
+    let is_registrable =
+        psl::domain(domain.as_bytes()).is_some_and(|registrable| registrable.suffix().is_known());
     (is_host_name && is_registrable).then(|| format!("https://{domain}/sellers.json"))
 }
 
@@ -200,7 +200,10 @@ mod tests {
     fn sellers_json_is_only_asked_of_public_domain_names() {
         for (domain, url) in [
             ("appnexus.com", "https://appnexus.com/sellers.json"),
-            ("RubiconProject.com", "https://rubiconproject.com/sellers.json"),
+            (
+                "RubiconProject.com",
+                "https://rubiconproject.com/sellers.json",
+            ),
             (
                 "video.unrulymedia.com",
                 "https://video.unrulymedia.com/sellers.json",
@@ -235,7 +238,11 @@ mod tests {
             "ex\u{e4}mple.com",
             "a..example.com",
         ] {
-            assert_eq!(sellers_json_url(not_a_public_domain), None, "{not_a_public_domain:?}");
+            assert_eq!(
+                sellers_json_url(not_a_public_domain),
+                None,
+                "{not_a_public_domain:?}"
+            );
         }
         assert_eq!(sellers_json_url(&format!("{}.com", "a".repeat(64))), None);
     }

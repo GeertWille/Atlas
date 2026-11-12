@@ -379,20 +379,35 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
     #[test]
     fn the_shapes_real_files_come_in_are_read_as_the_spec_says() {
         /// Line, and the record it is: domain, account id, relationship.
-        type Case = (&'static str, Option<(&'static str, &'static str, Relationship)>);
+        type Case = (
+            &'static str,
+            Option<(&'static str, &'static str, Relationship)>,
+        );
         let direct = Relationship::Direct;
         let cases: [Case; 22] = [
             ("a.com,1,DIRECT", Some(("a.com", "1", direct))),
             ("  a.com ,\t1 , direct  ", Some(("a.com", "1", direct))),
             ("A.COM, AbC-1, Direct", Some(("a.com", "AbC-1", direct))),
             ("a.com, 1, DIRECT,", Some(("a.com", "1", direct))),
-            ("a.com, 1, DIRECT, f08c47fec0942fa0,", Some(("a.com", "1", direct))),
+            (
+                "a.com, 1, DIRECT, f08c47fec0942fa0,",
+                Some(("a.com", "1", direct)),
+            ),
             ("a.com, 1, DIRECT, cert, , ,", Some(("a.com", "1", direct))),
-            ("a.com, 1, DIRECT # comment, with, commas", Some(("a.com", "1", direct))),
-            ("a.com, 1, DIRECT; ext=a,b,c; other=1", Some(("a.com", "1", direct))),
+            (
+                "a.com, 1, DIRECT # comment, with, commas",
+                Some(("a.com", "1", direct)),
+            ),
+            (
+                "a.com, 1, DIRECT; ext=a,b,c; other=1",
+                Some(("a.com", "1", direct)),
+            ),
             ("a.com, 1, DIRECT, cert ;ext", Some(("a.com", "1", direct))),
             ("a.com, pub-1 2, DIRECT", Some(("a.com", "pub-1 2", direct))),
-            ("sub.a-b.co.uk, 1, RESELLER", Some(("sub.a-b.co.uk", "1", Relationship::Reseller))),
+            (
+                "sub.a-b.co.uk, 1, RESELLER",
+                Some(("sub.a-b.co.uk", "1", Relationship::Reseller)),
+            ),
             ("a.com, 1, DIRECT, cert, extra", None),
             ("a.com, 1", None),
             ("a.com; 1; DIRECT", None),
@@ -407,12 +422,19 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
         ];
         for (line, expected) in cases {
             let parsed = parse(line);
-            let record = parsed
-                .records
-                .first()
-                .map(|record| (record.domain.as_str(), record.account_id.as_str(), record.relationship));
+            let record = parsed.records.first().map(|record| {
+                (
+                    record.domain.as_str(),
+                    record.account_id.as_str(),
+                    record.relationship,
+                )
+            });
             assert_eq!(record, expected, "{line:?}");
-            assert_eq!(parsed.invalid.len(), usize::from(expected.is_none()), "{line:?}");
+            assert_eq!(
+                parsed.invalid.len(),
+                usize::from(expected.is_none()),
+                "{line:?}"
+            );
         }
     }
 
@@ -432,7 +454,11 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
         assert_eq!(parsed.manager_domains, ["m.example"]);
         assert_eq!(parsed.subdomains, ["a.site.example"]);
         assert_eq!(parsed.records.len(), 1);
-        let invalid: Vec<&str> = parsed.invalid.iter().map(|line| line.text.as_str()).collect();
+        let invalid: Vec<&str> = parsed
+            .invalid
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
         assert_eq!(invalid, ["=nameless"]);
     }
 

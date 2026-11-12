@@ -63,7 +63,8 @@ export function describeSellersJson(diagnostics: BidderDiagnostics): string {
 
 export function describeConsent(consent: ConsentReport): string {
   if (!consent.cmpPresent) return "No TCF consent API on this page";
-  if (consent.gdprApplies !== true) return "A consent platform is present; GDPR did not apply to this page view";
+  if (consent.gdprApplies === null) return "A consent platform is present; it did not report whether GDPR applies";
+  if (!consent.gdprApplies) return "A consent platform is present; GDPR did not apply to this page view";
   const known =
     consent.resolvedAtMs === null
       ? "the choice was never made during the scan"
@@ -73,6 +74,10 @@ export function describeConsent(consent: ConsentReport): string {
       ? `, ${consent.auctionsBeforeConsent} of ${plural(consent.auctionCount, "auction")} started before that`
       : "";
   return `GDPR applies, ${known}${early}`;
+}
+
+export function describeBids({ bids, requests }: Pick<FlaggedBidder, "bids" | "requests">): string {
+  return `${bids} of ${plural(requests, "request")} answered with a bid`;
 }
 
 export function describeRemainder(bidder: FlaggedBidder): string | null {

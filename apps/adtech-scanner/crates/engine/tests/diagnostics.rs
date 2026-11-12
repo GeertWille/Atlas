@@ -1170,3 +1170,150 @@ fn stored_text_is_always_short() {
         assert!(check.summary.chars().count() <= 500, "{check:#?}");
     }
 }
+
+#[test]
+fn sellers_json_is_only_asked_of_known_exchanges_and_of_a_bounded_number() {
+    use adscan_engine::domain::diagnostics::adapters::ADAPTERS;
+
+    let with_ad_system: Vec<_> = ADAPTERS
+        .iter()
+        .filter(|adapter| !adapter.ad_system_domains.is_empty())
+        .collect();
+    let bidders: Vec<Bidder> = with_ad_system
+        .iter()
+        .map(|adapter| bidder(adapter.code, json!({})))
+        .collect();
+    let capture = page(&bidders, vec![]);
+    // Every exchange the scanner knows, and names only the file vouches for.
+    let mut text = String::from(
+        "evil.example, 1, DIRECT\nlocalhost.localdomain, 1, DIRECT\n10.0.0.1, 1, DIRECT\n\
+         metadata.google.internal, 1, DIRECT\n",
+    );
+    for domain in with_ad_system
+        .iter()
+        .flat_map(|adapter| adapter.ad_system_domains)
+    {
+        text.push_str(&format!("{domain}, 1, DIRECT\n"));
+    }
+    let lookups = diagnostics::sellers_lookups(&capture, &ads_txt::parse(&text));
+
+    assert_eq!(
+        lookups.len(),
+        12,
+        "a scan contacts at most twelve exchanges"
+    );
+    let known: Vec<&str> = ADAPTERS
+        .iter()
+        .flat_map(|adapter| adapter.ad_system_domains.iter().copied())
+        .collect();
+    for lookup in &lookups {
+        assert!(
+            known.contains(&lookup.ad_system_domain.as_str()),
+            "{} is not an exchange of the adapter table",
+            lookup.ad_system_domain
+        );
+    }
+}
+
+#[test]
+fn every_ad_system_domain_of_the_adapter_table_has_a_sellers_json_address() {
+    use adscan_engine::domain::diagnostics::adapters::ADAPTERS;
+    use adscan_engine::domain::diagnostics::site::sellers_json_url;
+
+    for domain in ADAPTERS
+        .iter()
+        .flat_map(|adapter| adapter.ad_system_domains)
+    {
+        assert_eq!(
+            sellers_json_url(domain),
+            Some(format!("https://{domain}/sellers.json"))
+        );
+    }
+}
+
+#[test]
+fn bidders_that_run_through_prebid_server_are_not_held_to_the_adapters_param_rules() {
+    // Prebid Server accepts `placementId` alone for Teads and `pubid` for Criteo.
+    let bidders = [
+        bidder("teads", json!({ "placementId": 5 })),
+        bidder("criteo", json!({ "pubid": "ABC123" })),
+        bidder("improvedigital", json!({ "placementId": 5 })),
+    ];
+    let with_s2s = |s2s_config: Value| {
+        let mut capture = page(&bidders, vec![]);
+        for event in &mut capture.events {
+            if let Ev::PrebidConfig { raw, .. } = &mut event.kind {
+                raw["s2sConfig"] = s2s_config.clone();
+            }
+        }
+        let diagnosed = diagnose(&capture, &files(AdsTxtOutcome::Missing));
+        ["criteo", "improvedigital", "teads"].map(|name| {
+            let params = checks(&diagnosed, name)
+                .into_iter()
+                .find(|(area, _, _)| *area == DiagnosticArea::Params)
+                .unwrap();
+            (params.1, params.2)
+        })
+    };
+    let missing = (DiagnosticStatus::Problem, "params-missing".to_string());
+    let server_side = (
+        DiagnosticStatus::NotChecked,
+        "params-server-side".to_string(),
+    );
+
+    assert_eq!(
+        with_s2s(Value::Null),
+        [missing.clone(), missing.clone(), missing.clone()]
+    );
+    assert_eq!(
+        with_s2s(json!({ "enabled": true, "bidders": ["teads", "criteo"] })),
+        [server_side.clone(), missing.clone(), server_side.clone()]
+    );
+    // Several servers, as an array; a switched-off one sends nothing.
+    assert_eq!(
+        with_s2s(json!([
+            { "bidders": ["improvedigital"] },
+            { "enabled": false, "bidders": ["teads"] },
+            { "bidders": "criteo" },
+        ])),
+        [missing.clone(), server_side, missing]
+    );
+}
+
+#[test]
+fn text_from_the_site_is_stored_without_characters_that_hide_or_reorder_it() {
+    let capture = page(&[bidder("appnexus", json!({ "placementId": 5 }))], vec![]);
+    let diagnosed = diagnose(
+        &capture,
+        &found(
+            "appnexus.com, 9\u{202e}58\u{1b}[31m\u{200b}, DIRECT\nbroken\u{0007}\u{2066} line\n",
+        ),
+    );
+    let stored = serde_json::to_string(&diagnosed).unwrap();
+    for hidden in ['\u{202e}', '\u{1b}', '\u{200b}', '\u{0007}', '\u{2066}'] {
+        assert!(!stored.contains(hidden), "{hidden:?} in {stored}");
+    }
+    assert_eq!(diagnosed.ads_txt.invalid_lines[0].excerpt, "broken   line");
+}
+
+#[test]
+fn a_page_served_from_this_machine_is_not_told_that_its_site_has_no_ads_txt() {
+    let mut capture = page(&healthy_bidders(), vec![]);
+    let missing = diagnose(&capture, &files(AdsTxtOutcome::Missing));
+    assert_eq!(fired(&capture, &missing), ["ads-txt-missing"]);
+    let no_file = finding(&capture, &missing, "ads-txt-missing");
+    assert_eq!(no_file.severity, Severity::Medium);
+    assert!(
+        no_file
+            .description
+            .contains("The specification lets them buy it anyway"),
+        "{}",
+        no_file.description
+    );
+
+    for local in ["http://localhost:5173/article", "http://127.0.0.1:8080/"] {
+        capture.final_url = local.into();
+        let missing = diagnose(&capture, &files(AdsTxtOutcome::Missing));
+        assert_eq!(fired(&capture, &missing), Vec::<&str>::new(), "{local}");
+    }
+}

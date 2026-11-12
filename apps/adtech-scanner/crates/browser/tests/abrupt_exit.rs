@@ -180,7 +180,7 @@ async fn a_second_instance_leaves_the_profile_of_a_running_scan_alone() {
 
     assert_eq!(
         profiles_in(temporary_files.path()),
-        [browser.profile.clone()]
+        std::slice::from_ref(&browser.profile)
     );
     assert!(browser.profile.join("Default").exists());
     assert!(browser.live_processes() >= 4);

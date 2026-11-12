@@ -445,8 +445,15 @@ mod tests {
         }
         file.push_str(r#"{"seller_id":"199999","seller_type":"BOTH"}]}"#);
         let sellers = find_sellers(file.as_bytes(), &wanted(&["199999", "17"])).unwrap();
-        let ids: Vec<&str> = sellers.iter().map(|seller| seller.seller_id.as_str()).collect();
-        assert_eq!(ids, ["17", "199999", "199999"], "duplicates are kept in file order");
+        let ids: Vec<&str> = sellers
+            .iter()
+            .map(|seller| seller.seller_id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["17", "199999", "199999"],
+            "duplicates are kept in file order"
+        );
         assert_eq!(sellers[1].seller_type, Some(SellerType::Publisher));
     }
 

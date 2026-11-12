@@ -1,6 +1,13 @@
 import { expect, test } from "vitest";
 import type { AdsTxtReport, BidderDiagnosis, ConsentReport, DiagnosticCheck } from "@/bindings";
-import { describeAdsTxt, describeConsent, describeRemainder, describeSellersJson, groupBidders } from "./bidder-checks";
+import {
+  describeAdsTxt,
+  describeBids,
+  describeConsent,
+  describeRemainder,
+  describeSellersJson,
+  groupBidders,
+} from "./bidder-checks";
 
 const check = (status: DiagnosticCheck["status"], code: string): DiagnosticCheck => ({
   area: "adsTxt",
@@ -80,7 +87,7 @@ const consent = (overrides: Partial<ConsentReport>): ConsentReport => ({
 test.each<[Partial<ConsentReport>, string]>([
   [{ cmpPresent: false, gdprApplies: null }, "No TCF consent API on this page"],
   [{ gdprApplies: false }, "A consent platform is present; GDPR did not apply to this page view"],
-  [{ gdprApplies: null }, "A consent platform is present; GDPR did not apply to this page view"],
+  [{ gdprApplies: null }, "A consent platform is present; it did not report whether GDPR applies"],
   [{}, "GDPR applies, choice known after 812 ms"],
   [{ auctionsBeforeConsent: 2 }, "GDPR applies, choice known after 812 ms, 2 of 3 auctions started before that"],
   [
@@ -97,4 +104,13 @@ test("sellers.json says whether it was looked up", () => {
     "Looked up at the exchanges that ads.txt names",
   );
   expect(describeSellersJson({ ...diagnostics, sellersJsonChecked: false })).toBe("Not looked up for this scan");
+});
+
+test.each([
+  [{ bids: 0, requests: 1 }, "0 of 1 request answered with a bid"],
+  [{ bids: 1, requests: 1 }, "1 of 1 request answered with a bid"],
+  [{ bids: 2, requests: 4 }, "2 of 4 requests answered with a bid"],
+  [{ bids: 0, requests: 0 }, "0 of 0 requests answered with a bid"],
+])("bids %j read as %s", (counts, expected) => {
+  expect(describeBids(counts)).toBe(expected);
 });
