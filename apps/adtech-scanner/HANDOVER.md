@@ -129,5 +129,28 @@ The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRe
 so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
-Command names, arguments and return types are listed in the table at the top of
-`src-tauri/src/commands.rs`; all return `Result<T, CommandError>`.
+## Tauri commands
+
+Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return `Result<T, CommandError>`.
+
+| Command | Args | Returns |
+|---|---|---|
+| `get_settings` | – | `Settings` |
+| `update_settings` | `{ patch }` | `Settings` |
+| `set_api_key` | `{ key }` | `ApiKeyStatus` (stored only if the API accepts it) |
+| `clear_api_key` | – | `null` |
+| `detect_browser` | – | `BrowserInfo \| null` |
+| `get_demo_url` | – | `string` |
+| `start_scan` | `{ options }` | `ScanSummary` (work continues in the background) |
+| `cancel_scan` | `{ scanId }` | `null` |
+| `list_scans` | `{ query }` | `ScanList` |
+| `get_scan` | `{ scanId }` | `ScanDetail` |
+| `delete_scan` | `{ scanId }` | `null` |
+| `delete_all_scans` | – | `null` |
+| `get_logs` | `{ scanId, stepId? }` | `LogEntry[]` |
+| `search_logs` | `{ query, limit? }` | `LogSearchHit[]` |
+| `get_dashboard_stats` | – | `DashboardStats` |
+| `export_scan` | `{ scanId, format, path? }` | `string` |
+
+The backend emits the Tauri event `scan-event` with a `ScanEvent` payload for every scan, step, log
+and finding change.

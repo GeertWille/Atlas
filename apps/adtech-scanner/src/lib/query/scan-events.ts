@@ -1,6 +1,5 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { LogEntry, ScanDetail, ScanEvent, ScanList, ScanSummary } from "@/bindings";
-import type { ApiPort } from "@/lib/api";
 import { isActive } from "@/shared/domain/vocabulary";
 import { queryKeys } from "./keys";
 
@@ -87,9 +86,4 @@ export function applyScanEvent(client: QueryClient, event: ScanEvent) {
   if (finished || !knownEverywhere) {
     void client.invalidateQueries({ queryKey: queryKeys.scanLists });
   }
-}
-
-/** The app's single live subscription: every screen reacts through the query cache. */
-export function subscribeQueryClientToScanEvents(api: ApiPort, client: QueryClient) {
-  return api.subscribeScanEvents((event) => applyScanEvent(client, event));
 }
