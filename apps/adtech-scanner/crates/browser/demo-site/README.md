@@ -26,7 +26,7 @@ therefore lists `localhost` as the one host outside the site.
 | `/` | The entry article: the page shell (`index.html`) around `fragments/tide-powered-town.html`, with one inline script (page config and theme) |
 | `/climate/village-substation`, `/climate/kelp-carbon`, `/climate/white-roofs`, `/climate/permit-queue` | The other four articles, each a full page: the same shell around its fragment |
 | `/fragments/<slug>.html` | The bare `<article>` of each of the five, fetched by the page when it shows an article in place |
-| `/static/ads/prebid.js` | Prebid.js stand-in: public API, event payloads, param validation and debug logging of the real library. Each bidder posts an OpenRTB request to its demo exchange and reads its bids from the answer (see "Simulated ad stack") |
+| `/static/ads/prebid.js` | Prebid.js stand-in: public API, event payloads, param validation and debug logging of the real library. Each bidder posts an OpenRTB request to its demo exchange, which answers with the bids the page's seeded simulation decided (see "Simulated ad stack") |
 | `/tag/js/gpt.js` | Google Publisher Tag stand-in: `googletag` API and slot events |
 | `/static/ads/apstag.js` | Amazon TAM stand-in, loaded by the wrapper |
 | `/static/ads/hb-wrapper.min.js` | The publisher's wrapper ("adstack"), minified. **This is where the bugs are.** |
