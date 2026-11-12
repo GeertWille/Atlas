@@ -90,7 +90,7 @@ export function SourceRoute() {
         detail={scan.data}
         script={script}
         search={search}
-        onSearchChange={(next) => navigate({ search: next, replace: true })}
+        onSearchChange={(patch) => navigate({ search: (current) => ({ ...current, ...patch }), replace: true })}
         onOpenScript={(next) => navigate({ to: sourceRoute.fullPath, params: { scanId, scriptId: next } })}
         onOpenFinding={(finding) =>
           navigate({ to: "/scans/$scanId", params: { scanId }, search: { tab: "findings", finding } })

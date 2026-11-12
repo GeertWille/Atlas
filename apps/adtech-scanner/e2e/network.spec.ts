@@ -5,7 +5,7 @@ const SCAN = "/scans/seed-sportsdesk-desktop";
 const BROWSE = "/scans/seed-sportsdesk-browse";
 const MOD = process.platform === "darwin" ? "Meta" : "Control";
 
-const grid = (page: Page) => page.getByRole("grid", { name: "Requests" });
+const grid = (page: Page) => page.getByRole("treegrid", { name: "Requests" });
 const count = (page: Page) => page.getByTestId("request-count");
 const details = (page: Page) => page.getByRole("region", { name: "Request details" });
 const filter = (page: Page) => page.getByRole("combobox", { name: "Filter requests" });
@@ -65,7 +65,7 @@ test("filtering: the query language, chips with counts, lifecycle and recipes al
   const category = page.getByRole("group", { name: "Category" });
   await expect(category.getByRole("button", { name: /^All 191/ })).toHaveAttribute("aria-pressed", "true");
 
-  await category.getByRole("button", { name: /^Bid requests 8/ }).click();
+  await category.getByRole("button", { name: /^Bids 8/ }).click();
   await expect(filter(page)).toHaveValue("cat:bid");
   await expect(count(page)).toHaveText("8 of 191 requests");
   // Category counts ignore the category itself, so they still say what another chip would show.
@@ -121,7 +121,7 @@ test("a reload restores filter, grouping, sorting, selection, tab and window", a
   await grid(page).getByRole("columnheader", { name: "Time" }).getByRole("button").click();
   await grid(page).getByRole("columnheader", { name: "Time" }).getByRole("button").click();
   await expect(grid(page).getByRole("columnheader", { name: "Time" })).toHaveAttribute("aria-sort", "descending");
-  await page.getByRole("button", { name: /^Group by:/ }).click();
+  await page.getByRole("button", { name: /^Group / }).click();
   await page.getByRole("menuitem", { name: "Vendor" }).click();
   await grid(page)
     .getByRole("row", { name: /late \+84 ms/ })
@@ -252,7 +252,7 @@ test("the whole path works from the keyboard: filter, rows, details, tabs, close
   await grid(page).focus();
   await page.keyboard.press("ArrowDown");
   await page.keyboard.press(`${MOD}+c`);
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^https:\/\//);
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toMatch(/^https:\/\//);
 });
 
 test("an auction's bid opens its exchange with the verdict, and Back returns to the auction", async ({ page }) => {
@@ -576,7 +576,7 @@ test("the list can be grouped, sorted and given other columns; the choice of col
   );
   await first.click();
 
-  await page.getByRole("button", { name: /^Group by:/ }).click();
+  await page.getByRole("button", { name: /^Group / }).click();
   await page.getByRole("menuitem", { name: "None" }).click();
   await expect(page).toHaveURL(/group=none$/);
   await expect(grid(page).getByRole("row", { name: /^Page 1/ })).toHaveCount(0);
@@ -742,7 +742,7 @@ test.describe("at the minimum window size", () => {
     await expectNoHorizontalOverflow(page);
     await expectWindowDoesNotScroll(page);
 
-    await page.getByRole("button", { name: "Category: All" }).click();
+    await page.getByRole("button", { name: /^All categories/ }).click();
     await page.getByRole("menuitem", { name: /Bid requests/ }).click();
     await expect(count(page)).toHaveText("17 of 402 requests");
     await expect(page.getByRole("group", { name: "State" }).getByRole("button")).toHaveCount(3);

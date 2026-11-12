@@ -33,7 +33,18 @@ export function itemKey(item: GridItem): string {
 
 const rowDomId = (key: string) => `net-item-${key.replaceAll(/[^\w-]/g, "_")}`;
 
-function GroupRow({ group, active, onToggle }: { group: GridGroup; active: boolean; onToggle: () => void }) {
+function GroupRow({
+  id,
+  group,
+  active,
+  onToggle,
+}: {
+  /** Absent on the copy pinned to the top, which stands in for a row scrolled out of view. */
+  id?: string;
+  group: GridGroup;
+  active: boolean;
+  onToggle: () => void;
+}) {
   const span =
     group.endMs === null
       ? `from ${formatDuration(group.startMs)}`
@@ -41,7 +52,9 @@ function GroupRow({ group, active, onToggle }: { group: GridGroup; active: boole
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the grid handles keys for its active row
     <div
+      id={id}
       role="row"
+      aria-level={1}
       aria-expanded={!group.collapsed}
       aria-selected={active}
       onClick={onToggle}
@@ -68,6 +81,8 @@ function GroupRow({ group, active, onToggle }: { group: GridGroup; active: boole
 }
 
 const DataRow = memo(function DataRow({
+  id,
+  level,
   indexed,
   columns,
   template,
@@ -78,6 +93,8 @@ const DataRow = memo(function DataRow({
   waterfallWidth,
   onSelect,
 }: {
+  id: string;
+  level: 1 | 2;
   indexed: IndexedRow;
   columns: ColumnDef[];
   template: string;
@@ -102,7 +119,9 @@ const DataRow = memo(function DataRow({
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: the grid handles keys for its active row
     <div
+      id={id}
       role="row"
+      aria-level={level}
       aria-rowindex={rowIndex}
       aria-selected={selected}
       title={row.url}
@@ -293,7 +312,9 @@ export function RequestGrid({
       hasModifier(event) &&
       event.key.toLowerCase() === "c" &&
       item?.kind === "row" &&
-      !window.getSelection()?.toString()
+      // Text selected in the page keeps the usual copy. A selection left behind in the filter field does not
+      // count: the document's own selection stays collapsed for it.
+      (window.getSelection()?.isCollapsed ?? true)
     ) {
       event.preventDefault();
       onCopyUrl(item.indexed.row.url);
@@ -347,11 +368,12 @@ export function RequestGrid({
   const span = scale.endMs - scale.startMs;
   const toPx = (ms: number) => ((ms - scale.startMs) / span) * waterfall.width;
   const dataRows = items.reduce((count, item) => count + (item.kind === "row" ? 1 : 0), 0);
+  const grouped = dataRows < items.length;
 
   return (
     <div
       ref={scroller}
-      role="grid"
+      role="treegrid"
       aria-label={label}
       aria-rowcount={dataRows + 1}
       aria-colcount={columns.length}
@@ -410,18 +432,21 @@ export function RequestGrid({
           return (
             <div
               key={key}
-              id={rowDomId(key)}
+              role="presentation"
               className="absolute inset-x-0 top-0"
               style={{ height: rowHeight, transform: `translateY(${virtual.start}px)` }}
             >
               {item.kind === "group" ? (
                 <GroupRow
+                  id={rowDomId(key)}
                   group={item.group}
                   active={key === activeKey}
                   onToggle={() => onToggleGroup(item.group.key)}
                 />
               ) : (
                 <DataRow
+                  id={rowDomId(key)}
+                  level={grouped ? 2 : 1}
                   indexed={item.indexed}
                   columns={columns}
                   template={template}

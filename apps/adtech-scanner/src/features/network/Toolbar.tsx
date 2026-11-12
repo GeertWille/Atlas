@@ -63,12 +63,7 @@ export function CategoryChips({
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <Button
-            variant="outline"
-            size="sm"
-            className="h-6 w-fit gap-1.5 rounded-full px-2.5 text-xs"
-            aria-label={`Category: ${category ? CATEGORY_META[category].label : "All"}`}
-          >
+          <Button variant="outline" size="sm" className="h-6 w-fit gap-1.5 rounded-full px-2.5 text-xs">
             <ListFilterIcon className="size-3.5!" />
             {category ? CATEGORY_META[category].label : "All categories"}
             <Count value={category ? (counts.byCategory[category] ?? 0) : counts.all} />
@@ -109,7 +104,6 @@ export function CategoryChips({
           key={candidate}
           type="button"
           aria-pressed={candidate === category}
-          aria-label={`${CATEGORY_META[candidate].label} ${counts.byCategory[candidate] ?? 0}`}
           title={`${CATEGORY_META[candidate].label}: ${CATEGORY_META[candidate].description}`}
           onClick={() => select(candidate === category ? null : candidate)}
           className={cn(chip, candidate !== category && idle)}
@@ -141,7 +135,6 @@ export function StateChips({
             key={state}
             type="button"
             aria-pressed={on}
-            aria-label={`${STATE_LABEL[state].label} ${counts[state]}`}
             title={`${STATE_LABEL[state].label}: ${STATE_LABEL[state].hint}`}
             onClick={() => onQueryChange(toggleToken(query, STATE_TOKENS[state]))}
             className={cn(chip, !on && idle)}
@@ -269,7 +262,7 @@ export function GroupMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="outline" size="sm" aria-label={`Group by: ${GROUP_LABEL[value]}`}>
+        <Button variant="outline" size="sm">
           <span className="text-muted-foreground">Group</span>
           {GROUP_LABEL[value]}
           <ChevronDownIcon className="text-subtle-foreground" />

@@ -61,7 +61,7 @@ export function NetworkRoute() {
         key={scanId}
         detail={scan.data}
         search={search}
-        onSearchChange={(next) => navigate({ search: next, replace: true })}
+        onSearchChange={(patch) => navigate({ search: (current) => ({ ...current, ...patch }), replace: true })}
       />
     );
   }

@@ -310,7 +310,7 @@
 <pre tabindex="0" class="selectable overflow-x-auto bg-code py-2.5 font-mono text-xs leading-[1.6]">
 <code class="block w-max min-w-full">
 <span class="flex" style="color: var(--foreground);">
-<span aria-hidden="true" class="w-11 shrink-0 pr-3 text-right text-subtle-foreground/70 tabular-nums select-none">211</span>
+<span aria-hidden="true" class="w-11 shrink-0 pr-3 text-right text-subtle-foreground tabular-nums select-none">211</span>
 <span class="pr-3 whitespace-pre">
 <span class="token keyword" style="color: var(--syn-keyword);">var</span>
 <span class="token plain"> </span>

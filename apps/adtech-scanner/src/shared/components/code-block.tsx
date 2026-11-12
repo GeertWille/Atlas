@@ -45,7 +45,7 @@ export function CodeBlock({
                 {startLine !== undefined ? (
                   <span
                     aria-hidden="true"
-                    className="w-11 shrink-0 pr-3 text-right text-subtle-foreground/70 tabular-nums select-none"
+                    className="w-11 shrink-0 pr-3 text-right text-subtle-foreground tabular-nums select-none"
                   >
                     {startLine + index}
                   </span>

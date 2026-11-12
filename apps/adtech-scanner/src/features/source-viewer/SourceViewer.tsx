@@ -130,8 +130,11 @@ export function SourceViewer({
   detail: ScanDetail;
   script: ScriptRecord;
   search: SourceSearch;
-  /** Selection and view changes replace the URL; they never add history entries. */
-  onSearchChange: (search: SourceSearch) => void;
+  /**
+   * Changes the named parts of the URL's state and leaves the rest as it is at that moment; `undefined`
+   * removes a part. Selection and view changes replace the URL; they never add history entries.
+   */
+  onSearchChange: (patch: SourceSearch) => void;
   onOpenScript: (scriptId: string) => void;
   onOpenFinding: (findingId: string) => void;
 }) {
@@ -197,19 +200,18 @@ export function SourceViewer({
   const urlTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const placeKey = `${scanId}|${script.id}|${viewKind}`;
 
-  // The delayed write must change the URL as it is then, not as it was when the caret moved.
-  const latestSearch = useRef(search);
+  // The URL's span as it is when a delayed write runs, not as it was when the caret moved.
+  const latestSpan = useRef<LineSpan | null>(null);
   useEffect(() => {
-    latestSearch.current = search;
-  }, [search]);
+    latestSpan.current = searchToSpan(search, lineCount);
+  }, [search, lineCount]);
 
   const writeSpan = (span: LineSpan) => {
     clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
-      const current = latestSearch.current;
-      if (sameSpan(span, searchToSpan(current, lineCount))) return;
+      if (sameSpan(span, latestSpan.current)) return;
       written.current = span;
-      onSearchChange({ ...current, ...spanToSearch(span), finding: undefined, oline: undefined, ocol: undefined });
+      onSearchChange({ ...spanToSearch(span), finding: undefined, oline: undefined, ocol: undefined });
     }, URL_WRITE_DELAY_MS);
   };
 
@@ -350,7 +352,14 @@ export function SourceViewer({
 
   const setViewKind = (next: SourceView) =>
     // Line numbers of one view mean nothing in the other.
-    onSearchChange({ view: next === "formatted" ? undefined : next });
+    onSearchChange({
+      view: next === "formatted" ? undefined : next,
+      line: undefined,
+      to: undefined,
+      finding: undefined,
+      oline: undefined,
+      ocol: undefined,
+    });
 
   const multiPage = detail.pages.length > 1;
   const networkAvailable = detail.network?.availability === "available" || detail.network?.availability === "evicted";

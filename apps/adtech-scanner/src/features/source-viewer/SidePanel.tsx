@@ -33,21 +33,10 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   );
 }
 
-function JumpButton({
-  line,
-  onJump,
-  children,
-  label,
-}: {
-  line: number;
-  onJump: () => void;
-  children: ReactNode;
-  label: string;
-}) {
+function JumpButton({ line, onJump, children }: { line: number; onJump: () => void; children: ReactNode }) {
   return (
     <button
       type="button"
-      aria-label={label}
       onClick={onJump}
       className="flex w-full items-start gap-2 px-3 py-1 text-left text-[13px] outline-offset-[-2px] hover:bg-accent"
     >
@@ -124,9 +113,9 @@ export function SidePanel({
                   <li key={lensKey(mark)}>
                     <JumpButton
                       line={mark.startLine}
-                      label={`${meta.label}: ${mark.title}, line ${mark.startLine}`}
                       onJump={() => onJump(mark.startLine, mark.endLine, lensKey(mark))}
                     >
+                      <span className="sr-only">{meta.label}: </span>
                       <Icon
                         aria-hidden="true"
                         className={cn(
@@ -163,11 +152,7 @@ export function SidePanel({
               {source.adCalls.map((call: AdCall, index) => (
                 // biome-ignore lint/suspicious/noArrayIndexKey: one line can hold the same call twice
                 <li key={`${call.name}-${call.line}-${index}`}>
-                  <JumpButton
-                    line={call.line}
-                    label={`${call.name}, line ${call.line}`}
-                    onJump={() => onJump(call.line, call.line)}
-                  >
+                  <JumpButton line={call.line} onJump={() => onJump(call.line, call.line)}>
                     <span className="min-w-0 truncate font-mono text-xs leading-[18px]">{call.name}</span>
                   </JumpButton>
                 </li>
@@ -200,11 +185,7 @@ export function SidePanel({
               <ul className="pb-1.5">
                 {ranges.map((range) => (
                   <li key={range.startLine}>
-                    <JumpButton
-                      line={range.startLine}
-                      label={`Lines ${range.startLine} to ${range.endLine}`}
-                      onJump={() => onJump(range.startLine, range.startLine)}
-                    >
+                    <JumpButton line={range.startLine} onJump={() => onJump(range.startLine, range.startLine)}>
                       <span className="text-xs leading-[18px] text-muted-foreground tabular-nums">
                         {formatInteger(range.endLine - range.startLine + 1)} lines
                       </span>

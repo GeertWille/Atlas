@@ -141,6 +141,10 @@ const severityRules = Object.fromEntries(
 );
 
 const findingTheme = EditorView.theme({
+  // The greys of comments and punctuation are tuned for the plain background; on a tint they need the next step.
+  ".cm-line[class*='cm-findingLine'] :is(.tok-comment, .tok-punctuation, .tok-meta)": {
+    color: "var(--muted-foreground)",
+  },
   ".cm-findingGutter": { width: "20px" },
   ".cm-findingGutter .cm-gutterElement": { display: "flex", alignItems: "center", justifyContent: "center" },
   ".cm-findingMarker": {

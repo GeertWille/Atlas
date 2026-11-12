@@ -51,8 +51,10 @@ test("an evidence chip opens the script at the cited lines, flashes them, and Ba
 test("F8 and Shift+F8 step through the findings of a file and wrap round", async ({ page }) => {
   await openApp(page, WRAPPER);
   await expect(
-    page.getByRole("complementary", { name: "In this file" }).getByRole("button", { name: /line 208/ }),
+    page.getByRole("complementary", { name: "In this file" }).getByRole("button", { name: /L208/ }),
   ).toBeVisible();
+  // The file's facts arrive before the editor does; the key belongs to the editor.
+  await expect(code(page).locator(".cm-line").first()).toBeVisible();
   await page.keyboard.press("F8");
   await expect(caret(page)).toHaveText("Ln 208, Col 1");
   await expect(page).toHaveURL(/line=208&to=215$/);
@@ -199,10 +201,10 @@ test("the side panel lists findings, ad API calls and what the AI read, and dims
   await openApp(page, WRAPPER);
   const panel = page.getByRole("complementary", { name: "In this file" });
   await expect(panel.getByRole("region", { name: "Findings" }).getByRole("button")).toHaveCount(3);
-  await panel.getByRole("button", { name: /800 ms failsafe.*line 318/ }).click();
+  await panel.getByRole("button", { name: /800 ms failsafe.*L318/ }).click();
   await expect(caret(page)).toHaveText("Ln 318, Col 1");
 
-  await panel.getByRole("button", { name: "requestBids, line 326" }).click();
+  await panel.getByRole("button", { name: /^requestBids\s*L326$/ }).click();
   await expect(caret(page)).toHaveText("Ln 326, Col 1");
   await expect(lineWith(page, "pbjs.requestBids({")).toBeInViewport();
 

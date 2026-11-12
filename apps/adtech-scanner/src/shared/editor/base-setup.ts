@@ -33,6 +33,8 @@ export function baseSetup(label: string): Extension {
   return [
     EditorState.readOnly.of(true),
     EditorView.contentAttributes.of({
+      // Editable content takes focus without this; saying so lets tools that only read the attribute see it.
+      tabindex: "0",
       "aria-label": label,
       "aria-readonly": "true",
       spellcheck: "false",

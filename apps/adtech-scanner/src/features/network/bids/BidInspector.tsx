@@ -59,7 +59,10 @@ function Cell({
     ? verdictSentence({ verdict: cell.verdict, lateByMs: cell.lateByMs, networkMs: cell.networkMs, error: row?.error })
     : BID_STATUS_META[cell.bid.status].description;
   const content = (
-    <span className="flex min-w-0 items-center gap-1.5">
+    <span className="flex min-w-0 flex-1 items-center gap-1.5">
+      <span className="sr-only">
+        {bidder} for {unit}:
+      </span>
       <Icon role="img" aria-label={style.label} className={cn("size-3.5 shrink-0", style.tone)} />
       <span className={cn("truncate tabular-nums", won && "font-semibold")}>{summary.primary}</span>
       {won ? (
@@ -78,7 +81,6 @@ function Cell({
         {cell.requestId ? (
           <button
             type="button"
-            aria-label={`${bidder} for ${unit}: ${summary.primary}${summary.secondary ? `, ${summary.secondary}` : ""}. Open the exchange`}
             aria-pressed={selected}
             onClick={() => onOpen(cell.requestId as string)}
             className={cn(

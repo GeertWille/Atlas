@@ -186,7 +186,8 @@ test("the sellers.json check is opt-in, survives a reload and shows in the next 
   await expect(checks.getByText("https://sportsdesk.example/ads.txt", { exact: false })).toBeVisible();
   await expect(checks.getByText("Looked up at the exchanges that ads.txt names")).toBeVisible();
   const openx = checks.getByRole("listitem", { name: "openx" });
-  await expect(openx.getByRole("img", { name: "Notice" })).toBeVisible();
+  // One notice is the sellers.json check; the other is what openx answered on the network.
+  await expect(openx.getByRole("img", { name: "Notice" })).toHaveCount(2);
   await expect(openx).toContainText("sellers.json: ads.txt lists seller id 544096208 at openx.com as DIRECT");
   await expect(openx.getByText("openx.com, 544096208, DIRECT", { exact: true })).toBeVisible();
 

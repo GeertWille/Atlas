@@ -26,7 +26,7 @@ const icon = (name: keyof typeof ICON_PATHS) =>
 const BUTTON_CLASS =
   "flex h-6 min-w-6 shrink-0 items-center justify-center rounded-md px-1 font-mono text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground aria-pressed:bg-primary-soft aria-pressed:text-primary-text";
 
-function button(label: string, content: string | SVGSVGElement, onClick: () => void): HTMLButtonElement {
+function button(label: string, content: Element, onClick: () => void): HTMLButtonElement {
   const element = document.createElement("button");
   element.type = "button";
   element.className = BUTTON_CLASS;
@@ -75,8 +75,13 @@ export function createSearchPanel(view: EditorView): Panel {
     if (query.valid) findNext(view);
   };
 
-  const toggle = (flag: keyof typeof flags, label: string, text: string) => {
-    const element = button(label, text, () => {
+  const toggle = (flag: keyof typeof flags, label: string, glyph: string) => {
+    // The glyph is a picture of the option, not its name: drawn by the style sheet, it is no text to speak or match.
+    const picture = document.createElement("span");
+    picture.setAttribute("aria-hidden", "true");
+    picture.dataset.glyph = glyph;
+    picture.className = "before:content-[attr(data-glyph)]";
+    const element = button(label, picture, () => {
       flags[flag] = !flags[flag];
       element.setAttribute("aria-pressed", String(flags[flag]));
       commit();

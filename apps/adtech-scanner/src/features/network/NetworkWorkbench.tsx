@@ -81,8 +81,11 @@ export function NetworkWorkbench({
 }: {
   detail: ScanDetail;
   search: NetworkSearch;
-  /** Every change here replaces the URL: filter, selection and window are not steps to go Back through. */
-  onSearchChange: (search: NetworkSearch) => void;
+  /**
+   * Changes the named parts of the URL's state and leaves the rest as it is at that moment; `undefined`
+   * removes a part. Every change replaces the URL: filter, selection and window are not steps to go Back through.
+   */
+  onSearchChange: (patch: NetworkSearch) => void;
 }) {
   const scanId = detail.summary.id;
   const state = networkState(detail);
@@ -112,11 +115,6 @@ export function NetworkWorkbench({
   const [draft, setDraft] = useState(search.q ?? "");
   const writtenQuery = useRef(search.q ?? "");
   const urlTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  // The delayed write must add the filter to the URL as it is then, not as it was when the key was pressed.
-  const latestSearch = useRef(search);
-  useEffect(() => {
-    latestSearch.current = search;
-  }, [search]);
   useEffect(() => {
     // A filter that arrives from outside (a link, Back) replaces what is typed; our own echo does not.
     if ((search.q ?? "") !== writtenQuery.current) {
@@ -131,7 +129,7 @@ export function NetworkWorkbench({
     clearTimeout(urlTimer.current);
     urlTimer.current = setTimeout(() => {
       writtenQuery.current = next;
-      onSearchChange({ ...latestSearch.current, q: next === "" ? undefined : next });
+      onSearchChange({ q: next === "" ? undefined : next });
       setRecents(pushRecent(recents, next));
     }, URL_WRITE_DELAY_MS);
   };
@@ -204,25 +202,13 @@ export function NetworkWorkbench({
   const openRequest = (requestId: string | undefined, dt?: DetailTab) => {
     if (requestId) setActiveChoice(requestId);
     else setMaximized(false);
-    onSearchChange({ ...search, req: requestId, dt: requestId ? (dt ?? search.dt) : undefined });
+    onSearchChange(requestId ? { req: requestId, ...(dt ? { dt } : {}) } : { req: undefined, dt: undefined });
   };
   const setWindow = (next: TimeWindow | null) =>
-    onSearchChange({
-      ...search,
-      from: next ? Math.round(next.fromMs) : undefined,
-      to: next ? Math.round(next.toMs) : undefined,
-    });
+    onSearchChange({ from: next ? Math.round(next.fromMs) : undefined, to: next ? Math.round(next.toMs) : undefined });
   const setPage = (next: number | undefined) =>
     // Another page view has its own clock: a window and a selection of this one mean nothing there.
-    onSearchChange({
-      ...search,
-      page: next,
-      from: undefined,
-      to: undefined,
-      req: undefined,
-      dt: undefined,
-      auction: undefined,
-    });
+    onSearchChange({ page: next, from: undefined, to: undefined, req: undefined, dt: undefined, auction: undefined });
   const toggleGroup = (key: string, fold?: boolean) => {
     const next = new Set(collapsed);
     if (fold ?? !next.has(key)) next.add(key);
@@ -233,7 +219,7 @@ export function NetworkWorkbench({
   // With the details open, the arrow keys move the selection and the details follow, as in DevTools.
   const moveActive = (key: string) => {
     setActiveChoice(key);
-    if (detailOpen && !key.startsWith("group:")) onSearchChange({ ...search, req: key });
+    if (detailOpen && !key.startsWith("group:")) onSearchChange({ req: key });
   };
 
   useEffect(() => {
@@ -259,16 +245,16 @@ export function NetworkWorkbench({
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey) return;
-      // Dialogs, menus and the editor's find bar take their own Escape.
+      // Dialogs, menus, lists and the editor's find bar take their own Escape. A tooltip that closes on the
+      // same key marks the event as handled, so that mark cannot be the test.
       if (
         event.key === "Escape" &&
-        !event.defaultPrevented &&
-        !target.closest("[role='dialog'], [role='menu'], .cm-panels")
+        !target.closest("[role='dialog'], [role='alertdialog'], [role='menu'], [role='listbox'], .cm-panels")
       ) {
         if (maximized) setMaximized(false);
         else if (detailOpen) {
           openRequest(undefined);
-          gridHost.current?.querySelector<HTMLElement>("[role='grid']")?.focus();
+          gridHost.current?.querySelector<HTMLElement>("[role='treegrid']")?.focus();
         } else if (timeWindow) setWindow(null);
         else return;
         event.preventDefault();
@@ -323,7 +309,7 @@ export function NetworkWorkbench({
         scan={detail}
         auctions={pageAuctions}
         auctionId={search.auction}
-        onAuctionChange={(auction) => onSearchChange({ ...search, auction })}
+        onAuctionChange={(auction) => onSearchChange({ auction })}
         rows={loaded.byId}
         selectedId={selected?.row.id}
         onOpen={(requestId) => openRequest(requestId)}
@@ -357,7 +343,7 @@ export function NetworkWorkbench({
         items={items}
         columns={columns}
         sort={sort}
-        onSort={(key) => onSearchChange({ ...search, sort: formatSort(nextSort(sort, key)) })}
+        onSort={(key) => onSearchChange({ sort: formatSort(nextSort(sort, key)) })}
         activeKey={activeKey}
         onActiveChange={moveActive}
         selectedId={selected?.row.id}
@@ -375,7 +361,7 @@ export function NetworkWorkbench({
       scan={detail}
       row={selected.row}
       tab={search.dt ?? "summary"}
-      onTabChange={(dt) => onSearchChange({ ...search, dt: dt === "summary" ? undefined : dt })}
+      onTabChange={(dt) => onSearchChange({ dt: dt === "summary" ? undefined : dt })}
       dock={dock}
       onDockChange={setDockChoice}
       maximized={maximized}
@@ -393,7 +379,7 @@ export function NetworkWorkbench({
             size="sm"
             aria-label="View"
             value={view}
-            onValueChange={(next) => onSearchChange({ ...search, view: next === "requests" ? undefined : next })}
+            onValueChange={(next) => onSearchChange({ view: next === "requests" ? undefined : next })}
           >
             <ToggleGroupItem value="requests">Requests</ToggleGroupItem>
             <ToggleGroupItem value="bids">Bid exchanges</ToggleGroupItem>
@@ -426,7 +412,7 @@ export function NetworkWorkbench({
               <GroupMenu
                 value={grouping}
                 multiPage={multiPage && page === undefined}
-                onChange={(group) => onSearchChange({ ...search, group })}
+                onChange={(group) => onSearchChange({ group })}
               />
               <ColumnsMenu
                 shown={columns}

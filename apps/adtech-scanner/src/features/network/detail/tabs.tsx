@@ -412,21 +412,21 @@ export function PayloadTab({ scanId, detail }: { scanId: string; detail: Network
           <dl className="pb-2">
             {params.map((param, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: a key can repeat in a query string
-              <div key={`${param.key}-${index}`} className="px-3 py-[3px] text-xs">
-                <div className="flex gap-3">
-                  <dt className="selectable w-36 shrink-0 font-medium break-words">{param.key}</dt>
-                  <dd className="selectable min-w-0 flex-1 font-mono break-all">{param.value}</dd>
-                </div>
+              <div key={`${param.key}-${index}`} className="flex flex-wrap gap-x-3 px-3 py-[3px] text-xs">
+                <dt className="selectable w-36 shrink-0 font-medium break-words">{param.key}</dt>
+                <dd className="selectable min-w-0 flex-1 font-mono break-all">{param.value}</dd>
                 {param.nested.length > 0 ? (
-                  <dl className="mt-0.5 ml-4 border-l pl-3">
-                    {param.nested.map((nested, nestedIndex) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: nested keys can repeat too
-                      <div key={`${nested.key}-${nestedIndex}`} className="flex gap-3 py-px">
-                        <dt className="selectable w-32 shrink-0 text-muted-foreground break-words">{nested.key}</dt>
-                        <dd className="selectable min-w-0 flex-1 font-mono break-all">{nested.value}</dd>
-                      </div>
-                    ))}
-                  </dl>
+                  <dd className="mt-0.5 ml-4 basis-full border-l pl-3">
+                    <dl>
+                      {param.nested.map((nested, nestedIndex) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: nested keys can repeat too
+                        <div key={`${nested.key}-${nestedIndex}`} className="flex gap-3 py-px">
+                          <dt className="selectable w-32 shrink-0 text-muted-foreground break-words">{nested.key}</dt>
+                          <dd className="selectable min-w-0 flex-1 font-mono break-all">{nested.value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </dd>
                 ) : null}
               </div>
             ))}

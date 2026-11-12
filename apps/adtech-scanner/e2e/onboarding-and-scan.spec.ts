@@ -120,10 +120,16 @@ test("an AI scan streams cost, tool calls and findings, then links evidence to i
   await expect(critical.getByText("~34% revenue at risk")).toBeVisible();
   await expect(critical.getByText("var IS_MOBILE = window.screen.width < 1440;")).toBeVisible();
 
-  // Deep link: evidence → the script row it came from.
+  // Deep link: evidence → the script's stored source at the cited lines, and Back returns to the finding.
   await critical.getByRole("button", { name: /hb-wrapper\.min\.js:208/ }).click();
-  await expect(reportTab(page, "Scripts")).toHaveAttribute("aria-selected", "true");
+  await expect(page).toHaveURL(/\/source\/s\d+\?line=208&to=215&finding=/);
+  await expect(page.getByRole("heading", { level: 1, name: "hb-wrapper.min.js" })).toBeVisible();
+  await page.goBack();
+  await expect(critical).toBeVisible();
+  // The script's row in the report says how it was triaged.
+  await reportTab(page, "Scripts").click();
   await expect(page).toHaveURL(/tab=scripts/);
+  await page.getByRole("row", { name: /hb-wrapper\.min\.js/ }).click();
   await expect(page.getByRole("row", { name: /hb-wrapper\.min\.js/ })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("region", { name: "Script details" })).toContainText("handed to Phase 2");
 
