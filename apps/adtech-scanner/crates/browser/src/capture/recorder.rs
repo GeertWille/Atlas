@@ -20,9 +20,7 @@ use url::Url;
 
 use crate::cdp::{Cdp, CdpError, CdpEvent};
 
-use super::bid_endpoints::{
-    BidRequest, BidResponseLog, MAX_BODY_BYTES, no_bid_reason, short,
-};
+use super::bid_endpoints::{BidRequest, BidResponseLog, MAX_BODY_BYTES, no_bid_reason, short};
 use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, is_tracker_script};
 use super::network::assembly::{Assembler, Ended, Finished, Output, Reporter, Source};
@@ -446,9 +444,7 @@ impl Recorder {
             page_url: &self.document_url,
             now_ms: epoch_ms_now(),
         };
-        let outputs = self
-            .requests
-            .observe(&source, &event.method, &event.params);
+        let outputs = self.requests.observe(&source, &event.method, &event.params);
         for output in outputs {
             match output {
                 Output::PostDataWanted {
@@ -722,7 +718,8 @@ impl Recorder {
                 let request_seq = self.sink.is_some().then_some(seq);
                 let text = || response.as_ref().ok().and_then(response_text);
                 if let Some(answer) = bid {
-                    let reason = text().and_then(|body| no_bid_reason(answer.request.bidder, &body));
+                    let reason =
+                        text().and_then(|body| no_bid_reason(answer.request.bidder, &body));
                     self.bid_responses.record(
                         answer.request,
                         Some(answer.answered_at_epoch_ms),
@@ -749,13 +746,15 @@ impl Recorder {
                 admission
             }
             Fetched::RequestBody { seq, response } => {
-                let text = response.ok().and_then(|mut result| match result["postData"].take() {
-                    Value::String(text) => Some(text),
-                    _ => None,
-                });
-                let settled =
-                    self.requests
-                        .post_data_settled(seq, text.as_deref(), epoch_ms_now());
+                let text = response
+                    .ok()
+                    .and_then(|mut result| match result["postData"].take() {
+                        Value::String(text) => Some(text),
+                        _ => None,
+                    });
+                let settled = self
+                    .requests
+                    .post_data_settled(seq, text.as_deref(), epoch_ms_now());
                 self.hand_over(settled);
                 None
             }

@@ -311,9 +311,7 @@ impl Page {
     /// An event of an iframe or worker below a tab, or of a shared worker.
     fn on_child_event(&mut self, session_id: &str, event: &CdpEvent) {
         match event.method.as_str() {
-            "Target.attachedToTarget" => {
-                self.adopt_child_target(Some(session_id), &event.params)
-            }
+            "Target.attachedToTarget" => self.adopt_child_target(Some(session_id), &event.params),
             "Target.detachedFromTarget" => self
                 .children
                 .detached(event.params["sessionId"].as_str().unwrap_or_default()),
@@ -411,9 +409,7 @@ impl Page {
     /// What is handled the same way in every tab. Returns whether it was.
     fn on_any_tab_event(&mut self, session_id: &str, event: &CdpEvent) -> bool {
         match event.method.as_str() {
-            "Target.attachedToTarget" => {
-                self.adopt_child_target(Some(session_id), &event.params)
-            }
+            "Target.attachedToTarget" => self.adopt_child_target(Some(session_id), &event.params),
             "Target.detachedFromTarget" => {
                 let child = event.params["sessionId"].as_str().unwrap_or_default();
                 self.children.detached(child);

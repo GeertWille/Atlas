@@ -85,15 +85,17 @@ pub(crate) fn call_frames(stack: &Value) -> Vec<CallFrame> {
     while stack.is_object() && frames.len() < MAX_INITIATOR_FRAMES {
         let room = MAX_INITIATOR_FRAMES - frames.len();
         let of_this_stack = stack["callFrames"].as_array().into_iter().flatten();
-        frames.extend(of_this_stack.take(room).map(|frame| CallFrame {
-            function: frame["functionName"]
-                .as_str()
-                .filter(|name| !name.is_empty())
-                .map(str::to_string),
-            url: frame["url"].as_str().unwrap_or_default().to_string(),
-            script_id: frame["scriptId"].as_str().unwrap_or_default().to_string(),
-            line: position(&frame["lineNumber"]).unwrap_or(0),
-            column: position(&frame["columnNumber"]).unwrap_or(0),
+        frames.extend(of_this_stack.take(room).map(|frame| {
+            CallFrame {
+                function: frame["functionName"]
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+                url: frame["url"].as_str().unwrap_or_default().to_string(),
+                script_id: frame["scriptId"].as_str().unwrap_or_default().to_string(),
+                line: position(&frame["lineNumber"]).unwrap_or(0),
+                column: position(&frame["columnNumber"]).unwrap_or(0),
+            }
         }));
         stack = &stack["parent"];
     }
@@ -142,7 +144,9 @@ pub(crate) fn post_data(text: &str) -> CapturedPostData {
 pub(crate) fn captured_body(result: Result<Value, CdpError>, max_bytes: usize) -> CapturedBody {
     let result = match result {
         Ok(result) => result,
-        Err(CdpError::Rejected { message, .. }) => return CapturedBody::Unavailable(short(&message)),
+        Err(CdpError::Rejected { message, .. }) => {
+            return CapturedBody::Unavailable(short(&message));
+        }
         Err(error) => return CapturedBody::Unavailable(short(&error.to_string())),
     };
     let Some(body) = result["body"].as_str() else {
@@ -214,7 +218,13 @@ mod tests {
         assert_eq!(resource_kind("XHR"), ResourceKind::Xhr);
         assert_eq!(resource_kind("Preflight"), ResourceKind::Preflight);
         assert_eq!(resource_kind("EventSource"), ResourceKind::EventSource);
-        for other in ["TextTrack", "Manifest", "Prefetch", "CSPViolationReport", ""] {
+        for other in [
+            "TextTrack",
+            "Manifest",
+            "Prefetch",
+            "CSPViolationReport",
+            "",
+        ] {
             assert_eq!(resource_kind(other), ResourceKind::Other, "{other}");
         }
         assert_eq!(initiator_kind("parser"), InitiatorKind::Parser);
@@ -252,7 +262,8 @@ mod tests {
     #[test]
     fn a_deep_stack_is_cut_at_the_frame_limit() {
         let frame = json!({ "functionName": "f", "scriptId": "1", "url": "u", "lineNumber": 1, "columnNumber": 1 });
-        let level = |parent: Value| json!({ "callFrames": vec![frame.clone(); 20], "parent": parent });
+        let level =
+            |parent: Value| json!({ "callFrames": vec![frame.clone(); 20], "parent": parent });
         let stack = level(level(level(Value::Null)));
         assert_eq!(call_frames(&stack).len(), MAX_INITIATOR_FRAMES);
     }

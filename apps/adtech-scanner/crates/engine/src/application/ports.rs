@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use adscan_model::{
     AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureActivity,
-    CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit, NetworkSink,
-    PageView, PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
+    CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit,
+    NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView, PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
     ScanListQuery, ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
@@ -359,6 +359,24 @@ pub struct ArchiveRecord {
     /// Bodies were left out because of the scan cap or back-pressure.
     pub truncated: bool,
     pub created_at: f64,
+}
+
+impl ArchiveRecord {
+    /// The archive as the report shows it.
+    pub fn info(&self) -> NetworkArchiveInfo {
+        NetworkArchiveInfo {
+            availability: match self.state {
+                ArchiveState::Writing | ArchiveState::Sealed => NetworkAvailability::Available,
+                ArchiveState::Evicted => NetworkAvailability::Evicted,
+                ArchiveState::Disabled => NetworkAvailability::Disabled,
+            },
+            request_count: self.request_count,
+            body_count: self.body_count,
+            stored_bytes: self.pack_bytes as f64,
+            headers_redacted: self.headers_redacted,
+            truncated: self.truncated,
+        }
+    }
 }
 
 /// Totals written when a scan's pack is sealed.

@@ -125,7 +125,11 @@ fn header_of<'a>(headers: &'a [RawHeader], name: &str) -> Option<&'a str> {
 /// Runs one request with a body through the assembler and returns its record.
 fn fetched(assembler: &mut Assembler, id: &str, url: &str, at: f64) -> NetworkRecord {
     let now = epoch(at);
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request(id, url, at));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request(id, url, at),
+    );
     assembler.observe(&tab(now), "Network.responseReceived", &{
         let mut response = response(id, 200, at + 0.1);
         response["hasExtraInfo"] = json!(false);
@@ -150,7 +154,11 @@ fn a_request_is_assembled_from_its_events_and_handed_over_with_its_body() {
 
     assert!(
         assembler
-            .observe(&tab(now), "Network.requestWillBeSent", &request("1.1", url, 1_002.0))
+            .observe(
+                &tab(now),
+                "Network.requestWillBeSent",
+                &request("1.1", url, 1_002.0)
+            )
             .is_empty()
     );
     assembler.observe(
@@ -163,7 +171,11 @@ fn a_request_is_assembled_from_its_events_and_handed_over_with_its_body() {
         "Network.responseReceivedExtraInfo",
         &response_extra("1.1", "seen=1"),
     );
-    assembler.observe(&tab(now), "Network.responseReceived", &response("1.1", 200, 1_002.1));
+    assembler.observe(
+        &tab(now),
+        "Network.responseReceived",
+        &response("1.1", 200, 1_002.1),
+    );
     for length in [1_000, 234] {
         assembler.observe(
             &tab(now),
@@ -222,7 +234,10 @@ fn a_request_is_assembled_from_its_events_and_handed_over_with_its_body() {
         Some("sid=abc"),
         "what was sent, not the provisional headers"
     );
-    assert_eq!(header_of(&record.response_headers, "set-cookie"), Some("seen=1"));
+    assert_eq!(
+        header_of(&record.response_headers, "set-cookie"),
+        Some("seen=1")
+    );
     assert_eq!(record.status, Some(200));
     assert_eq!(record.mime_type.as_deref(), Some("application/json"));
     assert_eq!(record.protocol.as_deref(), Some("h2"));
@@ -273,13 +288,22 @@ fn extra_info_that_comes_first_is_kept_for_its_request() {
         "Network.responseReceivedExtraInfo",
         &response_extra("1.2", "r=1"),
     );
-    assembler.observe(&tab(now), "Network.responseReceived", &response("1.2", 204, 1_001.1));
-    let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished("1.2", 1_001.2, 90));
-    let seq = finished_of(&outputs).unwrap().seq;
-    let record = record(
-        ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0),
+    assembler.observe(
+        &tab(now),
+        "Network.responseReceived",
+        &response("1.2", 204, 1_001.1),
     );
-    assert_eq!(header_of(&record.request_headers, "cookie"), Some("early=1"));
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("1.2", 1_001.2, 90),
+    );
+    let seq = finished_of(&outputs).unwrap().seq;
+    let record = record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
+    assert_eq!(
+        header_of(&record.request_headers, "cookie"),
+        Some("early=1")
+    );
     assert_eq!(record.body, CapturedBody::Empty);
 }
 
@@ -293,8 +317,16 @@ fn an_ended_request_waits_for_late_extra_info_but_not_for_ever() {
             "Network.requestWillBeSent",
             &request(id, "https://a.example/x", 1_001.0),
         );
-        assembler.observe(&tab(at), "Network.responseReceived", &response(id, 200, 1_001.1));
-        let outputs = assembler.observe(&tab(at), "Network.loadingFinished", &finished(id, 1_001.2, 90));
+        assembler.observe(
+            &tab(at),
+            "Network.responseReceived",
+            &response(id, 200, 1_001.1),
+        );
+        let outputs = assembler.observe(
+            &tab(at),
+            "Network.loadingFinished",
+            &finished(id, 1_001.2, 90),
+        );
         let seq = finished_of(&outputs).unwrap().seq;
         let skipped = CapturedBody::Skipped(BodySkip::Type);
         assert!(
@@ -317,7 +349,10 @@ fn an_ended_request_waits_for_late_extra_info_but_not_for_ever() {
     let first = record(ended(outputs).remove(0));
     assert_eq!(first.seq, 0);
     assert_eq!(header_of(&first.request_headers, "cookie"), Some("late=1"));
-    assert_eq!(header_of(&first.response_headers, "set-cookie"), Some("late=2"));
+    assert_eq!(
+        header_of(&first.response_headers, "set-cookie"),
+        Some("late=2")
+    );
 
     // For the second it never does: the next event after the wait frees it.
     let outputs = assembler.observe(
@@ -362,24 +397,61 @@ fn every_redirect_hop_is_a_record_linked_to_the_hop_before() {
         offer
     };
 
-    observe(&mut assembler, "Network.requestWillBeSentExtraInfo", request_extra("9.1", "hop=1"));
-    observe(&mut assembler, "Network.requestWillBeSent", hop("https://sync.a.example/start", 1_010.0, None));
-    observe(&mut assembler, "Network.responseReceivedExtraInfo", response_extra("9.1", "set=1"));
+    observe(
+        &mut assembler,
+        "Network.requestWillBeSentExtraInfo",
+        request_extra("9.1", "hop=1"),
+    );
+    observe(
+        &mut assembler,
+        "Network.requestWillBeSent",
+        hop("https://sync.a.example/start", 1_010.0, None),
+    );
+    observe(
+        &mut assembler,
+        "Network.responseReceivedExtraInfo",
+        response_extra("9.1", "set=1"),
+    );
     // The second hop is answered from the browser's cache: no ExtraInfo.
     observe(
         &mut assembler,
         "Network.requestWillBeSent",
-        hop("https://sync.b.example/match", 1_010.1, Some(("https://sync.b.example/match", true))),
+        hop(
+            "https://sync.b.example/match",
+            1_010.1,
+            Some(("https://sync.b.example/match", true)),
+        ),
     );
     observe(
         &mut assembler,
         "Network.requestWillBeSent",
-        hop("https://sync.a.example/done.gif", 1_010.2, Some(("https://sync.a.example/done.gif", false))),
+        hop(
+            "https://sync.a.example/done.gif",
+            1_010.2,
+            Some(("https://sync.a.example/done.gif", false)),
+        ),
     );
-    observe(&mut assembler, "Network.requestWillBeSentExtraInfo", request_extra("9.1", "hop=3"));
-    observe(&mut assembler, "Network.responseReceivedExtraInfo", response_extra("9.1", "set=3"));
-    observe(&mut assembler, "Network.responseReceived", response("9.1", 200, 1_010.3));
-    let offer = observe(&mut assembler, "Network.loadingFinished", finished("9.1", 1_010.35, 43)).unwrap();
+    observe(
+        &mut assembler,
+        "Network.requestWillBeSentExtraInfo",
+        request_extra("9.1", "hop=3"),
+    );
+    observe(
+        &mut assembler,
+        "Network.responseReceivedExtraInfo",
+        response_extra("9.1", "set=3"),
+    );
+    observe(
+        &mut assembler,
+        "Network.responseReceived",
+        response("9.1", 200, 1_010.3),
+    );
+    let offer = observe(
+        &mut assembler,
+        "Network.loadingFinished",
+        finished("9.1", 1_010.35, 43),
+    )
+    .unwrap();
     assert_eq!(offer.seq, 2, "only the last hop has a body");
     records.extend(
         ended(assembler.body_settled(2, CapturedBody::Skipped(BodySkip::Type), now))
@@ -446,13 +518,25 @@ fn every_redirect_hop_is_a_record_linked_to_the_hop_before() {
 fn a_body_is_handed_over_at_once_even_when_earlier_hops_still_wait() {
     let mut assembler = Assembler::default();
     let now = epoch(1_010.0);
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request("9.2", "https://a.example/1", 1_010.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("9.2", "https://a.example/1", 1_010.0),
+    );
     let mut second = request("9.2", "https://a.example/2", 1_010.1);
     second["redirectResponse"] = json!({ "status": 301, "headers": {} });
     second["redirectHasExtraInfo"] = json!(true);
     assert!(ended(assembler.observe(&tab(now), "Network.requestWillBeSent", &second)).is_empty());
-    assembler.observe(&tab(now), "Network.responseReceived", &response("9.2", 200, 1_010.2));
-    assembler.observe(&tab(now), "Network.loadingFinished", &finished("9.2", 1_010.3, 500));
+    assembler.observe(
+        &tab(now),
+        "Network.responseReceived",
+        &response("9.2", 200, 1_010.2),
+    );
+    assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("9.2", 1_010.3, 500),
+    );
 
     let body = CapturedBody::Read {
         bytes: vec![1, 2, 3],
@@ -482,7 +566,11 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
         answer["type"] = json!("Preflight");
         answer["hasExtraInfo"] = json!(false);
         assembler.observe(&tab(now), "Network.responseReceived", &answer);
-        let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished(id, at + 0.02, 0));
+        let outputs = assembler.observe(
+            &tab(now),
+            "Network.loadingFinished",
+            &finished(id, at + 0.02, 0),
+        );
         let seq = finished_of(&outputs).unwrap().seq;
         ended(assembler.body_settled(seq, CapturedBody::Skipped(BodySkip::Type), now))
     };
@@ -490,7 +578,11 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
     // Chrome announces the preflight, and finishes it, before the request.
     let mut assembler = Assembler::default();
     let now = epoch(1_020.0);
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &preflight("P1", "5.5", 1_020.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &preflight("P1", "5.5", 1_020.0),
+    );
     assert!(
         end_preflight(&mut assembler, "P1", 1_020.0).is_empty(),
         "kept until the request it belongs to is known"
@@ -514,13 +606,21 @@ fn a_preflight_names_its_request_whichever_is_announced_first() {
         "Network.requestWillBeSent",
         &request("5.6", "https://bid.example/auction", 1_020.0),
     );
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &preflight("P2", "5.6", 1_020.01));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &preflight("P2", "5.6", 1_020.01),
+    );
     let record = record(end_preflight(&mut assembler, "P2", 1_020.01).remove(0));
     assert_eq!((record.seq, record.preflight_of), (1, Some(0)));
 
     // A request that is never announced does not keep its preflight for ever.
     let mut assembler = Assembler::default();
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &preflight("P3", "5.7", 1_020.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &preflight("P3", "5.7", 1_020.0),
+    );
     assert!(end_preflight(&mut assembler, "P3", 1_020.0).is_empty());
     let outputs = assembler.observe(
         &tab(now + SETTLE_GRACE_MS + 30.0),
@@ -536,15 +636,27 @@ fn where_a_response_came_from_is_read_from_the_browser() {
     let served = |change: &dyn Fn(&mut Value), memory_cache: bool| {
         let mut assembler = Assembler::default();
         let now = epoch(1_001.0);
-        assembler.observe(&tab(now), "Network.requestWillBeSent", &request("1.1", "https://a.example/x", 1_001.0));
+        assembler.observe(
+            &tab(now),
+            "Network.requestWillBeSent",
+            &request("1.1", "https://a.example/x", 1_001.0),
+        );
         if memory_cache {
-            assembler.observe(&tab(now), "Network.requestServedFromCache", &json!({ "requestId": "1.1" }));
+            assembler.observe(
+                &tab(now),
+                "Network.requestServedFromCache",
+                &json!({ "requestId": "1.1" }),
+            );
         }
         let mut answer = response("1.1", 200, 1_001.1);
         answer["hasExtraInfo"] = json!(false);
         change(&mut answer["response"]);
         assembler.observe(&tab(now), "Network.responseReceived", &answer);
-        let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished("1.1", 1_001.2, 0));
+        let outputs = assembler.observe(
+            &tab(now),
+            "Network.loadingFinished",
+            &finished("1.1", 1_001.2, 0),
+        );
         let seq = finished_of(&outputs).unwrap().seq;
         record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0)).served_from
     };
@@ -555,7 +667,10 @@ fn where_a_response_came_from_is_read_from_the_browser() {
         ServedFrom::DiskCache
     );
     assert_eq!(
-        served(&|response| response["fromServiceWorker"] = json!(true), false),
+        served(
+            &|response| response["fromServiceWorker"] = json!(true),
+            false
+        ),
         ServedFrom::ServiceWorker
     );
     assert_eq!(
@@ -578,23 +693,46 @@ fn the_events_of_one_request_may_come_from_several_sessions() {
     let mut script = request("W1", "https://www.pub.example/worker.js", 1_030.0);
     script["type"] = json!("Script");
     assembler.observe(&tab(now), "Network.requestWillBeSent", &script);
-    assembler.observe(&tab(now), "Network.requestWillBeSentExtraInfo", &request_extra("W1", "a=1"));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("W1", "a=1"),
+    );
     let worker = child("worker", Reporter::Worker, now);
     // The same request, should a second session announce it too.
-    assert!(assembler.observe(&worker, "Network.requestWillBeSent", &script).is_empty());
-    assembler.observe(&worker, "Network.responseReceivedExtraInfo", &response_extra("W1", "b=1"));
+    assert!(
+        assembler
+            .observe(&worker, "Network.requestWillBeSent", &script)
+            .is_empty()
+    );
+    assembler.observe(
+        &worker,
+        "Network.responseReceivedExtraInfo",
+        &response_extra("W1", "b=1"),
+    );
     let mut answer = response("W1", 200, 1_030.1);
     answer["type"] = json!("Script");
     assembler.observe(&worker, "Network.responseReceived", &answer);
-    let outputs = assembler.observe(&worker, "Network.loadingFinished", &finished("W1", 1_030.2, 400));
+    let outputs = assembler.observe(
+        &worker,
+        "Network.loadingFinished",
+        &finished("W1", 1_030.2, 400),
+    );
 
     let offer = finished_of(&outputs).unwrap();
-    assert_eq!(offer.session, "worker", "only the worker's session has the body");
+    assert_eq!(
+        offer.session, "worker",
+        "only the worker's session has the body"
+    );
     assert!(!offer.in_tab);
     let mut records = ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now));
     assert_eq!(records.len(), 1, "one request, one record");
     let record = record(records.remove(0));
-    assert_eq!(record.context, RequestContext::Page, "the page asked for it");
+    assert_eq!(
+        record.context,
+        RequestContext::Page,
+        "the page asked for it"
+    );
     assert_eq!(record.target_id, None);
     assert_eq!(record.kind, ResourceKind::Script);
 
@@ -602,12 +740,29 @@ fn the_events_of_one_request_may_come_from_several_sessions() {
     let mut fetch = request("W2", "https://www.pub.example/config.json", 1_031.0);
     fetch.as_object_mut().unwrap().remove("frameId");
     assembler.observe(&worker, "Network.requestWillBeSent", &fetch);
-    assembler.observe(&tab(now), "Network.requestWillBeSentExtraInfo", &request_extra("W2", "c=1"));
-    assembler.observe(&tab(now), "Network.responseReceivedExtraInfo", &response_extra("W2", "d=1"));
-    assembler.observe(&worker, "Network.responseReceived", &response("W2", 200, 1_031.1));
-    let outputs = assembler.observe(&worker, "Network.loadingFinished", &finished("W2", 1_031.2, 400));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("W2", "c=1"),
+    );
+    assembler.observe(
+        &tab(now),
+        "Network.responseReceivedExtraInfo",
+        &response_extra("W2", "d=1"),
+    );
+    assembler.observe(
+        &worker,
+        "Network.responseReceived",
+        &response("W2", 200, 1_031.1),
+    );
+    let outputs = assembler.observe(
+        &worker,
+        "Network.loadingFinished",
+        &finished("W2", 1_031.2, 400),
+    );
     let seq = finished_of(&outputs).unwrap().seq;
-    let record = self::record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
+    let record =
+        self::record(ended(assembler.body_settled(seq, CapturedBody::Empty, now)).remove(0));
     assert_eq!(record.context, RequestContext::Worker);
     assert_eq!(record.target_id.as_deref(), Some("child-target"));
     assert_eq!(record.frame_id, None);
@@ -622,10 +777,18 @@ fn the_frame_and_the_session_decide_where_a_request_was_made() {
     let record = {
         let now = epoch(1_001.0);
         assembler.observe(&tab(now), "Network.requestWillBeSent", &in_frame);
-        assembler.observe(&tab(now), "Network.loadingFailed", &failed("1.1", 1_001.1, "net::ERR_FAILED"));
+        assembler.observe(
+            &tab(now),
+            "Network.loadingFailed",
+            &failed("1.1", 1_001.1, "net::ERR_FAILED"),
+        );
         record(assembler.finish().remove(0))
     };
-    assert_eq!(record.context, RequestContext::Iframe, "a frame of the page's own process");
+    assert_eq!(
+        record.context,
+        RequestContext::Iframe,
+        "a frame of the page's own process"
+    );
     assert_eq!(record.target_id, None);
 
     for (reporter, context) in [
@@ -635,7 +798,11 @@ fn the_frame_and_the_session_decide_where_a_request_was_made() {
     ] {
         let now = epoch(1_002.0);
         let source = child("child", reporter, now);
-        assembler.observe(&source, "Network.requestWillBeSent", &request("2.1", "https://ads.example/x", 1_002.0));
+        assembler.observe(
+            &source,
+            "Network.requestWillBeSent",
+            &request("2.1", "https://ads.example/x", 1_002.0),
+        );
         let record = self::record(assembler.finish().remove(0));
         assert_eq!(record.context, context);
         assert_eq!(record.target_id.as_deref(), Some("child-target"));
@@ -647,7 +814,10 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
     let mut assembler = Assembler::default();
     let now = epoch(1_040.0);
     let mut events = vec![
-        ("refused", failed("1.1", 1_040.1, "net::ERR_CONNECTION_REFUSED")),
+        (
+            "refused",
+            failed("1.1", 1_040.1, "net::ERR_CONNECTION_REFUSED"),
+        ),
         ("blocked", {
             let mut event = failed("1.2", 1_040.1, "net::ERR_BLOCKED_BY_CLIENT");
             event["blockedReason"] = json!("inspector");
@@ -655,7 +825,8 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
         }),
         ("cors", {
             let mut event = failed("1.3", 1_040.1, "net::ERR_FAILED");
-            event["corsErrorStatus"] = json!({ "corsError": "MissingAllowOriginHeader", "failedParameter": "" });
+            event["corsErrorStatus"] =
+                json!({ "corsError": "MissingAllowOriginHeader", "failedParameter": "" });
             event
         }),
         ("aborted", {
@@ -671,17 +842,27 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
         } else {
             format!("https://a.example/{index}")
         };
-        assembler.observe(&tab(now), "Network.requestWillBeSent", &request(&id, &url, 1_040.0));
+        assembler.observe(
+            &tab(now),
+            "Network.requestWillBeSent",
+            &request(&id, &url, 1_040.0),
+        );
         assembler.observe(&tab(now), "Network.loadingFailed", failure);
     }
     let failures = assembler.finish();
     assert_eq!(failures.len(), 4);
     let (bid, failed_at, why) = failures[0].failed_bid().expect("a bid request");
-    assert_eq!((bid.bidder, why.as_str()), ("openx", "net::ERR_CONNECTION_REFUSED"));
+    assert_eq!(
+        (bid.bidder, why.as_str()),
+        ("openx", "net::ERR_CONNECTION_REFUSED")
+    );
     assert_eq!(failed_at.round(), epoch(1_040.1).round());
     assert!(failures[1].failed_bid().is_none(), "not a bid request");
 
-    let ends: Vec<RequestEnd> = failures.into_iter().map(|ended| record(ended).end).collect();
+    let ends: Vec<RequestEnd> = failures
+        .into_iter()
+        .map(|ended| record(ended).end)
+        .collect();
     let failed = |error: &str, cancelled: bool, blocked_reason: Option<&str>| RequestEnd::Failed {
         error: error.into(),
         cancelled,
@@ -702,10 +883,18 @@ fn failures_keep_their_reason_and_a_failed_bid_request_is_told() {
 fn a_failed_request_has_no_body_and_is_handed_over_once_its_headers_are_known() {
     let mut assembler = Assembler::default();
     let now = epoch(1_040.0);
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request("1.1", "https://a.example/x", 1_040.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("1.1", "https://a.example/x", 1_040.0),
+    );
     assert!(
-        ended(assembler.observe(&tab(now), "Network.loadingFailed", &failed("1.1", 1_040.1, "net::ERR_TIMED_OUT")))
-            .is_empty()
+        ended(assembler.observe(
+            &tab(now),
+            "Network.loadingFailed",
+            &failed("1.1", 1_040.1, "net::ERR_TIMED_OUT")
+        ))
+        .is_empty()
     );
     let outputs = assembler.observe(
         &tab(now),
@@ -725,7 +914,11 @@ fn what_is_still_open_at_the_end_is_handed_over_as_pending_in_order() {
     let mut assembler = Assembler::default();
     let now = epoch(1_050.0);
     // Never answered.
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request("1.1", "https://a.example/never", 1_050.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("1.1", "https://a.example/never", 1_050.0),
+    );
     // Answered, still streaming.
     let mut stream = request("1.2", "https://a.example/events", 1_050.1);
     stream["type"] = json!("EventSource");
@@ -734,8 +927,16 @@ fn what_is_still_open_at_the_end_is_handed_over_as_pending_in_order() {
     answer["type"] = json!("EventSource");
     assembler.observe(&tab(now), "Network.responseReceived", &answer);
     // Finished, but the browser never handed the body over.
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request("1.3", "https://a.example/slow-body", 1_050.2));
-    assembler.observe(&tab(now), "Network.loadingFinished", &finished("1.3", 1_050.3, 10));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("1.3", "https://a.example/slow-body", 1_050.2),
+    );
+    assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("1.3", 1_050.3, 10),
+    );
 
     let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(record).collect();
     assert_eq!(records.iter().map(|r| r.seq).collect::<Vec<_>>(), [0, 1, 2]);
@@ -751,7 +952,11 @@ fn what_is_still_open_at_the_end_is_handed_over_as_pending_in_order() {
 
     assert!(assembler.finish().is_empty());
     // An answer that comes after the end changes nothing.
-    assert!(assembler.body_settled(2, CapturedBody::Empty, now).is_empty());
+    assert!(
+        assembler
+            .body_settled(2, CapturedBody::Empty, now)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -762,19 +967,46 @@ fn nothing_is_recorded_while_the_tab_shows_another_site() {
         recording: false,
         ..tab(now)
     };
-    assembler.observe(&elsewhere, "Network.requestWillBeSentExtraInfo", &request_extra("1.1", "x=1"));
-    assembler.observe(&elsewhere, "Network.requestWillBeSent", &request("1.1", "https://other.example/x", 1_060.0));
-    assembler.observe(&elsewhere, "Network.responseReceived", &response("1.1", 200, 1_060.1));
-    let outputs = assembler.observe(&elsewhere, "Network.loadingFinished", &finished("1.1", 1_060.2, 10));
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("1.1", "x=1"),
+    );
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSent",
+        &request("1.1", "https://other.example/x", 1_060.0),
+    );
+    assembler.observe(
+        &elsewhere,
+        "Network.responseReceived",
+        &response("1.1", 200, 1_060.1),
+    );
+    let outputs = assembler.observe(
+        &elsewhere,
+        "Network.loadingFinished",
+        &finished("1.1", 1_060.2, 10),
+    );
     assert!(outputs.is_empty());
-    assembler.observe(&elsewhere, "Network.webSocketCreated", &json!({ "requestId": "1.2", "url": "wss://other.example/" }));
+    assembler.observe(
+        &elsewhere,
+        "Network.webSocketCreated",
+        &json!({ "requestId": "1.2", "url": "wss://other.example/" }),
+    );
     assert!(assembler.finish().is_empty());
 
     // What is only ever heard of through ExtraInfo is forgotten again.
     let mut assembler = Assembler::default();
-    assembler.observe(&elsewhere, "Network.requestWillBeSentExtraInfo", &request_extra("1.3", "x=1"));
     assembler.observe(
-        &Source { now_ms: now + ORPHAN_PATIENCE_MS + 1.0, ..elsewhere },
+        &elsewhere,
+        "Network.requestWillBeSentExtraInfo",
+        &request_extra("1.3", "x=1"),
+    );
+    assembler.observe(
+        &Source {
+            now_ms: now + ORPHAN_PATIENCE_MS + 1.0,
+            ..elsewhere
+        },
         "Network.requestWillBeSentExtraInfo",
         &request_extra("1.4", "x=1"),
     );
@@ -798,7 +1030,11 @@ fn a_navigation_is_handed_over_when_its_document_commits_on_the_site() {
         recording: false,
         ..tab(now)
     };
-    assembler.observe(&arriving, "Network.requestWillBeSent", &navigation("NAV", "http://pub.example/", 1_070.0));
+    assembler.observe(
+        &arriving,
+        "Network.requestWillBeSent",
+        &navigation("NAV", "http://pub.example/", 1_070.0),
+    );
     let mut second = navigation("NAV", "https://www.pub.example/", 1_070.1);
     second["redirectResponse"] = json!({ "status": 301, "headers": {} });
     second["redirectHasExtraInfo"] = json!(false);
@@ -813,10 +1049,15 @@ fn a_navigation_is_handed_over_when_its_document_commits_on_the_site() {
 
     let released = ended(assembler.navigation_committed("NAV", true, now));
     assert_eq!(released.iter().map(Ended::seq).collect::<Vec<_>>(), [0]);
-    let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished("NAV", 1_070.3, 2_000));
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("NAV", 1_070.3, 2_000),
+    );
     let offer = finished_of(&outputs).unwrap();
     assert!(offer.main_document);
-    let document = record(ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now)).remove(0));
+    let document =
+        record(ended(assembler.body_settled(offer.seq, CapturedBody::Empty, now)).remove(0));
     assert_eq!((document.seq, document.redirect_from), (1, Some(0)));
     assert_eq!(document.kind, ResourceKind::Document);
 }
@@ -830,25 +1071,48 @@ fn a_navigation_that_never_shows_a_page_of_the_site_leaves_no_record() {
         ..tab(now)
     };
     let mut assembler = Assembler::default();
-    assembler.observe(&elsewhere, "Network.requestWillBeSent", &navigation("N1", "https://other.example/", 1_080.0));
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSent",
+        &navigation("N1", "https://other.example/", 1_080.0),
+    );
     assert!(assembler.navigation_committed("N1", false, now).is_empty());
     assert!(assembler.finish().is_empty(), "committed on another site");
 
-    assembler.observe(&elsewhere, "Network.requestWillBeSent", &navigation("N2", "https://other.example/2", 1_081.0));
-    assembler.observe(&elsewhere, "Network.loadingFailed", &failed("N2", 1_081.1, "net::ERR_ABORTED"));
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSent",
+        &navigation("N2", "https://other.example/2", 1_081.0),
+    );
+    assembler.observe(
+        &elsewhere,
+        "Network.loadingFailed",
+        &failed("N2", 1_081.1, "net::ERR_ABORTED"),
+    );
     let later = Source {
         now_ms: now + SETTLE_GRACE_MS + 2_000.0,
         ..tab(now)
     };
     assert!(
         assembler
-            .observe(&later, "Network.requestWillBeSent", &request("1.1", "https://a.example/x", 1_083.0))
+            .observe(
+                &later,
+                "Network.requestWillBeSent",
+                &request("1.1", "https://a.example/x", 1_083.0)
+            )
             .is_empty()
     );
     assert_eq!(assembler.finish().len(), 1, "only the page's own request");
 
-    assembler.observe(&elsewhere, "Network.requestWillBeSent", &navigation("N3", "https://other.example/3", 1_084.0));
-    assert!(assembler.finish().is_empty(), "still loading when the capture ended");
+    assembler.observe(
+        &elsewhere,
+        "Network.requestWillBeSent",
+        &navigation("N3", "https://other.example/3", 1_084.0),
+    );
+    assert!(
+        assembler.finish().is_empty(),
+        "still loading when the capture ended"
+    );
 }
 
 #[test]
@@ -856,8 +1120,16 @@ fn a_navigation_away_from_the_site_is_a_request_of_the_page_that_made_it() {
     let mut assembler = Assembler::default();
     let now = epoch(1_090.0);
     // Refused by the navigation guard, or a download: it never commits.
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &navigation("N1", "https://other.example/", 1_090.0));
-    assembler.observe(&tab(now), "Network.loadingFailed", &failed("N1", 1_090.1, "net::ERR_ABORTED"));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &navigation("N1", "https://other.example/", 1_090.0),
+    );
+    assembler.observe(
+        &tab(now),
+        "Network.loadingFailed",
+        &failed("N1", 1_090.1, "net::ERR_ABORTED"),
+    );
     let outputs = assembler.observe(
         &tab(now + SETTLE_GRACE_MS + 1.0),
         "Network.requestWillBeSent",
@@ -868,14 +1140,21 @@ fn a_navigation_away_from_the_site_is_a_request_of_the_page_that_made_it() {
     assert!(matches!(refused.end, RequestEnd::Failed { .. }));
 
     // One that does commit, on the other site.
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &navigation("N2", "https://other.example/2", 1_093.0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &navigation("N2", "https://other.example/2", 1_093.0),
+    );
     let mut answer = response("N2", 200, 1_093.1);
     answer["hasExtraInfo"] = json!(false);
     assembler.observe(&tab(now), "Network.responseReceived", &answer);
     assert!(ended(assembler.navigation_committed("N2", false, now)).is_empty());
     let left = assembler.finish();
     assert_eq!(left.len(), 2);
-    assert_eq!(record(left.into_iter().last().unwrap()).url, "https://other.example/2");
+    assert_eq!(
+        record(left.into_iter().last().unwrap()).url,
+        "https://other.example/2"
+    );
 }
 
 #[test]
@@ -904,30 +1183,53 @@ fn a_websocket_is_one_record_from_its_creation_to_its_close() {
     );
     for _ in 0..3 {
         let frame = json!({ "requestId": "7.1", "timestamp": 1_100.7, "response": { "opcode": 1, "payloadData": "tick" } });
-        assert!(assembler.observe(&tab(now), "Network.webSocketFrameReceived", &frame).is_empty());
+        assert!(
+            assembler
+                .observe(&tab(now), "Network.webSocketFrameReceived", &frame)
+                .is_empty()
+        );
     }
     let outputs = assembler.observe(
         &tab(now),
         "Network.webSocketClosed",
         &json!({ "requestId": "7.1", "timestamp": 1_102.0 }),
     );
-    assert!(finished_of(&outputs).is_none(), "a socket has no body to read");
+    assert!(
+        finished_of(&outputs).is_none(),
+        "a socket has no body to read"
+    );
     let socket = record(ended(outputs).remove(0));
     assert_eq!(socket.kind, ResourceKind::WebSocket);
-    assert_eq!((socket.method.as_str(), socket.url.as_str()), ("GET", "wss://live.pub.example/feed"));
+    assert_eq!(
+        (socket.method.as_str(), socket.url.as_str()),
+        ("GET", "wss://live.pub.example/feed")
+    );
     assert_eq!(socket.status, Some(101));
-    assert_eq!(header_of(&socket.request_headers, "upgrade"), Some("websocket"));
+    assert_eq!(
+        header_of(&socket.request_headers, "upgrade"),
+        Some("websocket")
+    );
     assert_eq!(socket.started_at_ms.round(), 100_500.0);
     assert_eq!(socket.response_at_ms.unwrap().round(), 100_600.0);
     assert_eq!(socket.ended_at_ms.unwrap().round(), 102_000.0);
     assert_eq!(socket.end, RequestEnd::Finished);
     assert_eq!(socket.body, CapturedBody::Absent);
-    assert_eq!(socket.initiator.stack[0].function.as_deref(), Some("connect"));
+    assert_eq!(
+        socket.initiator.stack[0].function.as_deref(),
+        Some("connect")
+    );
 
     // One that is still open when the capture ends.
-    assembler.observe(&tab(now), "Network.webSocketCreated", &json!({ "requestId": "7.2", "url": "wss://live.pub.example/2" }));
+    assembler.observe(
+        &tab(now),
+        "Network.webSocketCreated",
+        &json!({ "requestId": "7.2", "url": "wss://live.pub.example/2" }),
+    );
     let open = record(assembler.finish().remove(0));
-    assert_eq!((open.kind, open.end), (ResourceKind::WebSocket, RequestEnd::Pending));
+    assert_eq!(
+        (open.kind, open.end),
+        (ResourceKind::WebSocket, RequestEnd::Pending)
+    );
 }
 
 #[test]
@@ -944,16 +1246,35 @@ fn a_request_body_comes_with_the_request_or_is_asked_for() {
         event
     };
     let fail = |assembler: &mut Assembler, id: &str| {
-        assembler.observe(&tab(now), "Network.requestWillBeSentExtraInfo", &request_extra(id, "c=1"));
-        assembler.observe(&tab(now), "Network.loadingFailed", &failed(id, 1_110.1, "net::ERR_FAILED"))
+        assembler.observe(
+            &tab(now),
+            "Network.requestWillBeSentExtraInfo",
+            &request_extra(id, "c=1"),
+        );
+        assembler.observe(
+            &tab(now),
+            "Network.loadingFailed",
+            &failed(id, 1_110.1, "net::ERR_FAILED"),
+        )
     };
 
     // Sent along.
-    assert!(assembler.observe(&tab(now), "Network.requestWillBeSent", &post("1.1", Some("{\"id\":\"a\"}"))).is_empty());
+    assert!(
+        assembler
+            .observe(
+                &tab(now),
+                "Network.requestWillBeSent",
+                &post("1.1", Some("{\"id\":\"a\"}"))
+            )
+            .is_empty()
+    );
     let inline = record(ended(fail(&mut assembler, "1.1")).remove(0));
     assert_eq!(inline.bidder.as_deref(), Some("openx"));
     let data = inline.post_data.unwrap();
-    assert_eq!((data.bytes.as_slice(), data.total_bytes), (b"{\"id\":\"a\"}".as_slice(), 10));
+    assert_eq!(
+        (data.bytes.as_slice(), data.total_bytes),
+        (b"{\"id\":\"a\"}".as_slice(), 10)
+    );
     assert!(!inline.post_data_missing);
 
     // Asked for, and the request waits for the answer.
@@ -975,7 +1296,11 @@ fn a_request_body_comes_with_the_request_or_is_asked_for() {
     // An upload far beyond what is kept is not asked for at all.
     let mut upload = post("1.4", None);
     upload["request"]["headers"]["Content-Length"] = json!("73400320");
-    assert!(assembler.observe(&tab(now), "Network.requestWillBeSent", &upload).is_empty());
+    assert!(
+        assembler
+            .observe(&tab(now), "Network.requestWillBeSent", &upload)
+            .is_empty()
+    );
     let upload = record(ended(fail(&mut assembler, "1.4")).remove(0));
     assert_eq!((upload.post_data, upload.post_data_missing), (None, true));
 
@@ -999,8 +1324,14 @@ fn request_bodies_held_for_open_requests_are_bounded() {
     }
     assert_eq!(assembler.held_post_bytes, MAX_HELD_POST_BYTES);
     let records: Vec<NetworkRecord> = assembler.finish().into_iter().map(record).collect();
-    let kept = records.iter().filter(|record| record.post_data.is_some()).count();
-    let missing = records.iter().filter(|record| record.post_data_missing).count();
+    let kept = records
+        .iter()
+        .filter(|record| record.post_data.is_some())
+        .count();
+    let missing = records
+        .iter()
+        .filter(|record| record.post_data_missing)
+        .count();
     assert_eq!((kept, missing), (slots, 2));
 }
 
@@ -1018,9 +1349,17 @@ fn more_open_requests_than_are_followed_at_once_are_counted_not_kept() {
     assert_eq!(assembler.overflowed(), 5);
     assert_eq!(assembler.open_flights, MAX_OPEN_REQUESTS);
     // One ends: there is room for one more.
-    assembler.observe(&tab(now), "Network.loadingFailed", &failed("1.0", 1_130.1, "net::ERR_FAILED"));
+    assembler.observe(
+        &tab(now),
+        "Network.loadingFailed",
+        &failed("1.0", 1_130.1, "net::ERR_FAILED"),
+    );
     let later = tab(now + SETTLE_GRACE_MS + 1.0);
-    assembler.observe(&later, "Network.requestWillBeSent", &request("2.1", "https://a.example/next", 1_132.0));
+    assembler.observe(
+        &later,
+        "Network.requestWillBeSent",
+        &request("2.1", "https://a.example/next", 1_132.0),
+    );
     assert_eq!(assembler.overflowed(), 5);
     assert_eq!(assembler.finish().len(), MAX_OPEN_REQUESTS);
 }
@@ -1033,13 +1372,25 @@ fn addresses_that_are_their_own_content_are_recorded_without_it() {
     let mut script = request("1.1", &data_url, 1_140.0);
     script["type"] = json!("Script");
     assembler.observe(&tab(now), "Network.requestWillBeSent", &script);
-    let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished("1.1", 1_140.0, 0));
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("1.1", 1_140.0, 0),
+    );
     let offer = finished_of(&outputs).unwrap();
     assert!(!offer.has_address_on_the_network);
     assert!(offer.url.starts_with("data:text/javascript;base64,[") && offer.url.len() < 80);
 
-    assembler.observe(&tab(now), "Network.requestWillBeSent", &request("1.2", "blob:https://www.pub.example/3f6c", 1_140.0));
-    let outputs = assembler.observe(&tab(now), "Network.loadingFinished", &finished("1.2", 1_140.1, 0));
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("1.2", "blob:https://www.pub.example/3f6c", 1_140.0),
+    );
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("1.2", 1_140.1, 0),
+    );
     assert!(!finished_of(&outputs).unwrap().has_address_on_the_network);
 }
 
@@ -1050,22 +1401,47 @@ fn late_events_of_a_request_that_was_handed_over_start_nothing_new() {
     assert_eq!(record.seq, 0);
     let now = epoch(1_151.0);
     for (method, event) in [
-        ("Network.requestWillBeSentExtraInfo", request_extra("1.1", "late=1")),
-        ("Network.dataReceived", json!({ "requestId": "1.1", "dataLength": 10 })),
-        ("Network.requestWillBeSent", request("1.1", "https://a.example/x", 1_151.0)),
+        (
+            "Network.requestWillBeSentExtraInfo",
+            request_extra("1.1", "late=1"),
+        ),
+        (
+            "Network.dataReceived",
+            json!({ "requestId": "1.1", "dataLength": 10 }),
+        ),
+        (
+            "Network.requestWillBeSent",
+            request("1.1", "https://a.example/x", 1_151.0),
+        ),
         ("Network.loadingFinished", finished("1.1", 1_151.0, 1)),
     ] {
-        assert!(assembler.observe(&tab(now), method, &event).is_empty(), "{method}");
+        assert!(
+            assembler.observe(&tab(now), method, &event).is_empty(),
+            "{method}"
+        );
     }
     assert!(assembler.chains.is_empty());
-    assert_eq!(fetched(&mut assembler, "1.2", "https://a.example/y", 1_152.0).seq, 1);
+    assert_eq!(
+        fetched(&mut assembler, "1.2", "https://a.example/y", 1_152.0).seq,
+        1
+    );
 }
 
 #[test]
 fn a_bid_request_is_recognised_and_its_preflight_is_not() {
     let mut assembler = Assembler::default();
-    let bid = fetched(&mut assembler, "1.1", "https://hbopenbid.pubmatic.com/translator?source=prebid-client", 1_160.0);
+    let bid = fetched(
+        &mut assembler,
+        "1.1",
+        "https://hbopenbid.pubmatic.com/translator?source=prebid-client",
+        1_160.0,
+    );
     assert_eq!(bid.bidder.as_deref(), Some("pubmatic"));
-    let other = fetched(&mut assembler, "1.2", "https://ads.pubmatic.com/AdServer/js/user_sync.html", 1_161.0);
+    let other = fetched(
+        &mut assembler,
+        "1.2",
+        "https://ads.pubmatic.com/AdServer/js/user_sync.html",
+        1_161.0,
+    );
     assert_eq!(other.bidder, None);
 }

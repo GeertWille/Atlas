@@ -190,7 +190,7 @@ fn analysis_rank(script: &DescribedScript) -> (u8, bool, std::cmp::Reverse<usize
 
 /// The URL as it may be persisted. A `data:` URL is the script body itself,
 /// which must never be stored, so only its media type is kept.
-fn stored_url(url: &str) -> String {
+pub fn stored_url(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("data:") {
         let media_type: String = rest
             .chars()

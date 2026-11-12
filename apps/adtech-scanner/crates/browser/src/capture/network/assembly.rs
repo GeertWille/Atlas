@@ -467,6 +467,14 @@ impl Assembler {
         let Some(request_id) = params["requestId"].as_str() else {
             return out;
         };
+        if method == "Network.dataReceived" {
+            // The busiest event by far, and it settles nothing.
+            if let Some(flight) = self.current(request_id) {
+                flight.decoded_bytes += params["dataLength"].as_u64().unwrap_or(0);
+            }
+            return out;
+        }
+        self.revisit_due(source.now_ms, &mut out);
         if self.ended.contains(request_id) {
             return out;
         }
@@ -489,13 +497,6 @@ impl Assembler {
                 if let Some(flight) = self.current(request_id) {
                     flight.memory_cache = true;
                 }
-            }
-            "Network.dataReceived" => {
-                if let Some(flight) = self.current(request_id) {
-                    flight.decoded_bytes += params["dataLength"].as_u64().unwrap_or(0);
-                }
-                // The busiest event by far, and it settles nothing.
-                return out;
             }
             "Network.loadingFinished" => self.on_finished(source, request_id, params, &mut out),
             "Network.loadingFailed" => self.on_failed(request_id, params, source.now_ms),
@@ -539,12 +540,16 @@ impl Assembler {
             _ => return out,
         }
         self.settle(request_id, source.now_ms, &mut out);
-        self.revisit_due(source.now_ms, &mut out);
         out
     }
 
     /// The answer to [`Output::Finished`]: the body as it is handed over.
-    pub(crate) fn body_settled(&mut self, seq: u32, body: CapturedBody, now_ms: f64) -> Vec<Output> {
+    pub(crate) fn body_settled(
+        &mut self,
+        seq: u32,
+        body: CapturedBody,
+        now_ms: f64,
+    ) -> Vec<Output> {
         let mut out = Vec::new();
         let Some(request_id) = self.bodies_asked.remove(&seq) else {
             return out;

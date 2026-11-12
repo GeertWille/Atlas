@@ -343,7 +343,7 @@ class Planner {
         });
       }
     }
-    const images = loadsDocument ? 18 : 9;
+    const images = loadsDocument ? 30 : 20;
     for (let index = 0; index < images; index += 1) {
       const name = SITE_IMAGES[index % SITE_IMAGES.length];
       // One author portrait was deleted from the image service a while ago.
@@ -826,9 +826,11 @@ class Planner {
   private sync(page: PageView) {
     if (page.metrics.auctionCount === 0) return;
     const from = (page.metrics.timeToFirstAuctionMs ?? 900) + 1_700;
-    const count = page.reachedBy === "routeChange" ? 6 : SYNC_PIXELS.length;
+    const count = page.reachedBy === "routeChange" ? 10 : 28;
     for (let index = 0; index < count; index += 1) {
-      const url = this.local(SYNC_PIXELS[index] ?? SYNC_PIXELS[0]);
+      // Partners sync in rounds: the second round is the same pixels with the ids they just learned.
+      const round = index < SYNC_PIXELS.length ? "" : "&rnd=2";
+      const url = `${this.local(SYNC_PIXELS[index % SYNC_PIXELS.length] ?? SYNC_PIXELS[0])}${round}`;
       // One exchange's sync endpoint is having a bad day.
       const broken = index === 9;
       this.add({
@@ -912,7 +914,7 @@ class Planner {
 
   private measurement(page: PageView, end: number) {
     const gtm = this.frame("googletagmanager.com/gtm.js", "sendBeacon");
-    const count = page.reachedBy === "routeChange" ? 22 : 30;
+    const count = page.reachedBy === "routeChange" ? 30 : 46;
     for (let index = 0; index < count; index += 1) {
       const url = this.local(BEACONS[index % BEACONS.length] ?? BEACONS[0]);
       const segment = url.includes("segment.io");

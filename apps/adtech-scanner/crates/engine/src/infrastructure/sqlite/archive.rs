@@ -449,21 +449,7 @@ pub(super) fn network_info(
     connection: &Connection,
     scan_id: &str,
 ) -> rusqlite::Result<Option<adscan_model::NetworkArchiveInfo>> {
-    use adscan_model::NetworkAvailability;
-    Ok(read_archive(connection, scan_id)?.map(|archive| {
-        adscan_model::NetworkArchiveInfo {
-            availability: match archive.state {
-                ArchiveState::Writing | ArchiveState::Sealed => NetworkAvailability::Available,
-                ArchiveState::Evicted => NetworkAvailability::Evicted,
-                ArchiveState::Disabled => NetworkAvailability::Disabled,
-            },
-            request_count: archive.request_count,
-            body_count: archive.body_count,
-            stored_bytes: archive.pack_bytes as f64,
-            headers_redacted: archive.headers_redacted,
-            truncated: archive.truncated,
-        }
-    }))
+    Ok(read_archive(connection, scan_id)?.map(|archive| archive.info()))
 }
 
 fn scan_no(connection: &Connection, scan_id: &str) -> rusqlite::Result<Option<i64>> {

@@ -123,8 +123,14 @@ mod tests {
         );
         assert_eq!(targets.get("shared").unwrap().tab_session, None);
 
-        assert_eq!(targets.attached(None, false, &attached("page", "tab-2")), None);
-        assert_eq!(targets.attached(None, false, &attached("browser", "b")), None);
+        assert_eq!(
+            targets.attached(None, false, &attached("page", "tab-2")),
+            None
+        );
+        assert_eq!(
+            targets.attached(None, false, &attached("browser", "b")),
+            None
+        );
         assert!(targets.get("tab-2").is_none());
     }
 

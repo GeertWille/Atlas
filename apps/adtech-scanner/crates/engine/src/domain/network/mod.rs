@@ -5,3 +5,4 @@
 pub mod classify;
 pub mod exchange;
 pub mod openrtb;
+pub mod rows;

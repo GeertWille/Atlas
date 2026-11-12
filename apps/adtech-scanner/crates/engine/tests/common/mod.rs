@@ -10,13 +10,14 @@ use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
     CaptureError, CaptureSession, CaptureSource, EventSink, FetchError, PublicFile,
-    PublicFileFetcher, PublicFileRequest, SourceFormatter,
+    PublicFileFetcher, PublicFileRequest, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
-use adscan_engine::infrastructure::secrets::MemorySecretStore;
+use adscan_engine::infrastructure::keychain::Keychain;
+use adscan_engine::infrastructure::secrets::{MemorySecretStore, VaultSecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::TypesafeClient;
@@ -579,7 +580,7 @@ pub struct Harness {
     pub scans: ScanService,
     pub settings: Arc<SettingsService>,
     pub configurations: ConfigurationService,
-    pub secrets: Arc<MemorySecretStore>,
+    pub secrets: Arc<dyn SecretStore>,
     pub store: SqliteStore,
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
@@ -640,18 +641,47 @@ pub fn harness_with_providers(behavior: CaptureBehavior, providers: Providers) -
     build_harness(behavior, providers, Arc::new(OxcFormatter::default()))
 }
 
+/// Like [`harness_with_providers`], with the real secret store on `keychain`
+/// and `store` as the database. A second harness over the same two is the
+/// app started again. The keys of `providers` are not used.
+pub fn harness_with_keychain(
+    behavior: CaptureBehavior,
+    providers: Providers,
+    store: SqliteStore,
+    keychain: Arc<dyn Keychain>,
+) -> Harness {
+    let secrets = Arc::new(VaultSecretStore::new(keychain, Arc::new(store.clone())));
+    assemble(
+        behavior,
+        providers,
+        Arc::new(OxcFormatter::default()),
+        store,
+        secrets,
+    )
+}
+
 fn build_harness(
     behavior: CaptureBehavior,
     providers: Providers,
     formatter: Arc<dyn SourceFormatter>,
 ) -> Harness {
-    let store = SqliteStore::open_in_memory().unwrap();
-    let llm = Arc::new(AnthropicClient::new(providers.anthropic_base_url, fast_retry()).unwrap());
-    let judge = Arc::new(TypesafeClient::new(providers.typesafe_base_url, fast_retry()).unwrap());
     let secrets = Arc::new(MemorySecretStore::with_keys(
         providers.api_key.map(str::to_string),
         providers.typesafe_key.map(str::to_string),
     ));
+    let store = SqliteStore::open_in_memory().unwrap();
+    assemble(behavior, providers, formatter, store, secrets)
+}
+
+fn assemble(
+    behavior: CaptureBehavior,
+    providers: Providers,
+    formatter: Arc<dyn SourceFormatter>,
+    store: SqliteStore,
+    secrets: Arc<dyn SecretStore>,
+) -> Harness {
+    let llm = Arc::new(AnthropicClient::new(providers.anthropic_base_url, fast_retry()).unwrap());
+    let judge = Arc::new(TypesafeClient::new(providers.typesafe_base_url, fast_retry()).unwrap());
     let settings = Arc::new(SettingsService::new(
         Arc::new(store.clone()),
         secrets.clone(),
