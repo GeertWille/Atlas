@@ -4,12 +4,13 @@ import type { Effort } from "./Effort";
 import type { ThemePreference } from "./ThemePreference";
 
 /**
- * User preferences. Persisted locally; the API key is never part of this
- * struct, it lives in the OS keychain and is only reported via `has_api_key`.
+ * User preferences. Persisted locally; API keys are never part of this
+ * struct, they live in the OS keychain and are only reported via
+ * `has_api_key` and `has_typesafe_key`.
  */
 export type Settings = { 
 /**
- * Phase 1 ("Jeff") low-cost classifier model.
+ * Script triage model, used when Jev is off and as its fallback.
  */
 filterModel: string, 
 /**
@@ -32,4 +33,14 @@ defaultObserveSeconds: number, theme: ThemePreference,
 /**
  * Read-only: whether an Anthropic API key is stored in the keychain.
  */
-hasApiKey: boolean, };
+hasApiKey: boolean, 
+/**
+ * Classify scripts with TypeSafe's Jev System One instead of
+ * `filter_model`, and let it build the Phase 2 reading guide. Can only
+ * be true while a TypeSafe key is stored.
+ */
+jevEnabled: boolean, 
+/**
+ * Read-only: whether a TypeSafe API key is stored in the keychain.
+ */
+hasTypesafeKey: boolean, };

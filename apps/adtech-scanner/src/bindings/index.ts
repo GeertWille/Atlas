@@ -1,6 +1,7 @@
 // Barrel over the ts-rs generated files in this directory. Re-exports only.
 export type { AdSlot } from "./AdSlot";
 export type { ApiKeyStatus } from "./ApiKeyStatus";
+export type { ApiProvider } from "./ApiProvider";
 export type { Auction } from "./Auction";
 export type { AuctionAdUnit } from "./AuctionAdUnit";
 export type { Bid } from "./Bid";

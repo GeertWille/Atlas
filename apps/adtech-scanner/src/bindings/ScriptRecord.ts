@@ -12,7 +12,7 @@ inline: boolean, sizeBytes: number,
  */
 hash: string, category: ScriptCategory, adRelated: boolean, 
 /**
- * Why Phase 1 classified it this way.
+ * Why script triage classified it this way.
  */
 classificationReason: string | null, 
 /**
@@ -23,6 +23,16 @@ classificationConfidence: number | null,
  * Whether a deterministic rule or the model made the call.
  */
 classifiedBy: FindingSource, 
+/**
+ * Model id that made the call. `None` for rule-classified scripts and
+ * for scans stored before this field existed.
+ */
+classifierModel: string | null, 
+/**
+ * Raw probability that the script is ad-related, 0-1. Only set when
+ * Jev System One classified it.
+ */
+adProbability: number | null, 
 /**
  * Whether the script was handed to Phase 2.
  */

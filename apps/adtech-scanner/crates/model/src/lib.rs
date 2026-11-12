@@ -49,10 +49,18 @@ contract! {
         Dark,
     }
 
-    /// User preferences. Persisted locally; the API key is never part of this
-    /// struct, it lives in the OS keychain and is only reported via `has_api_key`.
+    /// The vendors whose API the scanner can call with a user-supplied key.
+    #[derive(Copy, Eq, Hash)]
+    pub enum ApiProvider {
+        Anthropic,
+        Typesafe,
+    }
+
+    /// User preferences. Persisted locally; API keys are never part of this
+    /// struct, they live in the OS keychain and are only reported via
+    /// `has_api_key` and `has_typesafe_key`.
     pub struct Settings {
-        /// Phase 1 ("Jeff") low-cost classifier model.
+        /// Script triage model, used when Jev is off and as its fallback.
         pub filter_model: String,
         /// Phase 2 logic-analysis model.
         pub analysis_model: String,
@@ -69,6 +77,12 @@ contract! {
         pub theme: ThemePreference,
         /// Read-only: whether an Anthropic API key is stored in the keychain.
         pub has_api_key: bool,
+        /// Classify scripts with TypeSafe's Jev System One instead of
+        /// `filter_model`, and let it build the Phase 2 reading guide. Can only
+        /// be true while a TypeSafe key is stored.
+        pub jev_enabled: bool,
+        /// Read-only: whether a TypeSafe API key is stored in the keychain.
+        pub has_typesafe_key: bool,
     }
 
     /// Partial update; omitted fields keep their current value.
@@ -94,6 +108,8 @@ contract! {
         pub default_observe_seconds: Option<u32>,
         #[ts(optional)]
         pub theme: Option<ThemePreference>,
+        #[ts(optional)]
+        pub jev_enabled: Option<bool>,
     }
 
     pub struct BrowserInfo {
@@ -144,6 +160,8 @@ impl Default for Settings {
             default_observe_seconds: 20,
             theme: ThemePreference::System,
             has_api_key: false,
+            jev_enabled: false,
+            has_typesafe_key: false,
         }
     }
 }
@@ -468,12 +486,18 @@ contract! {
         pub hash: String,
         pub category: ScriptCategory,
         pub ad_related: bool,
-        /// Why Phase 1 classified it this way.
+        /// Why script triage classified it this way.
         pub classification_reason: Option<String>,
         /// 0-1.
         pub classification_confidence: Option<f64>,
         /// Whether a deterministic rule or the model made the call.
         pub classified_by: FindingSource,
+        /// Model id that made the call. `None` for rule-classified scripts and
+        /// for scans stored before this field existed.
+        pub classifier_model: Option<String>,
+        /// Raw probability that the script is ad-related, 0-1. Only set when
+        /// Jev System One classified it.
+        pub ad_probability: Option<f64>,
         /// Whether the script was handed to Phase 2.
         pub analyzed: bool,
         /// Known vendor name when recognized ("Google", "Amazon", "Criteo", ...).
@@ -499,7 +523,7 @@ contract! {
         Telemetry,
         /// Deterministic revenue-leak rules.
         Heuristics,
-        /// Phase 1 ("Jeff"): classify which scripts are ad-related.
+        /// Script triage: classify which scripts are ad-related.
         FilterScripts,
         /// Beautify the selected scripts.
         Beautify,
@@ -559,6 +583,8 @@ contract! {
         ToolResult,
         /// A finding the model or a rule reported.
         Finding,
+        /// How one script was classified: probabilities, thresholds, routing.
+        Classification,
     }
 
     /// One entry of the audit trail. Stored and full-text indexed so developers

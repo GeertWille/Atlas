@@ -69,6 +69,8 @@ fn describe_one(
         classification_reason: None,
         classification_confidence: None,
         classified_by: FindingSource::Heuristic,
+        classifier_model: None,
+        ad_probability: None,
         analyzed: false,
         vendor: None,
         loaded_at_ms: script.loaded_at_ms,

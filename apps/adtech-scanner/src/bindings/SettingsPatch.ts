@@ -10,4 +10,4 @@ export type SettingsPatch = { filterModel?: string, analysisModel?: string, anal
 /**
  * `Some(None)` clears the explicit path and returns to auto-detect.
  */
-chromePath?: string | null, headless?: boolean, defaultDevice?: DeviceProfile, defaultObserveSeconds?: number, theme?: ThemePreference, };
+chromePath?: string | null, headless?: boolean, defaultDevice?: DeviceProfile, defaultObserveSeconds?: number, theme?: ThemePreference, jevEnabled?: boolean, };
