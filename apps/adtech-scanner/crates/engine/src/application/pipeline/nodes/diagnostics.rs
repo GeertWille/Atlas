@@ -60,7 +60,17 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
         sellers,
     };
 
-    let diagnosed = diagnostics::diagnose(run.state.capture()?, run.state.telemetry()?, &files);
+    let mut diagnosed = diagnostics::diagnose(run.state.capture()?, run.state.telemetry()?, &files);
+    if !run.state.archived {
+        // Without an archive there are no request rows to point at.
+        for check in diagnosed
+            .bidders
+            .iter_mut()
+            .flat_map(|bidder| &mut bidder.checks)
+        {
+            check.request_ids.clear();
+        }
+    }
     let scan_id = run.state.summary.id.clone();
     run.deps
         .scans

@@ -11,8 +11,9 @@ use std::sync::{Arc, Mutex};
 
 use adscan_browser::{BrowserError, CaptureHooks, capture};
 use adscan_model::{
-    ActivityKind, Capture, CaptureActivity, CaptureProxy, CaptureRequest, DeviceProfile,
-    TrackerEvent, TrackerEventKind, VisitorBehavior,
+    ActivityKind, BodyAdmission, BodyOffer, BodySkip, Capture, CaptureActivity, CaptureProxy,
+    CaptureRequest, CapturedBody, DeviceProfile, NetworkRecord, NetworkSink, RawHeader,
+    ResourceKind, TrackerEvent, TrackerEventKind, VisitorBehavior,
 };
 use axum::Router;
 use axum::extract::State;
@@ -115,6 +116,116 @@ impl Reported {
 
 pub async fn run(request: CaptureRequest) -> Outcome {
     Reported::new().run(request).await
+}
+
+/// The per-body cap of a sink that keeps text, as the app's archive has it.
+pub const KEPT_BODY_BYTES: usize = 5 * 1024 * 1024;
+
+type Admit = Box<dyn Fn(&BodyOffer<'_>) -> BodyAdmission + Send + Sync>;
+
+/// A network sink that keeps what the capture hands over.
+pub struct Requests {
+    admit: Admit,
+    /// `seq` and expected bytes of every body that was offered.
+    offered: Mutex<Vec<(u32, u64)>>,
+    recorded: Mutex<Vec<NetworkRecord>>,
+}
+
+impl Requests {
+    /// Admits what the app's archive keeps: documents, scripts, styles and
+    /// what scripts fetch, when it is text; never images, fonts or media.
+    pub fn keeping_text() -> Arc<Self> {
+        Self::admitting(|offer| {
+            let is_text = offer.mime_type.is_none_or(|mime| {
+                mime.starts_with("text/")
+                    || mime.contains("json")
+                    || mime.contains("javascript")
+                    || mime.contains("xml")
+            });
+            let kept_kind = matches!(
+                offer.kind,
+                ResourceKind::Document
+                    | ResourceKind::Script
+                    | ResourceKind::Stylesheet
+                    | ResourceKind::Xhr
+                    | ResourceKind::Fetch
+                    | ResourceKind::Other
+            );
+            if kept_kind && is_text {
+                BodyAdmission::Read {
+                    max_bytes: KEPT_BODY_BYTES,
+                }
+            } else {
+                BodyAdmission::Skip(BodySkip::Type)
+            }
+        })
+    }
+
+    pub fn admitting(
+        admit: impl Fn(&BodyOffer<'_>) -> BodyAdmission + Send + Sync + 'static,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            admit: Box::new(admit),
+            offered: Mutex::new(Vec::new()),
+            recorded: Mutex::new(Vec::new()),
+        })
+    }
+
+    /// Every record so far, in the order of `seq`.
+    pub fn records(&self) -> Vec<NetworkRecord> {
+        let mut records = self.recorded.lock().unwrap().clone();
+        records.sort_by_key(|record| record.seq);
+        records
+    }
+
+    pub fn count(&self) -> usize {
+        self.recorded.lock().unwrap().len()
+    }
+
+    pub fn offered(&self) -> Vec<(u32, u64)> {
+        self.offered.lock().unwrap().clone()
+    }
+}
+
+impl NetworkSink for Requests {
+    fn admit_body(&self, offer: &BodyOffer<'_>) -> BodyAdmission {
+        self.offered
+            .lock()
+            .unwrap()
+            .push((offer.seq, offer.expected_bytes));
+        (self.admit)(offer)
+    }
+
+    fn record(&self, record: NetworkRecord) {
+        self.recorded.lock().unwrap().push(record);
+    }
+}
+
+/// Runs a capture that must succeed, with its requests recorded.
+pub async fn capture_with_requests(request: CaptureRequest) -> (Capture, Vec<NetworkRecord>) {
+    let requests = Requests::keeping_text();
+    let mut reported = Reported::new();
+    reported.hooks.network = Some(requests.clone());
+    let outcome = reported.run(request).await;
+    let capture = outcome.result.unwrap_or_else(|error| {
+        panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress)
+    });
+    (capture, requests.records())
+}
+
+pub fn header_value<'a>(headers: &'a [RawHeader], name: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case(name))
+        .map(|header| header.value.as_str())
+}
+
+/// The body a record carries, as text.
+pub fn body_text(record: &NetworkRecord) -> Option<String> {
+    match &record.body {
+        CapturedBody::Read { bytes, .. } => Some(String::from_utf8_lossy(bytes).into_owned()),
+        _ => None,
+    }
 }
 
 pub async fn run_cancellable(request: CaptureRequest, cancel: CancellationToken) -> Outcome {
@@ -244,6 +355,8 @@ async fn respond(
         // Never answers, so a page that needs it never fires `load`.
         "never" => std::future::pending().await,
         "download" => download(),
+        "events" => event_stream(),
+        "large.json" => large_json(),
         _ => fixture(path).await,
     }
 }
@@ -277,6 +390,29 @@ fn status(code: u16) -> Response {
         format!("<h1>{status}</h1>"),
     )
         .into_response()
+}
+
+/// How large the body of `large.json` is: more than a sink keeps of one body.
+pub const LARGE_JSON_BYTES: usize = 8 * 1024 * 1024;
+
+fn large_json() -> Response {
+    let filler = "x".repeat(LARGE_JSON_BYTES - r#"{"pad":""}"#.len());
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        format!(r#"{{"pad":"{filler}"}}"#),
+    )
+        .into_response()
+}
+
+/// A server-sent event stream that sends one event and never ends.
+fn event_stream() -> Response {
+    let first =
+        futures_util::stream::once(async { Ok::<_, std::convert::Infallible>("data: tick\n\n") });
+    let body = axum::body::Body::from_stream(futures_util::StreamExt::chain(
+        first,
+        futures_util::stream::pending(),
+    ));
+    ([(header::CONTENT_TYPE, "text/event-stream")], body).into_response()
 }
 
 /// A response the browser saves to disk instead of showing.

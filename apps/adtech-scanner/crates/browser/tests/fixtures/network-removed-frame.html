@@ -1,0 +1,16 @@
+<!doctype html>
+<title>A frame that is removed once it has loaded</title>
+<h1>A frame that is removed once it has loaded</h1>
+<script>
+  // How long after the frame reports that it has loaded it is removed, in ms.
+  var patience = Number(location.search.slice(1)) || 0;
+  var frame = document.createElement('iframe');
+  frame.src = 'http://localhost:' + location.port + '/network-reports-back.html';
+  window.addEventListener('message', function () {
+    setTimeout(function () {
+      frame.remove();
+      fetch('/status/200?frame-removed');
+    }, patience);
+  });
+  document.body.appendChild(frame);
+</script>

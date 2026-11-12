@@ -8,7 +8,7 @@ function visitMarkdown(detail: ScanDetail): string | null {
   if (!environment) return null;
   const facts = [
     `- Visitor: ${VISITOR_META[environment.visitor].label}`,
-    `- Browser: ${environment.headless ? "headless" : "shown"}, ${environment.persistentProfile ? "kept scan profile" : "fresh profile"}`,
+    `- Browser: ${environment.headless ? "headless" : "shown"}, ${environment.persistentProfile ? "kept browser profile" : "fresh browser profile"}`,
     `- Proxy: ${proxyUseLabel(environment.proxy)}`,
     `- navigator.webdriver: ${environment.webdriver ?? "unknown"}`,
   ];

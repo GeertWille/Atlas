@@ -6,6 +6,7 @@ const mark = (startLine: number, endLine: number): FindingMark => ({
   findingId: `f${startLine}`,
   evidenceIndex: 0,
   title: "A finding",
+  label: "An excerpt",
   severity: "high",
   startLine,
   endLine,

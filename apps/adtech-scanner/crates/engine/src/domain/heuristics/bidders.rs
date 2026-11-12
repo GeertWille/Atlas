@@ -63,7 +63,7 @@ fn ad_units_of(hits: &[Hit]) -> Vec<String> {
 pub(super) fn add_evidence(finding: &mut FindingDraft, hits: &[Hit]) {
     for (bidder, check) in hits {
         let label = format!("{bidder}: {}", check.summary);
-        finding.evidence.push(match &check.excerpt {
+        let mut evidence = match &check.excerpt {
             Some(excerpt) => log_line(label, excerpt.clone()),
             None => metric(
                 label,
@@ -73,7 +73,10 @@ pub(super) fn add_evidence(finding: &mut FindingDraft, hits: &[Hit]) {
                     format!("Ad units: {}", check.ad_units.join(", "))
                 },
             ),
-        });
+        };
+        // What an endpoint answered can be opened: the first such request.
+        evidence.request_id = check.request_ids.first().cloned();
+        finding.evidence.push(evidence);
     }
 }
 
@@ -603,5 +606,49 @@ impl Rule for BiddersWithoutConsent {
         }
         finding.affected_bidders = bidders;
         vec![finding]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use adscan_model::{
+        DiagnosticArea, DiagnosticStatus, EvidenceKind, FindingCategory, FindingSource, Severity,
+    };
+
+    use super::*;
+
+    #[test]
+    fn evidence_made_from_a_check_names_the_request_the_check_read() {
+        let check = |excerpt: Option<&str>, request_ids: &[&str]| DiagnosticCheck {
+            area: DiagnosticArea::Response,
+            status: DiagnosticStatus::Problem,
+            code: "response-reason".into(),
+            summary: "The bidder's endpoint explained why it did not bid".into(),
+            excerpt: excerpt.map(str::to_string),
+            ad_units: Vec::new(),
+            pages: Vec::new(),
+            request_ids: request_ids.iter().map(|id| (*id).to_string()).collect(),
+        };
+        let answered = check(Some("nbr 7"), &["r12", "r40"]);
+        let unseen = check(None, &[]);
+        let mut finding = FindingDraft {
+            severity: Severity::Medium,
+            category: FindingCategory::Configuration,
+            source: FindingSource::Heuristic,
+            title: String::new(),
+            description: String::new(),
+            recommendation: String::new(),
+            confidence: 0.8,
+            impact: String::new(),
+            estimated_revenue_impact_pct: None,
+            evidence: Vec::new(),
+            affected_slots: Vec::new(),
+            affected_bidders: Vec::new(),
+            pages: Vec::new(),
+        };
+        add_evidence(&mut finding, &[("openx", &answered), ("ix", &unseen)]);
+        assert_eq!(finding.evidence[0].kind, EvidenceKind::Log);
+        assert_eq!(finding.evidence[0].request_id.as_deref(), Some("r12"));
+        assert_eq!(finding.evidence[1].request_id, None);
     }
 }

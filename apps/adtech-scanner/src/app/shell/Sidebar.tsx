@@ -14,9 +14,9 @@ import { HealthRing } from "@/shared/components/health-ring";
 import { DeviceIcon } from "@/shared/components/status";
 import { DEVICE_LABEL, isActive, SCAN_STATUS_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
+import { IS_MAC, MOD_KEY } from "@/shared/lib/platform";
 import { Button } from "@/shared/ui/button";
 import { Kbd } from "@/shared/ui/kbd";
-import { IS_MAC, MOD_KEY } from "./shortcuts";
 
 const NAV_ITEM =
   "flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-foreground data-[status=active]:bg-sidebar-accent data-[status=active]:text-foreground";

@@ -1,3 +1,4 @@
+@font-face { font-family: "Meridian Initial"; src: url("/static/fonts/meridian-initial.ttf") format("truetype"); font-display: swap; unicode-range: U+4D; }
 :root {
   --paper: #fbfaf7;
   --surface: #ffffff;
@@ -31,7 +32,7 @@ h1, h2, .kicker, .byline, .card, .sections, .masthead, .more, .site-footer, .tag
 
 .masthead { background: var(--surface); border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 20; }
 .masthead__bar { max-width: 1240px; margin: 0 auto; padding: 12px 20px; display: flex; align-items: center; gap: 12px; }
-.masthead__logo { flex: 1; text-align: center; font: 700 26px/1 var(--serif); letter-spacing: -.01em; text-decoration: none; }
+.masthead__logo { flex: 1; text-align: center; font: 700 26px/1 "Meridian Initial", var(--serif); letter-spacing: -.01em; text-decoration: none; }
 .masthead__actions { display: flex; align-items: center; gap: 8px; }
 .icon-button { background: none; border: 0; color: inherit; padding: 6px; border-radius: 8px; cursor: pointer; display: inline-flex; }
 .icon-button:hover { background: var(--slot); }
@@ -112,6 +113,7 @@ cite { font: normal 14px var(--sans); color: var(--muted); }
 .ad-slot--recirc .ad-slot__unit { width: 728px; min-height: 90px; }
 .site-footer { background: #0f172a; color: #cbd5e1; padding: 40px 20px 60px; text-align: center; font-size: 14px; }
 .site-footer strong { font: 700 22px var(--serif); color: #fff; }
+.site-footer__art { display: block; margin: 0 auto 14px; border-radius: 6px; }
 .site-footer p { max-width: 560px; margin: 10px auto 18px; }
 .site-footer nav { display: flex; gap: 20px; justify-content: center; }
 

@@ -432,13 +432,33 @@ async fn collect(
 
 #[cfg(test)]
 mod tests {
-    use adscan_model::PageReach;
+    use std::sync::Mutex;
+
+    use adscan_model::{
+        BodyAdmission, BodyOffer, NetworkRecord, NetworkSink, PageReach, RequestEnd, ResourceKind,
+    };
 
     use super::*;
 
+    /// A sink that keeps every record and reads every body.
+    #[derive(Default)]
+    struct Kept(Mutex<Vec<NetworkRecord>>);
+
+    impl NetworkSink for Kept {
+        fn admit_body(&self, _: &BodyOffer<'_>) -> BodyAdmission {
+            BodyAdmission::Read { max_bytes: 4_096 }
+        }
+
+        fn record(&self, record: NetworkRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+
     /// A page cannot close the tab it was opened in, so what a person does
     /// when they close the window is done here over the DevTools connection,
-    /// which only code inside this crate can reach.
+    /// which only code inside this crate can reach. With the browser gone
+    /// there is nobody to ask for anything: the requests it reported are
+    /// handed over as they stood.
     #[tokio::test]
     async fn closing_the_last_tab_ends_a_manual_visit_and_keeps_what_was_recorded() {
         let Some(browser) = detect::detect_browser(None) else {
@@ -462,6 +482,8 @@ mod tests {
             override_viewport: true,
             visitor: VisitorBehavior::Manual,
         };
+        let requests = Arc::new(Kept::default());
+        let sink = requests.clone();
         let mut page = Page::attach(
             cdp.clone(),
             events,
@@ -469,7 +491,7 @@ mod tests {
             Interception::new(None, false),
             |main_frame_id| {
                 let pages = PageLog::new(MAX_PAGE_VIEWS_MANUAL, true);
-                Recorder::new(main_frame_id, pages, Arc::new(|_| {}), None)
+                Recorder::new(main_frame_id, pages, Arc::new(|_| {}), Some(sink))
             },
         )
         .await
@@ -535,5 +557,21 @@ mod tests {
         );
         assert!(capture.pages[0].ended_at_ms >= 1_000.0);
         assert!(!capture.events.is_empty() && !capture.scripts.is_empty());
+
+        let records = requests.0.lock().unwrap();
+        let document = records.iter().find(|record| record.seq == 0).unwrap();
+        assert_eq!(
+            (document.kind, document.url.as_str(), &document.end),
+            (
+                ResourceKind::Document,
+                site.url.as_str(),
+                &RequestEnd::Finished
+            )
+        );
+        // Every request once, whether it had ended or was still open.
+        let mut numbers: Vec<u32> = records.iter().map(|record| record.seq).collect();
+        numbers.sort_unstable();
+        assert_eq!(numbers, (0..records.len() as u32).collect::<Vec<_>>());
+        assert!(records.len() > 10, "{} requests", records.len());
     }
 }

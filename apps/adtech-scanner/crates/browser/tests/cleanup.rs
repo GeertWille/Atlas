@@ -62,6 +62,63 @@ async fn cancelling_returns_promptly_and_leaves_no_chrome_behind() {
     browser.assert_gone(Duration::ZERO).await;
 }
 
+/// With its requests recorded, a visit has sessions on iframes and workers
+/// and bodies on their way from the browser. Cancelling is as prompt, leaves
+/// as little, and nothing is handed to the sink once the call has returned.
+#[tokio::test]
+async fn cancelling_while_requests_are_recorded_stops_the_hand_over_and_leaves_nothing() {
+    let _turn = ONE_BROWSER_AT_A_TIME.lock().await;
+    let site = adscan_browser::start_demo_site().await.unwrap();
+    let mut request = support::request(&site.url, DeviceProfile::Desktop);
+    request.observe_seconds = 60;
+    request.visitor = VisitorBehavior::Scroll;
+    let requests = support::Requests::keeping_text();
+    let mut reported = support::Reported::new();
+    reported.hooks.network = Some(requests.clone());
+    let cancel = reported.hooks.cancel.clone();
+    let running = tokio::spawn(reported.run(request));
+
+    let browser = Browser::launched_by(std::process::id()).await;
+    // Long enough for the user sync: the partner's frame, in a process of
+    // its own, is attached and recorded.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        requests
+            .records()
+            .iter()
+            .any(|record| record.target_id.is_some()),
+        "requests of an iframe or worker are handed over while the visit runs"
+    );
+
+    let cancelled_at = Instant::now();
+    cancel.cancel();
+    let outcome = running.await.unwrap();
+    assert!(
+        matches!(outcome.result, Err(BrowserError::Cancelled)),
+        "{:?}",
+        outcome.result.err()
+    );
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(3),
+        "took {:?}",
+        cancelled_at.elapsed()
+    );
+    browser.assert_gone(Duration::ZERO).await;
+
+    let handed_over = requests.count();
+    assert!(handed_over > 20, "{handed_over} requests");
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        requests.count(),
+        handed_over,
+        "the sink is not used after the capture has returned"
+    );
+    let records = requests.records();
+    let numbers: std::collections::BTreeSet<u32> =
+        records.iter().map(|record| record.seq).collect();
+    assert_eq!(numbers.len(), records.len(), "no request twice");
+}
+
 #[tokio::test]
 async fn cancelling_during_startup_leaves_no_chrome_behind() {
     let _turn = ONE_BROWSER_AT_A_TIME.lock().await;

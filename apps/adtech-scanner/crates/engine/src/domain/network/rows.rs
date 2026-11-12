@@ -27,9 +27,13 @@ impl<'a> ScriptIndex<'a> {
         let mut by_sha256 = HashMap::new();
         for script in scripts {
             // A URL loaded twice names its first load; so does the viewer.
-            by_url.entry(script.url.as_str()).or_insert(script.id.as_str());
+            by_url
+                .entry(script.url.as_str())
+                .or_insert(script.id.as_str());
             if let Some(sha256) = &script.sha256 {
-                by_sha256.entry(sha256.as_str()).or_insert(script.id.as_str());
+                by_sha256
+                    .entry(sha256.as_str())
+                    .or_insert(script.id.as_str());
             }
         }
         Self { by_url, by_sha256 }
@@ -37,7 +41,9 @@ impl<'a> ScriptIndex<'a> {
 
     /// `url` as the capture reported it; script records hold it as stored.
     pub fn id_of_url(&self, url: &str) -> Option<String> {
-        self.by_url.get(stored_url(url).as_str()).map(|id| (*id).to_string())
+        self.by_url
+            .get(stored_url(url).as_str())
+            .map(|id| (*id).to_string())
     }
 
     pub fn id_of_content(&self, sha256: &str) -> Option<String> {
@@ -45,7 +51,11 @@ impl<'a> ScriptIndex<'a> {
     }
 }
 
-pub fn row(index: &RequestIndexRow, document: Option<&RequestDocument>, scripts: &ScriptIndex) -> NetworkRow {
+pub fn row(
+    index: &RequestIndexRow,
+    document: Option<&RequestDocument>,
+    scripts: &ScriptIndex,
+) -> NetworkRow {
     let url = match document {
         Some(document) => document.full_url.clone(),
         // The query string went with the pack.
@@ -128,7 +138,10 @@ fn initiator_ref(initiator: &StoredInitiator, scripts: &ScriptIndex) -> Initiato
         },
         None => InitiatorRef {
             kind: initiator.kind,
-            script_id: initiator.url.as_deref().and_then(|url| scripts.id_of_url(url)),
+            script_id: initiator
+                .url
+                .as_deref()
+                .and_then(|url| scripts.id_of_url(url)),
             url: initiator.url.clone(),
             line: initiator.line.map(|line| line + 1),
             column: initiator.column.map(|column| column + 1),

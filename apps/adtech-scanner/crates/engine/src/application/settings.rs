@@ -3,17 +3,20 @@
 use std::sync::Arc;
 
 use adscan_model::{
-    ApiKeyStatus, ApiProvider, ProxyChoice, ProxyProfileDraft, Settings, SettingsPatch,
+    ApiKeyStatus, ApiProvider, ArchiveStorage, ProxyChoice, ProxyProfileDraft, Settings,
+    SettingsPatch,
 };
 use tokio::sync::Mutex;
 
 use super::AppError;
+use super::archive::Archive;
 use super::llm::LlmError;
 use super::ports::{
     IdGenerator, JudgeClient, LlmClient, ScanConfigurationRepository, SecretError, SecretName,
     SecretStore, SettingsRepository,
 };
 use crate::domain::DomainError;
+use crate::domain::archive::kinds::validate_archive_limit;
 use crate::domain::pricing::Budget;
 use crate::domain::proxy::{self, ResolvedProxy};
 use crate::domain::scan::{validate_extra_pages, validate_observe_seconds};
@@ -26,6 +29,9 @@ pub struct SettingsService {
     /// Asked before a proxy profile is deleted: one in use stays.
     configurations: Arc<dyn ScanConfigurationRepository>,
     ids: Arc<dyn IdGenerator>,
+    /// The limit on stored scan data is a setting; changing it acts on the
+    /// archives.
+    archive: Archive,
     /// Held from load to save: the UI sends one patch per changed field, and
     /// two patches working from the same copy would undo each other.
     updating: Mutex<()>,
@@ -39,6 +45,7 @@ impl SettingsService {
         judge: Arc<dyn JudgeClient>,
         configurations: Arc<dyn ScanConfigurationRepository>,
         ids: Arc<dyn IdGenerator>,
+        archive: Archive,
     ) -> Self {
         Self {
             settings,
@@ -47,6 +54,7 @@ impl SettingsService {
             judge,
             configurations,
             ids,
+            archive,
             updating: Mutex::new(()),
         }
     }
@@ -87,9 +95,32 @@ impl SettingsService {
             ));
         }
         let mut settings = self.settings.load().await?.unwrap_or_default();
+        let limit_changed = patch.archive_limit_bytes.is_some();
         apply_patch(&mut settings, patch)?;
+        let limit = settings.archive_limit_bytes;
         self.save(settings).await?;
+        if limit_changed {
+            // A lower limit takes effect now, not at the next scan.
+            self.archive.enforce_limit(limit, None).await?;
+        }
         self.get().await
+    }
+
+    /// How much scan data is stored, against the limit.
+    pub async fn archive_storage(&self) -> Result<ArchiveStorage, AppError> {
+        let limit = self
+            .settings
+            .load()
+            .await?
+            .unwrap_or_default()
+            .archive_limit_bytes;
+        self.archive.storage(limit).await
+    }
+
+    /// Removes the network data of every finished scan. Their reports stay.
+    pub async fn clear_archive(&self) -> Result<ArchiveStorage, AppError> {
+        self.archive.clear().await?;
+        self.archive_storage().await
     }
 
     /// Stores the key only when the provider's API accepts it.
@@ -332,6 +363,15 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) -> Result<(), Doma
     }
     if let Some(choice) = patch.default_proxy {
         settings.default_proxy = ResolvedProxy::resolve(&choice, &settings.proxies)?.choice;
+    }
+    if let Some(keep) = patch.keep_network_data {
+        settings.keep_network_data = keep;
+    }
+    if let Some(bytes) = patch.archive_limit_bytes {
+        settings.archive_limit_bytes = validate_archive_limit(bytes)?;
+    }
+    if let Some(full) = patch.store_full_headers {
+        settings.store_full_headers = full;
     }
     Ok(())
 }

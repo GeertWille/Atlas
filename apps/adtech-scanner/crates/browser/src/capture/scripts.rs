@@ -375,6 +375,55 @@ mod tests {
     }
 
     #[test]
+    fn a_script_is_found_again_by_what_the_browser_says_of_a_stack_frame() {
+        let mut library = ScriptLibrary::default();
+        library.add_external(
+            "https://a.test/hb.js".into(),
+            "wrapper()".into(),
+            Some(10.0),
+            None,
+            Some(7),
+        );
+        // Loaded again on a later page view: the first request stays its link.
+        library.add_external(
+            "https://a.test/hb.js".into(),
+            "wrapper()".into(),
+            Some(20.0),
+            None,
+            Some(31),
+        );
+        let data_url = format!("data:text/javascript,{}", "a()%3B".repeat(100));
+        library.add_external(data_url.clone(), "a();".into(), None, None, None);
+        library.add_inline("one()".into(), None, None);
+        library.add_inline("two()".into(), None, None);
+
+        assert_eq!(
+            library.external_url("https://a.test/hb.js").as_deref(),
+            Some("https://a.test/hb.js")
+        );
+        assert_eq!(library.external_url("https://a.test/other.js"), None);
+        assert_eq!(library.external_url(""), None);
+        let held_as = library.external_url(&data_url).unwrap();
+        assert!(held_as.starts_with("data:text/javascript,[") && held_as.len() < 60);
+
+        assert_eq!(
+            library.inline_url(inline_fingerprint("two()")),
+            Some("inline:2")
+        );
+        assert_eq!(library.inline_url(inline_fingerprint("three()")), None);
+        // An inline block is not found by an address: its document has one.
+        assert_eq!(library.external_url("inline:1"), None);
+
+        let scripts = library.into_captured(|at| (0, at));
+        assert_eq!(scripts[0].request_seq, Some(7));
+        assert!(
+            scripts[1..]
+                .iter()
+                .all(|script| script.request_seq.is_none())
+        );
+    }
+
+    #[test]
     fn oversized_body_is_truncated_on_a_character_boundary() {
         let mut library = ScriptLibrary::default();
         let body = "é".repeat(MAX_SCRIPT_BYTES / 2 + 10);

@@ -1,6 +1,7 @@
 import { createRootRoute, createRoute, createRouter, Link, lazyRouteComponent } from "@tanstack/react-router";
 import { CompassIcon } from "lucide-react";
 import { z } from "zod";
+import { DETAIL_TABS, NETWORK_GROUPINGS, NETWORK_VIEWS } from "@/features/network/search";
 import { Page } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
 import { Button } from "@/shared/ui/button";
@@ -9,7 +10,7 @@ import { createFragmentHistory } from "./hash-history";
 import { HomeRoute } from "./routes/HomeRoute";
 import { AppShell } from "./shell/AppShell";
 
-export const REPORT_TABS = ["findings", "auctions", "slots", "scripts", "audit"] as const;
+export const REPORT_TABS = ["findings", "auctions", "slots", "scripts", "network", "audit"] as const;
 export type ReportTab = (typeof REPORT_TABS)[number];
 
 /** The saved configuration the composer has open for editing. */
@@ -25,6 +26,32 @@ const scanSearchSchema = z.object({
 });
 
 const logSearchSchema = z.object({ q: z.string().optional().catch(undefined) });
+
+const line = z.number().int().min(1).optional().catch(undefined);
+
+/** A place in a script: lines of the view shown, or a position in the script as captured (`oline`, `ocol`). */
+const sourceSearchSchema = z.object({
+  line,
+  to: line,
+  view: z.enum(["formatted", "original"]).optional().catch(undefined),
+  finding: z.string().optional().catch(undefined),
+  oline: line,
+  ocol: line,
+});
+
+/** The whole state of the network workbench: filter, grouping, sorting, selection and time window. */
+const networkSearchSchema = z.object({
+  q: z.string().optional().catch(undefined),
+  page: z.number().int().min(0).optional().catch(undefined),
+  group: z.enum(NETWORK_GROUPINGS).optional().catch(undefined),
+  sort: z.string().optional().catch(undefined),
+  req: z.string().optional().catch(undefined),
+  dt: z.enum(DETAIL_TABS).optional().catch(undefined),
+  view: z.enum(NETWORK_VIEWS).optional().catch(undefined),
+  auction: z.string().optional().catch(undefined),
+  from: z.number().min(0).optional().catch(undefined),
+  to: z.number().min(0).optional().catch(undefined),
+});
 
 function NotFound() {
   return (
@@ -63,6 +90,20 @@ export const scanRoute = createRoute({
   component: lazyRouteComponent(() => import("./routes/ScanRoute"), "ScanRoute"),
 });
 
+export const sourceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/scans/$scanId/source/$scriptId",
+  validateSearch: sourceSearchSchema,
+  component: lazyRouteComponent(() => import("./routes/SourceRoute"), "SourceRoute"),
+});
+
+export const networkRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/scans/$scanId/network",
+  validateSearch: networkSearchSchema,
+  component: lazyRouteComponent(() => import("./routes/NetworkRoute"), "NetworkRoute"),
+});
+
 const configurationsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/configurations",
@@ -91,6 +132,8 @@ const settingsRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   homeRoute,
   scanRoute,
+  sourceRoute,
+  networkRoute,
   configurationsRoute,
   historyRoute,
   logSearchRoute,

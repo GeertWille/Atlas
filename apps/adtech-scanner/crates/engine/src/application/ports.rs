@@ -5,10 +5,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adscan_model::{
-    AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureActivity,
-    CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit,
-    NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView, PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
-    ScanListQuery, ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
+    AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture,
+    CaptureActivity, CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit,
+    NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView, PipelineStep,
+    ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList, ScanListQuery,
+    ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -419,7 +420,11 @@ pub trait ArchiveRepository: Send + Sync {
     ) -> RepoResult<(Vec<RequestIndexRow>, u32)>;
     async fn rows_by_seq(&self, scan_id: &str, seqs: &[u32]) -> RepoResult<Vec<RequestIndexRow>>;
     async fn body(&self, scan_id: &str, body_no: u32) -> RepoResult<Option<BodyIndexRow>>;
-    async fn body_by_sha(&self, scan_id: &str, sha256: [u8; 32]) -> RepoResult<Option<BodyIndexRow>>;
+    async fn body_by_sha(
+        &self,
+        scan_id: &str,
+        sha256: [u8; 32],
+    ) -> RepoResult<Option<BodyIndexRow>>;
     async fn save_ad_links(&self, scan_id: &str, links: Vec<RequestAdLink>) -> RepoResult<()>;
     /// Removes the archive's bookkeeping and all its rows. False when the
     /// scan has none.

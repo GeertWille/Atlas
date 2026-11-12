@@ -45,6 +45,13 @@ pub fn register_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Build
             commands::list_scan_configurations,
             commands::save_scan_configuration,
             commands::delete_scan_configuration,
+            commands::list_network_requests,
+            commands::get_network_summary,
+            commands::get_network_request,
+            commands::get_network_body,
+            commands::get_script_source,
+            commands::get_archive_storage,
+            commands::clear_archive,
         ])
 }
 

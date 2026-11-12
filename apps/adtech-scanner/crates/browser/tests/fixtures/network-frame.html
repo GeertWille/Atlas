@@ -1,0 +1,7 @@
+<!doctype html>
+<title>A frame that asks for things itself</title>
+<script>
+  var which = location.search.slice(1);
+  fetch('/status/200?frame-' + which).then(function (answer) { return answer.text(); });
+  new Worker('/network-worker.js?' + which);
+</script>

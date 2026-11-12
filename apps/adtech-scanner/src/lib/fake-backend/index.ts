@@ -520,7 +520,7 @@ class FakeBackend {
       if (this.profileInfo().inUse) {
         throw new ApiError(
           "profileBusy",
-          "The scan profile is in use by a running scan. Try again when that scan has finished.",
+          "The browser profile is in use by a running scan. Try again when that scan has finished.",
         );
       }
       this.scanProfile = { sizeBytes: 0, lastUsedAt: null };

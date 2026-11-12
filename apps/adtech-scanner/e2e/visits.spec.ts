@@ -6,8 +6,13 @@ const LEGACY = "/scans/seed-morningledger-mobile";
 
 test("the composer offers four visitor behaviours and only the options each one has", async ({ page }) => {
   await openApp(page, "/");
+  const scan = page.getByRole("button", { name: "Scan", exact: true });
+  await expect(scan).toHaveAccessibleDescription("Scroll · browser hidden · system proxy · AI on, about $0.36");
+  // Proxy, browser profile and budget stay out of the way until Options is opened.
+  await expect(page.getByRole("combobox", { name: "Proxy" })).toHaveCount(0);
   await page.getByRole("button", { name: "Options" }).click();
-  const visitor = page.getByRole("radiogroup", { name: "Visitor" });
+  const visit = page.getByRole("region", { name: "Visit" });
+  const visitor = visit.getByRole("radiogroup", { name: "Visitor" });
   await expect(visitor.getByRole("radio")).toHaveText([
     "Observe only",
     "Scroll",
@@ -18,6 +23,7 @@ test("the composer offers four visitor behaviours and only the options each one 
   await expect(page.getByRole("switch", { name: "Auto-scroll" })).toHaveCount(0);
   await expect(page.getByText(/This visit is automated and says so to the page/)).toBeVisible();
   await expect(page.getByRole("button", { name: "More pages" })).toHaveCount(0);
+  await expect(visit.getByText("Only “Browse like a visitor” follows links to further pages.")).toBeVisible();
 
   // The whole group is one tab stop; arrows move the choice.
   await visitor.getByRole("radio", { name: "Scroll" }).focus();
@@ -25,8 +31,11 @@ test("the composer offers four visitor behaviours and only the options each one 
   await expect(visitor.getByRole("radio", { name: "Browse like a visitor" })).toBeFocused();
   await page.keyboard.press("Space");
   await expect(visitor.getByRole("radio", { name: "Browse like a visitor" })).toBeChecked();
-  await expect(page.getByText("3 pages", { exact: true })).toBeVisible();
+  await expect(visit.getByText("3 pages", { exact: true })).toBeVisible();
   await expect(page.getByRole("switch", { name: "Show the browser" })).toBeChecked();
+  await expect(scan).toHaveAccessibleDescription(
+    "Browse like a visitor · 3 pages · browser shown · system proxy · AI on, about $0.37",
+  );
   await expect(page.getByText(/Estimated .* for 3 pages/)).toBeVisible();
   await page.getByRole("button", { name: "Fewer pages" }).click();
   await page.getByRole("button", { name: "Fewer pages" }).click();
@@ -34,17 +43,15 @@ test("the composer offers four visitor behaviours and only the options each one 
   await expect(page.getByRole("button", { name: "Fewer pages" })).toBeDisabled();
 
   await visitor.getByRole("radio", { name: "I'll browse myself" }).click();
-  await expect(
-    page.getByText(/Chrome opens; browse the site, then press Finish capture \(up to 15 minutes\)/),
-  ).toBeVisible();
+  await expect(visit.getByText("Chrome opens; browse the site, then press Finish capture.")).toBeVisible();
+  await expect(visit.getByText("Up to 15 minutes")).toBeVisible();
+  await expect(visit.getByText("You handle the consent banner yourself; nothing is clicked for you.")).toBeVisible();
   await expect(page.getByRole("slider")).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "Accept consent banner" })).toHaveCount(0);
   await expect(page.getByRole("switch", { name: "Show the browser" })).toHaveCount(0);
 
-  // Proxy, profile and budget are one click further, not in the way.
-  await expect(page.getByRole("combobox", { name: "Proxy" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Proxy, profile and budget" }).click();
-  await page.getByRole("combobox", { name: "Proxy" }).click();
+  // Where the visit comes from is its own group, whatever the visitor.
+  await page.getByRole("region", { name: "Origin" }).getByRole("combobox", { name: "Proxy" }).click();
   await expect(page.getByRole("option")).toHaveText([
     "Settings default (System proxy)",
     "No proxy",
@@ -82,7 +89,7 @@ test("a browse visit shows where it is while it runs, and ends in a report with 
   await expect(page.getByRole("region", { name: "Visit" })).toHaveCount(0);
   await expect(page.getByRole("radiogroup", { name: "Page view" }).getByRole("radio")).toHaveCount(4);
   const overview = page.getByRole("region", { name: "Overview" });
-  for (const fact of ["Browse like a visitor", "3 pages", "Browser shown", "Fresh profile", "System proxy"]) {
+  for (const fact of ["Browse like a visitor", "3 pages", "Browser shown", "Fresh browser profile", "System proxy"]) {
     await expect(overview.getByText(fact, { exact: true })).toBeVisible();
   }
 });

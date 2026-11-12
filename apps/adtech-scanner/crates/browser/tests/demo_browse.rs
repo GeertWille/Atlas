@@ -24,6 +24,16 @@ const TRAPS: [&str; 6] = [
     "/sponsored/offer",
     "/ads/click",
 ];
+/// Where the demo's bidders ask their stand-in exchanges.
+const EXCHANGES: [&str; 7] = [
+    "/ut/v3/prebid",
+    "/a/api/fastlane.json",
+    "/openrtb/pbjs",
+    "/translator",
+    "/openrtb_2_5/pbjs/auction/request",
+    "/header/auction",
+    "/openrtbb/prebidjs",
+];
 /// The containers every article page has; `ad-sidebar-2` is an ad unit
 /// without one.
 const SLOTS: [&str; 5] = [
@@ -134,10 +144,23 @@ impl Visit {
                 self.outcome.progress
             );
             let is_known = path == "/"
-                || ["/climate/", "/fragments/", "/static/", "/tag/"]
-                    .iter()
-                    .any(|prefix| path.starts_with(prefix))
-                || ["/collect", "/openrtbb/prebidjs", "/ads.txt"].contains(&path.as_str());
+                || [
+                    "/climate/",
+                    "/fragments/",
+                    "/static/",
+                    "/tag/",
+                    "/usersync/",
+                ]
+                .iter()
+                .any(|prefix| path.starts_with(prefix))
+                || [
+                    "/collect",
+                    "/collect/sampling.json",
+                    "/api/archive-index.json",
+                    "/ads.txt",
+                ]
+                .contains(&path.as_str())
+                || EXCHANGES.contains(&path.as_str());
             assert!(is_known, "{path} was requested");
         }
         for page in &self.capture.pages {
@@ -221,8 +244,8 @@ async fn a_browsing_visitor_acts_with_real_input_and_takes_no_trap() {
     assert_eq!(visit.hits["/"], 1);
     assert_eq!(
         capture.environment.request_hosts,
-        Vec::<String>::new(),
-        "the demo site asks nobody else for anything"
+        ["localhost"],
+        "the demo site asks its partners' stand-ins on this machine and nobody else"
     );
 
     // The page's own analytics saw a reader: pointer and wheel, all of it

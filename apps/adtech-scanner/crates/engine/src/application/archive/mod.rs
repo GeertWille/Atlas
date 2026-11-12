@@ -4,9 +4,9 @@
 pub mod analysis;
 pub mod codec;
 pub mod network;
+pub mod recording;
 pub mod source;
 pub mod storage;
-pub mod recording;
 
 use std::sync::Arc;
 

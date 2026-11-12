@@ -5,11 +5,11 @@
 //! network data. Today it keeps what the bid exchanges say; decoding of
 //! ad-server calls belongs here too.
 
-use adscan_model::{CapturedBody, NetworkCategory, NetworkRecord, RequestEnd};
+use adscan_model::{CapturedBody, NetworkCategory, NetworkRecord, RequestEnd, ResourceKind};
 
 use crate::domain::archive::index::RequestIndexRow;
 use crate::domain::network::classify::{is_ad_call, is_prebid_server};
-use crate::domain::network::exchange::{Answer, ExchangeRequest};
+use crate::domain::network::exchange::{AdServerCall, Answer, ExchangeRequest};
 use crate::domain::network::openrtb;
 
 /// A bid request's ids are near its start; more is not searched.
@@ -19,22 +19,31 @@ const MAX_HAYSTACK_BYTES: usize = 256 * 1024;
 pub struct RecordAnalysis {
     /// Every bid request of the visit, for matching against Prebid's auctions.
     pub exchanges: Vec<ExchangeRequest>,
+    /// Every ad-server ad call, for matching against the slots' requests.
+    pub ad_server_calls: Vec<AdServerCall>,
 }
 
 impl RecordAnalysis {
     /// Whether the answer of this request is wanted in memory. Asked before
     /// the body is read; the scan's storage setting plays no part in it.
     pub fn wants_body(url: &str, bidder: Option<&str>) -> bool {
-        url::Url::parse(url).is_ok_and(|url| {
-            is_ad_call(url.host_str().unwrap_or_default(), url.path(), bidder)
-        })
+        url::Url::parse(url)
+            .is_ok_and(|url| is_ad_call(url.host_str().unwrap_or_default(), url.path(), bidder))
     }
 
     /// Sees one finished request, body included. `row` is what the index
     /// would keep of it.
     pub fn observe(&mut self, record: &NetworkRecord, row: &RequestIndexRow) {
-        if row.category == NetworkCategory::Bid {
-            self.exchanges.push(exchange(record, row));
+        match row.category {
+            // A preflight is filed with its bid request but carries no bids.
+            NetworkCategory::Bid if record.kind == ResourceKind::Preflight => {}
+            NetworkCategory::Bid => self.exchanges.push(exchange(record, row)),
+            NetworkCategory::AdServer => self.ad_server_calls.push(AdServerCall {
+                seq: record.seq,
+                page: record.page,
+                started_ms: record.started_at_ms,
+            }),
+            _ => {}
         }
     }
 }
@@ -49,7 +58,9 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
         _ => None,
     };
     let decoded = openrtb::decode(&row.path, post.as_deref(), answer.as_deref(), &|_| None);
-    let response = decoded.as_ref().and_then(|decoded| decoded.response.as_ref());
+    let response = decoded
+        .as_ref()
+        .and_then(|decoded| decoded.response.as_ref());
     let mut haystack = record.url.clone();
     if let Some(post) = &post {
         haystack.push('\n');
@@ -64,9 +75,9 @@ fn exchange(record: &NetworkRecord, row: &RequestIndexRow) -> ExchangeRequest {
         page: record.page,
         bidder: record.bidder.clone(),
         via_server: is_prebid_server(&row.path)
-            || decoded
-                .as_ref()
-                .is_some_and(|decoded| decoded.protocol == adscan_model::ExchangeProtocol::PrebidServer),
+            || decoded.as_ref().is_some_and(|decoded| {
+                decoded.protocol == adscan_model::ExchangeProtocol::PrebidServer
+            }),
         started_ms: record.started_at_ms,
         ended_ms: record.ended_at_ms,
         answer: match record.end {

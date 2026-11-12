@@ -14,7 +14,7 @@ export function visitFacts(detail: Pick<ScanDetail, "environment" | "pages">): s
     VISITOR_META[environment.visitor].label,
     pluralize(Math.max(1, pages.length), "page"),
     environment.headless ? "Headless" : "Browser shown",
-    environment.persistentProfile ? "Kept scan profile" : "Fresh profile",
+    environment.persistentProfile ? "Kept browser profile" : "Fresh browser profile",
     proxyUseLabel(environment.proxy),
     ...(environment.emulatedMobile ? ["Mobile emulation"] : []),
   ];

@@ -20,6 +20,8 @@ export const editorTheme = EditorView.theme({
   ".cm-scroller": {
     fontFamily: "var(--font-mono)",
     lineHeight: "1.55",
+    // The app turns contextual alternates on for its UI font; in code they would draw `===` as one glyph.
+    fontFeatureSettings: '"calt" 0, "liga" 0',
     fontVariantLigatures: "none",
     overflow: "auto",
   },

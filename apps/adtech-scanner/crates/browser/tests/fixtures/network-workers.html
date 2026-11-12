@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Shared and service workers</title>
+<h1>Shared and service workers</h1>
+<script>
+  new SharedWorker('/network-shared.js');
+  // Asked once the service worker controls this page, so that it answers.
+  navigator.serviceWorker.addEventListener('controllerchange', function () {
+    fetch('/status/200?through-the-service-worker').then(function (answer) { return answer.text(); });
+  });
+  navigator.serviceWorker.register('/network-sw.js');
+</script>

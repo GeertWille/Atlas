@@ -16,6 +16,7 @@ use self::audit::StepRun;
 use self::graph::OnFailure;
 use self::state::{NodeError, NodeResult, ScanJob, ScanState};
 use super::AppError;
+use super::archive::Archive;
 use super::ports::{
     CaptureSource, Clock, EventSink, IdGenerator, JudgeClient, LlmClient, LogRepository,
     PublicFileFetcher, RepoResult, ScanRepository, SourceFormatter,
@@ -31,6 +32,7 @@ pub struct PipelineDeps {
     pub capture: Arc<dyn CaptureSource>,
     pub files: Arc<dyn PublicFileFetcher>,
     pub formatter: Arc<dyn SourceFormatter>,
+    pub archive: Archive,
     pub events: Arc<dyn EventSink>,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGenerator>,
@@ -184,7 +186,12 @@ impl Pipeline {
         summary.duration_ms = Some(now - summary.started_at);
         match outcome {
             RunOutcome::Completed => summary.status = ScanStatus::Completed,
-            RunOutcome::Cancelled => summary.status = ScanStatus::Cancelled,
+            RunOutcome::Cancelled => {
+                summary.status = ScanStatus::Cancelled;
+                // A cancelled scan has no report; its network data goes too.
+                // Best effort: what stays behind is swept at the next start.
+                let _ = self.deps.archive.remove(&summary.id).await;
+            }
             RunOutcome::Failed(error) => {
                 summary.status = ScanStatus::Failed;
                 summary.error = Some(error.to_string());

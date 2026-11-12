@@ -1,5 +1,13 @@
 import { afterAll, beforeAll, expect, test } from "vitest";
-import type { ApiKeyStatus, BrowserInfo, DashboardStats, ScanList, ScanSummary, Settings } from "../src/bindings";
+import type {
+  ApiKeyStatus,
+  ArchiveStorage,
+  BrowserInfo,
+  DashboardStats,
+  ScanList,
+  ScanSummary,
+  Settings,
+} from "../src/bindings";
 import {
   type App,
   button,
@@ -113,6 +121,9 @@ test("read commands answer with the contract's shapes", async () => {
     persistentProfile: false,
     proxies: [],
     defaultProxy: { kind: "system" },
+    keepNetworkData: true,
+    archiveLimitBytes: 5 * 1024 ** 3,
+    storeFullHeaders: false,
   });
 
   const detected = await invokeOk<BrowserInfo | null>(browser, "detect_browser");
@@ -136,6 +147,14 @@ test("read commands answer with the contract's shapes", async () => {
   // Optional arguments may be left out or sent as `undefined`, which is what the adapter does.
   expect(await invokeOk<unknown[]>(browser, "search_logs", { query: "anything" })).toEqual([]);
   expect(await invokeOk<unknown[]>(browser, "search_logs", { query: "anything", limit: 3 })).toEqual([]);
+  expect(await invokeOk<ArchiveStorage>(browser, "get_archive_storage")).toEqual({
+    scans: 0,
+    evictedScans: 0,
+    storedBytes: 0,
+    limitBytes: 5 * 1024 ** 3,
+    oldestAt: null,
+  });
+  expect((await invokeOk<ArchiveStorage>(browser, "clear_archive")).storedBytes).toBe(0);
   expect(await invokeOk<null>(browser, "delete_all_scans")).toBeNull();
 });
 
@@ -172,6 +191,15 @@ test("failures reject with { code, message }", async () => {
   expect(await invoke(browser, "cancel_scan", { scanId: UNKNOWN_SCAN })).toEqual(notFound);
   expect(await invoke(browser, "delete_scan", { scanId: UNKNOWN_SCAN })).toEqual(notFound);
   expect(await invoke(browser, "export_scan", { scanId: UNKNOWN_SCAN, format: "json" })).toEqual(notFound);
+  expect(await invoke(browser, "list_network_requests", { scanId: UNKNOWN_SCAN })).toEqual(notFound);
+  expect(await invoke(browser, "get_network_summary", { scanId: UNKNOWN_SCAN })).toEqual(notFound);
+  expect(await invoke(browser, "get_network_request", { scanId: UNKNOWN_SCAN, requestId: "r1" })).toEqual(notFound);
+  expect(
+    await invoke(browser, "get_network_body", { scanId: UNKNOWN_SCAN, requestId: "r1", side: "response" }),
+  ).toEqual(notFound);
+  expect(
+    await invoke(browser, "get_script_source", { scanId: UNKNOWN_SCAN, scriptId: "s1", view: "formatted" }),
+  ).toEqual(notFound);
 
   const options = { device: "desktop", observeSeconds: 5, autoScroll: true, acceptConsent: true, aiEnabled: false };
   expect(await invoke(browser, "start_scan", { options: { ...options, url: "file:///etc/passwd" } })).toEqual({

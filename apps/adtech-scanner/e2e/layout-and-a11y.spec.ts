@@ -132,7 +132,7 @@ for (const viewport of VIEWPORTS) {
         await openApp(page, "/");
         await page.getByRole("button", { name: "Options" }).click();
         await page.getByRole("radio", { name: "Browse like a visitor" }).click();
-        await page.getByRole("button", { name: "Proxy, profile and budget" }).click();
+        await expect(page.getByRole("textbox", { name: "LLM budget" })).toBeAttached();
         await expectWindowDoesNotScroll(page);
         await page.getByRole("region", { name: "Recent scans" }).evaluate((element) => element.scrollIntoView());
         await page.getByRole("form", { name: "New scan" }).evaluate((element) => element.scrollIntoView());

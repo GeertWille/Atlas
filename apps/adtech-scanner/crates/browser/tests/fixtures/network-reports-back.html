@@ -1,0 +1,7 @@
+<!doctype html>
+<title>Loads, then says so</title>
+<script>
+  fetch('/status/200?loaded-in-the-frame').then(function (answer) { return answer.text(); }).then(function () {
+    parent.postMessage('loaded', '*');
+  });
+</script>

@@ -6,6 +6,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adscan_engine::application::archive::Archive;
+use adscan_engine::application::archive::network::NetworkView;
+use adscan_engine::application::archive::source::ScriptSources;
 use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
@@ -17,14 +20,16 @@ use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::keychain::Keychain;
+use adscan_engine::infrastructure::pack_store::LocalPackStore;
 use adscan_engine::infrastructure::secrets::{MemorySecretStore, VaultSecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::TypesafeClient;
 use adscan_model::{
-    BrowserInfo, Capture, CaptureActivity, CaptureRequest, CapturedPage, CapturedScript,
-    DeviceProfile, PageReach, ScanDetail, ScanEvent, ScanOptions, ScanProfileInfo, ScanStatus,
-    TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, Viewport,
+    BodyAdmission, BodyOffer, BrowserInfo, Capture, CaptureActivity, CaptureRequest, CapturedBody,
+    CapturedPage, CapturedScript, DeviceProfile, NetworkRecord, PageReach, ScanDetail, ScanEvent,
+    ScanOptions, ScanProfileInfo, ScanStatus, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev,
+    Viewport,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -410,6 +415,12 @@ pub struct FakeCaptureSource {
     /// lock would say.
     pub profile_in_use: Mutex<bool>,
     pub profile_clears: Mutex<u32>,
+    /// The requests every capture "sees", handed to the scan's sink the way
+    /// the browser crate does: a body is offered first and only handed over
+    /// when the sink admits it.
+    pub network: Mutex<Vec<NetworkRecord>>,
+    /// Whether the last capture was given a sink at all.
+    pub had_sink: Mutex<Option<bool>>,
 }
 
 impl FakeCaptureSource {
@@ -421,6 +432,8 @@ impl FakeCaptureSource {
             activities: Mutex::new(Vec::new()),
             profile_in_use: Mutex::new(false),
             profile_clears: Mutex::new(0),
+            network: Mutex::new(Vec::new()),
+            had_sink: Mutex::new(None),
         }
     }
 }
@@ -448,6 +461,30 @@ impl CaptureSource for FakeCaptureSource {
         (session.on_activity)(CaptureActivity::progress("Page loaded in 0.9s"));
         for activity in self.activities.lock().unwrap().iter().cloned() {
             (session.on_activity)(activity);
+        }
+        *self.had_sink.lock().unwrap() = Some(session.network.is_some());
+        if let Some(sink) = &session.network {
+            for mut record in self.network.lock().unwrap().iter().cloned() {
+                if let CapturedBody::Read { bytes, total_bytes } = &record.body {
+                    let admission = sink.admit_body(&BodyOffer {
+                        seq: record.seq,
+                        url: &record.url,
+                        bidder: record.bidder.as_deref(),
+                        kind: record.kind,
+                        mime_type: record.mime_type.as_deref(),
+                        status: record.status,
+                        expected_bytes: *total_bytes,
+                    });
+                    record.body = match admission {
+                        BodyAdmission::Read { max_bytes } => CapturedBody::Read {
+                            bytes: bytes[..bytes.len().min(max_bytes)].to_vec(),
+                            total_bytes: *total_bytes,
+                        },
+                        BodyAdmission::Skip(why) => CapturedBody::Skipped(why),
+                    };
+                }
+                sink.record(record);
+            }
         }
         match &self.behavior {
             CaptureBehavior::Return(capture) => Ok((**capture).clone()),
@@ -585,6 +622,11 @@ pub struct Harness {
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
     pub files: Arc<FakePublicFiles>,
+    pub archive: Archive,
+    pub network: NetworkView,
+    pub sources: ScriptSources,
+    /// Where the pack files are; removed with the harness.
+    pub data_dir: Arc<tempfile::TempDir>,
 }
 
 pub fn fast_retry() -> RetryPolicy {
@@ -673,6 +715,29 @@ fn build_harness(
     assemble(behavior, providers, formatter, store, secrets)
 }
 
+/// The app over a database and a data directory that outlive the harness:
+/// a second harness over the same two is the app started again.
+pub fn harness_in(
+    behavior: CaptureBehavior,
+    store: SqliteStore,
+    data_dir: Arc<tempfile::TempDir>,
+) -> Harness {
+    let providers = Providers {
+        anthropic_base_url: "http://127.0.0.1:1",
+        api_key: None,
+        typesafe_base_url: "http://127.0.0.1:1",
+        typesafe_key: None,
+    };
+    assemble_in(
+        behavior,
+        providers,
+        Arc::new(OxcFormatter::default()),
+        store,
+        Arc::new(MemorySecretStore::with_keys(None, None)),
+        data_dir,
+    )
+}
+
 fn assemble(
     behavior: CaptureBehavior,
     providers: Providers,
@@ -680,6 +745,22 @@ fn assemble(
     store: SqliteStore,
     secrets: Arc<dyn SecretStore>,
 ) -> Harness {
+    let data_dir = Arc::new(tempfile::tempdir().unwrap());
+    assemble_in(behavior, providers, formatter, store, secrets, data_dir)
+}
+
+fn assemble_in(
+    behavior: CaptureBehavior,
+    providers: Providers,
+    formatter: Arc<dyn SourceFormatter>,
+    store: SqliteStore,
+    secrets: Arc<dyn SecretStore>,
+    data_dir: Arc<tempfile::TempDir>,
+) -> Harness {
+    let archive = Archive {
+        packs: Arc::new(LocalPackStore::new(data_dir.path())),
+        index: Arc::new(store.clone()),
+    };
     let llm = Arc::new(AnthropicClient::new(providers.anthropic_base_url, fast_retry()).unwrap());
     let judge = Arc::new(TypesafeClient::new(providers.typesafe_base_url, fast_retry()).unwrap());
     let settings = Arc::new(SettingsService::new(
@@ -689,6 +770,7 @@ fn assemble(
         judge.clone(),
         Arc::new(store.clone()),
         Arc::new(UuidGenerator),
+        archive.clone(),
     ));
     let configurations = ConfigurationService::new(
         Arc::new(store.clone()),
@@ -706,7 +788,8 @@ fn assemble(
         judge,
         capture: capture.clone(),
         files: files.clone(),
-        formatter,
+        formatter: formatter.clone(),
+        archive: archive.clone(),
         events: events.clone(),
         clock: Arc::new(SystemClock),
         ids: Arc::new(UuidGenerator),
@@ -716,10 +799,19 @@ fn assemble(
         settings,
         configurations,
         secrets,
-        store,
         events,
         capture,
         files,
+        network: NetworkView::new(archive.clone(), Arc::new(store.clone())),
+        sources: ScriptSources::new(
+            archive.clone(),
+            Arc::new(store.clone()),
+            Arc::new(store.clone()),
+            formatter,
+        ),
+        store,
+        archive,
+        data_dir,
     }
 }
 
@@ -761,4 +853,87 @@ pub async fn wait_for_end(harness: &Harness, scan_id: &str) -> ScanDetail {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     panic!("scan {scan_id} did not finish");
+}
+
+/// A finished GET of `url` on the entry page, 100 ms long, answered 200
+/// without a body: the values a test changes from.
+pub fn net(seq: u32, url: &str) -> NetworkRecord {
+    use adscan_model::{
+        InitiatorKind, NetworkInitiator, RequestContext, RequestEnd, ResourceKind, ResourceTiming,
+        ServedFrom,
+    };
+    NetworkRecord {
+        seq,
+        page: 0,
+        context: RequestContext::Page,
+        frame_id: Some("MAIN".into()),
+        target_id: None,
+        method: "GET".into(),
+        url: url.into(),
+        kind: ResourceKind::Other,
+        priority: Some("Low".into()),
+        request_headers: Vec::new(),
+        post_data: None,
+        post_data_missing: false,
+        initiator: NetworkInitiator {
+            kind: InitiatorKind::Other,
+            url: None,
+            line: None,
+            column: None,
+            stack: Vec::new(),
+        },
+        redirect_from: None,
+        preflight_of: None,
+        status: Some(200),
+        mime_type: None,
+        protocol: Some("h2".into()),
+        remote_address: Some("203.0.113.9:443".into()),
+        response_headers: Vec::new(),
+        served_from: ServedFrom::Network,
+        started_at_ms: 100.0 * f64::from(seq),
+        response_at_ms: Some(100.0 * f64::from(seq) + 80.0),
+        ended_at_ms: Some(100.0 * f64::from(seq) + 100.0),
+        queued_ms: Some(2.0),
+        timing: Some(ResourceTiming {
+            dns_start: Some(0.0),
+            dns_end: Some(5.0),
+            connect_start: Some(5.0),
+            connect_end: Some(25.0),
+            ssl_start: Some(10.0),
+            ssl_end: Some(25.0),
+            send_start: Some(26.0),
+            send_end: Some(27.0),
+            receive_headers_end: Some(78.0),
+            ..ResourceTiming::default()
+        }),
+        encoded_bytes: 300,
+        decoded_bytes: 0,
+        end: RequestEnd::Finished,
+        bidder: None,
+        body: CapturedBody::Empty,
+    }
+}
+
+/// `record` as a response of `kind` and `mime` with this text as its body.
+pub fn with_body(
+    mut record: NetworkRecord,
+    kind: adscan_model::ResourceKind,
+    mime: &str,
+    body: &str,
+) -> NetworkRecord {
+    record.kind = kind;
+    record.mime_type = Some(mime.into());
+    record.decoded_bytes = body.len() as u64;
+    record.body = CapturedBody::Read {
+        bytes: body.as_bytes().to_vec(),
+        total_bytes: body.len() as u64,
+    };
+    record
+}
+
+pub fn header(name: &str, value: &str) -> adscan_model::RawHeader {
+    adscan_model::RawHeader {
+        name: name.into(),
+        value: value.into(),
+    }
 }

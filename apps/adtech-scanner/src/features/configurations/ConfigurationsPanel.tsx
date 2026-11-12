@@ -3,6 +3,7 @@ import type { ScanConfiguration, Settings } from "@/bindings";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { Button } from "@/shared/ui/button";
 import { ConfigurationsTable } from "./ConfigurationsTable";
+import { sortConfigurations } from "./configuration-list";
 
 const SHOWN = 4;
 
@@ -15,12 +16,11 @@ export function ConfigurationsPanel({
   settings: Settings;
 }) {
   if (configurations.length === 0) return null;
-  const recentFirst = [...configurations].sort((a, b) => (b.lastRunAt ?? b.updatedAt) - (a.lastRunAt ?? a.updatedAt));
   return (
     <Panel aria-label="Configurations" className="overflow-hidden">
       <PanelHeader
         title="Configurations"
-        description="Saved scans you can run again with one click"
+        description="Saved scan setups, most recently used first. Open one to change it, or run it as it is."
         actions={
           <Button asChild variant="ghost" size="sm">
             <Link to="/configurations">
@@ -29,7 +29,11 @@ export function ConfigurationsPanel({
           </Button>
         }
       />
-      <ConfigurationsTable configurations={configurations} shown={recentFirst.slice(0, SHOWN)} settings={settings} />
+      <ConfigurationsTable
+        configurations={configurations}
+        shown={sortConfigurations(configurations, "recent").slice(0, SHOWN)}
+        settings={settings}
+      />
     </Panel>
   );
 }

@@ -1,13 +1,13 @@
 import { expect, test } from "@playwright/test";
 import { expectNoAxeViolations, openApp, reportHealth, startScan } from "./app";
 
-test("the scan profile is kept between scans once switched on, and cleared after confirming", async ({ page }) => {
+test("the browser profile is kept between scans once switched on, and cleared after confirming", async ({ page }) => {
   await openApp(page, "/settings", { profile: "fresh" });
   const browser = page.getByRole("region", { name: "Browser" });
-  const keep = browser.getByRole("switch", { name: "Keep a scan profile between scans" });
+  const keep = browser.getByRole("switch", { name: "Keep the browser profile between scans" });
   await expect(keep).not.toBeChecked();
   await expect(browser.getByText(/Stored only on this Mac, and separate from your own Chrome\./)).toBeVisible();
-  await expect(browser.getByText("No scan profile is stored yet.")).toBeVisible();
+  await expect(browser.getByText("No browser profile is stored yet.")).toBeVisible();
   await keep.click();
   await expect(page.getByText("Settings saved")).toBeVisible();
 
@@ -15,34 +15,40 @@ test("the scan profile is kept between scans once switched on, and cleared after
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.getByRole("button", { name: /Continue/ }).click();
   await page.getByRole("button", { name: "Options" }).click();
+  await expect(page.getByRole("combobox", { name: "Browser profile" })).toHaveText(
+    "Settings default (kept between scans)",
+  );
   await expect(
-    page.getByText(/Kept between scans: cookies and consent persist, like a returning visitor's\./),
+    page.getByText(/Cookies and consent carry over from earlier scans, like a returning visitor's\./),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(
+    /· kept browser profile ·/,
+  );
   await startScan(page, "morningledger.example");
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
   await expect(
-    page.getByRole("region", { name: "Overview" }).getByText("Kept scan profile", { exact: true }),
+    page.getByRole("region", { name: "Overview" }).getByText("Kept browser profile", { exact: true }),
   ).toBeVisible();
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await expect(browser.getByText(/20\.4 MB on this Mac, last used (just now|1 min ago)/)).toBeVisible();
-  await browser.getByRole("button", { name: "Clear scan profile…" }).click();
-  const confirm = page.getByRole("alertdialog", { name: "Clear the scan profile?" });
+  await browser.getByRole("button", { name: "Clear browser profile…" }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Clear the browser profile?" });
   await expect(confirm).toContainText("The next scan starts like a first-time visitor.");
   await expectNoAxeViolations(page);
   await confirm.getByRole("button", { name: "Cancel" }).click();
   await expect(browser.getByText(/20\.4 MB/)).toBeVisible();
-  await browser.getByRole("button", { name: "Clear scan profile…" }).click();
+  await browser.getByRole("button", { name: "Clear browser profile…" }).click();
   await confirm.getByRole("button", { name: "Clear profile" }).click();
-  await expect(browser.getByText("No scan profile is stored yet.")).toBeVisible();
+  await expect(browser.getByText("No browser profile is stored yet.")).toBeVisible();
   await page.reload();
-  await expect(browser.getByText("No scan profile is stored yet.")).toBeVisible();
+  await expect(browser.getByText("No browser profile is stored yet.")).toBeVisible();
   await expect(keep).toBeChecked();
 });
 
-test("the scan profile cannot be cleared while a scan is using it", async ({ page }) => {
+test("the browser profile cannot be cleared while a scan is using it", async ({ page }) => {
   await openApp(page, "/settings", { profile: "fresh", speed: 20 });
-  await page.getByRole("switch", { name: "Keep a scan profile between scans" }).click();
+  await page.getByRole("switch", { name: "Keep the browser profile between scans" }).click();
   await expect(page.getByText("Settings saved")).toBeVisible();
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.getByRole("button", { name: /Continue/ }).click();
@@ -54,14 +60,14 @@ test("the scan profile cannot be cleared while a scan is using it", async ({ pag
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   const browser = page.getByRole("region", { name: "Browser" });
   await expect(browser.getByText(/A running scan is using it\./)).toBeVisible();
-  await expect(browser.getByRole("button", { name: "Clear scan profile…" })).toBeDisabled();
+  await expect(browser.getByRole("button", { name: "Clear browser profile…" })).toBeDisabled();
 
   // Once the session is finished and the scan done, it can be cleared.
   await page.getByRole("region", { name: "Running", exact: true }).getByRole("link").click();
   await page.getByRole("button", { name: "Finish capture" }).click();
   await expect(reportHealth(page)).toBeVisible({ timeout: 40_000 });
   await page.getByRole("link", { name: "Settings", exact: true }).click();
-  await expect(browser.getByRole("button", { name: "Clear scan profile…" })).toBeEnabled();
+  await expect(browser.getByRole("button", { name: "Clear browser profile…" })).toBeEnabled();
 });
 
 test("add a proxy with credentials, use it for a scan, and see it in the report and history", async ({ page }) => {
@@ -119,8 +125,8 @@ test("add a proxy with credentials, use it for a scan, and see it in the report 
   await expect(page.getByText("Settings saved")).toBeVisible();
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.getByRole("button", { name: /Continue/ }).click();
+  await expect(page.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(/· France proxy ·/);
   await page.getByRole("button", { name: "Options" }).click();
-  await page.getByRole("button", { name: "Proxy, profile and budget" }).click();
   await expect(page.getByRole("combobox", { name: "Proxy" })).toHaveText("Settings default (France)");
   await startScan(page, "morningledger.example");
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
@@ -175,7 +181,9 @@ test("scan defaults for the visitor reach the composer", async ({ page }) => {
   await expect(page.getByText("Settings saved")).toBeVisible();
 
   await page.getByRole("link", { name: "Home", exact: true }).click();
-  await expect(page.getByRole("form", { name: "New scan" }).getByText("Browse like a visitor, 4 pages")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(
+    /^Browse like a visitor · 4 pages · browser shown ·/,
+  );
   await page.reload();
   await page.getByRole("button", { name: "Options" }).click();
   await expect(page.getByRole("radio", { name: "Browse like a visitor" })).toBeChecked();

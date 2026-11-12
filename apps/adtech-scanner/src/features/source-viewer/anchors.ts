@@ -6,6 +6,8 @@ export type FindingMark = {
   findingId: string;
   evidenceIndex: number;
   title: string;
+  /** What this excerpt shows, in the finding's words; tells two excerpts of one finding apart. */
+  label: string;
   severity: Severity;
   /** 1-based, inclusive, inside the file. */
   startLine: number;
@@ -37,6 +39,7 @@ export function findingMarks(anchors: SourceAnchor[], findings: Finding[], lineC
           findingId: finding.id,
           evidenceIndex: anchor.evidenceIndex,
           title: finding.title,
+          label: finding.evidence[anchor.evidenceIndex]?.label ?? "",
           severity: finding.severity,
           startLine,
           endLine: Math.max(startLine, clamp(anchor.endLine)),

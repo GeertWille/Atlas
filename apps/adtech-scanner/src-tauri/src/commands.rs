@@ -1,11 +1,13 @@
 //! Tauri commands: the frontend's contract, mapped one to one onto use cases.
 
 use adscan_engine::application::AppError;
+use adscan_engine::application::archive::source::OriginalPosition;
 use adscan_model::{
-    ApiKeyStatus, ApiProvider, BrowserInfo, CommandError, DashboardStats, ErrorCode, ExportFormat,
-    LogEntry, LogSearchHit, ProxyProfileDraft, ScanConfiguration, ScanConfigurationDraft,
-    ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo, ScanSummary, Settings,
-    SettingsPatch,
+    ApiKeyStatus, ApiProvider, ArchiveStorage, BodySide, BrowserInfo, CommandError, DashboardStats,
+    ErrorCode, ExportFormat, LogEntry, LogSearchHit, NetworkBodyChunk, NetworkRequestDetail,
+    NetworkRowChunk, NetworkSummary, ProxyProfileDraft, ScanConfiguration, ScanConfigurationDraft,
+    ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo, ScanSummary, ScriptSource,
+    Settings, SettingsPatch, SourceView,
 };
 use std::path::Path;
 
@@ -34,6 +36,101 @@ pub async fn update_settings(
     patch: SettingsPatch,
 ) -> CommandResult<Settings> {
     state.settings.update(patch).await.map_err(command_error)
+}
+
+/// The scan's requests, ordered by page view and start time, a chunk at a
+/// time. Filtering and sorting are the frontend's.
+#[tauri::command]
+pub async fn list_network_requests(
+    state: State<'_, AppState>,
+    scan_id: String,
+    pages: Option<Vec<u32>>,
+    cursor: Option<String>,
+    limit: Option<u32>,
+) -> CommandResult<NetworkRowChunk> {
+    state
+        .network
+        .list(
+            &scan_id,
+            &pages.unwrap_or_default(),
+            cursor.as_deref(),
+            limit,
+        )
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_network_summary(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> CommandResult<NetworkSummary> {
+    state.network.summary(&scan_id).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_network_request(
+    state: State<'_, AppState>,
+    scan_id: String,
+    request_id: String,
+) -> CommandResult<NetworkRequestDetail> {
+    state
+        .network
+        .request(&scan_id, &request_id)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_network_body(
+    state: State<'_, AppState>,
+    scan_id: String,
+    request_id: String,
+    side: BodySide,
+    offset: Option<f64>,
+    max_bytes: Option<f64>,
+) -> CommandResult<NetworkBodyChunk> {
+    state
+        .network
+        .body(&scan_id, &request_id, side, offset, max_bytes)
+        .await
+        .map_err(command_error)
+}
+
+/// `original_line` and `original_column` name a place in the source as
+/// captured; the reply says which line of the returned text it is on.
+#[tauri::command]
+pub async fn get_script_source(
+    state: State<'_, AppState>,
+    scan_id: String,
+    script_id: String,
+    view: SourceView,
+    original_line: Option<u32>,
+    original_column: Option<u32>,
+) -> CommandResult<ScriptSource> {
+    let position = original_line.map(|line| OriginalPosition {
+        line,
+        column: original_column.unwrap_or(1),
+    });
+    state
+        .sources
+        .get(&scan_id, &script_id, view, position)
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_archive_storage(state: State<'_, AppState>) -> CommandResult<ArchiveStorage> {
+    state
+        .settings
+        .archive_storage()
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn clear_archive(state: State<'_, AppState>) -> CommandResult<ArchiveStorage> {
+    state.settings.clear_archive().await.map_err(command_error)
 }
 
 /// `provider` defaults to Anthropic, the only provider older callers know.

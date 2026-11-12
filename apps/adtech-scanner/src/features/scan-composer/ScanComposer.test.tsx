@@ -28,6 +28,8 @@ const validOptions = {
 
 const urlInput = () => screen.getByRole("textbox", { name: "Page URL" });
 const scanButton = () => screen.getByRole("button", { name: "Scan" });
+/** The options that answer "How should the visit behave?". */
+const visit = () => within(screen.getByRole("region", { name: "Visit" }));
 
 test("an empty URL is rejected with an explanation and nothing starts", async () => {
   const user = userEvent.setup();
@@ -90,8 +92,11 @@ test("without an API key the AI option is off and locked, and the scan runs dete
   const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, hasApiKey: false }} />);
 
-  expect(screen.getByText(/this scan runs the deterministic checks only/)).toBeInTheDocument();
+  // Said before any option is opened, with the way to change it.
+  expect(scanButton()).toHaveAccessibleDescription("Scroll · browser hidden · system proxy · checks only, no API key");
+  expect(screen.getByRole("link", { name: "Add a key" })).toHaveAttribute("href", "/settings");
   await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(screen.getByText(/this scan runs the deterministic checks only/)).toBeInTheDocument();
   const aiSwitch = screen.getByRole("switch", { name: "AI logic analysis" });
   expect(aiSwitch).not.toBeChecked();
   expect(aiSwitch).toBeDisabled();
@@ -107,11 +112,14 @@ test("with only a TypeSafe key the scan is script triage only, priced as such, a
   const jevOnly = { ...settingsFixture, hasApiKey: false, hasTypesafeKey: true, jevEnabled: true };
   await renderWithApp(<ScanComposer settings={jevOnly} />);
 
+  expect(scanButton()).toHaveAccessibleDescription(
+    "Scroll · browser hidden · system proxy · script triage, about $0.001",
+  );
+  await user.click(screen.getByRole("button", { name: "Options" }));
   expect(screen.getByText(/Estimated/)).toHaveTextContent(
     "Estimated $0.001 for Jev script triage. Add an Anthropic key to analyse wrapper logic.",
   );
   expect(screen.getByRole("link", { name: "Add an Anthropic key" })).toHaveAttribute("href", "/settings");
-  await user.click(screen.getByRole("button", { name: "Options" }));
   expect(screen.queryByRole("switch", { name: "AI logic analysis" })).toBeNull();
   const triageSwitch = screen.getByRole("switch", { name: "AI script triage" });
   expect(triageSwitch).toBeChecked();
@@ -127,13 +135,17 @@ test("with only a TypeSafe key the scan is script triage only, priced as such, a
 test("a TypeSafe key with the Jev switch off does not unlock AI on its own", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, hasApiKey: false, hasTypesafeKey: true }} />);
-  expect(screen.getByText(/this scan runs the deterministic checks only/)).toBeInTheDocument();
+  expect(scanButton()).toHaveAccessibleDescription(/checks only, no API key$/);
   await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(screen.getByText(/this scan runs the deterministic checks only/)).toBeInTheDocument();
   expect(screen.getByRole("switch", { name: "AI logic analysis" })).toBeDisabled();
 });
 
 test("with both keys and Jev on, the cost line names both models", async () => {
+  const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, hasTypesafeKey: true, jevEnabled: true }} />);
+  expect(scanButton()).toHaveAccessibleDescription(/AI on, about \$0\.37$/);
+  await user.click(screen.getByRole("button", { name: "Options" }));
   expect(screen.getByText(/Estimated/)).toHaveTextContent(
     "Estimated $0.37 with claude-sonnet-5-5 and Jev script triage, hard cap $0.50 per scan.",
   );
@@ -143,12 +155,16 @@ test("the cost line reflects the settings and the AI switch", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, analysisEffort: "high" }} />);
 
+  expect(scanButton()).toHaveAccessibleDescription(/AI on, about \$0\.50$/);
+  await user.click(screen.getByRole("button", { name: "Options" }));
   expect(screen.getByText(/Estimated/)).toHaveTextContent(
     "Estimated $0.50 with claude-sonnet-5-5, hard cap $0.50 per scan. Analysis may stop early at the cap.",
   );
-  await user.click(screen.getByRole("button", { name: "Options" }));
   await user.click(screen.getByRole("switch", { name: "AI logic analysis" }));
   expect(screen.getByText("Deterministic checks only. No LLM cost.")).toBeInTheDocument();
+  expect(scanButton()).toHaveAccessibleDescription(/· AI off$/);
+  // A cap has nothing to cap then, and says so.
+  expect(screen.getByRole("textbox", { name: "LLM budget" })).toHaveAccessibleDescription("Not used while AI is off.");
 });
 
 test("pressing Enter twice starts one scan, not two", async () => {
@@ -172,7 +188,8 @@ const startedOptions = async () => {
 test("the visitor choice replaces auto-scroll: four behaviours, scroll by default, each described", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={settingsFixture} />);
-  expect(screen.getByText("Scroll", { selector: "span" })).toBeInTheDocument();
+  // What Scan will do is said in one line before any option is opened.
+  expect(scanButton()).toHaveAccessibleDescription("Scroll · browser hidden · system proxy · AI on, about $0.36");
   await openOptions(user);
 
   expect(screen.queryByRole("switch", { name: "Auto-scroll" })).toBeNull();
@@ -190,8 +207,10 @@ test("the visitor choice replaces auto-scroll: four behaviours, scroll by defaul
   expect(
     screen.getByText(/This visit is automated and says so to the page \(navigator\.webdriver is true\)/),
   ).toBeInTheDocument();
-  // Scroll and observe have no page count; the settings run them headless.
+  // Scroll and observe have no page count, and say where one is; the settings run them headless.
   expect(screen.queryByRole("button", { name: "More pages" })).toBeNull();
+  expect(visit().getByText("1 page")).toBeInTheDocument();
+  expect(visit().getByText("Only “Browse like a visitor” follows links to further pages.")).toBeInTheDocument();
   expect(screen.getByRole("switch", { name: "Show the browser" })).not.toBeChecked();
   expect(screen.getByText(/Headless Chrome is easier for ad partners to recognise as automated/)).toBeInTheDocument();
 });
@@ -206,7 +225,7 @@ test("browse like a visitor: pages to visit, the browser shown by default, and a
 
   await user.click(screen.getByRole("radio", { name: "Browse like a visitor" }));
   expect(screen.getByRole("switch", { name: "Show the browser" })).toBeChecked();
-  expect(screen.getByText("3 pages")).toBeInTheDocument();
+  expect(visit().getByText("3 pages")).toBeInTheDocument();
   expect(
     screen.getByText(
       /The entry page, then up to 2 links on the same site\. Ads, sign-in and checkout links are never clicked\./,
@@ -215,10 +234,12 @@ test("browse like a visitor: pages to visit, the browser shown by default, and a
   expect(screen.getByText(/Estimated/)).toHaveTextContent(
     "Estimated $0.37 with claude-sonnet-5-5 for 3 pages, hard cap $5.00 per scan.",
   );
-  expect(screen.getByText("Browse like a visitor, 3 pages")).toBeInTheDocument();
+  expect(scanButton()).toHaveAccessibleDescription(
+    "Browse like a visitor · 3 pages · browser shown · system proxy · AI on, about $0.37",
+  );
 
   for (let press = 0; press < 3; press += 1) await user.click(screen.getByRole("button", { name: "More pages" }));
-  expect(screen.getByText("6 pages")).toBeInTheDocument();
+  expect(visit().getByText("6 pages")).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "More pages" })).toBeDisabled();
   expect(screen.getByText(/Estimated/)).toHaveTextContent("Estimated $0.38 with claude-sonnet-5-5 for 6 pages");
   await user.click(screen.getByRole("button", { name: "Fewer pages" }));
@@ -238,10 +259,18 @@ test("I'll browse myself: no observe time, no consent click, no hidden browser, 
   expect(screen.queryByRole("switch", { name: "Accept consent banner" })).toBeNull();
   expect(screen.queryByRole("switch", { name: "Show the browser" })).toBeNull();
   expect(screen.queryByRole("button", { name: "More pages" })).toBeNull();
-  const explanation = screen.getByText(/Chrome opens; browse the site, then press/);
-  expect(explanation).toHaveTextContent(
-    "Chrome opens; browse the site, then press Finish capture (up to 15 minutes). You drive the browser and handle the consent banner yourself. The page can still notice the debugger that records it.",
+  // Each option keeps its place and says what holds instead.
+  expect(screen.getByText(/Chrome opens; browse the site, then press/)).toHaveTextContent(
+    "Chrome opens; browse the site, then press Finish capture.",
   );
+  expect(visit().getByText("Up to 15 minutes")).toBeInTheDocument();
+  expect(visit().getByText("Every page you open in that window is recorded.")).toBeInTheDocument();
+  expect(visit().getByText("There is nobody to browse a hidden window.")).toBeInTheDocument();
+  expect(visit().getByText("You handle the consent banner yourself; nothing is clicked for you.")).toBeInTheDocument();
+  expect(
+    visit().getByText("You drive the browser. The page can still notice the debugger that records it."),
+  ).toBeInTheDocument();
+  expect(scanButton()).toHaveAccessibleDescription(/^I'll browse myself · browser shown ·/);
   expect(screen.queryByText(/This visit is automated/)).toBeNull();
   expect(document.body).not.toHaveTextContent(/undetect|indistinguishable/i);
 
@@ -258,20 +287,26 @@ test("the profile state is shown with a way to change it, and follows the settin
   const user = userEvent.setup();
   const { unmount } = await renderWithApp(<ScanComposer settings={settingsFixture} />);
   await openOptions(user);
-  expect(
-    screen.getByText(/A fresh profile for this scan: no cookies, like a first-time visitor\./),
-  ).toBeInTheDocument();
+  expect(screen.getByRole("combobox", { name: "Browser profile" })).toHaveTextContent(
+    "Settings default (fresh each scan)",
+  );
+  expect(screen.getByText(/Starts without cookies, like a first-time visitor\./)).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Change the default" })).toHaveAttribute("href", "/settings");
+  expect(scanButton()).not.toHaveAccessibleDescription(/kept browser profile/);
   unmount();
 
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, persistentProfile: true }} />);
   await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(screen.getByRole("combobox", { name: "Browser profile" })).toHaveTextContent(
+    "Settings default (kept between scans)",
+  );
   expect(
-    screen.getByText(/Kept between scans: cookies and consent persist, like a returning visitor's\./),
+    screen.getByText(/Cookies and consent carry over from earlier scans, like a returning visitor's\./),
   ).toBeInTheDocument();
+  expect(scanButton()).toHaveAccessibleDescription(/· kept browser profile ·/);
 });
 
-test("proxy, profile and budget stay out of the way until asked for, and then override the settings for this scan", async () => {
+test("proxy, browser profile and budget stay out of the way until Options is opened, and then override the settings for this scan", async () => {
   const user = userEvent.setup();
   // Belgium exists in the backend, so a scan through it can start; Netherlands is only listed.
   const stored = await api.saveProxyProfile({
@@ -284,10 +319,11 @@ test("proxy, profile and budget stay out of the way until asked for, and then ov
   const belgium = stored.proxies[0] ?? makeProxy();
   const proxies = [belgium, makeProxy({ id: "proxy-nl", name: "Netherlands" })];
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, proxies }} />);
-  await openOptions(user);
   expect(screen.queryByRole("combobox", { name: "Proxy" })).toBeNull();
+  expect(screen.queryByRole("combobox", { name: "Browser profile" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "LLM budget" })).toBeNull();
 
-  await user.click(screen.getByRole("button", { name: "Proxy, profile and budget" }));
+  await openOptions(user);
   await user.click(screen.getByRole("combobox", { name: "Proxy" }));
   expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
     "Settings default (System proxy)",
@@ -298,9 +334,12 @@ test("proxy, profile and budget stay out of the way until asked for, and then ov
   ]);
   await user.click(screen.getByRole("option", { name: "Belgium" }));
   await user.click(screen.getByRole("combobox", { name: "Browser profile" }));
-  await user.click(await screen.findByRole("option", { name: "Kept scan profile" }));
-  expect(screen.getByText(/Kept between scans/)).toBeInTheDocument();
+  await user.click(await screen.findByRole("option", { name: "Kept between scans" }));
+  expect(screen.getByText(/Cookies and consent carry over from earlier scans/)).toBeInTheDocument();
   expect(screen.queryByRole("link", { name: "Change the default" })).toBeNull();
+  expect(scanButton()).toHaveAccessibleDescription(
+    "Scroll · browser hidden · Belgium proxy · kept browser profile · AI on, about $0.36",
+  );
 
   const budget = screen.getByLabelText("LLM budget");
   await user.type(budget, "0.01");
@@ -326,6 +365,8 @@ test("proxy, profile and budget stay out of the way until asked for, and then ov
 test("the options can be saved as a named configuration, which the composer then has open", async () => {
   const user = userEvent.setup();
   const { router } = await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  // Saving is offered before any option is opened.
+  expect(screen.getByRole("button", { name: "Save as configuration…" })).toBeInTheDocument();
   await openOptions(user);
   await user.click(screen.getByRole("radio", { name: "Browse like a visitor" }));
 
@@ -375,8 +416,10 @@ test("a loaded configuration shows its name, runs as saved, and offers to save e
   expect(urlInput()).toHaveValue("https://example.com/news");
   expect(screen.getByRole("radio", { name: "Mobile" })).toBeChecked();
   expect(screen.getByRole("radio", { name: "Browse like a visitor" })).toBeChecked();
-  expect(screen.getByText("2 pages")).toBeInTheDocument();
+  expect(visit().getByText("2 pages")).toBeInTheDocument();
+  expect(screen.getByText("Scan runs this configuration as saved and records it as its last run.")).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Update configuration" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Revert" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Save as configuration…" })).toBeNull();
   expect(screen.getByRole("link", { name: "Close configuration" })).toHaveAttribute("href", "/");
 
@@ -397,9 +440,7 @@ test("edits to a loaded configuration are marked, scanned once without it, or sa
 
   await user.click(screen.getByRole("button", { name: "More pages" }));
   expect(screen.getByText("Edited")).toBeInTheDocument();
-  expect(
-    screen.getByText("Scan runs these edited options once. Update the configuration to keep them."),
-  ).toBeInTheDocument();
+  expect(screen.getByText("Scan runs these edited options once; they are not saved yet.")).toBeInTheDocument();
   // Back to the saved value: no longer edited.
   await user.click(screen.getByRole("button", { name: "Fewer pages" }));
   expect(screen.queryByText("Edited")).toBeNull();
@@ -509,9 +550,12 @@ test("a configuration whose proxy was deleted says so and cannot be scanned unti
   });
   await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
 
-  // The advanced options are open, because that is where the problem is.
+  // The options are open, because that is where the problem is; the summary names it too.
   const proxy = screen.getByRole("combobox", { name: "Proxy" });
   expect(proxy).toBeInvalid();
+  expect(scanButton()).toHaveAccessibleDescription(/· deleted proxy ·/);
+  const blocked = "This configuration cannot run until another proxy is chosen under Origin.";
+  expect(screen.getByText(blocked)).toBeInTheDocument();
   expect(screen.getByText("This proxy was deleted. Choose another one.")).toBeInTheDocument();
   await user.click(scanButton());
   expect((await api.listScans({})).total).toBe(0);
@@ -519,6 +563,95 @@ test("a configuration whose proxy was deleted says so and cannot be scanned unti
   await user.click(proxy);
   await user.click(await screen.findByRole("option", { name: "No proxy" }));
   expect(screen.queryByText("This proxy was deleted. Choose another one.")).toBeNull();
+  expect(screen.queryByText(blocked)).toBeNull();
   await user.click(scanButton());
   expect(await startedOptions()).toMatchObject({ proxy: { kind: "none" } });
+});
+
+test("revert puts the saved options back, without a question and without saving anything", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({
+    name: "Example on mobile",
+    options: { ...validOptions, device: "mobile", visitor: "browse", extraPages: 1, headless: false },
+  });
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+
+  await user.click(screen.getByRole("radio", { name: "Desktop" }));
+  await user.click(screen.getByRole("radio", { name: "I'll browse myself" }));
+  expect(screen.getByText("Edited")).toBeInTheDocument();
+
+  await user.click(screen.getByRole("button", { name: "Revert" }));
+  expect(screen.queryByText("Edited")).toBeNull();
+  expect(screen.getByRole("radio", { name: "Mobile" })).toBeChecked();
+  expect(screen.getByRole("radio", { name: "Browse like a visitor" })).toBeChecked();
+  expect(visit().getByText("2 pages")).toBeInTheDocument();
+  expect(screen.queryByRole("alertdialog")).toBeNull();
+  expect((await api.listScanConfigurations())[0]?.options).toMatchObject({ device: "mobile", visitor: "browse" });
+});
+
+test("the options keep their places when the visitor changes: every behaviour shows the same four", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+
+  const labels = () =>
+    ["Pages to visit", "Show the browser", "Accept consent banner"].map((label) => visit().getByText(label));
+  for (const visitor of ["Observe only", "Scroll", "Browse like a visitor", "I'll browse myself"]) {
+    await user.click(screen.getByRole("radio", { name: visitor }));
+    expect(labels()).toHaveLength(3);
+  }
+  // The first place is the time: watched per page, or as long as the person takes.
+  expect(visit().getByText("Session length")).toBeInTheDocument();
+  await user.click(screen.getByRole("radio", { name: "Browse like a visitor" }));
+  expect(visit().getByText("Time on each page")).toBeInTheDocument();
+  await user.click(screen.getByRole("radio", { name: "Scroll" }));
+  expect(visit().getByText("Observe after load")).toBeInTheDocument();
+});
+
+test("the options are grouped by the question they answer", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+
+  const origin = within(screen.getByRole("region", { name: "Origin" }));
+  expect(origin.getByRole("combobox", { name: "Proxy" })).toBeInTheDocument();
+  expect(origin.getByRole("combobox", { name: "Browser profile" })).toBeInTheDocument();
+  const analysis = within(screen.getByRole("region", { name: "Analysis" }));
+  expect(analysis.getByRole("switch", { name: "AI logic analysis" })).toBeInTheDocument();
+  expect(analysis.getByRole("textbox", { name: "LLM budget" })).toBeInTheDocument();
+  expect(analysis.getByText(/Estimated/)).toBeInTheDocument();
+  expect(visit().getByRole("radiogroup", { name: "Visitor" })).toBeInTheDocument();
+  expect(visit().getByRole("slider")).toBeInTheDocument();
+});
+
+test("the keyboard scans from any field with Mod+Enter and saves with Mod+S", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await openOptions(user);
+  await user.type(urlInput(), "example.com/news");
+
+  // Mod+S with no configuration open: the save dialog.
+  screen.getByRole("switch", { name: "Accept consent banner" }).focus();
+  await user.keyboard("{Control>}s{/Control}");
+  const dialog = await screen.findByRole("dialog", { name: "Save as configuration" });
+  // Keys pressed inside the dialog are the dialog's own: nothing is scanned behind it.
+  await user.type(within(dialog).getByLabelText("Name"), "Example{Control>}{Enter}{/Control}");
+  expect((await api.listScans({})).total).toBe(0);
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+  screen.getByRole("switch", { name: "Accept consent banner" }).focus();
+  await user.keyboard("{Control>}{Enter}{/Control}");
+  expect(await startedOptions()).toMatchObject({ url: "https://example.com/news" });
+});
+
+test("Mod+S updates the open configuration once it is edited", async () => {
+  const user = userEvent.setup();
+  const configuration = await api.saveScanConfiguration({ name: "Example", options: validOptions });
+  await renderWithApp(<ScanComposer settings={settingsFixture} configuration={configuration} />);
+
+  await user.click(screen.getByRole("radio", { name: "Mobile" }));
+  await user.keyboard("{Control>}s{/Control}");
+  expect(await screen.findByText("Updated “Example”")).toBeInTheDocument();
+  expect((await api.listScanConfigurations())[0]?.options.device).toBe("mobile");
 });

@@ -1,9 +1,12 @@
 //! Script metadata derived from captured scripts. Bodies never leave memory.
 
-use adscan_model::{Capture, CapturedScript, FindingSource, ScriptCategory, ScriptRecord};
+use adscan_model::{
+    Capture, CapturedScript, FindingSource, ScriptCategory, ScriptRecord, request_id,
+};
 use sha2::{Digest, Sha256};
 use url::Url;
 
+use super::archive::index::sha256_hex;
 use super::knowledge::{self, ScriptFacts, Verdict};
 use super::triage::ANALYSE_THRESHOLD;
 
@@ -85,9 +88,9 @@ fn describe_one(
         loaded_at_ms: script.loaded_at_ms,
         first_party,
         pages: script.pages.clone(),
-        initiator: None,
-        request_id: None,
-        sha256: None,
+        initiator: script.initiator.as_deref().map(stored_url),
+        request_id: script.request_seq.map(request_id),
+        sha256: Some(sha256_hex(&Sha256::digest(script.body.as_bytes()).into())),
     };
     let ambiguous_hints = match verdict {
         Verdict::Decided(classification) => {

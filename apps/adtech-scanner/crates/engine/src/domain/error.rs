@@ -32,4 +32,6 @@ pub enum DomainError {
     ConfigurationNameInvalid { max: usize },
     #[error("A scan configuration named \"{0}\" already exists")]
     ConfigurationNameTaken(String),
+    #[error("The storage limit for scan data must be between {min_mb} MB and {max_gb} GB")]
+    ArchiveLimitOutOfRange { min_mb: u32, max_gb: u32 },
 }

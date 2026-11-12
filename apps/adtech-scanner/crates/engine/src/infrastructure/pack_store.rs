@@ -146,7 +146,12 @@ impl PackWriter for LocalPackWriter {
         let length = u32::try_from(frame.len())
             .ok()
             .filter(|length| *length > 0)
-            .ok_or_else(|| PackError::Io(format!("a frame of {} bytes cannot be addressed", frame.len())))?;
+            .ok_or_else(|| {
+                PackError::Io(format!(
+                    "a frame of {} bytes cannot be addressed",
+                    frame.len()
+                ))
+            })?;
         self.handle
             .write_all(&frame)
             .await
@@ -189,4 +194,115 @@ impl PackWriter for LocalPackWriter {
 
 fn io_error(file: &str, error: &std::io::Error) -> PackError {
     PackError::Io(format!("{file}: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn frames_are_appended_one_after_another_and_read_back_by_location() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalPackStore::new(directory.path());
+        let mut writer = store.create("scans/a.pack.zst").await.unwrap();
+        let first = writer.append(b"first".to_vec()).await.unwrap();
+        let second = writer.append(b"second frame".to_vec()).await.unwrap();
+        assert_eq!((first.offset, first.length), (0, 5));
+        assert_eq!((second.offset, second.length), (5, 12));
+        assert_eq!(second.compose(), "scans/a.pack.zst#o=5&l=12");
+        writer.sync().await.unwrap();
+        // Readable while the pack is still being written.
+        assert_eq!(store.read(&second).await.unwrap(), b"second frame");
+        let sealed = writer.seal().await.unwrap();
+        assert_eq!(
+            sealed,
+            PackInfo {
+                file: "scans/a.pack.zst".into(),
+                bytes: 17
+            }
+        );
+        assert_eq!(store.read(&first).await.unwrap(), b"first");
+        assert!(directory.path().join("archive/scans/a.pack.zst").is_file());
+    }
+
+    #[tokio::test]
+    async fn a_range_past_the_end_fails_instead_of_reading_short() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalPackStore::new(directory.path());
+        let mut writer = store.create("scans/a.pack.zst").await.unwrap();
+        writer.append(b"0123456789".to_vec()).await.unwrap();
+        writer.seal().await.unwrap();
+        let range = |offset, length| Location {
+            file: "scans/a.pack.zst".into(),
+            offset,
+            length,
+        };
+        assert_eq!(store.read(&range(8, 2)).await.unwrap(), b"89");
+        assert!(matches!(
+            store.read(&range(8, 3)).await,
+            Err(PackError::OutOfRange(_))
+        ));
+        assert!(matches!(
+            store.read(&range(50, 1)).await,
+            Err(PackError::OutOfRange(_))
+        ));
+        let missing = Location {
+            file: "scans/none.pack.zst".into(),
+            offset: 0,
+            length: 1,
+        };
+        assert_eq!(
+            store.read(&missing).await,
+            Err(PackError::Missing("scans/none.pack.zst".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn packs_are_listed_and_deleted_and_deleting_twice_is_fine() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalPackStore::new(directory.path());
+        assert!(
+            store.list().await.unwrap().is_empty(),
+            "no archive directory yet"
+        );
+        for name in ["scans/b.pack.zst", "scans/a.pack.zst"] {
+            let mut writer = store.create(name).await.unwrap();
+            writer.append(name.as_bytes().to_vec()).await.unwrap();
+            writer.seal().await.unwrap();
+        }
+        std::fs::write(
+            directory.path().join("archive/scans/notes.txt"),
+            "not a pack",
+        )
+        .unwrap();
+        let listed: Vec<String> = store
+            .list()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|pack| pack.file)
+            .collect();
+        assert_eq!(listed, ["scans/a.pack.zst", "scans/b.pack.zst"]);
+        store.delete("scans/a.pack.zst").await.unwrap();
+        store.delete("scans/a.pack.zst").await.unwrap();
+        assert_eq!(store.list().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn names_that_leave_the_archive_directory_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalPackStore::new(directory.path());
+        for name in ["../outside.pack.zst", "/etc/passwd", "scans/../../x", ""] {
+            assert!(store.create(name).await.is_err(), "{name}");
+            assert!(store.delete(name).await.is_err(), "{name}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_empty_frame_cannot_be_appended() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = LocalPackStore::new(directory.path());
+        let mut writer = store.create("scans/a.pack.zst").await.unwrap();
+        assert!(writer.append(Vec::new()).await.is_err());
+    }
 }

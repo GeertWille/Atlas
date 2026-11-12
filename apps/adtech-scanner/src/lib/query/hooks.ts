@@ -185,6 +185,22 @@ export function useNetworkBody(scanId: string, requestId: string, side: BodySide
   });
 }
 
+/** At most this much of one body is read into the window, however large it is stored. */
+export const MAX_BODY_VIEW_BYTES = 16 * 1024 * 1024;
+
+/** A stored body as one text, for copying: read stretch by stretch up to the view limit. `null` when it cannot be read. */
+export async function readNetworkBody(scanId: string, requestId: string, side: BodySide): Promise<string | null> {
+  let text = "";
+  let offset: number | undefined = 0;
+  while (offset !== undefined && offset < MAX_BODY_VIEW_BYTES) {
+    const chunk = await api.getNetworkBody(scanId, requestId, { side, offset });
+    if (chunk.text === null) return null;
+    text += chunk.text;
+    offset = chunk.nextOffset ?? undefined;
+  }
+  return text;
+}
+
 /** `original`: a position in the script as captured, answered as `focusLine` of the text returned. */
 export function useScriptSource(scanId: string, scriptId: string, view: SourceView, original?: SourcePosition) {
   return useQuery({

@@ -1,7 +1,5 @@
 import { useEffect } from "react";
-
-export const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform);
-export const MOD_KEY = IS_MAC ? "⌘" : "Ctrl+";
+import { hasModifier } from "@/shared/lib/platform";
 
 export type ShortcutHandlers = {
   onCommandPalette: () => void;
@@ -13,9 +11,7 @@ export type ShortcutHandlers = {
 export function useGlobalShortcuts({ onCommandPalette, onNewScan, onSettings }: ShortcutHandlers) {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      // Ctrl+N and Ctrl+K are text-editing keys on macOS; only the platform's own modifier counts.
-      const modifier = IS_MAC ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
-      if (!modifier || event.altKey || event.shiftKey) return;
+      if (!hasModifier(event) || event.altKey || event.shiftKey) return;
       const handler = { k: onCommandPalette, n: onNewScan, ",": onSettings }[event.key.toLowerCase()];
       if (!handler) return;
       event.preventDefault();

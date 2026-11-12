@@ -25,7 +25,7 @@ function ProfileState() {
   if (!profile.data) return null;
   const { exists, sizeBytes, lastUsedAt, inUse } = profile.data;
   if (!exists) {
-    return <p className="text-[13px] text-muted-foreground">No scan profile is stored yet.</p>;
+    return <p className="text-[13px] text-muted-foreground">No browser profile is stored yet.</p>;
   }
   return (
     <div className="flex w-full items-center justify-between gap-4">
@@ -37,12 +37,12 @@ function ProfileState() {
       <AlertDialog>
         <AlertDialogTrigger asChild>
           <Button variant="outline" size="sm" disabled={inUse || clear.isPending}>
-            Clear scan profile…
+            Clear browser profile…
           </Button>
         </AlertDialogTrigger>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear the scan profile?</AlertDialogTitle>
+            <AlertDialogTitle>Clear the browser profile?</AlertDialogTitle>
             <AlertDialogDescription>
               Its cookies, consent choices and cache are deleted. The next scan starts like a first-time visitor. Your
               own Chrome is not touched.
@@ -54,8 +54,8 @@ function ProfileState() {
               destructive
               onClick={() =>
                 clear.mutate(undefined, {
-                  onSuccess: () => toast.success("Scan profile cleared"),
-                  onError: (reason) => notifyError("Could not clear the scan profile", reason),
+                  onSuccess: () => toast.success("Browser profile cleared"),
+                  onError: (reason) => notifyError("Could not clear the browser profile", reason),
                 })
               }
             >
@@ -75,7 +75,7 @@ export function ScanProfileField({ settings, save }: { settings: Settings; save:
   return (
     <>
       <Field
-        label="Keep a scan profile between scans"
+        label="Keep the browser profile between scans"
         htmlFor={id}
         description={
           <span id={descriptionId}>
@@ -91,7 +91,7 @@ export function ScanProfileField({ settings, save }: { settings: Settings; save:
           onCheckedChange={(persistentProfile) => save({ persistentProfile })}
         />
       </Field>
-      <Field stacked label="Stored scan profile">
+      <Field stacked label="Stored browser profile">
         <ProfileState />
       </Field>
     </>

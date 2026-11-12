@@ -2,6 +2,8 @@ import { expect, test } from "@playwright/test";
 import { expectNoAxeViolations, openApp, reportHealth, startScan } from "./app";
 
 const table = (page: import("@playwright/test").Page) => page.getByRole("region", { name: "Configurations" });
+/** The configurations listed, without the site headings between them. */
+const rows = (page: import("@playwright/test").Page) => table(page).locator("tbody tr:has(td)");
 /** The row of the configuration with exactly this name ("X" is not "X copy"). */
 const row = (page: import("@playwright/test").Page, name: string) =>
   table(page)
@@ -16,7 +18,12 @@ test("configurations are one click from anywhere: sidebar, home and the command 
 
   await page.getByRole("link", { name: "Configurations", exact: true }).click();
   await expect(page).toHaveTitle("Configurations · Ad-Tech Scanner");
-  await expect(table(page).locator("tbody tr")).toHaveCount(4);
+  await expect(rows(page)).toHaveCount(4);
+  // Grouped by site, the site of the newest run first.
+  await expect(table(page).getByRole("rowheader")).toHaveText([
+    "morningledger.example 1 configuration",
+    "sportsdesk.example 3 configurations",
+  ]);
   await expect(row(page, "Sportsdesk from the Netherlands, mobile")).toContainText("Never run");
   await expect(row(page, "Sportsdesk from the Netherlands, mobile")).toContainText("Mobile");
   await expect(
@@ -84,7 +91,6 @@ test("save a scan's options as a configuration, edit it, update it and save a va
   await openApp(page, "/");
   await page.getByRole("button", { name: "Options" }).click();
   await page.getByRole("radio", { name: "Browse like a visitor" }).click();
-  await page.getByRole("button", { name: "Proxy, profile and budget" }).click();
   await page.getByRole("combobox", { name: "Proxy" }).click();
   await page.getByRole("option", { name: "Belgium" }).click();
   await page.getByRole("textbox", { name: "Page URL" }).fill("techpulse.example/reviews");
@@ -131,7 +137,10 @@ test("save a scan's options as a configuration, edit it, update it and save a va
   // It all survives a reload.
   await page.goto("/#/configurations");
   await page.reload();
-  await expect(table(page).locator("tbody tr")).toHaveCount(6);
+  await expect(rows(page)).toHaveCount(6);
+  await expect(table(page).getByRole("rowheader", { name: /^techpulse\.example/ })).toHaveText(
+    "techpulse.example 2 configurations",
+  );
 });
 
 test("edit, duplicate, rename and delete from the list; scans are kept", async ({ page }) => {
@@ -174,7 +183,7 @@ test("edit, duplicate, rename and delete from the list; scans are kept", async (
   await expectNoAxeViolations(page);
   await confirm.getByRole("button", { name: "Delete" }).click();
   await expect(row(page, "Sportsdesk from Belgium")).toHaveCount(0);
-  await expect(page.getByText("4 configurations")).toBeVisible();
+  await expect(page.getByText("4 configurations", { exact: true })).toBeVisible();
   // Its scan is still there, under the name it was started with.
   await page.goto("/#/scans/seed-sportsdesk-browse");
   await expect(page.getByRole("main").locator("header").getByText("Sportsdesk from Belgium")).toBeVisible();
@@ -217,7 +226,7 @@ test("with no configurations the screen explains them and home stays uncluttered
   await expect(page.getByText("No configurations yet")).toBeVisible();
   await expect(page.getByText(/the same site from Belgium on mobile and from Germany on desktop/)).toBeVisible();
   await expectNoAxeViolations(page);
-  await page.getByRole("link", { name: "Set up a scan" }).click();
+  await page.getByRole("button", { name: "Set up a scan" }).click();
   await page.getByRole("button", { name: /Continue/ }).click();
   await expect(page.getByRole("form", { name: "New scan" })).toBeVisible();
   await expect(table(page)).toHaveCount(0);
@@ -245,4 +254,105 @@ test("re-scanning a scan whose configuration was deleted scans it with its own o
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
   await expect(header.getByText("Morning Ledger, no proxy")).toHaveCount(0);
   await expect(page.getByRole("region", { name: "Overview" }).getByText("No proxy", { exact: true })).toBeVisible();
+});
+
+test("find a configuration in a long list, open it by name, switch with the palette and leave with Ctrl+N", async ({
+  page,
+}) => {
+  await openApp(page, "/configurations");
+  const search = page.getByRole("searchbox", { name: "Search configurations" });
+  await search.fill("netherlands mobile");
+  await expect(rows(page)).toHaveCount(1);
+  await expect(page.getByText("1 of 4 configurations")).toBeVisible();
+  await search.fill("nowhere");
+  await expect(page.getByText("No configurations match")).toBeVisible();
+  await expectNoAxeViolations(page);
+  await page.getByRole("button", { name: "Show all configurations" }).click();
+  await expect(rows(page)).toHaveCount(4);
+
+  // By name, the sites and their rows are in alphabetical order.
+  await page.getByRole("combobox", { name: "Sort by" }).click();
+  await page.getByRole("option", { name: "Name" }).click();
+  await expect(
+    rows(page)
+      .getByRole("link")
+      .filter({ hasText: /Ledger|Sportsdesk/ }),
+  ).toHaveText([
+    "Morning Ledger, no proxy",
+    "Sportsdesk from Belgium",
+    "Sportsdesk from Germany",
+    "Sportsdesk from the Netherlands, mobile",
+  ]);
+
+  // The name opens it in the composer, which says which configuration it holds and what Scan does.
+  await page.getByRole("link", { name: "Sportsdesk from the Netherlands, mobile" }).click();
+  await expect(page).toHaveURL(/#\/\?configuration=config-sportsdesk-netherlands$/);
+  const composer = page.getByRole("form", { name: "New scan" });
+  await expect(composer.getByText("Sportsdesk from the Netherlands, mobile")).toBeVisible();
+  await expect(
+    composer.getByText("Scan runs this configuration as saved and records it as its last run."),
+  ).toBeVisible();
+  await expect(composer.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(
+    "Scroll · browser hidden · Netherlands proxy · AI on, about $0.36",
+  );
+
+  // The palette switches to another one, also to one that cannot run until it is fixed.
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await palette.getByRole("combobox").fill("open germany");
+  // Offered for opening, to fix it; still not for running.
+  await expect(palette.getByRole("option", { name: /configuration:/ })).toHaveText([
+    "Open configuration: Sportsdesk from Germany",
+  ]);
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/#\/\?configuration=config-sportsdesk-germany$/);
+  await expect(composer.getByText("This proxy was deleted. Choose another one.")).toBeVisible();
+  await expect(composer.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(
+    /· deleted proxy ·/,
+  );
+
+  // Ctrl+N leaves the configuration for an empty scan, ready to type.
+  await page.keyboard.press("Control+n");
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(composer.getByRole("textbox", { name: "Page URL" })).toHaveValue("");
+  await expect(composer.getByRole("textbox", { name: "Page URL" })).toBeFocused();
+  await expect(composer.getByRole("link", { name: "Close configuration" })).toHaveCount(0);
+});
+
+test("edits to an open configuration are reverted, or saved from the keyboard", async ({ page }) => {
+  await openApp(page, "/?configuration=config-sportsdesk-belgium");
+  const composer = page.getByRole("form", { name: "New scan" });
+  await composer.getByRole("radio", { name: "Mobile" }).click();
+  await expect(composer.getByText("Edited", { exact: true })).toBeVisible();
+  await expect(composer.getByText("Scan runs these edited options once; they are not saved yet.")).toBeVisible();
+  await expectNoAxeViolations(page);
+
+  await composer.getByRole("button", { name: "Revert" }).click();
+  await expect(composer.getByText("Edited", { exact: true })).toHaveCount(0);
+  await expect(composer.getByRole("radio", { name: "Desktop" })).toBeChecked();
+
+  await composer.getByRole("button", { name: "More pages" }).click();
+  await page.keyboard.press("Control+s");
+  await expect(page.getByText("Updated “Sportsdesk from Belgium”")).toBeVisible();
+  await expect(composer.getByText("Edited", { exact: true })).toHaveCount(0);
+  await expect(row(page, "Sportsdesk from Belgium")).toContainText("Browse like a visitor, 4 pages");
+});
+
+test("the palette lists only the most recently run configurations until something is typed", async ({ page }) => {
+  await openApp(page, "/configurations");
+  for (const copy of ["copy", "copy 2", "copy 3"]) {
+    await row(page, "Morning Ledger, no proxy")
+      .getByRole("button", { name: /^Actions for/ })
+      .click();
+    await page.getByRole("menuitem", { name: "Duplicate" }).click();
+    await expect(row(page, `Morning Ledger, no proxy ${copy}`)).toBeVisible();
+  }
+  await page.keyboard.press("Control+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  // Six can run; five are listed, and none is offered for opening yet.
+  await expect(palette.getByRole("option", { name: /^Run configuration/ })).toHaveCount(5);
+  await expect(palette.getByRole("option", { name: /^Open configuration/ })).toHaveCount(0);
+  await palette.getByRole("combobox").fill("ledger");
+  await expect(palette.getByRole("option", { name: /^Run configuration/ })).toHaveCount(4);
+  await expect(palette.getByRole("option", { name: /^Open configuration/ })).toHaveCount(4);
 });

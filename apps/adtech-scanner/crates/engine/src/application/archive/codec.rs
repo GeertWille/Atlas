@@ -46,7 +46,10 @@ mod tests {
     fn a_frame_is_a_plain_zstd_file() {
         let frame = compress(b"hello").unwrap();
         assert_eq!(frame[0..4], [0x28, 0xB5, 0x2F, 0xFD], "zstd magic");
-        assert_eq!(zstd::stream::decode_all(frame.as_slice()).unwrap(), b"hello");
+        assert_eq!(
+            zstd::stream::decode_all(frame.as_slice()).unwrap(),
+            b"hello"
+        );
     }
 
     #[test]
@@ -55,7 +58,10 @@ mod tests {
         let second = compress(b"second body").unwrap();
         let pack = [first.clone(), second.clone()].concat();
         assert_eq!(decompress(&pack[..first.len()], 64).unwrap(), b"first body");
-        assert_eq!(decompress(&pack[first.len()..], 64).unwrap(), b"second body");
+        assert_eq!(
+            decompress(&pack[first.len()..], 64).unwrap(),
+            b"second body"
+        );
     }
 
     #[test]

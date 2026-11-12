@@ -20,7 +20,9 @@ pub fn decode(
     resolve: &dyn Fn(&str) -> Option<String>,
 ) -> Option<DecodedExchange> {
     let request_json = request_body.and_then(parse_object);
-    let request = request_json.as_ref().and_then(|json| decode_request(json, resolve));
+    let request = request_json
+        .as_ref()
+        .and_then(|json| decode_request(json, resolve));
     let response = response_body
         .and_then(parse_object)
         .and_then(|json| decode_response(&json, resolve));
@@ -76,7 +78,10 @@ fn parse_object(text: &str) -> Option<Value> {
         .filter(Value::is_object)
 }
 
-fn decode_request(json: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> Option<DecodedBidRequest> {
+fn decode_request(
+    json: &Value,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> Option<DecodedBidRequest> {
     let imps = json.get("imp")?.as_array()?;
     let user = &json["user"];
     let regs = &json["regs"];
@@ -133,7 +138,12 @@ fn decode_imp(imp: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> DecodedI
             continue;
         };
         media_types.push(media.to_string());
-        for format in object.get("format").and_then(Value::as_array).into_iter().flatten() {
+        for format in object
+            .get("format")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
             sizes.extend(size(&format["w"], &format["h"]));
         }
         sizes.extend(size(&imp[media]["w"], &imp[media]["h"]));
@@ -154,9 +164,15 @@ fn decode_imp(imp: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> DecodedI
     }
 }
 
-fn decode_response(json: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> Option<DecodedBidResponse> {
+fn decode_response(
+    json: &Value,
+    resolve: &dyn Fn(&str) -> Option<String>,
+) -> Option<DecodedBidResponse> {
     let seat_bids = json.get("seatbid").and_then(Value::as_array);
-    let nbr = json.get("nbr").and_then(Value::as_u64).map(|code| code as u32);
+    let nbr = json
+        .get("nbr")
+        .and_then(Value::as_u64)
+        .map(|code| code as u32);
     // An object that says neither is some other JSON, not a bid response.
     if seat_bids.is_none() && nbr.is_none() {
         return None;
@@ -208,11 +224,15 @@ fn decode_response(json: &Value, resolve: &dyn Fn(&str) -> Option<String>) -> Op
             .into_iter()
             .flatten()
             .flat_map(|(bidder, errors)| {
-                errors.as_array().into_iter().flatten().map(move |error| ServerBidderError {
-                    bidder: bidder.clone(),
-                    code: error["code"].as_u64().map(|code| code as u32),
-                    message: text(&error["message"]).unwrap_or_default(),
-                })
+                errors
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(move |error| ServerBidderError {
+                        bidder: bidder.clone(),
+                        code: error["code"].as_u64().map(|code| code as u32),
+                        message: text(&error["message"]).unwrap_or_default(),
+                    })
             })
             .collect(),
     })
@@ -225,7 +245,9 @@ pub fn best_price(response: &DecodedBidResponse) -> Option<f64> {
         .iter()
         .flat_map(|seat| &seat.bids)
         .map(|bid| bid.price)
-        .fold(None, |best, price| Some(best.map_or(price, |best: f64| best.max(price))))
+        .fold(None, |best, price| {
+            Some(best.map_or(price, |best: f64| best.max(price)))
+        })
 }
 
 fn either<'a>(first: &'a Value, second: &'a Value) -> &'a Value {
@@ -355,9 +377,14 @@ mod tests {
             "regs":{"gdpr":0,"gpp":"DBABMA~","us_privacy":"1---"},
             "user":{"consent":"CP","eids":[{"source":"uidapi.com"}]},
             "source":{"schain":{"complete":0,"nodes":[]}}}"#;
-        let request = decode("/x", Some(body), None, &no_units).unwrap().request.unwrap();
+        let request = decode("/x", Some(body), None, &no_units)
+            .unwrap()
+            .request
+            .unwrap();
         assert_eq!(request.gdpr, Some(false));
-        assert!(request.gpp_present && request.us_privacy_present && request.consent_string_present);
+        assert!(
+            request.gpp_present && request.us_privacy_present && request.consent_string_present
+        );
         assert_eq!(request.eid_sources, ["uidapi.com"]);
         assert_eq!(request.schain.unwrap().complete, Some(false));
         assert_eq!(request.imps[0].sizes, ["300x250"]);
@@ -375,9 +402,15 @@ mod tests {
             "2c" => Some("anchor".to_string()),
             _ => None,
         };
-        let response = decode("/x", None, Some(body), &units).unwrap().response.unwrap();
+        let response = decode("/x", None, Some(body), &units)
+            .unwrap()
+            .response
+            .unwrap();
         assert_eq!(response.currency.as_deref(), Some("USD"));
-        assert_eq!((response.nbr, response.nbr_meaning.as_deref()), (None, None));
+        assert_eq!(
+            (response.nbr, response.nbr_meaning.as_deref()),
+            (None, None)
+        );
         let bids = &response.seats[0].bids;
         assert_eq!(response.seats[0].seat.as_deref(), Some("pubmatic"));
         assert_eq!(
@@ -400,12 +433,20 @@ mod tests {
 
     #[test]
     fn a_no_bid_reason_is_decoded_to_words() {
-        let response = decode("/openrtbb/prebidjs", None, Some(r#"{"id":"meridian-post","nbr":7}"#), &no_units)
-            .unwrap()
-            .response
-            .unwrap();
+        let response = decode(
+            "/openrtbb/prebidjs",
+            None,
+            Some(r#"{"id":"meridian-post","nbr":7}"#),
+            &no_units,
+        )
+        .unwrap()
+        .response
+        .unwrap();
         assert_eq!(response.nbr, Some(7));
-        assert_eq!(response.nbr_meaning.as_deref(), Some("Blocked Publisher or Site"));
+        assert_eq!(
+            response.nbr_meaning.as_deref(),
+            Some("Blocked Publisher or Site")
+        );
         assert!(response.seats.is_empty());
         assert_eq!(best_price(&response), None);
     }
@@ -417,7 +458,11 @@ mod tests {
         }
         assert_eq!(nbr_meaning(2), Some("Invalid Request"));
         assert_eq!(nbr_meaning(18), None);
-        assert_eq!(nbr_meaning(500), None, "exchange-specific codes are left as numbers");
+        assert_eq!(
+            nbr_meaning(500),
+            None,
+            "exchange-specific codes are left as numbers"
+        );
     }
 
     #[test]
@@ -438,13 +483,23 @@ mod tests {
         assert_eq!(
             response.server_timings,
             [
-                ServerBidderTiming { bidder: "appnexus".into(), ms: 140.0 },
-                ServerBidderTiming { bidder: "sovrn".into(), ms: 1000.0 },
+                ServerBidderTiming {
+                    bidder: "appnexus".into(),
+                    ms: 140.0
+                },
+                ServerBidderTiming {
+                    bidder: "sovrn".into(),
+                    ms: 1000.0
+                },
             ]
         );
         assert_eq!(
             response.server_errors,
-            [ServerBidderError { bidder: "sovrn".into(), code: Some(1), message: "timeout".into() }]
+            [ServerBidderError {
+                bidder: "sovrn".into(),
+                code: Some(1),
+                message: "timeout".into()
+            }]
         );
         assert_eq!(response.seats[0].bids[0].ad_unit.as_deref(), Some("top"));
     }
@@ -462,11 +517,18 @@ mod tests {
             (None, None),
             (Some("not json"), Some("<html></html>")),
             (Some("[1,2,3]"), Some("42")),
-            (Some(r#"{"tags":[{"uuid":"1"}]}"#), Some(r#"{"tags":[{"error":"x"}]}"#)),
+            (
+                Some(r#"{"tags":[{"uuid":"1"}]}"#),
+                Some(r#"{"tags":[{"error":"x"}]}"#),
+            ),
             (Some(""), Some("")),
             (None, Some(r#"{"status":"ok"}"#)),
         ] {
-            assert_eq!(decode("/ut/v3/prebid", request, response, &no_units), None, "{request:?}");
+            assert_eq!(
+                decode("/ut/v3/prebid", request, response, &no_units),
+                None,
+                "{request:?}"
+            );
         }
     }
 

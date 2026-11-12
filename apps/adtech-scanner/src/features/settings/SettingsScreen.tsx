@@ -194,7 +194,10 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
         <ProxySection settings={settings} save={save} />
       </Section>
 
-      <Section title="Scan defaults" description="Starting values for the new-scan composer.">
+      <Section
+        title="Scan defaults"
+        description="What a new scan starts from. A scan's Options and a saved configuration can set each of these differently."
+      >
         <ScanDefaultsFields settings={settings} save={save} />
       </Section>
 

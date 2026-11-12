@@ -1,12 +1,18 @@
 import { expect, test } from "vitest";
 import { makeConfiguration, makeProxy } from "@/test/fixtures";
-import { configurationProblem, duplicateName, proxySummary, visitorSummary } from "./configuration-summary";
+import {
+  configurationProblem,
+  duplicateName,
+  healthChange,
+  proxySummary,
+  visitorSummary,
+} from "./configuration-summary";
 
 const settings = { proxies: [makeProxy()] };
 const withProxy = (proxy: NonNullable<ReturnType<typeof makeConfiguration>["options"]["proxy"]>) =>
   makeConfiguration({ options: { ...makeConfiguration().options, proxy } });
 
-test("a configuration can run unless the proxy profile it names is gone", () => {
+test("a configuration can run unless the saved proxy it names is gone", () => {
   expect(configurationProblem(makeConfiguration(), settings)).toBeNull();
   expect(configurationProblem(withProxy({ kind: "none" }), settings)).toBeNull();
   expect(configurationProblem(withProxy({ kind: "profile", id: "proxy-be" }), settings)).toBeNull();
@@ -42,4 +48,18 @@ test("the visitor reads with its page count for a browse visit", () => {
 test("a duplicate gets the first free copy name, compared without case", () => {
   expect(duplicateName("Sportsdesk", ["Sportsdesk"])).toBe("Sportsdesk copy");
   expect(duplicateName("Sportsdesk", ["Sportsdesk", "sportsdesk COPY", "Sportsdesk copy 2"])).toBe("Sportsdesk copy 3");
+});
+
+test("the health change compares the two newest runs, and only when both completed with a score", () => {
+  const run = (healthScore: number | null, status: "completed" | "failed" | "running" = "completed") => ({
+    healthScore,
+    status,
+  });
+  expect(healthChange([run(84), run(72)])).toBe(12);
+  expect(healthChange([run(40), run(72)])).toBe(-32);
+  expect(healthChange([run(72), run(72)])).toBe(0);
+  expect(healthChange([run(84)])).toBeNull();
+  expect(healthChange([])).toBeNull();
+  expect(healthChange([run(null, "running"), run(72)])).toBeNull();
+  expect(healthChange([run(84), run(null, "failed")])).toBeNull();
 });

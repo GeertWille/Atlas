@@ -46,6 +46,7 @@ use crate::domain::archive::pack::{
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// What a recording is started with.
+#[derive(Clone)]
 pub struct RecordingStart {
     pub scan_id: String,
     pub url: String,
@@ -185,16 +186,23 @@ impl Recording {
         let store = match archive {
             Some(archive) => {
                 let file = pack_file(&start.scan_id);
+                // The row first: a file without one is only found by the
+                // start-up sweep, a row without a file by whoever removes it.
+                archive
+                    .index
+                    .begin(
+                        &start.scan_id,
+                        Some(&file),
+                        !start.full_headers,
+                        start.started_at,
+                    )
+                    .await
+                    .map_err(|error| error.0)?;
                 let pack = archive
                     .packs
                     .create(&file)
                     .await
                     .map_err(|error| error.to_string())?;
-                archive
-                    .index
-                    .begin(&start.scan_id, Some(&file), !start.full_headers, start.started_at)
-                    .await
-                    .map_err(|error| error.0)?;
                 Some(Store {
                     pack,
                     index: Arc::clone(&archive.index),
@@ -409,8 +417,13 @@ impl Store {
             }
             _ => {}
         }
-        let document =
-            RequestDocument::of(&start.scan_id, record, start.full_headers, row.body_state, stored);
+        let document = RequestDocument::of(
+            &start.scan_id,
+            record,
+            start.full_headers,
+            row.body_state,
+            stored,
+        );
         let line = serde_json::to_string(&document).map_err(|error| error.to_string())?;
         row.record_index = self.lines.len() as u32;
         self.lines_bytes += line.len() + 1;
@@ -527,7 +540,11 @@ impl Store {
             .map_err(|error| error.0)
     }
 
-    async fn seal(mut self, start: &RecordingStart, truncated: bool) -> Result<ArchiveTotals, String> {
+    async fn seal(
+        mut self,
+        start: &RecordingStart,
+        truncated: bool,
+    ) -> Result<ArchiveTotals, String> {
         self.flush(&start.scan_id).await?;
         let manifest = Manifest {
             format: FORMAT_VERSION,
@@ -561,5 +578,495 @@ impl Store {
             .await
             .map_err(|error| error.0)?;
         Ok(totals)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use adscan_model::{
+        InitiatorKind, NetworkInitiator, RequestContext, RequestEnd, ResourceKind, ServedFrom,
+    };
+
+    use super::*;
+    use crate::application::ports::{ArchiveState, ScanRepository};
+    use crate::infrastructure::pack_store::LocalPackStore;
+    use crate::infrastructure::sqlite::SqliteStore;
+
+    const MIB: u64 = 1024 * 1024;
+
+    struct Fixture {
+        archive: Archive,
+        _directory: tempfile::TempDir,
+    }
+
+    async fn fixture() -> Fixture {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SqliteStore::open_in_memory().unwrap();
+        let summary = adscan_model::ScanSummary {
+            id: "scan".into(),
+            url: "https://pub.example/".into(),
+            hostname: "pub.example".into(),
+            device: adscan_model::DeviceProfile::Desktop,
+            status: adscan_model::ScanStatus::Running,
+            started_at: 1.0,
+            finished_at: None,
+            duration_ms: None,
+            cost_usd: 0.0,
+            finding_counts: adscan_model::SeverityCounts::default(),
+            health_score: None,
+            prebid_version: None,
+            ai_used: false,
+            error: None,
+            configuration: None,
+            proxy: None,
+        };
+        store
+            .create(
+                &summary,
+                &adscan_model::ScanOptions::for_url("https://pub.example/"),
+            )
+            .await
+            .unwrap();
+        Fixture {
+            archive: Archive {
+                packs: Arc::new(LocalPackStore::new(directory.path())),
+                index: Arc::new(store),
+            },
+            _directory: directory,
+        }
+    }
+
+    fn start() -> RecordingStart {
+        RecordingStart {
+            scan_id: "scan".into(),
+            url: "https://pub.example/".into(),
+            page_host: "pub.example".into(),
+            started_at: 1.0,
+            full_headers: false,
+        }
+    }
+
+    fn offer(
+        seq: u32,
+        url: &'static str,
+        kind: ResourceKind,
+        mime: &'static str,
+        bytes: u64,
+    ) -> BodyOffer<'static> {
+        BodyOffer {
+            seq,
+            url,
+            bidder: None,
+            kind,
+            mime_type: Some(mime),
+            status: Some(200),
+            expected_bytes: bytes,
+        }
+    }
+
+    fn script_offer(seq: u32, bytes: u64) -> BodyOffer<'static> {
+        offer(
+            seq,
+            "https://cdn.example/a.js",
+            ResourceKind::Script,
+            "text/javascript",
+            bytes,
+        )
+    }
+
+    fn record(seq: u32, url: &str, body: CapturedBody) -> NetworkRecord {
+        NetworkRecord {
+            seq,
+            page: 0,
+            context: RequestContext::Page,
+            frame_id: None,
+            target_id: None,
+            method: "GET".into(),
+            url: url.into(),
+            kind: ResourceKind::Script,
+            priority: None,
+            request_headers: Vec::new(),
+            post_data: None,
+            post_data_missing: false,
+            initiator: NetworkInitiator {
+                kind: InitiatorKind::Other,
+                url: None,
+                line: None,
+                column: None,
+                stack: Vec::new(),
+            },
+            redirect_from: None,
+            preflight_of: None,
+            status: Some(200),
+            mime_type: Some("text/javascript".into()),
+            protocol: None,
+            remote_address: None,
+            response_headers: Vec::new(),
+            served_from: ServedFrom::Network,
+            started_at_ms: f64::from(seq),
+            response_at_ms: None,
+            ended_at_ms: Some(f64::from(seq) + 1.0),
+            queued_ms: None,
+            timing: None,
+            encoded_bytes: 0,
+            decoded_bytes: 0,
+            end: RequestEnd::Finished,
+            bidder: None,
+            body,
+        }
+    }
+
+    fn read(text: &str) -> CapturedBody {
+        CapturedBody::Read {
+            bytes: text.as_bytes().to_vec(),
+            total_bytes: text.len() as u64,
+        }
+    }
+
+    #[tokio::test]
+    async fn admission_follows_the_kind_of_body() {
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        let max_bytes = MAX_BODY_BYTES;
+        assert_eq!(
+            sink.admit_body(&script_offer(0, 1_000)),
+            BodyAdmission::Read { max_bytes }
+        );
+        assert_eq!(
+            sink.admit_body(&offer(
+                1,
+                "https://pub.example/a.png",
+                ResourceKind::Image,
+                "image/png",
+                1_000
+            )),
+            BodyAdmission::Skip(BodySkip::Type)
+        );
+        assert_eq!(
+            sink.admit_body(&offer(
+                2,
+                "https://pub.example/v.mp4",
+                ResourceKind::Media,
+                "video/mp4",
+                0
+            )),
+            BodyAdmission::Skip(BodySkip::Type)
+        );
+        recording.abort();
+    }
+
+    #[tokio::test]
+    async fn the_sink_stops_admitting_bodies_while_too_many_bytes_wait_for_the_writer() {
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        // Twelve bodies of 5 MiB are announced: 60 of the 64 MiB that may
+        // be in flight. Their records have not arrived yet.
+        for seq in 0..12 {
+            assert!(matches!(
+                sink.admit_body(&script_offer(seq, 5 * MIB)),
+                BodyAdmission::Read { .. }
+            ));
+        }
+        assert_eq!(
+            sink.admit_body(&script_offer(12, 5 * MIB)),
+            BodyAdmission::Skip(BodySkip::Backlog)
+        );
+        // A small one still fits.
+        assert!(matches!(
+            sink.admit_body(&script_offer(13, MIB)),
+            BodyAdmission::Read { .. }
+        ));
+
+        // The announced bodies arrive (much smaller than announced) and are
+        // written: the room is free again.
+        for seq in (0..12).chain([13]) {
+            sink.record(record(
+                seq,
+                "https://cdn.example/a.js",
+                read(&format!("var a{seq}=1;")),
+            ));
+        }
+        sink.record(record(
+            12,
+            "https://cdn.example/a.js",
+            CapturedBody::Skipped(BodySkip::Backlog),
+        ));
+        let recorded = recording.finish().await.unwrap();
+        let totals = recorded.stored.unwrap().unwrap();
+        assert!(totals.truncated, "a body was left out");
+
+        let (rows, _) = fixture
+            .archive
+            .index
+            .rows("scan", &[], 0, 100)
+            .await
+            .unwrap();
+        let dropped = rows.iter().find(|row| row.seq == 12).unwrap();
+        assert_eq!(
+            (dropped.body_state, dropped.body_no),
+            (BodyState::Dropped, None)
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.body_state == BodyState::Kept)
+                .count(),
+            13
+        );
+    }
+
+    #[tokio::test]
+    async fn past_the_scan_cap_requests_keep_their_metadata_and_say_why_the_body_is_missing() {
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        // Fill the scan's 256 MiB with bodies of 5 MiB, in the batches the
+        // in-flight limit allows.
+        let mut seq = 0;
+        let mut admitted = Vec::new();
+        loop {
+            match sink.admit_body(&script_offer(seq, 5 * MIB)) {
+                BodyAdmission::Read { .. } => admitted.push(seq),
+                BodyAdmission::Skip(BodySkip::Backlog) => break,
+                other => panic!("{other:?}"),
+            }
+            seq += 1;
+        }
+        assert_eq!(admitted.len(), 12);
+        // Each arrives at full size: 5 MiB really kept per body.
+        let five_mib = "x".repeat(5 * MIB as usize);
+        let mut kept = 0u64;
+        let mut next = 0;
+        let limited = loop {
+            for seq in admitted.drain(..) {
+                sink.record(record(
+                    seq,
+                    "https://cdn.example/a.js",
+                    read(&format!("{five_mib}{seq}")),
+                ));
+                kept += 5 * MIB;
+            }
+            // Wait for the writer to work the queue off.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            next += 1;
+            let seq = 1_000 + next;
+            match sink.admit_body(&script_offer(seq, 5 * MIB)) {
+                BodyAdmission::Read { .. } => admitted.push(seq),
+                BodyAdmission::Skip(BodySkip::Backlog) => {}
+                BodyAdmission::Skip(BodySkip::ScanLimit) => break seq,
+                other => panic!("{other:?}"),
+            }
+            assert!(kept < MAX_SCAN_BODY_BYTES + 64 * MIB, "the cap never came");
+        };
+        assert!(
+            kept + 5 * MIB > MAX_SCAN_BODY_BYTES - 5 * MIB,
+            "kept {kept}"
+        );
+
+        // A bid call that no longer fits is still read for the analysis,
+        // and not stored.
+        let bid_offer = BodyOffer {
+            bidder: Some("openx"),
+            ..offer(
+                5_000,
+                "https://rtb.openx.net/openrtbb/prebidjs",
+                ResourceKind::Fetch,
+                "application/json",
+                5 * MIB,
+            )
+        };
+        assert!(matches!(
+            sink.admit_body(&bid_offer),
+            BodyAdmission::Read { .. }
+        ));
+        let mut bid = record(
+            5_000,
+            "https://rtb.openx.net/openrtbb/prebidjs",
+            read(r#"{"id":"1","nbr":2}"#),
+        );
+        bid.kind = ResourceKind::Fetch;
+        bid.method = "POST".into();
+        bid.bidder = Some("openx".into());
+        bid.mime_type = Some("application/json".into());
+        sink.record(bid);
+        sink.record(record(
+            limited,
+            "https://cdn.example/late.js",
+            CapturedBody::Skipped(BodySkip::ScanLimit),
+        ));
+
+        let recorded = recording.finish().await.unwrap();
+        assert!(recorded.stored.unwrap().unwrap().truncated);
+        assert_eq!(recorded.analysis.exchanges.len(), 1);
+        assert_eq!(
+            recorded.analysis.exchanges[0].nbr,
+            Some(2),
+            "the answer was read"
+        );
+        let (rows, _) = fixture
+            .archive
+            .index
+            .rows("scan", &[], 0, 1_000)
+            .await
+            .unwrap();
+        let state = |seq: u32| rows.iter().find(|row| row.seq == seq).unwrap().body_state;
+        assert_eq!(state(limited), BodyState::ScanLimit);
+        assert_eq!(state(5_000), BodyState::ScanLimit);
+        assert_eq!(
+            state(0),
+            BodyState::Truncated,
+            "one byte more than the per-body cap"
+        );
+        let archive = fixture.archive.index.record("scan").await.unwrap().unwrap();
+        assert_eq!(archive.state, ArchiveState::Sealed);
+        assert!(archive.truncated);
+    }
+
+    #[tokio::test]
+    async fn without_storage_only_bid_and_ad_server_calls_are_read_and_nothing_is_written() {
+        let fixture = fixture().await;
+        let recording = Recording::start(None, start()).await.unwrap();
+        let sink = recording.sink();
+        assert_eq!(
+            sink.admit_body(&script_offer(0, 1_000)),
+            BodyAdmission::Skip(BodySkip::NotStored)
+        );
+        assert_eq!(
+            sink.admit_body(&offer(
+                1,
+                "https://pub.example/a.png",
+                ResourceKind::Image,
+                "image/png",
+                10
+            )),
+            BodyAdmission::Skip(BodySkip::NotStored)
+        );
+        for (seq, url) in [
+            (
+                2,
+                "https://securepubads.g.doubleclick.net/gampad/ads?iu=/1/top",
+            ),
+            (3, "https://ib.adnxs.com/ut/v3"),
+            (4, "https://www8.smartadserver.com/ac?siteid=1"),
+            (5, "https://pbs.example.net/openrtb2/auction"),
+        ] {
+            assert!(
+                matches!(
+                    sink.admit_body(&offer(seq, url, ResourceKind::Xhr, "application/json", 500)),
+                    BodyAdmission::Read { .. }
+                ),
+                "{url}"
+            );
+        }
+        let mut auction = record(
+            5,
+            "https://pbs.example.net/openrtb2/auction",
+            read(r#"{"seatbid":[{"bid":[{"impid":"a","price":2.5}]}]}"#),
+        );
+        auction.method = "POST".into();
+        auction.kind = ResourceKind::Fetch;
+        sink.record(auction);
+        sink.record(record(
+            2,
+            "https://securepubads.g.doubleclick.net/gampad/ads?iu=/1/top",
+            read("{}"),
+        ));
+        sink.record(record(
+            0,
+            "https://cdn.example/a.js",
+            CapturedBody::Skipped(BodySkip::NotStored),
+        ));
+        recording.store_script("var inline = 1;");
+
+        let recorded = recording.finish().await.unwrap();
+        assert!(recorded.stored.is_none());
+        assert_eq!(recorded.analysis.exchanges.len(), 1);
+        assert_eq!(recorded.analysis.exchanges[0].best_cpm, Some(2.5));
+        assert!(recorded.analysis.exchanges[0].via_server);
+        assert_eq!(recorded.analysis.ad_server_calls.len(), 1);
+        assert_eq!(fixture.archive.index.record("scan").await.unwrap(), None);
+        assert!(fixture.archive.packs.list().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rows_never_point_past_what_is_durable_in_the_pack() {
+        let fixture = fixture().await;
+        let recording = Recording::start(Some(&fixture.archive), start())
+            .await
+            .unwrap();
+        let sink = recording.sink();
+        for seq in 0..300 {
+            assert!(matches!(
+                sink.admit_body(&script_offer(seq, 100)),
+                BodyAdmission::Read { .. }
+            ));
+            sink.record(record(
+                seq,
+                "https://cdn.example/a.js",
+                read(&format!("var unique{seq}={seq};")),
+            ));
+        }
+        // Wait until some rows are in the index, then stop the writer as a
+        // crash would, mid-flight.
+        let mut indexed = 0;
+        for _ in 0..200 {
+            indexed = fixture
+                .archive
+                .index
+                .rows("scan", &[], 0, 1)
+                .await
+                .unwrap()
+                .1;
+            if indexed >= 128 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(indexed >= 128, "a full record frame was flushed");
+        recording.abort();
+
+        let pack_bytes = fixture.archive.packs.list().await.unwrap()[0].bytes;
+        let (rows, _) = fixture
+            .archive
+            .index
+            .rows("scan", &[], 0, 1_000)
+            .await
+            .unwrap();
+        for row in &rows {
+            assert!(row.record_offset + u64::from(row.record_length) <= pack_bytes);
+            let body = fixture
+                .archive
+                .index
+                .body("scan", row.body_no.unwrap())
+                .await
+                .unwrap()
+                .expect("a row's body is indexed with it");
+            assert!(body.pack_offset + u64::from(body.pack_length) <= pack_bytes);
+            // And the bytes are really there.
+            let frame = fixture
+                .archive
+                .packs
+                .read(&crate::domain::archive::Location {
+                    file: pack_file("scan"),
+                    offset: body.pack_offset,
+                    length: body.pack_length,
+                })
+                .await
+                .unwrap();
+            assert!(codec::decompress(&frame, body.raw_len as usize).is_ok());
+        }
+        // Never sealed: the next start removes it.
+        let archive = fixture.archive.index.record("scan").await.unwrap().unwrap();
+        assert_eq!(archive.state, ArchiveState::Writing);
+        let report = fixture.archive.sweep().await.unwrap();
+        assert_eq!(report.unfinished, 1);
+        assert!(fixture.archive.packs.list().await.unwrap().is_empty());
     }
 }

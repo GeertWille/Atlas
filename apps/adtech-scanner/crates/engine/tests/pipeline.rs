@@ -257,6 +257,38 @@ async fn full_scan_runs_every_node_and_merges_ai_and_heuristic_findings() {
         code.line.unwrap() > 1,
         "the citation was relocated from line 1 to the real line"
     );
+    assert_eq!(code.script_id.as_deref(), Some("s3"));
+    assert_eq!(code.end_line, code.line, "a one-line excerpt");
+
+    // The viewer opens that script from the scan's archive and marks the
+    // evidence where it is, and the lines the model read.
+    let source = harness
+        .sources
+        .get(&summary.id, "s3", adscan_model::SourceView::Formatted, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        source.availability,
+        adscan_model::SourceAvailability::Available
+    );
+    let anchor = source
+        .anchors
+        .iter()
+        .find(|anchor| anchor.finding_id == finding.id)
+        .expect("the finding's code evidence is anchored");
+    assert!(anchor.located);
+    assert_eq!(Some(anchor.start_line), code.line);
+    let lines: Vec<&str> = source.text.as_deref().unwrap().lines().collect();
+    assert!(lines[anchor.start_line as usize - 1].contains("return window.innerWidth > 768;"));
+    assert_eq!(
+        source.regions,
+        vec![adscan_model::SourceRegion {
+            kind: adscan_model::RegionKind::Read,
+            start_line: 1,
+            end_line: source.line_count.min(80),
+            rank: None,
+        }]
+    );
     assert!(
         finding
             .evidence

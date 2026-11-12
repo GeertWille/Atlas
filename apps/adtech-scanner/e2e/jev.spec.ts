@@ -25,6 +25,7 @@ test("a scan with Jev shows who classified each script and how each decision was
   await openApp(page, "/settings", { speed: 8 });
   await enableJev(page);
   await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("button", { name: "Options" }).click();
   await expect(page.getByText(/with claude-sonnet-5-5 and Jev script triage, hard cap/)).toBeVisible();
   await startScan(page, "sportsdesk.example/live");
 
@@ -145,8 +146,11 @@ test("with only a TypeSafe key the composer offers script triage and the scan sk
   await expect(page).toHaveTitle("Home · Ad-Tech Scanner");
   await expect(page.getByRole("button", { name: /Continue/ })).toHaveCount(0);
 
-  await expect(page.getByText(/Estimated \$0\.001 for Jev script triage\./)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Scan", exact: true })).toHaveAccessibleDescription(
+    /· script triage, about \$0\.001$/,
+  );
   await page.getByRole("button", { name: "Options" }).click();
+  await expect(page.getByText(/Estimated \$0\.001 for Jev script triage\./)).toBeVisible();
   const triageSwitch = page.getByRole("switch", { name: "AI script triage" });
   await expect(triageSwitch).toBeChecked();
   await expect(page.getByRole("switch", { name: "AI logic analysis" })).toHaveCount(0);

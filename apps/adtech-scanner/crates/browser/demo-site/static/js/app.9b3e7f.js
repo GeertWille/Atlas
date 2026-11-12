@@ -131,7 +131,23 @@
     initRelativeTimes();
   }
 
+  // The archive index behind the search box: large, and fetched once the
+  // page has loaded.
+  function initSearchIndex() {
+    win.addEventListener('load', function () {
+      fetch('/api/archive-index.json')
+        .then(function (response) {
+          return response.json();
+        })
+        .then(function (index) {
+          site.archive = index.articles;
+        })
+        .catch(function () {});
+    });
+  }
+
   initArticle();
+  initSearchIndex();
   initNavigation();
   initTheme();
   initNewsletter();

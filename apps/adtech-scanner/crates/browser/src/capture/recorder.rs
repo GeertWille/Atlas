@@ -327,7 +327,13 @@ impl Recorder {
         let now = epoch_ms_now();
         let change = self.pages.document_committed(Committed {
             url: &self.document_url,
-            requested_at: self.document_requested_at.take().unwrap_or(now),
+            // A tab the visit just moved to asked for its document before
+            // it was the recorded one.
+            requested_at: self
+                .document_requested_at
+                .take()
+                .or_else(|| self.requests.navigation_started_at(loader_id))
+                .unwrap_or(now),
             on_site: self.on_site,
             restored,
             now,

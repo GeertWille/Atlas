@@ -32,6 +32,7 @@ const TAB_LABEL: Record<ReportTab, string> = {
   auctions: "Auctions",
   slots: "Ad slots",
   scripts: "Scripts",
+  network: "Network",
   audit: "Audit trail",
 };
 

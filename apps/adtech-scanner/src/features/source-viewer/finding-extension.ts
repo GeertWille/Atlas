@@ -1,9 +1,9 @@
-import { type Extension, type Range, RangeSet } from "@codemirror/state";
+import { type Extension, Prec, type Range, RangeSet } from "@codemirror/state";
 import { Decoration, EditorView, GutterMarker, gutter, WidgetType } from "@codemirror/view";
 import type { Severity } from "@/bindings";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
-import { svgIcon } from "@/shared/editor";
-import { type FindingMark, type GutterMark, gutterMarks, type LineRange, lineTints } from "./anchors";
+import { jumpToLine, svgIcon } from "@/shared/editor";
+import { adjacentMark, type FindingMark, type GutterMark, gutterMarks, type LineRange, lineTints } from "./anchors";
 
 /** One shape per severity, so a marker reads without its colour. The same shapes as the severity badges. */
 const SEVERITY_SHAPE: Record<Severity, readonly string[]> = {
@@ -27,8 +27,8 @@ export function lensKey(mark: Pick<FindingMark, "findingId" | "evidenceIndex">):
 export type FindingActions = {
   /** Opens or closes the one-line summary under a marked range. */
   toggleLens: (key: string) => void;
+  showLens: (key: string) => void;
   openFinding: (findingId: string) => void;
-  nextFinding: () => void;
 };
 
 class FindingGutterMarker extends GutterMarker {
@@ -61,7 +61,8 @@ class LensWidget extends WidgetType {
   constructor(
     private readonly mark: FindingMark,
     private readonly actions: FindingActions,
-    private readonly hasNext: boolean,
+    /** The finding F8 would go to from here; `null` when this is the file's only one. */
+    private readonly next: FindingMark | null,
   ) {
     super();
   }
@@ -70,8 +71,8 @@ class LensWidget extends WidgetType {
     return lensKey(other.mark) === lensKey(this.mark) && other.mark.title === this.mark.title;
   }
 
-  override toDOM() {
-    const { mark, actions } = this;
+  override toDOM(view: EditorView) {
+    const { mark, actions, next } = this;
     const lens = document.createElement("div");
     lens.className = `cm-findingLens cm-severity-${mark.severity}`;
     lens.setAttribute("role", "note");
@@ -100,7 +101,14 @@ class LensWidget extends WidgetType {
       title,
       button("Open finding", () => actions.openFinding(mark.findingId)),
     );
-    if (this.hasNext) lens.append(button("Next (F8)", actions.nextFinding));
+    if (next) {
+      lens.append(
+        button("Next (F8)", () => {
+          jumpToLine(view, next.startLine, next.endLine);
+          actions.showLens(lensKey(next));
+        }),
+      );
+    }
     return lens;
   }
 
@@ -229,7 +237,8 @@ export function findingExtension({ marks, openLenses, read, dimUnread, actions }
     }
     for (const mark of lenses) {
       if (mark.endLine > lineCount) continue;
-      const widget = new LensWidget(mark, actions, marks.length > 1);
+      const next = marks.length > 1 ? adjacentMark(marks, mark.startLine, 1) : null;
+      const widget = new LensWidget(mark, actions, next);
       ranges.push(Decoration.widget({ widget, block: true, side: 1 }).range(state.doc.line(mark.endLine).to));
     }
     return Decoration.set(ranges, true);
@@ -256,7 +265,8 @@ export function findingExtension({ marks, openLenses, read, dimUnread, actions }
 
   return [
     findingTheme,
-    findingGutter,
+    // Before the line numbers, where an editor shows its breakpoints.
+    Prec.high(findingGutter),
     decorations,
     EditorView.editorAttributes.of({ class: dimUnread ? "cm-dimUnread" : "" }),
   ];

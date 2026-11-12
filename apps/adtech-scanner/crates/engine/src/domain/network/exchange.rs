@@ -10,8 +10,8 @@
 use std::collections::{BTreeMap, HashSet};
 
 use adscan_model::{
-    AdLink, Auction, BidExchange, BidStatus, ExchangeVerdict, TrackedBidRequest, TrackerEvent,
-    TrackerEventKind, request_id,
+    AdLink, AdSlot, Auction, BidExchange, BidStatus, ExchangeVerdict, TrackedBidRequest,
+    TrackerEvent, TrackerEventKind, request_id,
 };
 
 /// The tracker's clock and the network's clock can disagree by a few
@@ -24,6 +24,10 @@ const TIMING_MATCH_BEFORE_MS: f64 = 30.0;
 const TIMING_MATCH_AFTER_MS: f64 = 300.0;
 /// Shorter ids ("1", "top") turn up in unrelated requests.
 const MIN_ID_CHARS: usize = 8;
+/// How long before and after the tag reported a slot request the ad-server
+/// call that carries it may start. Starting values, not calibrated.
+const SLOT_MATCH_BEFORE_MS: f64 = 50.0;
+const SLOT_MATCH_AFTER_MS: f64 = 1_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -51,6 +55,46 @@ pub struct ExchangeRequest {
     /// From the decoded answer.
     pub best_cpm: Option<f64>,
     pub nbr: Option<u32>,
+}
+
+/// An ad server's ad call as recorded on the network.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdServerCall {
+    pub seq: u32,
+    pub page: u32,
+    /// ms since the start of page view `page`.
+    pub started_ms: f64,
+}
+
+/// Ties each ad request of a slot to the ad-server call that started
+/// nearest to it on the same page view. One call can carry several slots
+/// (single-request mode), so calls are shared.
+pub fn link_slots(slots: &mut [AdSlot], calls: &[AdServerCall]) {
+    for slot in slots {
+        let page = slot.page;
+        for request in &mut slot.requests {
+            request.request_id = calls
+                .iter()
+                .filter(|call| call.page == page)
+                .map(|call| (call, call.started_ms - request.at_ms))
+                .filter(|(_, after)| (-SLOT_MATCH_BEFORE_MS..=SLOT_MATCH_AFTER_MS).contains(after))
+                .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .map(|(call, _)| request_id(call.seq));
+        }
+    }
+}
+
+/// For a scan that stored no network data: the verdicts stand, but there is
+/// no request row to point at.
+pub fn forget_requests(auctions: &mut [Auction]) {
+    let exchanges = auctions
+        .iter_mut()
+        .flat_map(|auction| &mut auction.ad_units)
+        .flat_map(|unit| &mut unit.bids)
+        .filter_map(|bid| bid.exchange.as_mut());
+    for exchange in exchanges {
+        exchange.request_id = None;
+    }
 }
 
 /// One `bidRequested` of the tracker.
@@ -123,7 +167,8 @@ pub fn link(
     requests: &[ExchangeRequest],
     page_starts: &[f64],
 ) -> Vec<RequestAdLink> {
-    let absolute = |page: u32, at_ms: f64| page_starts.get(page as usize).copied().unwrap_or(0.0) + at_ms;
+    let absolute =
+        |page: u32, at_ms: f64| page_starts.get(page as usize).copied().unwrap_or(0.0) + at_ms;
     let visible_bidders: HashSet<&str> = requests
         .iter()
         .filter_map(|request| request.bidder.as_deref())
@@ -151,7 +196,12 @@ pub fn link(
                 request.bidder.as_deref() == Some(announcement.bidder.as_str())
                     && !claimed.contains(&request.seq)
             })
-            .map(|request| (request, absolute(request.page, request.started_ms) - announced_at))
+            .map(|request| {
+                (
+                    request,
+                    absolute(request.page, request.started_ms) - announced_at,
+                )
+            })
             .filter(|(_, after)| (-TIMING_MATCH_BEFORE_MS..=TIMING_MATCH_AFTER_MS).contains(after))
             .min_by(|a, b| a.1.abs().total_cmp(&b.1.abs()));
         if let Some((request, _)) = nearest {
@@ -201,7 +251,11 @@ pub fn link(
                 .ad_units
                 .iter_mut()
                 .find(|unit| &unit.code == code)
-                .and_then(|unit| unit.bids.iter_mut().find(|bid| bid.bidder == announcement.bidder))
+                .and_then(|unit| {
+                    unit.bids
+                        .iter_mut()
+                        .find(|bid| bid.bidder == announcement.bidder)
+                })
             else {
                 continue;
             };
@@ -272,7 +326,10 @@ pub fn link(
     links.into_values().collect()
 }
 
-fn exact_matches<'a>(announcement: &Announcement, requests: &'a [ExchangeRequest]) -> Vec<Match<'a>> {
+fn exact_matches<'a>(
+    announcement: &Announcement,
+    requests: &'a [ExchangeRequest],
+) -> Vec<Match<'a>> {
     let own_ids: Vec<&str> = announcement
         .bidder_request_id
         .iter()
@@ -391,7 +448,13 @@ mod tests {
         }
     }
 
-    fn request(seq: u32, bidder: Option<&str>, started: f64, ended: Option<f64>, body: &str) -> ExchangeRequest {
+    fn request(
+        seq: u32,
+        bidder: Option<&str>,
+        started: f64,
+        ended: Option<f64>,
+        body: &str,
+    ) -> ExchangeRequest {
         ExchangeRequest {
             seq,
             page: 0,
@@ -410,7 +473,11 @@ mod tests {
         }
     }
 
-    fn exchange_of<'a>(auctions: &'a [Auction], unit: &str, bidder: &str) -> Option<&'a BidExchange> {
+    fn exchange_of<'a>(
+        auctions: &'a [Auction],
+        unit: &str,
+        bidder: &str,
+    ) -> Option<&'a BidExchange> {
         auctions[0]
             .ad_units
             .iter()
@@ -428,13 +495,29 @@ mod tests {
             "auction-0001",
             vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
         )];
-        let announcements = [announced("auction-0001", "openx", &[("top", "bid-openx-top")])];
+        let announcements = [announced(
+            "auction-0001",
+            "openx",
+            &[("top", "bid-openx-top")],
+        )];
         let requests = [
             // Started closer in time, but it is somebody else's.
-            request(1, Some("openx"), 1_002.0, Some(1_100.0), r#"{"imp":[{"id":"bid-other-x"}]}"#),
+            request(
+                1,
+                Some("openx"),
+                1_002.0,
+                Some(1_100.0),
+                r#"{"imp":[{"id":"bid-other-x"}]}"#,
+            ),
             ExchangeRequest {
                 nbr: Some(7),
-                ..request(2, Some("openx"), 1_040.0, Some(1_212.0), r#"{"imp":[{"id":"bid-openx-top"}]}"#)
+                ..request(
+                    2,
+                    Some("openx"),
+                    1_040.0,
+                    Some(1_212.0),
+                    r#"{"imp":[{"id":"bid-openx-top"}]}"#,
+                )
             },
         ];
         let links = link(&mut auctions, &announcements, &requests, &[0.0]);
@@ -469,7 +552,11 @@ mod tests {
             "auction-0001",
             vec![("top", vec![bid("rubicon", BidStatus::Timeout, None)])],
         )];
-        let announcements = [announced("auction-0001", "rubicon", &[("top", "bid-rubicon-top")])];
+        let announcements = [announced(
+            "auction-0001",
+            "rubicon",
+            &[("top", "bid-rubicon-top")],
+        )];
         let requests = [
             request(4, Some("rubicon"), 400.0, Some(500.0), "account_id=1"),
             request(5, Some("rubicon"), 1_010.0, Some(1_334.0), "account_id=1"),
@@ -499,7 +586,11 @@ mod tests {
         let announcements = [announced(
             "auction-0001",
             "triplelift",
-            &[("top", "bid-tl-top"), ("sidebar", "bid-tl-side"), ("anchor", "bid-tl-anchor")],
+            &[
+                ("top", "bid-tl-top"),
+                ("sidebar", "bid-tl-side"),
+                ("anchor", "bid-tl-anchor"),
+            ],
         )];
         let requests = [request(
             9,
@@ -510,7 +601,10 @@ mod tests {
         )];
         let links = link(&mut auctions, &announcements, &requests, &[0.0]);
         assert_eq!(
-            exchange_of(&auctions, "top", "triplelift").unwrap().request_id.as_deref(),
+            exchange_of(&auctions, "top", "triplelift")
+                .unwrap()
+                .request_id
+                .as_deref(),
             Some("r9")
         );
         for unit in ["sidebar", "anchor"] {
@@ -519,7 +613,11 @@ mod tests {
             assert_eq!(exchange.request_id, None);
         }
         assert_eq!(links[0].link.ad_units, ["top"]);
-        assert_eq!(links[0].link.cpm, Some(0.4), "from Prebid's bid when the answer was not decoded");
+        assert_eq!(
+            links[0].link.cpm,
+            Some(0.4),
+            "from Prebid's bid when the answer was not decoded"
+        );
     }
 
     #[test]
@@ -544,7 +642,11 @@ mod tests {
             "auction-0001",
             vec![("top", vec![bid("obscure", BidStatus::Bid, Some(1.0))])],
         )];
-        let announcements = [announced("auction-0001", "obscure", &[("top", "bid-obscure")])];
+        let announcements = [announced(
+            "auction-0001",
+            "obscure",
+            &[("top", "bid-obscure")],
+        )];
         let links = link(&mut auctions, &announcements, &[], &[0.0]);
         assert_eq!(exchange_of(&auctions, "top", "obscure"), None);
         assert!(links.is_empty());
@@ -569,7 +671,13 @@ mod tests {
         let requests = [ExchangeRequest {
             via_server: true,
             best_cpm: Some(0.88),
-            ..request(3, None, 1_004.0, Some(1_200.0), r#"{"id":"auction-0001","imp":[{"id":"top"}]}"#)
+            ..request(
+                3,
+                None,
+                1_004.0,
+                Some(1_200.0),
+                r#"{"id":"auction-0001","imp":[{"id":"top"}]}"#,
+            )
         }];
         let links = link(&mut auctions, &announcements, &requests, &[0.0]);
         for bidder in ["appnexus", "sovrn"] {
@@ -591,8 +699,14 @@ mod tests {
     #[test]
     fn a_request_with_an_id_in_it_is_not_given_to_another_auction_by_timing() {
         let mut auctions = vec![
-            auction("auction-0001", vec![("top", vec![bid("openx", BidStatus::NoBid, None)])]),
-            auction("auction-0002", vec![("top", vec![bid("openx", BidStatus::NoBid, None)])]),
+            auction(
+                "auction-0001",
+                vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
+            ),
+            auction(
+                "auction-0002",
+                vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
+            ),
         ];
         let announcements = [
             Announcement {
@@ -602,14 +716,29 @@ mod tests {
             },
             announced("auction-0002", "openx", &[("top", "bid-second-top")]),
         ];
-        let requests = [request(7, Some("openx"), 1_002.0, Some(1_100.0), "bid-second-top")];
+        let requests = [request(
+            7,
+            Some("openx"),
+            1_002.0,
+            Some(1_100.0),
+            "bid-second-top",
+        )];
         link(&mut auctions, &announcements, &requests, &[0.0]);
         assert_eq!(
-            auctions[1].ad_units[0].bids[0].exchange.as_ref().unwrap().request_id.as_deref(),
+            auctions[1].ad_units[0].bids[0]
+                .exchange
+                .as_ref()
+                .unwrap()
+                .request_id
+                .as_deref(),
             Some("r7")
         );
         assert_eq!(
-            auctions[0].ad_units[0].bids[0].exchange.as_ref().unwrap().verdict,
+            auctions[0].ad_units[0].bids[0]
+                .exchange
+                .as_ref()
+                .unwrap()
+                .verdict,
             ExchangeVerdict::NotSent
         );
     }
@@ -618,7 +747,10 @@ mod tests {
     fn times_on_different_page_views_are_compared_on_one_clock() {
         let mut auctions = vec![Auction {
             page: 1,
-            ..auction("auction-0001", vec![("top", vec![bid("openx", BidStatus::NoBid, None)])])
+            ..auction(
+                "auction-0001",
+                vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
+            )
         }];
         let announcements = [Announcement {
             page: 1,
@@ -682,6 +814,105 @@ mod tests {
     }
 
     #[test]
+    fn a_slot_request_is_tied_to_the_ad_call_that_started_nearest_on_its_page() {
+        use adscan_model::{SlotOutcome, SlotRequest};
+        let slot = |page: u32, element: &str, at: &[f64]| AdSlot {
+            page,
+            element_id: element.into(),
+            ad_unit_path: None,
+            sizes: Vec::new(),
+            outcome: SlotOutcome::Filled,
+            rendered_size: None,
+            defined_at_ms: None,
+            requested_at_ms: at.first().copied(),
+            response_at_ms: None,
+            rendered_at_ms: None,
+            viewable_at_ms: None,
+            in_initial_viewport: None,
+            had_prebid_targeting: None,
+            requested_before_auction_end: None,
+            advertiser_id: None,
+            line_item_id: None,
+            requests: at
+                .iter()
+                .map(|at_ms| SlotRequest {
+                    at_ms: *at_ms,
+                    had_prebid_targeting: false,
+                    prebid_ad_id: None,
+                    request_id: None,
+                })
+                .collect(),
+        };
+        let mut slots = vec![
+            slot(0, "top", &[1_500.0, 9_000.0]),
+            slot(0, "sidebar", &[1_501.0]),
+            slot(1, "top", &[1_500.0]),
+            slot(0, "late", &[20_000.0]),
+        ];
+        let calls = [
+            AdServerCall {
+                seq: 10,
+                page: 0,
+                started_ms: 1_504.0,
+            },
+            AdServerCall {
+                seq: 30,
+                page: 0,
+                started_ms: 9_020.0,
+            },
+            AdServerCall {
+                seq: 40,
+                page: 1,
+                started_ms: 1_480.0,
+            },
+        ];
+        link_slots(&mut slots, &calls);
+        let ids = |slot: &AdSlot| -> Vec<Option<String>> {
+            slot.requests
+                .iter()
+                .map(|request| request.request_id.clone())
+                .collect()
+        };
+        assert_eq!(
+            ids(&slots[0]),
+            [Some("r10".to_string()), Some("r30".to_string())]
+        );
+        assert_eq!(
+            ids(&slots[1]),
+            [Some("r10".to_string())],
+            "one call carries both slots"
+        );
+        assert_eq!(ids(&slots[2]), [Some("r40".to_string())]);
+        assert_eq!(ids(&slots[3]), [None], "no call near it");
+    }
+
+    #[test]
+    fn without_stored_requests_the_verdicts_stay_and_the_request_ids_go() {
+        let mut auctions = vec![auction(
+            "auction-0001",
+            vec![("top", vec![bid("openx", BidStatus::NoBid, None)])],
+        )];
+        let announcements = [announced(
+            "auction-0001",
+            "openx",
+            &[("top", "bid-openx-top")],
+        )];
+        let requests = [request(
+            2,
+            Some("openx"),
+            1_040.0,
+            Some(1_334.0),
+            "bid-openx-top",
+        )];
+        link(&mut auctions, &announcements, &requests, &[0.0]);
+        forget_requests(&mut auctions);
+        let exchange = exchange_of(&auctions, "top", "openx").unwrap();
+        assert_eq!(exchange.request_id, None);
+        assert_eq!(exchange.verdict, ExchangeVerdict::LateOnNetwork);
+        assert_eq!(exchange.late_by_ms, Some(84.0));
+    }
+
+    #[test]
     fn short_ids_are_not_searched_for() {
         assert!(!contains_id("imp id top and 1", "top"));
         assert!(contains_id("x bid-openx-top y", "bid-openx-top"));
@@ -710,12 +941,17 @@ mod tests {
             TrackerEvent {
                 page: 2,
                 t: 80.0,
-                kind: TrackerEventKind::AuctionEnd { auction_id: "a".into() },
+                kind: TrackerEventKind::AuctionEnd {
+                    auction_id: "a".into(),
+                },
             },
         ];
         let found = announcements(&events);
         assert_eq!(found.len(), 1);
-        assert_eq!((found[0].page, found[0].at_ms, found[0].bidder.as_str()), (2, 77.0, "ix"));
+        assert_eq!(
+            (found[0].page, found[0].at_ms, found[0].bidder.as_str()),
+            (2, 77.0, "ix")
+        );
         assert_eq!(ad_unit_of_bid(&found, "b1").as_deref(), Some("top"));
         assert_eq!(ad_unit_of_bid(&found, "nope"), None);
     }

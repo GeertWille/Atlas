@@ -29,9 +29,9 @@ test("settings changes are saved and survive a reload", async ({ page }) => {
   // The composer picks up the new defaults and the new cost estimate.
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await expect(page.getByRole("radiogroup", { name: "Device" }).getByRole("radio", { name: "Mobile" })).toBeChecked();
+  await page.getByRole("button", { name: "Options" }).click();
   await expect(page.getByText(/hard cap \$0\.75 per scan/)).toBeVisible();
   await expect(page.getByText(/with claude-opus-5-5/)).toBeVisible();
-  await page.getByRole("button", { name: "Options" }).click();
   await expect(page.getByText("35 s", { exact: true })).toBeVisible();
 
   await page.getByRole("link", { name: "Settings" }).click();

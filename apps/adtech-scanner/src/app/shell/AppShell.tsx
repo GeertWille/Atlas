@@ -1,7 +1,7 @@
 import { Outlet, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import type { ThemePreference } from "@/bindings";
-import { configurationProblem } from "@/features/configurations";
+import { configurationProblem, sortConfigurations } from "@/features/configurations";
 import { requestComposerFocus } from "@/features/scan-composer";
 import {
   useActiveScans,
@@ -44,6 +44,7 @@ export function AppShell() {
       if (settings.data && demoUrl.data) launch(defaultScanOptions(settings.data, demoUrl.data, "desktop"));
     },
     runConfiguration: launchConfiguration,
+    openConfiguration: (configuration) => navigate({ to: "/", search: { configuration } }),
     goTo: (to) => navigate({ to }),
     openScan: (scanId) => navigate({ to: "/scans/$scanId", params: { scanId } }),
     searchLogs: (q) => navigate({ to: "/logs", search: { q } }),
@@ -62,8 +63,11 @@ export function AppShell() {
 
   const recentScans = (recent.data?.items ?? []).filter((scan) => !isActive(scan.status));
   const { data: currentSettings } = settings;
-  const runnable = currentSettings
-    ? (configurations.data ?? []).filter((configuration) => !configurationProblem(configuration, currentSettings))
+  const paletteConfigurations = currentSettings
+    ? sortConfigurations(configurations.data ?? [], "recent").map((configuration) => ({
+        configuration,
+        runnable: !configurationProblem(configuration, currentSettings),
+      }))
     : [];
 
   return (
@@ -81,7 +85,7 @@ export function AppShell() {
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         recentScans={recentScans}
-        configurations={runnable}
+        configurations={paletteConfigurations}
         actions={actions}
       />
       <Toaster theme={theme} />

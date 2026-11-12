@@ -2,6 +2,8 @@
 
 use adscan_model::ResourceKind;
 
+use crate::domain::DomainError;
+
 /// A response body is stored up to this many bytes.
 pub const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 /// Kept bodies of one scan, before compression. After that requests keep
@@ -11,6 +13,22 @@ pub const MAX_SCAN_BODY_BYTES: u64 = 256 * 1024 * 1024;
 pub const MAX_IN_FLIGHT_BODY_BYTES: u64 = 64 * 1024 * 1024;
 /// What an admission reserves when the browser cannot say how large the body is.
 pub const UNKNOWN_BODY_RESERVATION: u64 = 256 * 1024;
+
+/// Bounds of the user's limit on all archives together.
+pub const MIN_ARCHIVE_LIMIT_BYTES: f64 = 100.0 * 1024.0 * 1024.0;
+pub const MAX_ARCHIVE_LIMIT_BYTES: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+
+/// The limit as it may be saved.
+pub fn validate_archive_limit(bytes: f64) -> Result<f64, DomainError> {
+    if (MIN_ARCHIVE_LIMIT_BYTES..=MAX_ARCHIVE_LIMIT_BYTES).contains(&bytes) {
+        Ok(bytes.floor())
+    } else {
+        Err(DomainError::ArchiveLimitOutOfRange {
+            min_mb: 100,
+            max_gb: 1024,
+        })
+    }
+}
 
 /// The text classes a scan keeps bodies of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -62,7 +80,13 @@ pub fn kept_kind(kind: ResourceKind, mime_type: Option<&str>) -> Option<BodyKind
         return None;
     }
     let mime = mime_type
-        .map(|mime| mime.split(';').next().unwrap_or_default().trim().to_ascii_lowercase())
+        .map(|mime| {
+            mime.split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+        })
         .filter(|mime| !mime.is_empty());
     match mime.as_deref() {
         Some(mime) => kind_of_mime(mime),
@@ -109,7 +133,11 @@ mod tests {
     #[test]
     fn text_classes_are_kept_by_their_mime_type() {
         for (kind, mime, expected) in [
-            (Script, "application/javascript; charset=utf-8", BodyKind::Js),
+            (
+                Script,
+                "application/javascript; charset=utf-8",
+                BodyKind::Js,
+            ),
             (Script, "text/javascript", BodyKind::Js),
             (Other, "application/x-javascript", BodyKind::Js),
             (Document, "text/html", BodyKind::Html),
@@ -121,7 +149,11 @@ mod tests {
             (Xhr, "application/vast+xml", BodyKind::Text),
             (Document, "application/xhtml+xml", BodyKind::Html),
         ] {
-            assert_eq!(kept_kind(kind, Some(mime)), Some(expected), "{kind:?} {mime}");
+            assert_eq!(
+                kept_kind(kind, Some(mime)),
+                Some(expected),
+                "{kind:?} {mime}"
+            );
         }
     }
 
@@ -158,8 +190,33 @@ mod tests {
     }
 
     #[test]
+    fn the_archive_limit_must_be_a_sensible_size() {
+        assert_eq!(
+            validate_archive_limit(MIN_ARCHIVE_LIMIT_BYTES),
+            Ok(MIN_ARCHIVE_LIMIT_BYTES)
+        );
+        assert_eq!(validate_archive_limit(5_368_709_120.7), Ok(5_368_709_120.0));
+        for bytes in [
+            0.0,
+            -1.0,
+            1024.0,
+            MAX_ARCHIVE_LIMIT_BYTES * 2.0,
+            f64::NAN,
+            f64::INFINITY,
+        ] {
+            assert!(validate_archive_limit(bytes).is_err(), "{bytes}");
+        }
+    }
+
+    #[test]
     fn body_kind_codes_round_trip() {
-        for kind in [BodyKind::Js, BodyKind::Html, BodyKind::Json, BodyKind::Text, BodyKind::Css] {
+        for kind in [
+            BodyKind::Js,
+            BodyKind::Html,
+            BodyKind::Json,
+            BodyKind::Text,
+            BodyKind::Css,
+        ] {
             assert_eq!(BodyKind::from_code(kind.code()), Some(kind));
         }
         assert_eq!(BodyKind::from_code(9), None);

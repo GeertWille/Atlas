@@ -155,6 +155,18 @@
   --tone-gray-fg: var(--gray-600);
   --tone-gray-soft: var(--gray-100);
   --tone-gray-line: var(--gray-300);
+
+  /*
+   * Request phases on the network waterfall: one hue in three steps, connecting to receiving, so
+   * they read without hue and never look like a bid status. Checked as an ordinal ramp with the
+   * dataviz validator against this surface (monotone lightness, step gaps, light end 2.1:1).
+   * The late part of a bid response is the amber status colour, hatched.
+   */
+  --net-queue: var(--gray-400);
+  --net-connect: oklch(0.76 0.1 200);
+  --net-wait: oklch(0.6 0.115 210);
+  --net-receive: oklch(0.44 0.1 220);
+  --net-late: var(--tone-amber-fg);
 }
 
 .dark {
@@ -213,6 +225,13 @@
   --tone-gray-fg: oklch(0.8 0.015 261);
   --tone-gray-soft: oklch(0.27 0.018 264);
   --tone-gray-line: oklch(0.4 0.02 264);
+
+  /* The same ramp chosen for the dark surface: it runs dark to light, the dark end at 3.3:1. */
+  --net-queue: oklch(0.58 0.022 261);
+  --net-connect: oklch(0.5 0.1 222);
+  --net-wait: oklch(0.64 0.115 210);
+  --net-receive: oklch(0.8 0.1 198);
+  --net-late: var(--tone-amber);
 }
 
 @layer base {

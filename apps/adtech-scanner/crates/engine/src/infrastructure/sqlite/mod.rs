@@ -558,4 +558,140 @@ mod tests {
         .unwrap();
         assert_eq!(of_configuration.total, 0);
     }
+
+    #[tokio::test]
+    async fn a_schema_version_four_database_gains_the_archive_and_its_scans_read_as_not_recorded() {
+        use crate::application::ports::{ArchiveRepository, ScanRepository, SettingsRepository};
+
+        let connection = Connection::open_in_memory().unwrap();
+        for migration in &MIGRATIONS[..4] {
+            connection.execute_batch(migration).unwrap();
+        }
+        connection.pragma_update(None, "user_version", 4).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                INSERT INTO scans (id, url, hostname, device, status, started_at, finished_at, options, pages)
+                VALUES ('v4-scan', 'https://pub.example/', 'pub.example', 'desktop', 'completed', 1000, 2000,
+                    '{"url":"https://pub.example/","device":"desktop","observeSeconds":20,"autoScroll":true,"acceptConsent":true,"aiEnabled":false,"visitor":"scroll"}',
+                    '[]');
+                INSERT INTO scripts (scan_id, position, data) VALUES ('v4-scan', 0,
+                    '{"id":"s1","url":"https://pub.example/ads.js","hostname":"pub.example","inline":false,"sizeBytes":10,"hash":"abc","category":"wrapper","adRelated":true,"classificationReason":null,"classificationConfidence":null,"classifiedBy":"heuristic","classifierModel":null,"adProbability":null,"analyzed":false,"vendor":null,"loadedAtMs":100,"firstParty":true,"pages":[0]}');
+                INSERT INTO auctions (scan_id, position, data) VALUES ('v4-scan', 0,
+                    '{"id":"a1","page":0,"startedAtMs":360,"endedAtMs":700,"durationMs":340,"timeoutMs":1500,"adUnits":[{"code":"top","sizes":[],"bids":[{"bidder":"rubicon","status":"bid","cpm":1.2,"currency":"USD","size":null,"requestedAtMs":365,"responseTimeMs":200,"dealId":null}],"winningBidder":null,"winningCpm":null}]}');
+                INSERT INTO findings (id, scan_id, position, data) VALUES ('f1', 'v4-scan', 0,
+                    '{"id":"f1","scanId":"v4-scan","severity":"high","category":"logicBug","source":"ai","title":"t","description":"d","recommendation":"r","confidence":0.7,"impact":"i","estimatedRevenueImpactPct":null,"evidence":[{"kind":"code","label":"l","body":"if (x) {","scriptUrl":"https://pub.example/ads.js","line":12}],"affectedSlots":[],"affectedBidders":[],"pages":[]}');
+                INSERT INTO settings (id, data) VALUES (1,
+                    '{"filterModel":"claude-haiku-5-5","analysisModel":"claude-sonnet-5-5","analysisEffort":"medium","budgetUsd":0.75,"chromePath":null,"headless":true,"defaultDevice":"desktop","defaultObserveSeconds":20,"theme":"system","hasApiKey":false,"jevEnabled":false,"hasTypesafeKey":false,"checkSellersJson":true,"defaultVisitor":"browse","defaultExtraPages":3,"persistentProfile":true,"proxies":[],"defaultProxy":{"kind":"none"}}');
+                "#,
+            )
+            .unwrap();
+
+        let store = SqliteStore::prepare(connection).unwrap();
+        let version: u32 = store
+            .call(|connection| {
+                connection.pragma_query_value(None, "user_version", |row| row.get(0))
+            })
+            .await
+            .unwrap();
+        assert_eq!(version as usize, MIGRATIONS.len());
+
+        // The settings keep what the user chose; storage starts on, with the
+        // default limit and redacted headers.
+        let settings = SettingsRepository::load(&store).await.unwrap().unwrap();
+        assert_eq!(settings.budget_usd, 0.75);
+        assert_eq!(settings.default_extra_pages, 3);
+        assert!(settings.persistent_profile && settings.check_sellers_json);
+        assert!(settings.keep_network_data);
+        assert!(!settings.store_full_headers);
+        assert_eq!(
+            settings.archive_limit_bytes,
+            adscan_model::DEFAULT_ARCHIVE_LIMIT_BYTES
+        );
+
+        // The old scan reads as before, with nothing where the links are.
+        let detail = ScanRepository::detail(&store, "v4-scan")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.network, None);
+        assert_eq!(detail.auctions[0].ad_units[0].bids[0].exchange, None);
+        let script = &detail.scripts[0];
+        assert_eq!(
+            (&script.sha256, &script.request_id, &script.initiator),
+            (&None, &None, &None)
+        );
+        let evidence = &detail.findings[0].evidence[0];
+        assert_eq!(evidence.line, Some(12));
+        assert_eq!(
+            (
+                &evidence.end_line,
+                &evidence.script_id,
+                &evidence.request_id
+            ),
+            (&None, &None, &None)
+        );
+        assert_eq!(
+            ArchiveRepository::record(&store, "v4-scan").await.unwrap(),
+            None
+        );
+        let (rows, total) = ArchiveRepository::rows(&store, "v4-scan", &[], 0, 10)
+            .await
+            .unwrap();
+        assert!(rows.is_empty() && total == 0);
+        let storage = ArchiveRepository::storage(&store, 1.0).await.unwrap();
+        assert_eq!(
+            (storage.scans, storage.evicted_scans, storage.stored_bytes),
+            (0, 0, 0.0)
+        );
+
+        // The new tables work for it, and go with the scan.
+        ArchiveRepository::begin(
+            &store,
+            "v4-scan",
+            Some("scans/v4-scan.pack.zst"),
+            true,
+            1000.0,
+        )
+        .await
+        .unwrap();
+        assert!(ScanRepository::delete(&store, "v4-scan").await.unwrap());
+        assert_eq!(
+            ArchiveRepository::record(&store, "v4-scan").await.unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_request_list_reads_by_primary_key_and_host_lookups_use_their_index() {
+        let store = SqliteStore::open_in_memory().unwrap();
+        let plan = |sql: &'static str| {
+            let store = store.clone();
+            async move {
+                store
+                    .call(move |connection| {
+                        let mut statement =
+                            connection.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                        let lines = statement
+                            .query_map([], |row| row.get::<_, String>(3))?
+                            .collect::<rusqlite::Result<Vec<_>>>()?;
+                        Ok(lines.join("; "))
+                    })
+                    .await
+                    .unwrap()
+            }
+        };
+        let list = plan(
+            "SELECT * FROM requests r WHERE r.scan_no = 1 ORDER BY r.page, r.started_ms, r.seq",
+        )
+        .await;
+        assert!(
+            list.contains("PRIMARY KEY") && !list.contains("SCAN r"),
+            "{list}"
+        );
+        let by_host = plan("SELECT scan_no FROM requests WHERE host_id = 7").await;
+        assert!(by_host.contains("requests_by_host"), "{by_host}");
+        let by_content = plan("SELECT scan_no FROM scan_bodies WHERE sha256 = x'00'").await;
+        assert!(by_content.contains("scan_bodies_by_sha"), "{by_content}");
+    }
 }

@@ -3,7 +3,7 @@
 //! data-lake request document; the rest is what the network view needs.
 
 use adscan_model::{
-    BodyState, CapturedBody, BodySkip, InitiatorKind, NetworkRecord, RequestContext, RequestEnd,
+    BodySkip, BodyState, CapturedBody, InitiatorKind, NetworkRecord, RequestContext, RequestEnd,
     ResourceKind, ResourceTiming, ServedFrom,
 };
 use serde::{Deserialize, Serialize};
@@ -404,7 +404,10 @@ mod tests {
         let document = RequestDocument::of("s1", &record(412), false, BodyState::Kept, Some(body));
         let line = serde_json::to_string(&document).unwrap();
         assert!(!line.contains('\n'), "one document is one line");
-        assert_eq!(serde_json::from_str::<RequestDocument>(&line).unwrap(), document);
+        assert_eq!(
+            serde_json::from_str::<RequestDocument>(&line).unwrap(),
+            document
+        );
     }
 
     #[test]
@@ -413,7 +416,10 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&document).unwrap();
         assert_eq!(json["_v"], 1);
         assert_eq!(json["id"], "s1:412");
-        assert_eq!(json["fullUrl"], "https://rtb.openx.net/openrtbb/prebidjs?x=1");
+        assert_eq!(
+            json["fullUrl"],
+            "https://rtb.openx.net/openrtbb/prebidjs?x=1"
+        );
         assert_eq!(json["headers"]["Content-Type"], "text/plain");
         assert_eq!(json["postData"], r#"{"id":"1"}"#);
         // Two cookies of one response are one member, as CDP joins them.
@@ -426,14 +432,24 @@ mod tests {
 
     #[test]
     fn credentials_are_not_in_the_document_unless_full_headers_are_stored() {
-        let redacted =
-            serde_json::to_string(&RequestDocument::of("s", &record(1), false, BodyState::Empty, None))
-                .unwrap();
+        let redacted = serde_json::to_string(&RequestDocument::of(
+            "s",
+            &record(1),
+            false,
+            BodyState::Empty,
+            None,
+        ))
+        .unwrap();
         assert!(!redacted.contains("abcdef"));
         assert!(redacted.contains("i=[6 bytes]"));
-        let full =
-            serde_json::to_string(&RequestDocument::of("s", &record(1), true, BodyState::Empty, None))
-                .unwrap();
+        let full = serde_json::to_string(&RequestDocument::of(
+            "s",
+            &record(1),
+            true,
+            BodyState::Empty,
+            None,
+        ))
+        .unwrap();
         assert!(full.contains("i=abcdef"));
     }
 
@@ -455,24 +471,57 @@ mod tests {
         let finished = RequestEnd::Finished;
         for (body, end, expected) in [
             (CapturedBody::Empty, &finished, BodyState::Empty),
-            (CapturedBody::Skipped(BodySkip::Type), &finished, BodyState::NotKeptType),
-            (CapturedBody::Skipped(BodySkip::ScanLimit), &finished, BodyState::ScanLimit),
-            (CapturedBody::Skipped(BodySkip::Backlog), &finished, BodyState::Dropped),
-            (CapturedBody::Unavailable("gone".into()), &finished, BodyState::Unavailable),
-            (CapturedBody::Absent, &RequestEnd::Redirected, BodyState::Unavailable),
-            (CapturedBody::Absent, &RequestEnd::Pending, BodyState::Pending),
             (
-                CapturedBody::Read { bytes: vec![1, 2], total_bytes: 2 },
+                CapturedBody::Skipped(BodySkip::Type),
+                &finished,
+                BodyState::NotKeptType,
+            ),
+            (
+                CapturedBody::Skipped(BodySkip::ScanLimit),
+                &finished,
+                BodyState::ScanLimit,
+            ),
+            (
+                CapturedBody::Skipped(BodySkip::Backlog),
+                &finished,
+                BodyState::Dropped,
+            ),
+            (
+                CapturedBody::Unavailable("gone".into()),
+                &finished,
+                BodyState::Unavailable,
+            ),
+            (
+                CapturedBody::Absent,
+                &RequestEnd::Redirected,
+                BodyState::Unavailable,
+            ),
+            (
+                CapturedBody::Absent,
+                &RequestEnd::Pending,
+                BodyState::Pending,
+            ),
+            (
+                CapturedBody::Read {
+                    bytes: vec![1, 2],
+                    total_bytes: 2,
+                },
                 &finished,
                 BodyState::Kept,
             ),
             (
-                CapturedBody::Read { bytes: vec![1, 2], total_bytes: 9 },
+                CapturedBody::Read {
+                    bytes: vec![1, 2],
+                    total_bytes: 9,
+                },
                 &finished,
                 BodyState::Truncated,
             ),
             (
-                CapturedBody::Read { bytes: Vec::new(), total_bytes: 0 },
+                CapturedBody::Read {
+                    bytes: Vec::new(),
+                    total_bytes: 0,
+                },
                 &finished,
                 BodyState::Empty,
             ),

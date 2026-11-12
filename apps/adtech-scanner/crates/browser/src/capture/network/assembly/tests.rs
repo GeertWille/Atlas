@@ -244,7 +244,11 @@ fn a_request_is_assembled_from_its_events_and_handed_over_with_its_body() {
     assert_eq!(record.remote_address.as_deref(), Some("203.0.113.9:443"));
     assert_eq!(record.served_from, ServedFrom::Network);
     assert_eq!(record.started_at_ms, 2_000.0);
-    assert_eq!(record.response_at_ms.unwrap().round(), 2_100.0);
+    assert_eq!(
+        record.response_at_ms.unwrap().round(),
+        2_098.0,
+        "when the network received the headers, not when the page was told"
+    );
     assert_eq!(record.ended_at_ms.unwrap().round(), 2_250.0);
     assert_eq!(record.queued_ms.unwrap().round(), 20.0);
     let timing = record.timing.unwrap();

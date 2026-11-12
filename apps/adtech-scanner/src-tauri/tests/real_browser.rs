@@ -81,6 +81,26 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
 async fn scan_demo_site_with(
     options_for: impl FnOnce(String) -> ScanOptions,
 ) -> (ScanDetail, Vec<LogEntry>, MockServer) {
+    let scan = run_demo_scan(options_for).await;
+    let logs = scan
+        .state
+        .scans
+        .logs(&scan.detail.summary.id, None)
+        .await
+        .unwrap();
+    scan.state.scans.shutdown().await;
+    (scan.detail, logs, scan.server)
+}
+
+/// A finished scan of the demo site with the app that made it still up.
+struct DemoScan {
+    state: AppState,
+    data_dir: tempfile::TempDir,
+    detail: ScanDetail,
+    server: MockServer,
+}
+
+async fn run_demo_scan(options_for: impl FnOnce(String) -> ScanOptions) -> DemoScan {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/v1/messages"))
@@ -131,9 +151,12 @@ async fn scan_demo_site_with(
     })
     .await
     .expect("the scan did not finish in time");
-    let logs = state.scans.logs(&started.id, None).await.unwrap();
-    state.scans.shutdown().await;
-    (detail, logs, server)
+    DemoScan {
+        state,
+        data_dir,
+        detail,
+        server,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -490,4 +513,191 @@ async fn a_browse_visit_of_the_demo_site_follows_links_and_reports_per_page_view
             "{finding:#?}"
         );
     }
+}
+
+/// The archive of a real capture: what the browser crate hands over is
+/// stored, and reads back as the network view and the script viewer need it.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "needs a local Chrome/Chromium"]
+async fn the_demo_scan_is_archived_and_reads_back_for_the_network_view_and_the_script_viewer() {
+    use adscan_model::{
+        BodySide, BodyState, ExchangeVerdict, NetworkAvailability, NetworkCategory, ResourceKind,
+        SourceAvailability, SourceView,
+    };
+    let scan = run_demo_scan(|url| ScanOptions {
+        observe_seconds: 6,
+        ..ScanOptions::for_url(url)
+    })
+    .await;
+    let DemoScan {
+        state,
+        data_dir,
+        detail,
+        server: _server,
+    } = &scan;
+    assert_eq!(
+        detail.summary.status,
+        ScanStatus::Completed,
+        "{:?}",
+        detail.summary.error
+    );
+    let scan_id = detail.summary.id.as_str();
+
+    // One sealed pack, and the report says so.
+    let network = detail
+        .network
+        .clone()
+        .expect("the scan has a network record");
+    assert_eq!(network.availability, NetworkAvailability::Available);
+    assert!(network.headers_redacted);
+    let pack = data_dir
+        .path()
+        .join(format!("archive/scans/{scan_id}.pack.zst"));
+    assert_eq!(
+        std::fs::metadata(&pack).unwrap().len() as f64,
+        network.stored_bytes
+    );
+
+    let started = std::time::Instant::now();
+    let chunk = state.network.list(scan_id, &[], None, None).await.unwrap();
+    let list_ms = started.elapsed().as_secs_f64() * 1e3;
+    let rows = &chunk.rows;
+    assert_eq!(rows.len() as u32, network.request_count);
+    assert!(rows.len() >= 15, "only {} requests", rows.len());
+    let raw_bytes: f64 = rows.iter().map(|row| row.decoded_bytes).sum();
+    eprintln!(
+        "demo scan archive: {} requests, {} bodies, pack {} bytes ({} bytes of bodies before compression), list in {list_ms:.1} ms",
+        network.request_count, network.body_count, network.stored_bytes, raw_bytes
+    );
+
+    // The page, its scripts, an image without a body.
+    let document = rows
+        .iter()
+        .find(|row| row.kind == ResourceKind::Document)
+        .unwrap();
+    assert!(document.first_party && document.has_response_body);
+    assert_eq!(document.category, NetworkCategory::Site);
+    let image = rows.iter().find(|row| row.kind == ResourceKind::Image);
+    if let Some(image) = image {
+        assert!(!image.has_response_body);
+        let body = state
+            .network
+            .body(scan_id, &image.id, BodySide::Response, None, None)
+            .await
+            .unwrap();
+        assert_eq!(body.state, BodyState::NotKeptType);
+    }
+
+    // The openx exchange: the request with Prebid's ids, the answer decoded.
+    let openx = rows
+        .iter()
+        .find(|row| row.bidder.as_deref() == Some("openx") && row.kind != ResourceKind::Preflight)
+        .expect("the demo's openx bid request is in the list");
+    assert_eq!(openx.category, NetworkCategory::Bid);
+    let started = std::time::Instant::now();
+    let opened = state.network.request(scan_id, &openx.id).await.unwrap();
+    let detail_ms = started.elapsed().as_secs_f64() * 1e3;
+    let decoded = opened.decoded.expect("the exchange is OpenRTB");
+    assert_eq!(decoded.response.unwrap().nbr, Some(7));
+    assert!(!decoded.request.unwrap().imps.is_empty());
+    let link = openx
+        .ad
+        .clone()
+        .expect("the request is tied to its auction");
+    assert_eq!(link.nbr, Some(7));
+    assert!(
+        detail
+            .auctions
+            .iter()
+            .any(|auction| auction.id == link.auction_id)
+    );
+
+    // The verdicts of the first auction: under the 250 ms timeout two
+    // bidders answer late or never, and triplelift's bids without an
+    // inventory code never leave the page.
+    let verdicts: Vec<(String, String, ExchangeVerdict)> = detail
+        .auctions
+        .iter()
+        .flat_map(|auction| &auction.ad_units)
+        .flat_map(|unit| {
+            unit.bids.iter().filter_map(|bid| {
+                Some((
+                    unit.code.clone(),
+                    bid.bidder.clone(),
+                    bid.exchange.as_ref()?.verdict,
+                ))
+            })
+        })
+        .collect();
+    assert!(
+        verdicts.iter().any(|(_, _, verdict)| matches!(
+            verdict,
+            ExchangeVerdict::LateOnNetwork | ExchangeVerdict::NeverAnswered
+        )),
+        "{verdicts:?}"
+    );
+    assert!(
+        verdicts
+            .iter()
+            .any(|(_, bidder, verdict)| bidder == "triplelift"
+                && *verdict == ExchangeVerdict::NotSent),
+        "{verdicts:?}"
+    );
+
+    // The wrapper opens in the viewer, formatted, with the planted line.
+    let wrapper = detail
+        .scripts
+        .iter()
+        .find(|script| script.url.contains("hb-wrapper"))
+        .expect("the demo wrapper was captured");
+    assert!(wrapper.request_id.is_some() && wrapper.sha256.is_some());
+    let started = std::time::Instant::now();
+    let original = state
+        .sources
+        .get(scan_id, &wrapper.id, SourceView::Original, None)
+        .await
+        .unwrap();
+    let source_ms = started.elapsed().as_secs_f64() * 1e3;
+    assert_eq!(original.availability, SourceAvailability::Available);
+    let started = std::time::Instant::now();
+    let formatted = state
+        .sources
+        .get(scan_id, &wrapper.id, SourceView::Formatted, None)
+        .await
+        .unwrap();
+    let format_ms = started.elapsed().as_secs_f64() * 1e3;
+    let text = formatted.text.unwrap();
+    assert!(
+        text.lines().any(|line| line.contains("min-width")),
+        "the planted bug is in the source"
+    );
+    assert!(formatted.line_count > original.line_count);
+    assert!(
+        formatted
+            .ad_calls
+            .iter()
+            .any(|call| call.name == "requestBids")
+    );
+    // The script's own response is the same content.
+    let response = state
+        .network
+        .request(scan_id, wrapper.request_id.as_deref().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(
+        response.response_body.script_id.as_deref(),
+        Some(wrapper.id.as_str())
+    );
+    eprintln!(
+        "demo scan reads: request detail {detail_ms:.1} ms, script source {source_ms:.1} ms, formatted {format_ms:.1} ms"
+    );
+
+    // Nothing of the capture's credentials or of the app's key is on disk.
+    let on_disk = std::fs::read(&pack).unwrap();
+    assert!(
+        !on_disk
+            .windows(24)
+            .any(|window| window == b"sk-ant-real-browser-test")
+    );
+    state.scans.shutdown().await;
 }

@@ -1,9 +1,16 @@
 import { Link } from "@tanstack/react-router";
 import { BookmarkIcon, XIcon } from "lucide-react";
 import type { ScanConfiguration } from "@/bindings";
+import { cn } from "@/shared/lib/cn";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Hint } from "@/shared/ui/tooltip";
+
+function status(edited: boolean, blocked: boolean): string {
+  if (blocked) return "This configuration cannot run until another proxy is chosen under Origin.";
+  if (edited) return "Scan runs these edited options once; they are not saved yet.";
+  return "Scan runs this configuration as saved and records it as its last run.";
+}
 
 /**
  * The configuration the composer has open: its name, whether the options differ from what is saved, what
@@ -13,6 +20,7 @@ import { Hint } from "@/shared/ui/tooltip";
 export function ConfigurationBar({
   configuration,
   edited,
+  blocked,
   saving,
   onRevert,
   onUpdate,
@@ -20,6 +28,8 @@ export function ConfigurationBar({
 }: {
   configuration: ScanConfiguration;
   edited: boolean;
+  /** The options name a saved proxy that has been deleted: nothing can be scanned or saved until that changes. */
+  blocked: boolean;
   saving: boolean;
   onRevert: () => void;
   onUpdate: () => void;
@@ -45,10 +55,8 @@ export function ConfigurationBar({
         </Hint>
       </div>
       <div className="flex min-h-7 items-center justify-between gap-3 pl-6">
-        <p className="min-w-0 text-xs text-pretty text-muted-foreground">
-          {edited
-            ? "Scan runs these edited options once; they are not saved yet."
-            : "Scan runs this configuration as saved and records it as its last run."}
+        <p className={cn("min-w-0 text-xs text-pretty", blocked ? "text-amber-fg" : "text-muted-foreground")}>
+          {status(edited, blocked)}
         </p>
         {edited ? (
           <div className="flex shrink-0 items-center gap-1">

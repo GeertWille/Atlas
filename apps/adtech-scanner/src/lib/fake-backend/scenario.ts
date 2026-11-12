@@ -294,7 +294,7 @@ export function buildScenario({
 
   timeline.start("capture");
   timeline.log(
-    `Visit: ${VISITOR_META[visitor].label.toLowerCase()}${visitor === "browse" ? `, up to ${pageCount} pages` : ""}, seed ${options.seed ?? 0}, ${headless ? "headless" : "browser shown"}, ${options.persistentProfile ? "kept scan profile" : "fresh profile"}, ${proxyUseLabel(proxy).toLowerCase()}`,
+    `Visit: ${VISITOR_META[visitor].label.toLowerCase()}${visitor === "browse" ? `, up to ${pageCount} pages` : ""}, seed ${options.seed ?? 0}, ${headless ? "headless" : "browser shown"}, ${options.persistentProfile ? "kept browser profile" : "fresh browser profile"}, ${proxyUseLabel(proxy).toLowerCase()}`,
     { after: 40 },
   );
   timeline.log(`Emulating ${options.device} (${VIEWPORT[options.device]})`, { after: 80 });

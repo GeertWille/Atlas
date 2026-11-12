@@ -4,6 +4,7 @@ import {
   HomeIcon,
   MonitorIcon,
   MoonIcon,
+  PencilIcon,
   PlayIcon,
   PlusIcon,
   ScrollTextIcon,
@@ -15,6 +16,7 @@ import type { ScanConfiguration, ScanSummary, ThemePreference } from "@/bindings
 import { DeviceIcon } from "@/shared/components/status";
 import { useReturnFocus } from "@/shared/hooks/use-return-focus";
 import { formatRelativeTime } from "@/shared/lib/format";
+import { MOD_KEY } from "@/shared/lib/platform";
 import {
   Command,
   CommandEmpty,
@@ -25,12 +27,21 @@ import {
   CommandShortcut,
 } from "@/shared/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/shared/ui/dialog";
-import { MOD_KEY } from "./shortcuts";
+
+export type PaletteConfiguration = {
+  configuration: ScanConfiguration;
+  /** Whether it can run as saved; one that cannot is still offered for opening, to fix it. */
+  runnable: boolean;
+};
+
+/** Without a query the palette lists only this many configurations, the most recently run. */
+const RECENT_CONFIGURATIONS = 5;
 
 export type PaletteActions = {
   newScan: () => void;
   scanDemo: () => void;
   runConfiguration: (configurationId: string) => void;
+  openConfiguration: (configurationId: string) => void;
   goTo: (to: "/" | "/configurations" | "/history" | "/logs" | "/settings") => void;
   openScan: (scanId: string) => void;
   searchLogs: (query: string) => void;
@@ -56,7 +67,7 @@ function PaletteCommands({
   onClose,
 }: {
   recentScans: ScanSummary[];
-  configurations: ScanConfiguration[];
+  configurations: PaletteConfiguration[];
   actions: PaletteActions;
   onClose: () => void;
 }) {
@@ -66,6 +77,10 @@ function PaletteCommands({
     action();
   };
   const trimmed = query.trim();
+  // Typing searches all of them, and also offers to open one in the composer.
+  const searching = trimmed !== "";
+  const runnable = configurations.filter((entry) => entry.runnable);
+  const listed = searching ? runnable : runnable.slice(0, RECENT_CONFIGURATIONS);
 
   return (
     <Command loop filter={matchesEveryTerm}>
@@ -85,7 +100,7 @@ function PaletteCommands({
         </CommandGroup>
         {configurations.length > 0 ? (
           <CommandGroup heading="Configurations">
-            {configurations.map((configuration) => (
+            {listed.map(({ configuration }) => (
               <CommandItem
                 key={configuration.id}
                 value={`run configuration ${configuration.name} ${configuration.options.url} ${configuration.id}`}
@@ -96,6 +111,19 @@ function PaletteCommands({
                 <DeviceIcon device={configuration.options.device} />
               </CommandItem>
             ))}
+            {searching
+              ? configurations.map(({ configuration }) => (
+                  <CommandItem
+                    key={configuration.id}
+                    value={`open configuration ${configuration.name} ${configuration.options.url} ${configuration.id}`}
+                    onSelect={run(() => actions.openConfiguration(configuration.id))}
+                  >
+                    <PencilIcon />
+                    <span className="min-w-0 flex-1 truncate">Open configuration: {configuration.name}</span>
+                    <DeviceIcon device={configuration.options.device} />
+                  </CommandItem>
+                ))
+              : null}
           </CommandGroup>
         ) : null}
         <CommandGroup heading="Go to">
@@ -178,8 +206,8 @@ export function CommandPalette({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   recentScans: ScanSummary[];
-  /** The ones that can run as saved. */
-  configurations: ScanConfiguration[];
+  /** Most recently run first. */
+  configurations: PaletteConfiguration[];
   actions: PaletteActions;
 }) {
   const returnFocus = useReturnFocus();
@@ -192,7 +220,7 @@ export function CommandPalette({
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         <DialogDescription className="sr-only">
-          Search scans, run a saved configuration, navigate, or run a command.
+          Search scans, run or open a saved configuration, navigate, or run a command.
         </DialogDescription>
         <PaletteCommands
           recentScans={recentScans}

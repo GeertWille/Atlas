@@ -2,8 +2,9 @@ import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 import { useEffect, useEffectEvent, useState } from "react";
 import { baseSetup } from "./base-setup";
-import { type EditorLanguage, languageExtension } from "./languages";
+import { languageExtension } from "./languages";
 import { hasLongLine } from "./long-lines";
+import type { EditorLanguage } from "./mime";
 
 export type CodeMirrorOptions = {
   /** The text shown. A new value replaces the document and resets the view. */

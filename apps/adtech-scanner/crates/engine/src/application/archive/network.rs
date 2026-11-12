@@ -17,9 +17,9 @@ use super::storage::pack_error;
 use super::{Archive, codec};
 use crate::application::AppError;
 use crate::application::ports::{ArchiveRecord, RequestIndexRow, ScanRepository};
+use crate::domain::archive::Location;
 use crate::domain::archive::document::RequestDocument;
 use crate::domain::archive::redact::displayed_headers;
-use crate::domain::archive::Location;
 use crate::domain::network::rows::{self, ScriptIndex};
 use crate::domain::network::{classify, openrtb};
 
@@ -54,9 +54,9 @@ impl NetworkView {
     ) -> Result<NetworkRowChunk, AppError> {
         let scan = self.scan(scan_id).await?;
         let offset = match cursor {
-            Some(cursor) => cursor
-                .parse::<u32>()
-                .map_err(|_| AppError::InvalidInput(format!("`{cursor}` is not a cursor of this list")))?,
+            Some(cursor) => cursor.parse::<u32>().map_err(|_| {
+                AppError::InvalidInput(format!("`{cursor}` is not a cursor of this list"))
+            })?,
             None => 0,
         };
         let limit = limit.unwrap_or(DEFAULT_CHUNK_ROWS).clamp(1, MAX_CHUNK_ROWS);
@@ -67,7 +67,11 @@ impl NetworkView {
                 total: 0,
             });
         };
-        let (index_rows, total) = self.archive.index.rows(scan_id, pages, offset, limit).await?;
+        let (index_rows, total) = self
+            .archive
+            .index
+            .rows(scan_id, pages, offset, limit)
+            .await?;
         let documents = self.documents(&record, &index_rows).await;
         let scripts = ScriptIndex::new(&scan.scripts);
         let next = offset + index_rows.len() as u32;
@@ -125,7 +129,9 @@ impl NetworkView {
             summary.transferred_bytes += bytes;
             match rows::outcome(row) {
                 RequestOutcome::HttpError | RequestOutcome::Failed => summary.failed += 1,
-                RequestOutcome::Blocked | RequestOutcome::Cancelled => summary.blocked_or_cancelled += 1,
+                RequestOutcome::Blocked | RequestOutcome::Cancelled => {
+                    summary.blocked_or_cancelled += 1
+                }
                 RequestOutcome::Ok | RequestOutcome::Pending => {}
             }
             match row.ad.as_ref().map(|ad| ad.verdict) {
@@ -136,13 +142,14 @@ impl NetworkView {
             if row.served_from != ServedFrom::Network {
                 summary.from_cache += 1;
             }
-            let category = categories
-                .entry(category_order(row.category))
-                .or_insert(NetworkCategoryCount {
-                    category: row.category,
-                    requests: 0,
-                    transferred_bytes: 0.0,
-                });
+            let category =
+                categories
+                    .entry(category_order(row.category))
+                    .or_insert(NetworkCategoryCount {
+                        category: row.category,
+                        requests: 0,
+                        transferred_bytes: 0.0,
+                    });
             category.requests += 1;
             category.transferred_bytes += bytes;
             if let Some(vendor) = classify::vendor(&row.host) {
@@ -169,10 +176,8 @@ impl NetworkView {
         vendors.truncate(TOP_VENDORS);
         summary.vendors = vendors;
 
-        let notable: Vec<RequestIndexRow> = notable(&index_rows, &scan)
-            .into_iter()
-            .cloned()
-            .collect();
+        let notable: Vec<RequestIndexRow> =
+            notable(&index_rows, &scan).into_iter().cloned().collect();
         if let Some(record) = &record {
             let documents = self.documents(record, &notable).await;
             let scripts = ScriptIndex::new(&scan.scripts);
@@ -199,31 +204,38 @@ impl NetworkView {
         let row = rows::row(&index_row, document, &scripts);
 
         let response_text = match (document, index_row.category) {
-            (Some(_), NetworkCategory::Bid) => self.stored_body(scan_id, &record, &index_row).await.ok(),
+            (Some(_), NetworkCategory::Bid) => {
+                self.stored_body(scan_id, &record, &index_row).await.ok()
+            }
             _ => None,
         };
-        let decoded = document.filter(|_| index_row.category == NetworkCategory::Bid).and_then(|document| {
-            let auction_units: Vec<&str> = scan
-                .auctions
-                .iter()
-                .filter(|auction| row.ad.as_ref().is_none_or(|ad| ad.auction_id == auction.id))
-                .flat_map(|auction| auction.ad_units.iter().map(|unit| unit.code.as_str()))
-                .collect();
-            let resolve = |found: &str| {
-                index_row
-                    .bid_units
+        let decoded = document
+            .filter(|_| index_row.category == NetworkCategory::Bid)
+            .and_then(|document| {
+                let auction_units: Vec<&str> = scan
+                    .auctions
                     .iter()
-                    .find(|(bid_id, _)| bid_id == found)
-                    .map(|(_, unit)| unit.clone())
-                    .or_else(|| auction_units.contains(&found).then(|| found.to_string()))
-            };
-            openrtb::decode(
-                &index_row.path,
-                document.post_data.as_deref(),
-                response_text.as_ref().map(|body| String::from_utf8_lossy(body)).as_deref(),
-                &resolve,
-            )
-        });
+                    .filter(|auction| row.ad.as_ref().is_none_or(|ad| ad.auction_id == auction.id))
+                    .flat_map(|auction| auction.ad_units.iter().map(|unit| unit.code.as_str()))
+                    .collect();
+                let resolve = |found: &str| {
+                    index_row
+                        .bid_units
+                        .iter()
+                        .find(|(bid_id, _)| bid_id == found)
+                        .map(|(_, unit)| unit.clone())
+                        .or_else(|| auction_units.contains(&found).then(|| found.to_string()))
+                };
+                openrtb::decode(
+                    &index_row.path,
+                    document.post_data.as_deref(),
+                    response_text
+                        .as_ref()
+                        .map(|body| String::from_utf8_lossy(body))
+                        .as_deref(),
+                    &resolve,
+                )
+            });
 
         let request_body = match document {
             Some(document) => BodyRef {
@@ -234,7 +246,10 @@ impl NetworkView {
                     None => BodyState::Empty,
                 },
                 bytes: document.post_bytes as f64,
-                stored_bytes: document.post_data.as_ref().map_or(0.0, |post| post.len() as f64),
+                stored_bytes: document
+                    .post_data
+                    .as_ref()
+                    .map_or(0.0, |post| post.len() as f64),
                 mime: header(&document.headers, "content-type"),
                 script_id: None,
             },
@@ -269,7 +284,8 @@ impl NetworkView {
             protocol: document.and_then(|document| document.protocol.clone()),
             priority: document.and_then(|document| document.priority.clone()),
             remote_address: document.and_then(|document| document.remote_address.clone()),
-            timing: document.and_then(|document| rows::timing_detail(document, index_row.duration_ms)),
+            timing: document
+                .and_then(|document| rows::timing_detail(document, index_row.duration_ms)),
             redirect_chain: chain
                 .iter()
                 .map(|hop| RedirectHop {
@@ -282,7 +298,9 @@ impl NetworkView {
                 .iter()
                 .find(|other| other.preflight_of == Some(index_row.seq))
                 .and_then(|preflight| preflight.duration_ms),
-            stack: document.map_or_else(Vec::new, |document| rows::stack(&document.initiator, &scripts)),
+            stack: document.map_or_else(Vec::new, |document| {
+                rows::stack(&document.initiator, &scripts)
+            }),
             request_body,
             response_body,
             ad_context: ad_context(&row, &scan),
@@ -303,7 +321,10 @@ impl NetworkView {
         let (record, _, row) = self.locate(scan_id, id).await?;
         let (state, content) = match side {
             BodySide::Response => match row.body_no {
-                Some(_) => (row.body_state, Some(self.stored_body(scan_id, &record, &row).await?)),
+                Some(_) => (
+                    row.body_state,
+                    Some(self.stored_body(scan_id, &record, &row).await?),
+                ),
                 None => (row.body_state, None),
             },
             BodySide::Request => {
@@ -332,7 +353,9 @@ impl NetworkView {
             });
         };
         let limit = max_bytes
-            .map_or(DEFAULT_BODY_CHUNK_BYTES, |max| max.max(MIN_BODY_CHUNK_BYTES) as usize)
+            .map_or(DEFAULT_BODY_CHUNK_BYTES, |max| {
+                max.max(MIN_BODY_CHUNK_BYTES) as usize
+            })
             .min(MAX_BODY_CHUNK_BYTES);
         let (start, end) = text_range(&content, offset.unwrap_or(0.0).max(0.0) as usize, limit);
         Ok(NetworkBodyChunk {
@@ -358,17 +381,30 @@ impl NetworkView {
         id: &str,
     ) -> Result<(ArchiveRecord, Vec<RequestIndexRow>, RequestIndexRow), AppError> {
         let not_found = || AppError::NotFound(format!("Request {id}"));
-        let record = self.archive.index.record(scan_id).await?.ok_or_else(not_found)?;
+        let record = self
+            .archive
+            .index
+            .record(scan_id)
+            .await?
+            .ok_or_else(not_found)?;
         let seq = request_seq(id).ok_or_else(not_found)?;
         let (all, _) = self.archive.index.rows(scan_id, &[], 0, u32::MAX).await?;
-        let row = all.iter().find(|row| row.seq == seq).cloned().ok_or_else(not_found)?;
+        let row = all
+            .iter()
+            .find(|row| row.seq == seq)
+            .cloned()
+            .ok_or_else(not_found)?;
         Ok((record, all, row))
     }
 
     /// The documents of `rows`, by `seq`. A row whose frame cannot be read
     /// (the pack was evicted, or is damaged) has none and is shown from the
     /// index alone.
-    async fn documents(&self, record: &ArchiveRecord, rows: &[RequestIndexRow]) -> HashMap<u32, RequestDocument> {
+    async fn documents(
+        &self,
+        record: &ArchiveRecord,
+        rows: &[RequestIndexRow],
+    ) -> HashMap<u32, RequestDocument> {
         let mut documents = HashMap::with_capacity(rows.len());
         let Some(file) = &record.pack_file else {
             return documents;
@@ -390,7 +426,8 @@ impl NetworkView {
                 continue;
             };
             let parsed = tokio::task::spawn_blocking({
-                let wanted: Vec<(u32, u32)> = rows.iter().map(|row| (row.seq, row.record_index)).collect();
+                let wanted: Vec<(u32, u32)> =
+                    rows.iter().map(|row| (row.seq, row.record_index)).collect();
                 move || {
                     let content = codec::decompress(&frame, MAX_RECORD_FRAME_CONTENT).ok()?;
                     let text = std::str::from_utf8(&content).ok()?;
@@ -426,8 +463,20 @@ impl NetworkView {
         let missing = || AppError::Storage("the body is not in the archive any more".into());
         let body_no = row.body_no.ok_or_else(missing)?;
         let file = record.pack_file.clone().ok_or_else(missing)?;
-        let body = self.archive.index.body(scan_id, body_no).await?.ok_or_else(missing)?;
-        read_body(&self.archive, file, body.pack_offset, body.pack_length, body.raw_len).await
+        let body = self
+            .archive
+            .index
+            .body(scan_id, body_no)
+            .await?
+            .ok_or_else(missing)?;
+        read_body(
+            &self.archive,
+            file,
+            body.pack_offset,
+            body.pack_length,
+            body.raw_len,
+        )
+        .await
     }
 }
 
@@ -441,7 +490,11 @@ pub(super) async fn read_body(
 ) -> Result<Vec<u8>, AppError> {
     let frame = archive
         .packs
-        .read(&Location { file, offset, length })
+        .read(&Location {
+            file,
+            offset,
+            length,
+        })
         .await
         .map_err(pack_error)?;
     tokio::task::spawn_blocking(move || codec::decompress(&frame, raw_len as usize))
@@ -493,7 +546,10 @@ fn category_order(category: NetworkCategory) -> u8 {
 
 /// Every hop of the redirect chain `row` is part of, in order; empty when
 /// it is not part of one.
-fn redirect_chain<'a>(all: &'a [RequestIndexRow], row: &'a RequestIndexRow) -> Vec<&'a RequestIndexRow> {
+fn redirect_chain<'a>(
+    all: &'a [RequestIndexRow],
+    row: &'a RequestIndexRow,
+) -> Vec<&'a RequestIndexRow> {
     let by_seq = |seq: u32| all.iter().find(|other| other.seq == seq);
     let mut chain = vec![row];
     while let Some(previous) = chain[0].redirect_from.and_then(by_seq) {
@@ -541,10 +597,13 @@ fn notable<'a>(rows: &'a [RequestIndexRow], scan: &ScanDetail) -> Vec<&'a Reques
         .map(|auction| auction.started_at_ms)
         .reduce(f64::min);
     let slowest_before_auction = first_auction.and_then(|started| {
+        // Rows come in start order; of equally slow ones the first is taken.
         rows.iter()
             .filter(|row| row.page == 0 && row.started_ms < started)
-            .filter(|row| row.duration_ms.is_some())
-            .max_by(|a, b| a.duration_ms.unwrap_or(0.0).total_cmp(&b.duration_ms.unwrap_or(0.0)))
+            .fold(None, |slowest: Option<&RequestIndexRow>, row| {
+                let slower = row.duration_ms > slowest.and_then(|slowest| slowest.duration_ms);
+                if slower { Some(row) } else { slowest }
+            })
     });
     let mut picked: Vec<&RequestIndexRow> = Vec::new();
     let candidates = rows
@@ -568,12 +627,18 @@ fn notable<'a>(rows: &'a [RequestIndexRow], scan: &ScanDetail) -> Vec<&'a Reques
 /// what the report says about its bidders.
 fn ad_context(row: &NetworkRow, scan: &ScanDetail) -> Option<AdContext> {
     let link = row.ad.clone()?;
-    let auction = scan.auctions.iter().rev().find(|auction| auction.id == link.auction_id);
+    let auction = scan
+        .auctions
+        .iter()
+        .rev()
+        .find(|auction| auction.id == link.auction_id);
     let mut units = Vec::new();
     let mut bidders: Vec<&str> = Vec::new();
     for unit in auction.iter().flat_map(|auction| &auction.ad_units) {
         for bid in &unit.bids {
-            let Some(exchange) = &bid.exchange else { continue };
+            let Some(exchange) = &bid.exchange else {
+                continue;
+            };
             if exchange.request_id.as_deref() == Some(row.id.as_str()) {
                 units.push(AdContextUnit {
                     ad_unit: unit.code.clone(),
@@ -587,7 +652,10 @@ fn ad_context(row: &NetworkRow, scan: &ScanDetail) -> Option<AdContext> {
             }
         }
     }
-    let checks = scan.bidder_diagnostics.iter().flat_map(|diagnostics| &diagnostics.bidders);
+    let checks = scan
+        .bidder_diagnostics
+        .iter()
+        .flat_map(|diagnostics| &diagnostics.bidders);
     Some(AdContext {
         bidder: row
             .bidder
@@ -612,7 +680,12 @@ fn ad_context(row: &NetworkRow, scan: &ScanDetail) -> Option<AdContext> {
         check_codes: checks
             .filter(|diagnosis| bidders.contains(&diagnosis.bidder.as_str()))
             .flat_map(|diagnosis| &diagnosis.checks)
-            .filter(|check| matches!(check.status, DiagnosticStatus::Problem | DiagnosticStatus::Notice))
+            .filter(|check| {
+                matches!(
+                    check.status,
+                    DiagnosticStatus::Problem | DiagnosticStatus::Notice
+                )
+            })
             .map(|check| check.code.clone())
             .collect(),
         link,
@@ -629,7 +702,11 @@ mod tests {
         assert_eq!(text_range(text, 0, 100), (0, 11));
         assert_eq!(text_range(text, 0, 2), (0, 1), "é does not fit whole");
         assert_eq!(text_range(text, 1, 2), (1, 3));
-        assert_eq!(text_range(text, 3, 4), (3, 6), "the emoji waits for the next chunk");
+        assert_eq!(
+            text_range(text, 3, 4),
+            (3, 6),
+            "the emoji waits for the next chunk"
+        );
         assert_eq!(text_range(text, 6, 4), (6, 10));
         // An offset inside a character moves on to the next one.
         assert_eq!(text_range(text, 4, 100), (6, 11));

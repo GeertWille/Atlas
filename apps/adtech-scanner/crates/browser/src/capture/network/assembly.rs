@@ -215,6 +215,26 @@ impl Flight {
         }
     }
 
+    /// The response `response` (a CDP `Network.Response`), reported by an
+    /// event with this `timestamp`. Its headers arrived when the network
+    /// says so; the event itself is sent when the page gets round to it,
+    /// which can be after the whole body has loaded.
+    fn response(&self, response: &Value, timestamp: &Value, now_ms: f64) -> Response {
+        let timing = timing(&response["timing"]);
+        let headers_at =
+            timing
+                .zip(self.started_mono_ms)
+                .and_then(|((request_time_ms, phases), started)| {
+                    let after_start = request_time_ms + phases.receive_headers_end? - started;
+                    Some(self.started_epoch_ms + after_start.max(0.0))
+                });
+        response_of(
+            response,
+            headers_at.unwrap_or_else(|| self.epoch_of(timestamp, now_ms)),
+            timing,
+        )
+    }
+
     fn is_complete(&self) -> bool {
         self.end.is_some() && self.body != Body::Asked && self.post != Post::Asked
     }
@@ -403,9 +423,10 @@ impl Ended {
             remote_address: response
                 .as_ref()
                 .and_then(|response| response.remote_address.clone()),
-            response_at_ms: response
-                .as_ref()
-                .map(|response| since_page_start(response.at_epoch_ms)),
+            response_at_ms: response.as_ref().map(|response| {
+                let at = since_page_start(response.at_epoch_ms);
+                ended_at_ms.map_or(at, |ended| at.min(ended))
+            }),
             response_headers: self
                 .response_extra
                 .or(response.map(|response| response.headers))
@@ -514,16 +535,8 @@ impl Assembler {
                 let now_ms = source.now_ms;
                 if let Some(flight) = self.current(request_id) {
                     let response = &params["response"];
-                    flight.response = Some(Response {
-                        status: status_of(response),
-                        mime_type: None,
-                        protocol: None,
-                        remote_address: None,
-                        headers: headers(&response["headers"]),
-                        served_from: ServedFrom::Network,
-                        at_epoch_ms: flight.epoch_of(&params["timestamp"], now_ms),
-                        timing: None,
-                    });
+                    let at = flight.epoch_of(&params["timestamp"], now_ms);
+                    flight.response = Some(response_of(response, at, None));
                 }
             }
             "Network.webSocketClosed" => {
@@ -609,6 +622,16 @@ impl Assembler {
             self.forget(loader_id);
         }
         out
+    }
+
+    /// When the navigation that request `loader_id` loads was asked for,
+    /// epoch ms, while it waits for its document to commit.
+    pub(crate) fn navigation_started_at(&self, loader_id: &str) -> Option<f64> {
+        let chain = self
+            .chains
+            .get(loader_id)
+            .filter(|chain| chain.hold.is_some())?;
+        chain.hops.front().map(|first| first.started_epoch_ms)
     }
 
     /// The capture is over: every request that was not handed over yet, in
@@ -705,7 +728,8 @@ impl Assembler {
             Some(previous) => {
                 let at = previous.epoch_of(&params["timestamp"], source.now_ms);
                 let encoded = redirect["encodedDataLength"].as_f64().unwrap_or(0.0) as u64;
-                previous.response = Some(response_of(redirect, at));
+                previous.response =
+                    Some(previous.response(redirect, &params["timestamp"], source.now_ms));
                 previous.end(RequestEnd::Redirected, at, encoded, source.now_ms);
                 redirect_from = Some(previous.seq);
                 let hop = previous.hop;
@@ -873,10 +897,12 @@ impl Assembler {
         let Some(flight) = chain.current() else {
             return;
         };
-        let at = flight.epoch_of(&params["timestamp"], now_ms);
-        flight.response = Some(response_of(&params["response"], at));
-        if flight.kind != ResourceKind::Preflight {
-            flight.kind = resource_kind(params["type"].as_str().unwrap_or_default());
+        flight.response = Some(flight.response(&params["response"], &params["timestamp"], now_ms));
+        // The session that answers may know less about the request than the
+        // one that announced it: a worker's script is "other" to the worker.
+        let answered_as = resource_kind(params["type"].as_str().unwrap_or_default());
+        if flight.kind == ResourceKind::Other {
+            flight.kind = answered_as;
         }
         let hop = flight.hop;
         if params["hasExtraInfo"] == false {
@@ -1149,7 +1175,11 @@ fn status_of(response: &Value) -> Option<u16> {
 }
 
 /// A CDP `Network.Response`, whose headers arrived at `at_epoch_ms`.
-fn response_of(response: &Value, at_epoch_ms: f64) -> Response {
+fn response_of(
+    response: &Value,
+    at_epoch_ms: f64,
+    timing: Option<(f64, ResourceTiming)>,
+) -> Response {
     let text = |key: &str| {
         response[key]
             .as_str()
@@ -1176,7 +1206,7 @@ fn response_of(response: &Value, at_epoch_ms: f64) -> Response {
         headers: headers(&response["headers"]),
         served_from,
         at_epoch_ms,
-        timing: timing(&response["timing"]),
+        timing,
     }
 }
 

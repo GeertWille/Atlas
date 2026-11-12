@@ -1,0 +1,7 @@
+<!doctype html>
+<title>One large answer</title>
+<script>
+  fetch('/large.json').then(function (answer) { return answer.text(); }).then(function (text) {
+    document.title = 'read ' + text.length;
+  });
+</script>

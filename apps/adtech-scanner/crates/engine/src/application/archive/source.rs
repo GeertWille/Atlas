@@ -5,9 +5,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use adscan_model::{
-    ScriptRecord, ScriptSource, SourceAvailability, SourceFormat, SourceView,
-};
+use adscan_model::{ScriptRecord, ScriptSource, SourceAvailability, SourceFormat, SourceView};
 
 use super::Archive;
 use super::network::read_body;
@@ -152,7 +150,14 @@ impl ScriptSources {
         let Some(body) = self.archive.index.body_by_sha(scan_id, sha256).await? else {
             return Ok(Err(SourceAvailability::NotRetained));
         };
-        let bytes = read_body(&self.archive, file, body.pack_offset, body.pack_length, body.raw_len).await?;
+        let bytes = read_body(
+            &self.archive,
+            file,
+            body.pack_offset,
+            body.pack_length,
+            body.raw_len,
+        )
+        .await?;
         Ok(Ok(String::from_utf8_lossy(&bytes).into_owned()))
     }
 
@@ -167,7 +172,9 @@ impl ScriptSources {
     }
 
     fn cache(&self) -> std::sync::MutexGuard<'_, FormatCache> {
-        self.formatted.lock().unwrap_or_else(PoisonError::into_inner)
+        self.formatted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -180,7 +187,10 @@ struct FormatCache {
 
 impl FormatCache {
     fn get(&mut self, key: &str) -> Option<Arc<FormattedSource>> {
-        let position = self.entries.iter().position(|(cached, _, _)| cached == key)?;
+        let position = self
+            .entries
+            .iter()
+            .position(|(cached, _, _)| cached == key)?;
         let entry = self.entries.remove(position)?;
         let formatted = Arc::clone(&entry.1);
         self.entries.push_back(entry);

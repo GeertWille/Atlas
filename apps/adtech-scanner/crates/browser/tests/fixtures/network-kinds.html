@@ -1,0 +1,30 @@
+<!doctype html>
+<title>Requests of every kind</title>
+<h1>Requests of every kind</h1>
+<script src="data:text/javascript,window.fromDataUrl=1"></script>
+<script>
+  var other = 'http://localhost:' + location.port;
+  var closedPort = new URLSearchParams(location.search).get('closed');
+
+  fetch('/never?pending');
+  new EventSource('/events');
+  new WebSocket('ws://' + location.host + '/never?socket');
+
+  var aborter = new AbortController();
+  fetch('/never?aborted', { signal: aborter.signal }).catch(function () {});
+  setTimeout(function () { aborter.abort(); }, 300);
+
+  fetch('http://127.0.0.1:' + closedPort + '/refused').catch(function () {});
+  fetch(other + '/status/200?no-cors-header').catch(function () {});
+  fetch('/redirect?/status/404').then(function (answer) { return answer.text(); });
+  fetch(URL.createObjectURL(new Blob(['from a blob'], { type: 'text/plain' }))).then(function (answer) { return answer.text(); });
+  navigator.sendBeacon('/status/204', 'beacon=1');
+  fetch('/status/200?posted', { method: 'POST', body: JSON.stringify({ posted: true }) }).then(function (answer) { return answer.text(); });
+
+  var sameSite = document.createElement('iframe');
+  sameSite.src = '/network-frame.html?same-site';
+  document.body.appendChild(sameSite);
+  var otherSite = document.createElement('iframe');
+  otherSite.src = other + '/network-frame.html?other-site';
+  document.body.appendChild(otherSite);
+</script>

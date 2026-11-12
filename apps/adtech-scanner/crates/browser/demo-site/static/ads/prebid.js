@@ -2,10 +2,12 @@
  *
  * Reproduces the public API and event payload shapes of Prebid.js closely enough
  * for wrappers and monitoring tools to behave as they do against the real
- * library. Bidders are simulated in the page: each has a latency and CPM range,
- * and every outcome is derived from a seeded hash, so runs are repeatable. One
- * bidder asks an endpoint of the demo server instead, the way a real adapter
- * asks its exchange.
+ * library. Each bidder has a latency and CPM range, and every outcome is
+ * derived from a seeded hash, so runs are repeatable. Like a real adapter,
+ * each bidder posts an OpenRTB request to its exchange and reads the bids
+ * from the answer. The exchanges are stand-ins on the demo server that
+ * answer what the request's `ext.standin` tells them to, after the latency
+ * it names: the simulation stays here, the round trip is real.
  */
 (function (root) {
   'use strict';
@@ -39,15 +41,25 @@
 
   // ------------------------------------------------------ simulated bidders
 
-  // latency in ms, cpm in USD, bidRate = share of requests answered with a bid.
+  // The partners' second origin and the identity provider. The demo server
+  // fills both in when it serves this file.
+  var PARTNER_ORIGIN = '%PARTNER_ORIGIN%';
+  var IDENTITY_ORIGIN = '%IDENTITY_ORIGIN%';
+
+  // latency in ms, cpm in USD, bidRate = share of requests answered with a
+  // bid, endpoint = where the bidder's exchange is asked. The appnexus
+  // exchange is at another origin and takes JSON, so the browser sends a
+  // CORS preflight first; the others get a plain-text POST, as most real
+  // adapters send to avoid exactly that. The openx exchange ignores what it
+  // is told and always answers with a no-bid reason.
   var BIDDERS = {
-    appnexus: { latency: [70, 150], cpm: [0.35, 1.9], bidRate: 0.95 },
-    rubicon: { latency: [105, 195], cpm: [0.45, 2.4], bidRate: 0.9 },
-    ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0 },
-    pubmatic: { latency: [330, 620], cpm: [1.8, 4.6], bidRate: 1 },
-    criteo: { latency: [1500, 2100], cpm: [0.6, 2.2], bidRate: 1 },
-    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 1 },
-    openx: { endpoint: '/openrtbb/prebidjs' },
+    appnexus: { latency: [70, 150], cpm: [0.35, 1.9], bidRate: 0.95, endpoint: PARTNER_ORIGIN + '/ut/v3/prebid', json: true },
+    rubicon: { latency: [105, 195], cpm: [0.45, 2.4], bidRate: 0.9, endpoint: '/a/api/fastlane.json' },
+    ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0, endpoint: '/openrtb/pbjs' },
+    pubmatic: { latency: [330, 620], cpm: [1.8, 4.6], bidRate: 1, endpoint: '/translator' },
+    criteo: { latency: [1500, 2100], cpm: [0.6, 2.2], bidRate: 1, endpoint: '/openrtb_2_5/pbjs/auction/request' },
+    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 1, endpoint: '/header/auction' },
+    openx: { latency: [0, 0], cpm: [0, 0], bidRate: 0, endpoint: '/openrtbb/prebidjs' },
   };
 
   // What each adapter's isBidRequestValid insists on. As in the real library,
@@ -69,7 +81,7 @@
       return !!params[key];
     });
   }
-  var UNKNOWN_BIDDER = { latency: [100, 300], cpm: [0.1, 1], bidRate: 0.5 };
+  var UNKNOWN_BIDDER = { latency: [100, 300], cpm: [0.1, 1], bidRate: 0.5, endpoint: '/openrtb2/auction' };
 
   function hash(text) {
     var h = 2166136261;
@@ -407,45 +419,79 @@
       }, 0);
       return;
     }
-    if (profile.endpoint) {
-      askEndpoint(profile.endpoint, bidderRequest, validBids).then(function (failure) {
-        if (failure) emit('bidderError', { error: failure, bidderRequest: bidderRequest });
-        // The demo exchange never bids; a failed request leaves its bids unanswered.
-        settle(auction, bidderRequest, failure ? [] : noBids(), startedAt);
-      });
-      return;
-    }
-    var outcomes = bidderRequest.bids.map(function (bid) {
-      return validBids.indexOf(bid) >= 0 ? simulate(bid) : { bids: false };
-    });
-    var firstAnswer = outcomes.filter(function (outcome) {
-      return 'latencyDraw' in outcome;
-    })[0];
+    var decided = validBids.map(simulate);
     // One HTTP round trip per bidder: every bid of the request arrives together.
-    var latency = Math.round(between(profile.latency, firstAnswer.latencyDraw));
-    setTimeout(function () {
-      settle(auction, bidderRequest, outcomes, startedAt);
-    }, latency);
+    var latency = Math.round(between(profile.latency, decided[0].latencyDraw));
+    askExchange(profile, auction, bidderRequest, validBids, decided, latency).then(function (answer) {
+      if (answer.failure) {
+        emit('bidderError', { error: answer.failure, bidderRequest: bidderRequest });
+        // A failed request leaves its bids unanswered.
+        settle(auction, bidderRequest, [], startedAt);
+        return;
+      }
+      settle(auction, bidderRequest, outcomesOf(answer.response, bidderRequest.bids), startedAt);
+    });
   }
 
-  // Posts an OpenRTB request and resolves with the failure, or null when the
-  // endpoint answered.
-  function askEndpoint(endpoint, bidderRequest, bids) {
+  // Posts the OpenRTB request for the valid bids to the bidder's exchange and
+  // resolves with the answer, or with the failure.
+  function askExchange(profile, auction, bidderRequest, bids, decided, latency) {
     var request = {
       id: bidderRequest.bidderRequestId,
       imp: bids.map(function (bid) {
-        return { id: bid.bidId, tagid: bid.params.unit, banner: { format: bid.sizes } };
+        return {
+          id: bid.bidId,
+          tagid: bid.params.unit || bid.adUnitCode,
+          banner: {
+            format: bid.sizes.map(function (size) {
+              return { w: size[0], h: size[1] };
+            }),
+          },
+        };
       }),
-      site: { page: root.location.href },
+      site: { page: root.location.href, domain: root.location.hostname },
+      source: { tid: auction.auctionId },
+      cur: ['USD'],
       tmax: bidderRequest.timeout,
+      ext: {
+        standin: {
+          latencyMs: latency,
+          bids: bids
+            .map(function (bid, index) {
+              var outcome = decided[index];
+              return outcome.bids ? { impid: bid.bidId, price: outcome.cpm, w: outcome.size[0], h: outcome.size[1] } : null;
+            })
+            .filter(Boolean),
+        },
+      },
     };
-    return fetch(endpoint, { method: 'POST', body: JSON.stringify(request), credentials: 'omit' })
+    var options = { method: 'POST', body: JSON.stringify(request), credentials: 'omit' };
+    if (profile.json) options.headers = { 'Content-Type': 'application/json' };
+    return fetch(profile.endpoint, options)
       .then(function (response) {
-        return response.ok ? null : { status: response.status, statusText: response.statusText };
+        if (!response.ok) return { failure: { status: response.status, statusText: response.statusText } };
+        return response.json().then(function (answer) {
+          return { response: answer };
+        });
       })
       .catch(function (error) {
-        return error;
+        return { failure: error };
       });
+  }
+
+  // What an OpenRTB answer holds for each bid that was announced: the bid
+  // for its impression, or none.
+  function outcomesOf(response, bids) {
+    var byImpression = {};
+    (response.seatbid || []).forEach(function (seat) {
+      (seat.bid || []).forEach(function (bid) {
+        byImpression[bid.impid] = bid;
+      });
+    });
+    return bids.map(function (bid) {
+      var answer = byImpression[bid.bidId];
+      return answer ? { bids: true, cpm: answer.price, size: [answer.w, answer.h] } : { bids: false };
+    });
   }
 
   function settle(auction, bidderRequest, outcomes, startedAt) {
@@ -493,6 +539,7 @@
     auction.auctionEnd = Date.now();
     logInfo('Bids Received for Auction with id: ' + auction.auctionId, auction.bidsReceived);
     emit('auctionEnd', auctionSnapshot(auction));
+    scheduleUserSync();
     try {
       if (auction.callback) auction.callback(bidsByAdUnit(auction), timedOut, auction.auctionId);
     } catch (error) {
@@ -676,6 +723,35 @@
       emit('adRenderFailed', { reason: 'exception', message: error.message, bid: bid, adId: adId });
     }
   };
+
+  // ------------------------------------------------------ identity and sync
+
+  // userId module: asks the identity provider for an envelope once per page.
+  // This site's provider hangs up on every caller, so no bid request ever
+  // carries an id; bidding goes on without one.
+  fetch(IDENTITY_ORIGIN + '/identity/envelope?pid=meridian', { credentials: 'omit' }).catch(function () {});
+
+  // User sync, once per page, `userSync.syncDelay` after the first auction
+  // ended: a pixel that the partner redirects back to the site with its id,
+  // and the partner's sync frame, which loads what it wants by itself.
+  var userSyncScheduled = false;
+
+  function scheduleUserSync() {
+    var settings = config.userSync || {};
+    if (userSyncScheduled || settings.syncEnabled === false) return;
+    userSyncScheduled = true;
+    setTimeout(function () {
+      new Image().src = '/usersync/start?bidder=rubicon';
+      var frame = document.createElement('iframe');
+      frame.src = PARTNER_ORIGIN + '/usersync/frame.html?bidder=appnexus';
+      frame.title = 'user sync';
+      frame.width = 0;
+      frame.height = 0;
+      frame.setAttribute('aria-hidden', 'true');
+      frame.style.cssText = 'display:none;border:0';
+      (document.body || document.documentElement).appendChild(frame);
+    }, settings.syncDelay || 0);
+  }
 
   // ---------------------------------------------------------- command queue
 

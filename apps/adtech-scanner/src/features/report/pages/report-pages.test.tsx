@@ -168,14 +168,14 @@ test("the overview says how the site was visited, once the scan recorded it", as
     "Browse like a visitor",
     "3 pages",
     "Browser shown",
-    "Kept scan profile",
+    "Kept browser profile",
     "Belgium (be.proxy.example)",
   ]);
   expect(visitFacts({ environment: makeEnvironment({ emulatedMobile: true }), pages: [] })).toEqual([
     "Scroll",
     "1 page",
     "Headless",
-    "Fresh profile",
+    "Fresh browser profile",
     "System proxy",
     "Mobile emulation",
   ]);

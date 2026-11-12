@@ -5,16 +5,20 @@ use std::sync::Arc;
 
 use adscan_browser::DemoSite;
 use adscan_engine::application::AppError;
+use adscan_engine::application::archive::Archive;
+use adscan_engine::application::archive::network::NetworkView;
+use adscan_engine::application::archive::source::ScriptSources;
 use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureSource, Clock, EventSink, IdGenerator, SecretStore,
+    CaptureSource, Clock, EventSink, IdGenerator, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, DEFAULT_BASE_URL, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::keychain::OsKeychain;
+use adscan_engine::infrastructure::pack_store::LocalPackStore;
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_engine::infrastructure::secrets::{MemorySecretStore, VaultSecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
@@ -67,6 +71,8 @@ pub struct AppState {
     pub scans: Arc<ScanService>,
     pub settings: Arc<SettingsService>,
     pub configurations: Arc<ConfigurationService>,
+    pub network: NetworkView,
+    pub sources: ScriptSources,
     /// The built-in demo publisher page; it is served for as long as the app runs.
     pub demo_site: DemoSite,
 }
@@ -100,6 +106,11 @@ impl AppState {
                     .with_proxy_password(proxy_password),
             ),
         };
+        let archive = Archive {
+            packs: Arc::new(LocalPackStore::new(&config.data_dir)),
+            index: Arc::new(store.clone()),
+        };
+        let formatter: Arc<dyn SourceFormatter> = Arc::new(OxcFormatter::default());
         let clock: Arc<dyn Clock> = Arc::new(SystemClock);
         let ids: Arc<dyn IdGenerator> = Arc::new(UuidGenerator);
         let settings = Arc::new(SettingsService::new(
@@ -109,6 +120,7 @@ impl AppState {
             judge.clone(),
             Arc::new(store.clone()),
             Arc::clone(&ids),
+            archive.clone(),
         ));
         let configurations = Arc::new(ConfigurationService::new(
             Arc::new(store.clone()),
@@ -124,15 +136,22 @@ impl AppState {
                 judge,
                 capture,
                 files: Arc::new(HttpPublicFileFetcher),
-                formatter: Arc::new(OxcFormatter::default()),
+                formatter: Arc::clone(&formatter),
+                archive: archive.clone(),
                 events,
                 clock,
                 ids,
             },
             Arc::clone(&settings),
-            Arc::new(store),
+            Arc::new(store.clone()),
         ));
         scans.recover_interrupted().await?;
+        // After the interrupted scans are closed: what they were still
+        // writing, and files that a crash left without rows, are removed.
+        archive.sweep().await?;
+        let network = NetworkView::new(archive.clone(), Arc::new(store.clone()));
+        let sources =
+            ScriptSources::new(archive, Arc::new(store.clone()), Arc::new(store), formatter);
         let demo_site = adscan_browser::start_demo_site().await.map_err(|error| {
             AppError::Internal(format!("could not start the demo site: {error}"))
         })?;
@@ -140,6 +159,8 @@ impl AppState {
             scans,
             settings,
             configurations,
+            network,
+            sources,
             demo_site,
         })
     }

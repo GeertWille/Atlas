@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { languageForMime } from "./languages";
+import { languageForMime } from "./mime";
 
 describe("languageForMime", () => {
   it.each([

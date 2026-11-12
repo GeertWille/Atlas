@@ -159,6 +159,7 @@ export function ScanComposer({
         <ConfigurationBar
           configuration={configuration}
           edited={edited}
+          blocked={proxyMissing}
           saving={saveConfiguration.isPending}
           onRevert={() => saved && setForm(saved)}
           onUpdate={updateConfiguration}

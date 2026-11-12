@@ -8,6 +8,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::application::AppError;
+use crate::application::archive::analysis::RecordAnalysis;
 use crate::application::llm::LlmError;
 use crate::application::ports::{CaptureError, RepositoryError};
 use crate::domain::chunks::LineRange;
@@ -77,6 +78,10 @@ pub struct ScanState {
     pub summary: ScanSummary,
     pub budget: Budget,
     pub capture: Option<Capture>,
+    /// What was read out of the visit's requests while they streamed past.
+    pub network: RecordAnalysis,
+    /// The scan has an archive: request rows exist and can be pointed at.
+    pub archived: bool,
     pub telemetry: Option<ScanTelemetry>,
     /// What the pages could tell about the visit; set with the telemetry.
     pub environment: Option<ScanEnvironment>,
@@ -101,6 +106,8 @@ impl ScanState {
             summary,
             budget,
             capture: None,
+            network: RecordAnalysis::default(),
+            archived: false,
             telemetry: None,
             environment: None,
             diagnostics: None,

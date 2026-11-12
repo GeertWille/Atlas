@@ -70,16 +70,16 @@ test("scan defaults: the visitor behaviour and the pages of a browse visit are s
   await waitFor(async () => expect((await api.getSettings()).defaultExtraPages).toBe(0));
 });
 
-test("the scan profile is explained, switched on, shown with its size, and cleared after confirming", async () => {
+test("the browser profile is explained, switched on, shown with its size, and cleared after confirming", async () => {
   const user = userEvent.setup();
   const { queryClient } = await renderWithApp(<ConnectedSettings />);
   const browser = await section("Browser");
-  const keep = within(browser).getByRole("switch", { name: "Keep a scan profile between scans" });
+  const keep = within(browser).getByRole("switch", { name: "Keep the browser profile between scans" });
   expect(keep).not.toBeChecked();
   expect(keep).toHaveAccessibleDescription(
     "Cookies and consent persist like a returning visitor's, so a banner accepted once does not come back. Off: every scan starts with a fresh profile. Stored only on this Mac, and separate from your own Chrome.",
   );
-  expect(await within(browser).findByText("No scan profile is stored yet.")).toBeInTheDocument();
+  expect(await within(browser).findByText("No browser profile is stored yet.")).toBeInTheDocument();
 
   await user.click(keep);
   await waitFor(async () => expect((await api.getSettings()).persistentProfile).toBe(true));
@@ -90,17 +90,17 @@ test("the scan profile is explained, switched on, shown with its size, and clear
   await waitFor(() => expect(within(browser).getByText("20.4 MB")).toBeInTheDocument());
   expect(within(browser).getByText(/on this Mac, last used just now/)).toBeInTheDocument();
 
-  await user.click(within(browser).getByRole("button", { name: "Clear scan profile…" }));
-  const confirm = await screen.findByRole("alertdialog", { name: "Clear the scan profile?" });
+  await user.click(within(browser).getByRole("button", { name: "Clear browser profile…" }));
+  const confirm = await screen.findByRole("alertdialog", { name: "Clear the browser profile?" });
   expect(confirm).toHaveTextContent("Your own Chrome is not touched.");
   await user.click(within(confirm).getByRole("button", { name: "Clear profile" }));
 
-  expect(await within(browser).findByText("No scan profile is stored yet.")).toBeInTheDocument();
-  expect(await screen.findByText("Scan profile cleared")).toBeInTheDocument();
+  expect(await within(browser).findByText("No browser profile is stored yet.")).toBeInTheDocument();
+  expect(await screen.findByText("Browser profile cleared")).toBeInTheDocument();
   expect((await api.getScanProfile()).exists).toBe(false);
 });
 
-test("the scan profile cannot be cleared while a scan is using it", async () => {
+test("the browser profile cannot be cleared while a scan is using it", async () => {
   localStorage.setItem("adscan.fake.speed", "5000");
   await api.updateSettings({ persistentProfile: true });
   // A manual session holds the profile until it is finished.
@@ -109,7 +109,7 @@ test("the scan profile cannot be cleared while a scan is using it", async () => 
   const browser = await section("Browser");
 
   expect(await within(browser).findByText(/A running scan is using it\./)).toBeInTheDocument();
-  expect(within(browser).getByRole("button", { name: "Clear scan profile…" })).toBeDisabled();
+  expect(within(browser).getByRole("button", { name: "Clear browser profile…" })).toBeDisabled();
   await api.cancelScan(scan.id);
 });
 

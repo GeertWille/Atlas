@@ -73,6 +73,14 @@
     send('page_view', { route: event.detail.path });
   });
 
+  // Which events are sampled is decided off the main thread.
+  if (win.Worker) {
+    var sampler = new Worker('/static/js/analytics-worker.js');
+    sampler.onmessage = function (message) {
+      site.sampling = message.data;
+    };
+  }
+
   win.addEventListener('scroll', onScroll, { passive: true });
   send('page_view', { referrer: doc.referrer || null, viewport: win.innerWidth + 'x' + win.innerHeight });
 })(window, document);

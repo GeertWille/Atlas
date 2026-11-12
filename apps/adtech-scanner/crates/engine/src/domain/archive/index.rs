@@ -136,7 +136,10 @@ impl RequestIndexRow {
             .chars()
             .take(MAX_PATH_CHARS)
             .collect();
-        let query = parsed.as_ref().and_then(|url| url.query()).unwrap_or_default();
+        let query = parsed
+            .as_ref()
+            .and_then(|url| url.query())
+            .unwrap_or_default();
         let site = site_of(&host);
         let third_party = site != page_site;
         let category = classify::category(&RequestFacts {

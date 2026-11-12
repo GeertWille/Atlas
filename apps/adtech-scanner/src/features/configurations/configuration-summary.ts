@@ -1,4 +1,4 @@
-import type { ScanConfiguration, Settings } from "@/bindings";
+import type { ScanConfiguration, ScanSummary, Settings } from "@/bindings";
 import { hasMissingProxy, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import { pluralize } from "@/shared/lib/format";
@@ -38,4 +38,15 @@ export function duplicateName(name: string, existing: string[]): string {
     const candidate = `${name} copy${copy === 1 ? "" : ` ${copy}`}`;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
+}
+
+/**
+ * How the health score moved between a configuration's two newest scans (newest first). `null` unless
+ * both completed with a score: a failed or running scan has nothing to compare.
+ */
+export function healthChange(scans: Pick<ScanSummary, "status" | "healthScore">[]): number | null {
+  const [latest, previous] = scans;
+  if (latest?.status !== "completed" || previous?.status !== "completed") return null;
+  if (latest.healthScore === null || previous.healthScore === null) return null;
+  return latest.healthScore - previous.healthScore;
 }

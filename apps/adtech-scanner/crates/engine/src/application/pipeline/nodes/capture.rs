@@ -7,6 +7,7 @@ use serde_json::json;
 use tokio::sync::mpsc;
 
 use crate::application::AppError;
+use crate::application::archive::recording::{Recording, RecordingStart};
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::application::ports::{ActivityFn, CaptureSession};
@@ -51,12 +52,13 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     let on_activity: ActivityFn = Arc::new(move |activity| {
         let _ = activity_tx.send(activity);
     });
+    let recording = start_recording(run).await?;
     let session = CaptureSession {
         cancel: run.job.cancel.clone(),
         finish,
         on_activity,
         proxy_password: run.job.proxy_password.clone(),
-        network: None,
+        network: Some(recording.sink()),
     };
     let source = Arc::clone(&run.deps.capture);
     let capture = source.capture(request, session);
@@ -71,7 +73,19 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     while let Ok(activity) = activity_rx.try_recv() {
         record(run, activity).await?;
     }
-    let capture = result?;
+    let capture = match result {
+        Ok(capture) => capture,
+        Err(error) => {
+            recording.abort();
+            // Best effort: what stays behind is swept at the next start.
+            let _ = run.deps.archive.remove(&run.state.summary.id).await;
+            return Err(error.into());
+        }
+    };
+    for script in &capture.scripts {
+        recording.store_script(&script.body);
+    }
+    finish_recording(run, recording).await?;
 
     let summary = format!(
         "Captured {} page view{}, {} scripts and {} tracker events from {}",
@@ -83,6 +97,95 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     );
     run.state.capture = Some(capture);
     Ok(summary)
+}
+
+/// Every capture is recorded for the analysis of its bid and ad-server
+/// calls; with "keep network data" on, the recording is also the scan's
+/// archive.
+async fn start_recording(run: &mut StepRun<'_>) -> Result<Recording, NodeError> {
+    let settings = &run.job.settings;
+    let start = RecordingStart {
+        scan_id: run.state.summary.id.clone(),
+        url: run.state.summary.url.clone(),
+        page_host: run.state.summary.hostname.clone(),
+        started_at: run.state.summary.started_at,
+        full_headers: settings.store_full_headers,
+    };
+    let unstored =
+        |reason: String| AppError::Internal(format!("the capture could not be recorded: {reason}"));
+    if !settings.keep_network_data {
+        run.deps
+            .archive
+            .index
+            .begin(
+                &run.state.summary.id,
+                None,
+                false,
+                run.state.summary.started_at,
+            )
+            .await?;
+        return Ok(Recording::start(None, start).await.map_err(unstored)?);
+    }
+    match Recording::start(Some(&run.deps.archive), start.clone()).await {
+        Ok(recording) => {
+            run.state.archived = true;
+            Ok(recording)
+        }
+        Err(error) => {
+            // A scan is worth more than its archive: go on without one.
+            run.warn(format!("Network data is not stored for this scan: {error}"))
+                .await?;
+            let _ = run.deps.archive.remove(&run.state.summary.id).await;
+            Ok(Recording::start(None, start).await.map_err(unstored)?)
+        }
+    }
+}
+
+async fn finish_recording(run: &mut StepRun<'_>, recording: Recording) -> Result<(), NodeError> {
+    let scan_id = run.state.summary.id.clone();
+    let recorded = recording.finish().await.map_err(|error| {
+        AppError::Internal(format!("the capture could not be recorded: {error}"))
+    })?;
+    run.state.network = recorded.analysis;
+    match recorded.stored {
+        None => {}
+        Some(Ok(totals)) => {
+            let record = run.deps.archive.index.record(&scan_id).await?;
+            let (requests, bodies) =
+                record.map_or((0, 0), |record| (record.request_count, record.body_count));
+            run.info(format!(
+                "Stored {requests} requests and {bodies} bodies in the scan's archive ({} KB){}",
+                totals.pack_bytes / 1024,
+                if totals.truncated {
+                    "; some bodies were left out because the scan reached its size cap"
+                } else {
+                    ""
+                },
+            ))
+            .await?;
+            let evicted = run
+                .deps
+                .archive
+                .enforce_limit(run.job.settings.archive_limit_bytes, Some(&scan_id))
+                .await?;
+            if evicted > 0 {
+                run.info(format!(
+                    "Removed the network data of {evicted} older scan{} to stay under the storage limit",
+                    if evicted == 1 { "" } else { "s" }
+                ))
+                .await?;
+            }
+        }
+        Some(Err(error)) => {
+            run.state.archived = false;
+            run.warn(format!(
+                "Network data could not be stored for this scan: {error}"
+            ))
+            .await?;
+            let _ = run.deps.archive.remove(&scan_id).await;
+        }
+    }
+    Ok(())
 }
 
 fn start_line(request: &CaptureRequest, proxy_name: Option<String>) -> String {

@@ -314,7 +314,7 @@ describe("a manual session", () => {
   });
 });
 
-describe("the scan profile", () => {
+describe("the browser profile", () => {
   test("is empty until a scan keeps it, grows with each such scan, and can be cleared when idle", async () => {
     const api = fresh();
     expect(await api.getScanProfile()).toEqual({ exists: false, sizeBytes: 0, lastUsedAt: null, inUse: false });

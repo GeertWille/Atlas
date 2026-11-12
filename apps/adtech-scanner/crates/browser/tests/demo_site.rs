@@ -630,22 +630,28 @@ async fn desktop_scan_shows_the_planted_bidder_setup_bugs() {
         ["ad-leaderboard", "ad-sidebar-1", "ad-inarticle-1"]
     );
     assert_eq!((bids_from("openx"), passes_from("openx")), (0, 3));
+    let answers_of = |bidder: &str| -> Vec<&adscan_model::ObservedBidResponse> {
+        capture
+            .bid_responses
+            .iter()
+            .filter(|answer| answer.bidder == bidder)
+            .collect()
+    };
+    let openx = answers_of("openx");
     assert_eq!(
-        capture.bid_responses.len(),
+        openx.len(),
         1,
         "one request for the three ad units: {:#?}",
         capture.bid_responses
     );
-    for answer in &capture.bid_responses {
+    for answer in openx {
         assert_eq!(
             (
-                answer.bidder.as_str(),
                 answer.host.as_str(),
                 answer.status,
                 answer.reason.as_deref()
             ),
             (
-                "openx",
                 "127.0.0.1",
                 Some(200),
                 Some("no-bid reason 7 (blocked publisher or site)")
@@ -653,6 +659,42 @@ async fn desktop_scan_shows_the_planted_bidder_setup_bugs() {
         );
         assert!(answer.t > 0.0 && answer.t < 60_000.0);
     }
+    // Every bidder that was asked made a real request to its exchange, and
+    // none of the others was given a reason not to bid.
+    for bidder in [
+        "appnexus",
+        "rubicon",
+        "ix",
+        "pubmatic",
+        "criteo",
+        "triplelift",
+    ] {
+        let answers = answers_of(bidder);
+        assert!(
+            !answers.is_empty(),
+            "{bidder}: {:#?}",
+            capture.bid_responses
+        );
+        for answer in answers {
+            assert_eq!(
+                (answer.status, answer.reason.as_deref()),
+                (Some(200), None),
+                "{bidder}"
+            );
+        }
+    }
+    assert_eq!(
+        answers_of("appnexus")[0].host,
+        "localhost",
+        "the exchange at the second origin"
+    );
+    assert!(
+        capture
+            .bid_responses
+            .iter()
+            .all(|answer| answer.request_seq.is_none()),
+        "no request numbers without a network record"
+    );
     // The demo has no consent platform.
     assert_eq!(
         events_where(&capture, |kind| matches!(

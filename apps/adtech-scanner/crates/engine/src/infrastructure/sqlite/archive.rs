@@ -325,7 +325,11 @@ impl ArchiveRepository for SqliteStore {
         .await
     }
 
-    async fn body_by_sha(&self, scan_id: &str, sha256: [u8; 32]) -> RepoResult<Option<BodyIndexRow>> {
+    async fn body_by_sha(
+        &self,
+        scan_id: &str,
+        sha256: [u8; 32],
+    ) -> RepoResult<Option<BodyIndexRow>> {
         let scan_id = scan_id.to_string();
         self.call(move |connection| {
             connection
@@ -346,8 +350,9 @@ impl ArchiveRepository for SqliteStore {
         self.call(move |connection| {
             let transaction = connection.transaction()?;
             if let Some(scan_no) = scan_no(&transaction, &scan_id)? {
-                let mut update = transaction
-                    .prepare_cached("UPDATE requests SET ad = ?3 WHERE scan_no = ?1 AND seq = ?2")?;
+                let mut update = transaction.prepare_cached(
+                    "UPDATE requests SET ad = ?3 WHERE scan_no = ?1 AND seq = ?2",
+                )?;
                 for link in &links {
                     update.execute(params![
                         scan_no,
@@ -569,7 +574,10 @@ struct StoredAd {
     bid_units: Vec<(String, String)>,
 }
 
-fn stored_ad(link: Option<&AdLink>, bid_units: &[(String, String)]) -> rusqlite::Result<Option<String>> {
+fn stored_ad(
+    link: Option<&AdLink>,
+    bid_units: &[(String, String)],
+) -> rusqlite::Result<Option<String>> {
     link.map(|link| {
         to_json(&StoredAd {
             link: link.clone(),
@@ -619,5 +627,9 @@ fn name_of(names: &[&str], code: i64, other: &str) -> String {
 }
 
 fn unreadable(column: usize, message: String) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(column, rusqlite::types::Type::Integer, message.into())
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Integer,
+        message.into(),
+    )
 }

@@ -53,7 +53,12 @@ const BID_CALLS: &[(&str, &str)] = &[
 
 /// Path fragments of auction endpoints on hosts the tables do not know:
 /// Prebid Server and plain OpenRTB.
-const BID_PATH_MARKS: &[&str] = &["/openrtb2/auction", "/openrtb2/amp", "/openrtb/", "/openrtbb/"];
+const BID_PATH_MARKS: &[&str] = &[
+    "/openrtb2/auction",
+    "/openrtb2/amp",
+    "/openrtb/",
+    "/openrtbb/",
+];
 
 /// Hosts whose business is user identity: id modules and match tables.
 const IDENTITY_HOSTS: &[&str] = &[
@@ -71,31 +76,70 @@ const IDENTITY_HOSTS: &[&str] = &[
 
 /// Path fragments of cookie-sync and id endpoints on any ad host.
 const SYNC_PATH_MARKS: &[&str] = &[
-    "usersync", "user_sync", "user-sync", "cookiesync", "cookie-sync", "cksync", "/sync", "setuid",
-    "getuid", "/match", "/pixel", "/ups/", "/usync", "/cm/", "idsync",
+    "usersync",
+    "user_sync",
+    "user-sync",
+    "cookiesync",
+    "cookie-sync",
+    "cksync",
+    "/sync",
+    "setuid",
+    "getuid",
+    "/match",
+    "/pixel",
+    "/ups/",
+    "/usync",
+    "/cm/",
+    "idsync",
 ];
 
 /// Google ad host paths that report rather than serve.
 const GOOGLE_MEASUREMENT_PATHS: &[&str] = &[
-    "/pcs/", "/pagead/gen_204", "/pagead/interaction", "/activeview", "/ddm/", "/pagead/1p-",
-    "/pagead/viewthroughconversion", "/getconfig/", "/pagead/ppub_config",
+    "/pcs/",
+    "/pagead/gen_204",
+    "/pagead/interaction",
+    "/activeview",
+    "/ddm/",
+    "/pagead/1p-",
+    "/pagead/viewthroughconversion",
+    "/getconfig/",
+    "/pagead/ppub_config",
 ];
 
 /// File names of the ad libraries themselves, wherever they are served from.
-const AD_LIBRARY_FILES: &[&str] = &["prebid", "pbjs", "gpt.js", "pubads_impl", "apstag", "hb-wrapper"];
+const AD_LIBRARY_FILES: &[&str] = &[
+    "prebid",
+    "pbjs",
+    "gpt.js",
+    "pubads_impl",
+    "apstag",
+    "hb-wrapper",
+];
 
 pub fn category(facts: &RequestFacts) -> NetworkCategory {
     use NetworkCategory::*;
+    // A preflight belongs with the request it clears the way for, which is
+    // not a plain GET or the browser would not have sent one.
+    let method = if facts.kind == ResourceKind::Preflight {
+        "POST"
+    } else {
+        facts.method
+    };
     if matches(BID_CALLS, facts) || facts.bidder.is_some() {
         return Bid;
     }
     if matches(AD_SERVER_CALLS, facts) {
         return AdServer;
     }
-    if BID_PATH_MARKS.iter().any(|mark| facts.path.contains(mark)) && facts.method == "POST" {
+    if BID_PATH_MARKS.iter().any(|mark| facts.path.contains(mark)) && method == "POST" {
         return Bid;
     }
-    let file = facts.path.rsplit('/').next().unwrap_or_default().to_ascii_lowercase();
+    let file = facts
+        .path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let is_script = facts.kind == ResourceKind::Script;
     if is_script && AD_LIBRARY_FILES.iter().any(|name| file.contains(name)) {
         return Wrapper;
@@ -126,7 +170,10 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
         Some(ScriptCategory::AdQuality) => Measurement,
         Some(ScriptCategory::Wrapper | ScriptCategory::Prebid) => Wrapper,
         Some(ScriptCategory::AdServer) => {
-            if GOOGLE_MEASUREMENT_PATHS.iter().any(|mark| facts.path.contains(mark)) {
+            if GOOGLE_MEASUREMENT_PATHS
+                .iter()
+                .any(|mark| facts.path.contains(mark))
+            {
                 Measurement
             } else if looks_like_sync() {
                 Identity
@@ -139,7 +186,12 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
         Some(ScriptCategory::Bidder) => {
             if looks_like_sync() {
                 Identity
-            } else if facts.method == "POST" && matches!(facts.kind, ResourceKind::Xhr | ResourceKind::Fetch) {
+            } else if method == "POST"
+                && matches!(
+                    facts.kind,
+                    ResourceKind::Xhr | ResourceKind::Fetch | ResourceKind::Preflight
+                )
+            {
                 // An auction endpoint the capture has no adapter entry for.
                 Bid
             } else if is_script && facts.context != RequestContext::Iframe {
@@ -150,7 +202,8 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
                 Measurement
             }
         }
-        Some(ScriptCategory::Application | ScriptCategory::Library | ScriptCategory::Unknown) | None => {
+        Some(ScriptCategory::Application | ScriptCategory::Library | ScriptCategory::Unknown)
+        | None => {
             if facts.first_party {
                 Site
             } else if looks_like_sync() {
@@ -221,6 +274,16 @@ mod tests {
     use RequestContext::{Iframe, Page};
     use ResourceKind::*;
 
+    /// URL, method, kind, context, recognised bidder, expected category.
+    type Case = (
+        &'static str,
+        &'static str,
+        ResourceKind,
+        RequestContext,
+        Option<&'static str>,
+        NetworkCategory,
+    );
+
     fn facts<'a>(
         url: &'a str,
         method: &'a str,
@@ -244,7 +307,7 @@ mod tests {
     #[test]
     fn requests_are_classified_by_host_path_and_kind() {
         #[rustfmt::skip]
-        let table: &[(&str, &str, ResourceKind, RequestContext, Option<&str>, NetworkCategory)] = &[
+        let table: &[Case] = &[
             // Bid endpoints the capture recognised, on any host.
             ("https://rtb.openx.net/openrtbb/prebidjs", "POST", Fetch, Page, Some("openx"), Bid),
             ("https://fastlane.rubiconproject.com/a/api/fastlane.json", "GET", Xhr, Page, Some("rubicon"), Bid),
@@ -278,6 +341,8 @@ mod tests {
             ("https://static.criteo.net/images/logo.png", "GET", Image, Iframe, None, Creative),
             ("https://c.amazon-adsystem.com/aax2/apstag.js", "GET", Script, Page, None, Wrapper),
             ("https://us-u.openx.net/w/1.0/pd", "GET", Image, Page, None, Measurement),
+            ("https://rtb.openx.net/openrtbb/prebidjs", "OPTIONS", Preflight, Page, None, Bid),
+            ("https://hbopenbid.pubmatic.com/translator", "OPTIONS", Preflight, Page, None, Bid),
             // Consent, identity, measurement.
             ("https://cdn.cookielaw.org/scripttemplates/otSDKStub.js", "GET", Script, Page, None, Consent),
             ("https://id5-sync.com/g/v2/123.json", "POST", Xhr, Page, None, Identity),
@@ -306,13 +371,23 @@ mod tests {
     fn bid_and_ad_server_calls_are_known_before_their_answer_is_read() {
         for (host, path, bidder, expected) in [
             ("rtb.openx.net", "/openrtbb/prebidjs", Some("openx"), true),
-            ("fastlane.rubiconproject.com", "/a/api/fastlane.json", Some("rubicon"), true),
+            (
+                "fastlane.rubiconproject.com",
+                "/a/api/fastlane.json",
+                Some("rubicon"),
+                true,
+            ),
             ("ib.adnxs.com", "/ut/v3", None, true),
             ("ib.adnxs.com", "/ut/v3/prebid", None, true),
             ("www8.smartadserver.com", "/ac", None, true),
             ("securepubads.g.doubleclick.net", "/gampad/ads", None, true),
             ("pbs.example.net", "/openrtb2/auction", None, true),
-            ("securepubads.g.doubleclick.net", "/tag/js/gpt.js", None, false),
+            (
+                "securepubads.g.doubleclick.net",
+                "/tag/js/gpt.js",
+                None,
+                false,
+            ),
             ("www.pub.example", "/article", None, false),
             ("ib.adnxs.com", "/getuid", None, false),
         ] {
@@ -323,15 +398,30 @@ mod tests {
     #[test]
     fn the_vendor_comes_from_the_host_table() {
         assert_eq!(vendor("ib.adnxs.com"), Some("Xandr"));
-        assert_eq!(vendor("securepubads.g.doubleclick.net"), Some("Google Ad Manager"));
+        assert_eq!(
+            vendor("securepubads.g.doubleclick.net"),
+            Some("Google Ad Manager")
+        );
         assert_eq!(vendor("www.pub.example"), None);
     }
 
     #[test]
     fn prebid_targeting_is_found_in_the_query_however_it_is_encoded() {
-        assert!(has_prebid_targeting("iu=/1/top&prev_scp=hb_pb%3D1.20%26hb_bidder%3Drubicon", None));
-        assert!(has_prebid_targeting("iu=/1/top&cust_params=hb_adid%253Dabc", None));
-        assert!(has_prebid_targeting("", Some(r#"{"keywords":[{"key":"hb_pb","value":["1.20"]}]}"#)));
-        assert!(!has_prebid_targeting("iu=/1/top&prev_scp=pos%3Dtop&sz=728x90", None));
+        assert!(has_prebid_targeting(
+            "iu=/1/top&prev_scp=hb_pb%3D1.20%26hb_bidder%3Drubicon",
+            None
+        ));
+        assert!(has_prebid_targeting(
+            "iu=/1/top&cust_params=hb_adid%253Dabc",
+            None
+        ));
+        assert!(has_prebid_targeting(
+            "",
+            Some(r#"{"keywords":[{"key":"hb_pb","value":["1.20"]}]}"#)
+        ));
+        assert!(!has_prebid_targeting(
+            "iu=/1/top&prev_scp=pos%3Dtop&sz=728x90",
+            None
+        ));
     }
 }

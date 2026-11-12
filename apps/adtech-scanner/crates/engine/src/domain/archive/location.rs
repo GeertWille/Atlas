@@ -13,18 +13,6 @@ impl Location {
     pub fn compose(&self) -> String {
         format!("{}#o={}&l={}", self.file, self.offset, self.length)
     }
-
-    /// `None` for anything that is not a file with a non-empty byte range.
-    pub fn parse(text: &str) -> Option<Self> {
-        let (file, fragment) = text.split_once('#')?;
-        let (offset, length) = fragment.strip_prefix("o=")?.split_once("&l=")?;
-        let location = Self {
-            file: file.to_string(),
-            offset: offset.parse().ok()?,
-            length: length.parse().ok()?,
-        };
-        (!location.file.is_empty() && location.length > 0).then_some(location)
-    }
 }
 
 /// Where the pack of a scan lives, relative to the archive directory.
@@ -37,36 +25,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_location_reads_back_as_it_was_composed() {
+    fn a_location_is_composed_in_the_data_lakes_syntax() {
         let location = Location {
             file: pack_file("abc"),
             offset: 1_048_576,
             length: 1_433,
         };
-        assert_eq!(
-            location.compose(),
-            "scans/abc.pack.zst#o=1048576&l=1433"
-        );
-        assert_eq!(Location::parse(&location.compose()), Some(location));
-    }
-
-    #[test]
-    fn the_first_byte_alone_is_a_valid_range() {
-        let parsed = Location::parse("requests/o/a/s/b.batch.zst#o=0&l=1").unwrap();
-        assert_eq!((parsed.offset, parsed.length), (0, 1));
-    }
-
-    #[test]
-    fn an_empty_range_a_missing_range_and_garbage_are_refused() {
-        for text in [
-            "scans/a.pack.zst#o=10&l=0",
-            "scans/a.pack.zst",
-            "#o=1&l=2",
-            "scans/a.pack.zst#l=2&o=1",
-            "scans/a.pack.zst#o=-1&l=2",
-            "scans/a.pack.zst#o=1&l=two",
-        ] {
-            assert_eq!(Location::parse(text), None, "{text}");
-        }
+        assert_eq!(location.compose(), "scans/abc.pack.zst#o=1048576&l=1433");
+        let first_byte = Location {
+            file: "requests/o/a/s/b.batch.zst".into(),
+            offset: 0,
+            length: 1,
+        };
+        assert_eq!(first_byte.compose(), "requests/o/a/s/b.batch.zst#o=0&l=1");
     }
 }

@@ -48,7 +48,11 @@ impl Archive {
     /// archive loses its pack; its request rows stay. The archive of
     /// `keep_scan`, the scan just written, is never taken. Returns how many
     /// were evicted.
-    pub async fn enforce_limit(&self, limit_bytes: f64, keep_scan: Option<&str>) -> Result<u32, AppError> {
+    pub async fn enforce_limit(
+        &self,
+        limit_bytes: f64,
+        keep_scan: Option<&str>,
+    ) -> Result<u32, AppError> {
         let archives = self.index.all().await?;
         let mut total: f64 = archives.iter().map(|record| record.pack_bytes as f64).sum();
         let mut evicted = 0;
@@ -59,7 +63,8 @@ impl Archive {
             if record.state != ArchiveState::Sealed || Some(record.scan_id.as_str()) == keep_scan {
                 continue;
             }
-            self.evict(&record.scan_id, record.pack_file.as_deref(), true).await?;
+            self.evict(&record.scan_id, record.pack_file.as_deref(), true)
+                .await?;
             total -= record.pack_bytes as f64;
             evicted += 1;
         }
@@ -71,14 +76,20 @@ impl Archive {
     pub async fn clear(&self) -> Result<(), AppError> {
         for record in self.index.all().await? {
             if matches!(record.state, ArchiveState::Sealed | ArchiveState::Evicted) {
-                self.evict(&record.scan_id, record.pack_file.as_deref(), false).await?;
+                self.evict(&record.scan_id, record.pack_file.as_deref(), false)
+                    .await?;
             }
         }
         self.index.compact().await?;
         Ok(())
     }
 
-    async fn evict(&self, scan_id: &str, pack_file: Option<&str>, keep_rows: bool) -> Result<(), AppError> {
+    async fn evict(
+        &self,
+        scan_id: &str,
+        pack_file: Option<&str>,
+        keep_rows: bool,
+    ) -> Result<(), AppError> {
         self.index.mark_evicted(scan_id, keep_rows).await?;
         if let Some(file) = pack_file {
             self.packs.delete(file).await.map_err(pack_error)?;

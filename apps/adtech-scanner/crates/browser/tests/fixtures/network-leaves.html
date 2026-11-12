@@ -1,0 +1,9 @@
+<!doctype html>
+<title>A page that leaves its site</title>
+<script>
+  fetch('/status/200?before-leaving').then(function (answer) { return answer.text(); }).then(function () {
+    setTimeout(function () {
+      location.href = 'http://localhost:' + location.port + '/network-elsewhere.html';
+    }, 300);
+  });
+</script>

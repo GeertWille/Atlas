@@ -31,9 +31,14 @@ Rules that came from you and must keep holding:
   exchanges" is on, a GET of sellers.json at the ad-system domains that ads.txt names. A scan can send
   the first three kinds through one proxy the user configured (see "Proxies"); the two model APIs never
   use it.
-- No raw payloads stored. Script bodies, bid responses, ads.txt and sellers.json stay in memory; only
-  findings, derived telemetry, the bidder check results (with excerpts of at most 300 characters) and
-  the audit trail (steps plus AI debug logs, full-text indexed) are persisted.
+- Raw scan data is stored locally and only locally (this replaced "no raw payloads stored"): one
+  compressed archive per scan with every request, its headers (cookie and authorization values
+  replaced by their length unless the user turns on "Store full headers"), and the bodies of scripts,
+  documents, JSON, text, CSS and POST requests, bid requests and responses included. Never images,
+  video, audio or fonts. It is deleted with the scan, bounded by a size limit (5 GB by default, oldest
+  scans first), and can be switched off ("Keep network data"). See "Scan archive". ads.txt and
+  sellers.json are still read in memory and not kept; the audit trail still holds bounded excerpts
+  only, never whole scripts.
 - API keys and proxy passwords live in the macOS Keychain, all in one item (service
   `com.webclew.adtech-scanner`, account `vault`; see "Keychain prompts"), never in SQLite, logs or the
   frontend. SQLite only records which of them exist (table `secret_presence`, names without values).
@@ -50,7 +55,7 @@ Rules that came from you and must keep holding:
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 59 unit and 30 integration tests pass. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (26 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 3 real-browser pipeline tests on Linux. |
+| Tauri shell (33 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 3 real-browser pipeline tests on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
 | Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, and every command's contract. Not run on macOS. |
 
@@ -166,12 +171,14 @@ without destroying the old ones.
   Xandr AST (`apntag`, `ib.adnxs.com/ut/v3`), Equativ/Smart AdServer (`sas`), Adform or a direct ad
   server has Prebid telemetry only: no slots, no "requested without bids", no fill rate, and the slot
   rules (`slots-never-requested`, `ad-request-before-auction-end`, `slots-outside-header-bidding`,
-  refresh rules) cannot fire. `ScanMetrics.hasGpt` is the only ad-server flag. The host table
+  refresh rules) cannot fire. `ScanMetrics.hasGpt` is the only ad-server flag. The script host table
   (`domain/knowledge.rs`) lists `adnxs.com` and `smartadserver.com` as bidders, which is right for
-  their Prebid endpoints (`/ut/v3/prebid`) and wrong for their ad-server calls. What is missing: a
-  tracker hook per ad server (AST `apntag.defineTag`/`loadTags`/`onEvent`, Smart `sas.call`/`sas.render`)
-  mapped onto the same slot events, an ad-server category for those hosts by path, and `hasAdServer`
-  next to `hasGpt`. Today only `bids-requested-without-ad-units` mentions such servers, by host name.
+  their Prebid endpoints (`/ut/v3/prebid`). The network view does tell their ad-server calls apart
+  by path (`domain/network/classify.rs`: `/ut/v3`, `/ttj`, Smart `/ac`, `/call/`, `/h/`), and the
+  engine reads the answers of those calls in memory for every scan (`application/archive/analysis.rs`),
+  but nothing is derived from them yet. What is missing: a tracker hook per ad server (AST
+  `apntag.defineTag`/`loadTags`/`onEvent`, Smart `sas.call`/`sas.render`) or a decoder of the calls
+  in that analysis step, mapped onto the same slot events, and `hasAdServer` next to `hasGpt`.
 
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
 - A cancelled step shows as Failed with summary "Cancelled"; there is no cancelled step status.
@@ -179,6 +186,76 @@ without destroying the old ones.
 - Very small scripts can fit entirely inside one stored excerpt.
 - The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
   Prebid releases.
+
+## Scan archive
+
+What a scan loaded is kept next to its report, so the script viewer, the network view and the bid
+inspector have something to show after the scan. The contract between the three crates is written
+down in the session scratchpad (`archive/02-contract.md`); the Rust sources are the truth.
+
+**Where.** `<data dir>/archive/scans/<scan id>.pack.zst`, one file per scan, plus three SQLite tables
+(migration 5): `scan_archives` (one row per scan: state `writing`, `sealed`, `evicted` or `disabled`),
+`scan_bodies` (sha-256 and byte range of every kept body) and `requests` with a `hosts` dictionary
+(one row per request: host, path without query, status, sizes, timing, category, links). A request
+row never holds a query string, a header or a body; those are in the pack.
+
+**Pack format (version 1).** A sequence of independent zstd frames (level 3, checksum on), in the
+location syntax of the Webclew data lake (`scans/<id>.pack.zst#o=<offset>&l=<length>`): one frame per
+distinct body (raw bytes, deduplicated by sha-256 within the scan), record frames of up to 128
+request documents as JSON lines (the first seven fields are the data lake's: `_v`, `id`, `fullUrl`,
+`headers`, `postData`, `responseHeaders`, `responseContent`), a manifest frame, and a trailer that is
+a zstd skippable frame naming the manifest. The whole file is a valid `.zst`. The local adapter is
+`infrastructure/pack_store.rs` behind the `PackStore` port; an S3 adapter was not built.
+
+**What is kept.** Every request's metadata and headers, from every frame and worker the browser
+crate reports. Bodies of scripts, documents, stylesheets, JSON, XML and text, and POST bodies; every
+script source of the capture, inline ones included. Images, video, audio, fonts and other binary
+content: size and type only. Caps: 5 MiB per body and 1 MiB per POST body (cut and flagged), 256 MiB
+of kept bodies per scan (after that metadata only, each request says so), 64 MiB of bodies in flight
+between browser and disk. Every way a body can be missing has its own `BodyState`.
+
+**Redaction.** By default the values of `Cookie`, `Set-Cookie`, `Authorization` and
+`Proxy-Authorization` never reach the disk: cookie names, cookie attributes and the authorization
+scheme stay, each value becomes its length (`_ga=[27 bytes]`). "Store full headers" turns that off
+for new scans; each archive records its mode. Everything else is stored as captured: URLs with their
+query strings, other headers, POST bodies, documents. A manual visit or a persistent profile can
+make that signed-in content, and the Settings copy must say so. No app-level encryption (FileVault).
+
+**While the capture runs.** The engine hands the browser crate a `NetworkSink` for every scan
+(`application/archive/recording.rs`). Reading a body and storing it are separate decisions: the sink
+admits a body when it will be stored, or when it is a bid or ad-server call, which the engine always
+reads in memory. Every record passes `RecordAnalysis::observe` (`application/archive/analysis.rs`)
+with its bodies still attached: the one place to plug in what is read out of the traffic (today the
+bid exchanges and the list of ad-server calls; decoding ad-server calls belongs there). With "Keep
+network data" off that analysis still runs, and nothing is written. Rows are added to SQLite only
+after the bytes they point at are synced.
+
+**After the capture.** Telemetry ties bids to requests (`domain/network/exchange.rs`): by an id of
+Prebid's found in the request (exact), else by bidder and timing (labelled), with a verdict per bid:
+in time, at the deadline (within 10 ms, `VERDICT_TOLERANCE_MS`, not calibrated), late, in time but
+timed out in Prebid, never answered, failed, not sent. The deadline is the auction's start plus its
+timeout. Slot requests are tied to the nearest ad-server call. Bid exchanges are decoded as OpenRTB
+2.x with Prebid Server's `ext` when a request is opened (`domain/network/openrtb.rs`); other
+protocols (Rubicon fastlane, AppNexus `ut/v3`) are shown raw.
+
+**Limit and lifetime.** After each scan the oldest sealed archives lose their pack until the total
+is under `Settings.archiveLimitBytes`; their request rows stay, so the request list still reads, with
+URLs cut to host and path. Deleting a scan deletes its rows, then its pack. A cancelled scan and a
+failed capture leave no archive. "Clear stored scan data" removes packs and rows of every finished
+scan. At start-up (`Archive::sweep`) archives that were still being written, packs without rows and
+rows without packs are cleaned up. Exports (Markdown, JSON) never contain bodies.
+
+**Script viewer.** `get_script_source` reads the source from the archive by the script's sha-256,
+formats it on demand with the same oxc formatter the analysis uses (cached in memory, never on
+disk), finds each finding's code evidence again by its text (`domain/source.rs::locate`, shared with
+the citation check, which now also stores `Evidence.scriptId` and `endLine`), and reads the "read by
+the AI" ranges from the stored audit trail. Phase 2 itself still reads the in-memory sources.
+
+Known limits: "first party" is measured against the host the scan was started with, so a start URL
+that redirects to another registrable domain makes the whole site third party in the network view;
+the host and path tables of `domain/network/classify.rs` and every threshold of the exchange
+matching have only seen the demo site and test fixtures; the OpenRTB no-bid reason names 11 to 17
+were written from memory of the 2.6 specification; nothing here ran on macOS.
 
 ## Keychain prompts
 
@@ -467,7 +544,8 @@ every check passed or could not be made.
 2. **Bid responses.** The browser crate recognises bid requests by endpoint host and path (same
    Prebid release) and keeps status, failure and a reason of at most 200 characters: a top-level
    `error` or `message`, AppNexus per-tag `error`, or the OpenRTB `nbr` code; an answer that carries
-   bids (`seatbid`) has no reason. Bodies are read in memory and dropped. A path alone identifies an
+   bids (`seatbid`) has no reason. That reason is read in memory; the exchange itself is in the
+   scan's archive when the scan keeps one. A path alone identifies an
    endpoint only at the own origin of a page served from this machine, which is how the demo site
    stands in for an exchange; on every real host the adapter's own host must match. Prebid's own
    `bidderError` events are used too.
@@ -488,8 +566,9 @@ every check passed or could not be made.
    under a public suffix, and one scan asks at most twelve. It is never done for a page served from
    this machine, so the demo site cannot send the app to a real exchange.
 5. **Consent.** The tracker listens to `__tcfapi` and records, per state change, whether GDPR
-   applies, whether there is a TC string, and the consented purposes and vendor ids. The string
-   itself is never captured. From each `bidRequested` it records `gdprApplies` and whether a consent
+   applies, whether there is a TC string, and the consented purposes and vendor ids. The tracker
+   never reports the string itself; where it travels in a URL or a bid request, it is in the scan's
+   archive like the rest of that request. From each `bidRequested` it records `gdprApplies` and whether a consent
    string was passed. Findings: auctions that started before the choice was known, bid requests
    without a consent string, and a bidder whose IAB vendor id (adapter `gvlid`, cross-checked against
    GVL v184) lacks consent.
@@ -563,8 +642,8 @@ Three Phase 2 cost levers apply to every AI scan, with or without Jev:
 - Publisher scripts that together stay under 400 beautified lines and 15,000 characters are inlined
   in the opening message, so a small wrapper costs no tool turns.
 
-Not built, on purpose: any switch that writes script bodies to disk, Jev answers inside the
-deterministic rules, and a Jev-versus-Haiku compare mode.
+Not built, on purpose: Jev answers inside the deterministic rules, and a Jev-versus-Haiku compare
+mode.
 
 ## Architecture in one screen
 
@@ -572,17 +651,20 @@ deterministic rules, and a Jev-versus-Haiku compare mode.
 crates/model     shared types, serde camelCase, ts-rs export
 crates/browser   detect/, cdp/, capture/, injected/tracker.js, injected/consent.js, demo-site/
 crates/engine    domain/          pure: scan, pricing, telemetry, diagnostics (adapter table, ads.txt and
-                                  sellers.json parsers, consent), heuristics (Rule trait), synthesis
-                 application/     use cases, ports, pipeline graph and nodes
+                                  sellers.json parsers, consent), heuristics (Rule trait), synthesis,
+                                  archive (pack format, request document, redaction, kept kinds),
+                                  network (classification, exchange matching, OpenRTB), source
+                 application/     use cases, ports, pipeline graph and nodes, archive (recording,
+                                  analysis, network view, script sources, storage)
                  infrastructure/  sqlite, anthropic and typesafe (reqwest, shared http retry),
-                                  public file fetcher, keychain, oxc beautifier
+                                  public file fetcher, keychain, oxc beautifier, pack store
 src-tauri        composition root: state.rs, adapters.rs, commands.rs
 src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake-backend/
 ```
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
 `ScanConfigurationRepository`, `SecretStore`, `SecretPresenceRepository`, `LlmClient`, `JudgeClient`, `CaptureSource`,
-`PublicFileFetcher`, `SourceFormatter`,
+`PublicFileFetcher`, `SourceFormatter`, `PackStore`, `ArchiveRepository`,
 `EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
@@ -618,6 +700,13 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `list_scan_configurations` | – | `ScanConfiguration[]` |
 | `save_scan_configuration` | `{ configuration }` | `ScanConfiguration` (create, or update with `configuration.id`) |
 | `delete_scan_configuration` | `{ id }` | `null` |
+| `list_network_requests` | `{ scanId, pages?, cursor?, limit? }` | `NetworkRowChunk` (time-ordered, 2,000 rows by default; no filtering) |
+| `get_network_summary` | `{ scanId }` | `NetworkSummary` |
+| `get_network_request` | `{ scanId, requestId }` | `NetworkRequestDetail` |
+| `get_network_body` | `{ scanId, requestId, side, offset?, maxBytes? }` | `NetworkBodyChunk` |
+| `get_script_source` | `{ scanId, scriptId, view, originalLine?, originalColumn? }` | `ScriptSource` |
+| `get_archive_storage` | – | `ArchiveStorage` |
+| `clear_archive` | – | `ArchiveStorage` (network data of all finished scans; reports stay) |
 
 `provider` is `"anthropic"` (the default when omitted) or `"typesafe"`.
 

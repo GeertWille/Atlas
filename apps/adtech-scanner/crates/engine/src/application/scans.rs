@@ -249,16 +249,28 @@ impl ScanService {
 
     pub async fn delete(&self, scan_id: &str) -> Result<(), AppError> {
         self.stop_and_wait(Some(scan_id)).await;
-        if self.deps.scans.delete(scan_id).await? {
-            Ok(())
-        } else {
-            Err(not_found(scan_id))
+        let archive = self.deps.archive.index.record(scan_id).await?;
+        if !self.deps.scans.delete(scan_id).await? {
+            return Err(not_found(scan_id));
         }
+        // The archive's rows went with the scan. The pack goes last: a crash
+        // in between leaves a file without rows, which the next start sweeps.
+        if let Some(file) = archive.and_then(|archive| archive.pack_file) {
+            self.deps
+                .archive
+                .packs
+                .delete(&file)
+                .await
+                .map_err(|error| AppError::Storage(error.to_string()))?;
+        }
+        Ok(())
     }
 
     pub async fn delete_all(&self) -> Result<(), AppError> {
         self.stop_and_wait(None).await;
-        Ok(self.deps.scans.delete_all().await?)
+        self.deps.scans.delete_all().await?;
+        self.deps.archive.remove_unreferenced_packs().await?;
+        Ok(())
     }
 
     pub async fn logs(

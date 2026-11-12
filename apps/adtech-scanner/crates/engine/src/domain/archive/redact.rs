@@ -133,23 +133,42 @@ mod tests {
                     "Set-Cookie".to_string(),
                     "sid=[6 bytes]; Path=/; Secure; SameSite=None".to_string()
                 ),
-                ("Set-Cookie".to_string(), "uid=[2 bytes]; Max-Age=3600".to_string()),
+                (
+                    "Set-Cookie".to_string(),
+                    "uid=[2 bytes]; Max-Age=3600".to_string()
+                ),
             ]
         );
     }
 
     #[test]
     fn authorization_keeps_its_scheme_only() {
-        assert_eq!(stored("Authorization", "Bearer abc.def.ghi"), "Bearer [11 bytes]");
-        assert_eq!(stored("proxy-authorization", "Basic dXNlcjpwYXNz"), "Basic [12 bytes]");
+        assert_eq!(
+            stored("Authorization", "Bearer abc.def.ghi"),
+            "Bearer [11 bytes]"
+        );
+        assert_eq!(
+            stored("proxy-authorization", "Basic dXNlcjpwYXNz"),
+            "Basic [12 bytes]"
+        );
         assert_eq!(stored("AUTHORIZATION", "opaque-token"), "[12 bytes]");
     }
 
     #[test]
     fn header_names_are_compared_without_case() {
-        for name in ["cookie", "COOKIE", "Set-Cookie", "set-cookie", "Authorization", "Proxy-Authorization"] {
+        for name in [
+            "cookie",
+            "COOKIE",
+            "Set-Cookie",
+            "set-cookie",
+            "Authorization",
+            "Proxy-Authorization",
+        ] {
             assert!(redaction_of(name).is_some(), "{name}");
-            assert!(!stored(name, "name=secretvalue").contains("secretvalue"), "{name}");
+            assert!(
+                !stored(name, "name=secretvalue").contains("secretvalue"),
+                "{name}"
+            );
         }
     }
 
@@ -188,6 +207,10 @@ mod tests {
         assert_eq!(shown[0].value, "a=[1 bytes]");
         assert_eq!(shown[1].redaction, None);
         // An archive written with full headers shows them as they are.
-        assert!(displayed_headers(&stored, false).iter().all(|header| header.redaction.is_none()));
+        assert!(
+            displayed_headers(&stored, false)
+                .iter()
+                .all(|header| header.redaction.is_none())
+        );
     }
 }

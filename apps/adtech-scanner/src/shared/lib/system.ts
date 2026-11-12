@@ -12,6 +12,15 @@ export function openApiKeysPage(provider: ApiProvider) {
   api.openExternal(API_KEYS_URL[provider]).catch((reason) => notifyError("Could not open the link", reason));
 }
 
+/** Opens a web address in the default browser. Anything that is not http or https is refused. */
+export function openInBrowser(url: string) {
+  if (!/^https?:\/\//i.test(url)) {
+    notifyError("Could not open the link", new Error("Only web addresses can be opened in the browser."));
+    return;
+  }
+  api.openExternal(url).catch((reason) => notifyError("Could not open the link", reason));
+}
+
 /** Native file picker for a Chrome/Chromium executable. `null` when cancelled or when the picker failed (reported). */
 export async function chooseBrowserExecutable(): Promise<string | null> {
   try {

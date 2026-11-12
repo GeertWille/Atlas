@@ -6,7 +6,7 @@ import { proxySummary, visitorSummary } from "./configuration-summary";
 export type ConfigurationSort = "recent" | "name";
 
 export const SORT_LABEL: Record<ConfigurationSort, string> = {
-  recent: "Recently run",
+  recent: "Recently used",
   name: "Name",
 };
 

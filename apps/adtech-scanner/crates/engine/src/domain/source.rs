@@ -87,7 +87,9 @@ pub fn anchors(script: &ScriptRecord, findings: &[Finding], lines: &[String]) ->
                 }
                 (None, Some(line)) => (
                     line,
-                    evidence.end_line.map_or(line, |end| (end as usize).max(line)),
+                    evidence
+                        .end_line
+                        .map_or(line, |end| (end as usize).max(line)),
                     false,
                 ),
                 (None, None) => continue,
@@ -134,7 +136,11 @@ pub fn regions(script_id: &str, logs: &[LogEntry], line_count: u32) -> Vec<Sourc
                 });
             }
         } else if let Some(chunks) = data["chunks"].as_array() {
-            guide.extend(chunks.iter().filter_map(|chunk| guide_chunk(chunk, script_id)));
+            guide.extend(
+                chunks
+                    .iter()
+                    .filter_map(|chunk| guide_chunk(chunk, script_id)),
+            );
         }
     }
     // Rank is the chunk's place among the guide's chunks of every script.
@@ -215,7 +221,9 @@ pub fn focus_line(raw: &str, formatted: &[String], line: u32, column: u32) -> Op
 
 #[cfg(test)]
 mod tests {
-    use adscan_model::{Evidence, FindingCategory, FindingSource, PipelineNode, ScriptCategory, Severity};
+    use adscan_model::{
+        Evidence, FindingCategory, FindingSource, PipelineNode, ScriptCategory, Severity,
+    };
     use serde_json::json;
 
     use super::*;
@@ -272,7 +280,13 @@ mod tests {
         }
     }
 
-    fn code(body: &str, script_id: Option<&str>, url: &str, line: Option<u32>, end: Option<u32>) -> Evidence {
+    fn code(
+        body: &str,
+        script_id: Option<&str>,
+        url: &str,
+        line: Option<u32>,
+        end: Option<u32>,
+    ) -> Evidence {
         Evidence {
             kind: EvidenceKind::Code,
             label: String::new(),
@@ -304,11 +318,29 @@ mod tests {
             vec![
                 Evidence {
                     kind: EvidenceKind::Metric,
-                    ..code("3 auctions", None, "https://pub.example/wrapper.js", None, None)
+                    ..code(
+                        "3 auctions",
+                        None,
+                        "https://pub.example/wrapper.js",
+                        None,
+                        None,
+                    )
                 },
                 // Cited two lines off: found again by its text.
-                code("if (mq(\"(min-width: 768px)\").matches) {", Some("s2"), "x", Some(5), Some(5)),
-                code("anything", Some("s9"), "https://pub.example/wrapper.js", Some(1), None),
+                code(
+                    "if (mq(\"(min-width: 768px)\").matches) {",
+                    Some("s2"),
+                    "x",
+                    Some(5),
+                    Some(5),
+                ),
+                code(
+                    "anything",
+                    Some("s9"),
+                    "https://pub.example/wrapper.js",
+                    Some(1),
+                    None,
+                ),
             ],
         )];
         assert_eq!(
@@ -328,17 +360,35 @@ mod tests {
         let script = script("s2", "u");
         let findings = [finding(
             "f1",
-            vec![code("pbjs.requestBids({ timeout: 250, });", Some("s2"), "u", Some(6), Some(8))],
+            vec![code(
+                "pbjs.requestBids({ timeout: 250, });",
+                Some("s2"),
+                "u",
+                Some(6),
+                Some(8),
+            )],
         )];
         let anchor = &anchors(&script, &findings, &lines(WRAPPER))[0];
-        assert_eq!((anchor.start_line, anchor.end_line, anchor.located), (6, 8, true));
+        assert_eq!(
+            (anchor.start_line, anchor.end_line, anchor.located),
+            (6, 8, true)
+        );
     }
 
     #[test]
     fn a_stored_excerpt_that_was_cut_keeps_its_stored_end_line() {
         let script = script("s2", "u");
         // The body holds the first line only; the citation covered 6 to 8.
-        let findings = [finding("f1", vec![code("pbjs.requestBids({", Some("s2"), "u", Some(6), Some(8))])];
+        let findings = [finding(
+            "f1",
+            vec![code(
+                "pbjs.requestBids({",
+                Some("s2"),
+                "u",
+                Some(6),
+                Some(8),
+            )],
+        )];
         let anchor = &anchors(&script, &findings, &lines(WRAPPER))[0];
         assert_eq!((anchor.start_line, anchor.end_line), (6, 8));
     }
@@ -349,8 +399,20 @@ mod tests {
         let findings = [finding(
             "f1",
             vec![
-                code("code that is no longer there", Some("s2"), "u", Some(4), Some(5)),
-                code("gone too, and never had a line", Some("s2"), "u", None, None),
+                code(
+                    "code that is no longer there",
+                    Some("s2"),
+                    "u",
+                    Some(4),
+                    Some(5),
+                ),
+                code(
+                    "gone too, and never had a line",
+                    Some("s2"),
+                    "u",
+                    None,
+                    None,
+                ),
             ],
         )];
         assert_eq!(
@@ -371,8 +433,20 @@ mod tests {
         let findings = [finding(
             "f1",
             vec![
-                code("waitForScroll(run);", None, "https://pub.example/wrapper.js", Some(4), None),
-                code("waitForScroll(run);", None, "https://pub.example/other.js", Some(4), None),
+                code(
+                    "waitForScroll(run);",
+                    None,
+                    "https://pub.example/wrapper.js",
+                    Some(4),
+                    None,
+                ),
+                code(
+                    "waitForScroll(run);",
+                    None,
+                    "https://pub.example/other.js",
+                    Some(4),
+                    None,
+                ),
             ],
         )];
         let found = anchors(&script, &findings, &lines(WRAPPER));
@@ -397,14 +471,38 @@ mod tests {
     #[test]
     fn regions_come_from_the_read_script_calls_of_the_audit_trail() {
         let logs = [
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 10, "end_line": 40}})),
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "S2 ", "start_line": 100, "end_line": 900}})),
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 480, "end_line": 600}})),
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 0, "end_line": 0}})),
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 700, "end_line": 710}})),
-            log(LogKind::ToolCall, json!({"tool": "read_script", "input": {"script_id": "s3", "start_line": 1, "end_line": 5}})),
-            log(LogKind::ToolCall, json!({"tool": "search_scripts", "input": {"script_id": "s2", "pattern": "x"}})),
-            log(LogKind::ToolResult, json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 1, "end_line": 2}})),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 10, "end_line": 40}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "S2 ", "start_line": 100, "end_line": 900}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 480, "end_line": 600}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 0, "end_line": 0}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 700, "end_line": 710}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "read_script", "input": {"script_id": "s3", "start_line": 1, "end_line": 5}}),
+            ),
+            log(
+                LogKind::ToolCall,
+                json!({"tool": "search_scripts", "input": {"script_id": "s2", "pattern": "x"}}),
+            ),
+            log(
+                LogKind::ToolResult,
+                json!({"tool": "read_script", "input": {"script_id": "s2", "start_line": 1, "end_line": 2}}),
+            ),
         ];
         let found: Vec<(u32, u32)> = regions("s2", &logs, 500)
             .iter()
@@ -433,8 +531,18 @@ mod tests {
         assert_eq!(
             found,
             vec![
-                SourceRegion { kind: RegionKind::Guide, start_line: 161, end_line: 300, rank: Some(2) },
-                SourceRegion { kind: RegionKind::Guide, start_line: 1, end_line: 160, rank: Some(3) },
+                SourceRegion {
+                    kind: RegionKind::Guide,
+                    start_line: 161,
+                    end_line: 300,
+                    rank: Some(2)
+                },
+                SourceRegion {
+                    kind: RegionKind::Guide,
+                    start_line: 1,
+                    end_line: 160,
+                    rank: Some(3)
+                },
             ],
             "chunks below the guide's threshold are not regions"
         );
@@ -445,7 +553,10 @@ mod tests {
         let calls = ad_calls(&lines(
             "googletag.cmd.push(function () {\n  googletag.defineSlot('/1/top', [728, 90], 'top');\n});\nwindow.__tcfapi('addEventListener', 2, cb);\nfoo.refresh();\ngoogletag.pubads().refresh([slot]);\npbjs.que.push(function () { pbjs.addAdUnits(units); pbjs.requestBids({}); });",
         ));
-        let found: Vec<(&str, u32)> = calls.iter().map(|call| (call.name.as_str(), call.line)).collect();
+        let found: Vec<(&str, u32)> = calls
+            .iter()
+            .map(|call| (call.name.as_str(), call.line))
+            .collect();
         assert_eq!(
             found,
             [
@@ -458,7 +569,11 @@ mod tests {
                 ("pbjs.que", 7),
             ]
         );
-        assert!(ad_calls(&lines(WRAPPER)).iter().any(|call| call.name == "requestBids" && call.line == 6));
+        assert!(
+            ad_calls(&lines(WRAPPER))
+                .iter()
+                .any(|call| call.name == "requestBids" && call.line == 6)
+        );
     }
 
     #[test]
@@ -467,7 +582,10 @@ mod tests {
         let formatted = lines(WRAPPER);
         let column_of = |needle: &str| raw.find(needle).unwrap() as u32 + 1;
         assert_eq!(focus_line(raw, &formatted, 1, column_of("if(mq(")), Some(3));
-        assert_eq!(focus_line(raw, &formatted, 1, column_of("pbjs.requestBids")), Some(6));
+        assert_eq!(
+            focus_line(raw, &formatted, 1, column_of("pbjs.requestBids")),
+            Some(6)
+        );
         assert_eq!(focus_line(raw, &formatted, 1, 1), Some(1));
         // Past the end of the source there is nothing to look for.
         assert_eq!(focus_line(raw, &formatted, 1, 5_000), None);
@@ -477,7 +595,9 @@ mod tests {
     #[test]
     fn a_position_on_a_later_line_of_the_original_is_found_too() {
         let raw = "var a = 1;\nvar b = 2;\nfunction go(){return a+b+window.innerWidth}\n";
-        let formatted = lines("var a = 1;\nvar b = 2;\nfunction go() {\n  return a + b + window.innerWidth;\n}");
+        let formatted = lines(
+            "var a = 1;\nvar b = 2;\nfunction go() {\n  return a + b + window.innerWidth;\n}",
+        );
         assert_eq!(focus_line(raw, &formatted, 3, 15), Some(4));
     }
 }
