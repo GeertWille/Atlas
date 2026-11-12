@@ -9,6 +9,11 @@ export default defineConfig({
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },
+  define: {
+    // `tauri build` sets TAURI_ENV_PLATFORM; the packaged app never ships the fake backend.
+    __FAKE_BACKEND__: JSON.stringify(!process.env.TAURI_ENV_PLATFORM),
+    __APP_VERSION__: JSON.stringify(process.env.npm_package_version ?? "0.0.0"),
+  },
   clearScreen: false,
   server: {
     port: 1420,

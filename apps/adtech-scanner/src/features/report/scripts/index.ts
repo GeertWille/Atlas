@@ -1,0 +1,1 @@
+export { ScriptsTab } from "./ScriptsTab";

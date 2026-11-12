@@ -1,0 +1,221 @@
+import { CircleCheckIcon, CircleDashedIcon, CircleSlashIcon, HourglassIcon, LayoutPanelTopIcon, type LucideIcon, TriangleAlertIcon } from "lucide-react";
+import type { AdSlot, ScanMetrics, SlotOutcome } from "@/bindings";
+import { Panel } from "@/shared/components/panel";
+import { SLOT_OUTCOME_META } from "@/shared/domain/vocabulary";
+import { cn } from "@/shared/lib/cn";
+import { formatDuration, formatOffset } from "@/shared/lib/format";
+import { Badge } from "@/shared/ui/badge";
+import { Empty } from "@/shared/ui/empty";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
+import {
+  layoutSlotTimeline,
+  SLOT_PHASE_LABEL,
+  SLOT_PHASES,
+  type SlotPhase,
+  type SlotRow,
+  type SlotTimeline,
+} from "./slot-timeline";
+
+const GRID = "grid grid-cols-[300px_minmax(0,1fr)]";
+const PLOT_INSET = "left-[300px] right-5";
+
+const OUTCOME_ICON: Record<SlotOutcome, LucideIcon> = {
+  filled: CircleCheckIcon,
+  empty: CircleSlashIcon,
+  neverRequested: CircleDashedIcon,
+  pending: HourglassIcon,
+};
+
+/** Each phase has its own shape as well as colour, so the sequence reads without colour. */
+const PHASE_MARK: Record<SlotPhase, string> = {
+  defined: "size-2.5 rounded-full border-2 border-gray bg-card",
+  requested: "size-2.5 rounded-full bg-blue",
+  response: "size-2.5 rotate-45 rounded-[2px] bg-violet",
+  rendered: "size-2.5 rounded-[2px] bg-green",
+  viewable: "size-3 rounded-full border-[3px] border-green bg-card",
+};
+
+function PhaseMark({ phase, className }: { phase: SlotPhase; className?: string }) {
+  return <span className={cn("block ring-2 ring-card", PHASE_MARK[phase], className)} />;
+}
+
+function SlotTooltip({ row }: { row: SlotRow }) {
+  const { slot, marks } = row;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <p className="font-mono font-medium">{slot.elementId}</p>
+      {marks.length === 0 ? <p className="text-muted-foreground">No lifecycle events recorded.</p> : null}
+      <dl className="grid grid-cols-[auto_auto_auto] items-center gap-x-3 gap-y-0.5 tabular-nums">
+        {marks.map((mark, index) => {
+          const previous = marks[index - 1];
+          return (
+            <div key={mark.phase} className="contents">
+              <dt className="flex items-center gap-1.5 text-muted-foreground">
+                <PhaseMark phase={mark.phase} className="ring-0" />
+                {SLOT_PHASE_LABEL[mark.phase]}
+              </dt>
+              <dd className="text-right">{formatOffset(mark.atMs)}</dd>
+              <dd className="text-right text-muted-foreground">{previous ? `+${formatDuration(mark.atMs - previous.atMs)}` : ""}</dd>
+            </div>
+          );
+        })}
+      </dl>
+      {slot.renderedSize ? <p className="text-muted-foreground">Rendered {slot.renderedSize}{slot.lineItemId ? `, line item ${slot.lineItemId}` : ""}</p> : null}
+      <p className="text-muted-foreground">{SLOT_OUTCOME_META[slot.outcome].description}</p>
+    </div>
+  );
+}
+
+function SlotLabel({ slot, flags }: Pick<SlotRow, "slot" | "flags">) {
+  const outcome = SLOT_OUTCOME_META[slot.outcome];
+  const OutcomeIcon = OUTCOME_ICON[slot.outcome];
+  return (
+    <div className="flex min-w-0 flex-col gap-1.5 py-3 pr-4 pl-4">
+      <div className="flex items-center justify-between gap-2">
+        <span className="selectable truncate font-mono text-xs font-medium">{slot.elementId}</span>
+        <Badge tone={outcome.tone}>
+          <OutcomeIcon />
+          {outcome.label}
+        </Badge>
+      </div>
+      <span className="selectable truncate text-xs text-subtle-foreground">
+        {slot.adUnitPath ?? "No ad unit path"} · {slot.sizes.join(", ")}
+      </span>
+      {flags.length > 0 ? (
+        <div className="flex flex-wrap gap-1">
+          {flags.map((flag) => (
+            <Badge key={flag.key} tone={flag.warning ? "amber" : "outline"} title={flag.description}>
+              {flag.warning ? <TriangleAlertIcon /> : null}
+              {flag.label}
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SlotTrack({ row }: { row: SlotRow }) {
+  return (
+    <div className="relative h-full min-h-14">
+      {row.unfinishedFromPercent !== null ? (
+        <>
+          <span
+            className="absolute top-1/2 right-0 h-0 -translate-y-1/2 border-t-2 border-dashed border-border-strong"
+            style={{ left: `${row.unfinishedFromPercent}%` }}
+          />
+          <span
+            className="absolute top-1/2 -translate-y-[160%] pl-3 text-[11px] whitespace-nowrap text-subtle-foreground"
+            style={{ left: `${row.unfinishedFromPercent}%` }}
+          >
+            {row.slot.outcome === "neverRequested" ? "no ad request during observation" : "no response during observation"}
+          </span>
+        </>
+      ) : null}
+      {row.span ? (
+        <span
+          className="absolute top-1/2 h-0.5 -translate-y-1/2 rounded-full bg-gray"
+          style={{ left: `${row.span.startPercent}%`, width: `${row.span.widthPercent}%` }}
+        />
+      ) : null}
+      {row.marks.map((mark) => (
+        <span key={mark.phase} className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: `${mark.percent}%` }}>
+          <PhaseMark phase={mark.phase} />
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function Axis({ timeline }: { timeline: SlotTimeline }) {
+  return (
+    <div aria-hidden="true" className={cn("pointer-events-none absolute inset-y-0", PLOT_INSET)}>
+      {timeline.scale.ticks.map((tick) => (
+        <div key={tick} className="absolute inset-y-0" style={{ left: `${timeline.scale.toPercent(tick)}%` }}>
+          <span className="absolute top-12 bottom-0 w-px bg-border" />
+          <span className="absolute top-[30px] -translate-x-1/2 text-[11px] whitespace-nowrap text-subtle-foreground tabular-nums">
+            {tick === 0 ? "0" : formatDuration(tick)}
+          </span>
+        </div>
+      ))}
+      {timeline.markers.map((marker) => (
+        <div key={marker.label} className="absolute inset-y-0" style={{ left: `${marker.percent}%` }}>
+          <span className="absolute top-12 bottom-0 w-px bg-violet/70" />
+          <span
+            className={cn(
+              "absolute left-1 rounded-sm bg-card px-1 text-[11px] font-medium whitespace-nowrap text-violet-fg",
+              marker.labelRow === 0 ? "top-1" : "top-4",
+            )}
+          >
+            {marker.label} {formatDuration(marker.atMs)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Legend() {
+  return (
+    <ul aria-label="Lifecycle legend" className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted-foreground">
+      {SLOT_PHASES.map((phase) => (
+        <li key={phase} className="flex items-center gap-1.5">
+          <PhaseMark phase={phase} className="ring-0" />
+          {SLOT_PHASE_LABEL[phase]}
+        </li>
+      ))}
+      <li className="flex items-center gap-1.5">
+        <span className="h-3 w-px bg-violet" />
+        Page lifecycle
+      </li>
+    </ul>
+  );
+}
+
+export function SlotsTab({ slots, metrics }: { slots: AdSlot[]; metrics: ScanMetrics }) {
+  if (slots.length === 0) {
+    return (
+      <Empty
+        icon={LayoutPanelTopIcon}
+        title="No ad slots captured"
+        description="GPT did not define any slots while the page was observed."
+      />
+    );
+  }
+  const timeline = layoutSlotTimeline(slots, metrics);
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <p className="text-[13px] text-muted-foreground">
+          Every slot from definition to viewable impression, in ms since navigation start.
+        </p>
+        <Legend />
+      </div>
+      <Panel className="relative overflow-hidden pt-12">
+        <Axis timeline={timeline} />
+        <ul className="relative">
+          {timeline.rows.map((row) => (
+            <li key={row.slot.elementId} className="border-t">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div
+                    // biome-ignore lint/a11y/noNoninteractiveTabindex: rows expose exact timings on focus
+                    tabIndex={0}
+                    aria-label={`${row.slot.elementId}: ${SLOT_OUTCOME_META[row.slot.outcome].label}`}
+                    className={cn(GRID, "items-stretch pr-5 outline-offset-[-2px] hover:bg-accent/50")}
+                  >
+                    <SlotLabel slot={row.slot} flags={row.flags} />
+                    <SlotTrack row={row} />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" align="end">
+                  <SlotTooltip row={row} />
+                </TooltipContent>
+              </Tooltip>
+            </li>
+          ))}
+        </ul>
+      </Panel>
+    </div>
+  );
+}

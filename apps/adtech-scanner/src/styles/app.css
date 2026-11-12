@@ -373,3 +373,21 @@
     background: none;
   }
 }
+
+:root {
+  --syn-comment: var(--gray-500);
+  --syn-keyword: oklch(0.47 0.25 290);
+  --syn-string: oklch(0.44 0.12 155);
+  --syn-number: oklch(0.5 0.16 45);
+  --syn-function: oklch(0.45 0.17 255);
+  --syn-punctuation: var(--gray-500);
+}
+
+.dark {
+  --syn-comment: oklch(0.62 0.02 261);
+  --syn-keyword: oklch(0.78 0.14 295);
+  --syn-string: oklch(0.8 0.13 155);
+  --syn-number: oklch(0.8 0.12 60);
+  --syn-function: oklch(0.78 0.11 245);
+  --syn-punctuation: oklch(0.68 0.02 261);
+}

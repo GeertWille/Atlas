@@ -8,6 +8,7 @@ import type {
   Settings,
   StepStatus,
 } from "@/bindings";
+import { pricingFor } from "@/shared/domain/model-pricing";
 import { aiInvestigations, healthScore, heuristicFindings, overviewFor } from "./findings";
 import { buildScripts, captureSite, computeMetrics } from "./site";
 
@@ -32,17 +33,9 @@ export type Scenario = {
   result: ScanResult | null;
 };
 
-/** Price per million tokens: [input, output]. */
-const PRICING: Record<string, [number, number]> = {
-  haiku: [1, 5],
-  sonnet: [3, 15],
-  opus: [5, 25],
-};
-
 function costOf(model: string, inputTokens: number, outputTokens: number): number {
-  const family = Object.keys(PRICING).find((name) => model.includes(name)) ?? "sonnet";
-  const [input, output] = PRICING[family] as [number, number];
-  return (inputTokens * input + outputTokens * output) / 1_000_000;
+  const { inputPerMTok, outputPerMTok } = pricingFor(model);
+  return (inputTokens * inputPerMTok + outputTokens * outputPerMTok) / 1_000_000;
 }
 
 class Timeline {
@@ -294,7 +287,7 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
       timeline.log("report_finding", { after: 2200 * effortScale, kind: "toolCall", data: { title: investigation.finding.title, severity: investigation.finding.severity, category: investigation.finding.category, confidence: investigation.finding.confidence } });
       addFinding(investigation.finding);
       reported += 1;
-      const inputTokens = Math.round((21_400 + turn * 9_800) * effortScale);
+      const inputTokens = Math.round((34_000 + turn * 14_000) * effortScale);
       const outputTokens = Math.round((1_850 + turn * 240) * effortScale);
       spent += timeline.usage(settings.analysisModel, inputTokens, outputTokens);
       timeline.log(`Turn ${turn + 1} complete`, { after: 0, kind: "llmResponse", level: "debug", data: { stopReason: "tool_use", usage: { inputTokens, outputTokens } } });

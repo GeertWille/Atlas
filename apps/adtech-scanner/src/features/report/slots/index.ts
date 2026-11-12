@@ -1,0 +1,1 @@
+export { SlotsTab } from "./SlotsTab";
