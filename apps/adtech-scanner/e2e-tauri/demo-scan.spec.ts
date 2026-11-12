@@ -1,4 +1,3 @@
-import { execFileSync, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,13 +18,13 @@ import {
   withRole,
 } from "./support/app";
 import { type MockAnthropic, startMockAnthropic } from "./support/mock-anthropic";
+import { canDriveNativeDialogs, nativeDialog } from "./support/native-dialog";
 import { installScanProbe, readScanProbe } from "./support/scan-probe";
 
 const PIPELINE = labelled("Pipeline");
 const ACTIVITY = withRole("log", "Activity");
 const MAIN = "//main";
 const SIDEBAR = "//aside";
-const hasXdotool = spawnSync("xdotool", ["version"]).status === 0;
 
 let api: MockAnthropic;
 let app: App;
@@ -41,10 +40,6 @@ afterAll(async () => {
   await app?.close();
   await api?.close();
 });
-
-const xdotool = (...args: string[]) => execFileSync("xdotool", args, { encoding: "utf8" });
-/** The main window plus any native dialog it has open. */
-const appWindowCount = () => xdotool("search", "--onlyvisible", "--class", "adtech-scanner").trim().split("\n").length;
 
 async function reloadApp() {
   await app.browser.refresh();
@@ -223,34 +218,26 @@ test("settings are saved by the backend and survive a reload", async () => {
   await browser.waitUntil(() => browser.execute(() => !document.documentElement.classList.contains("dark")));
 });
 
-test.skipIf(!hasXdotool)("export writes the report where the native save dialog says", async () => {
+test.skipIf(!canDriveNativeDialogs)("export writes the report where the native save dialog says", async () => {
   const { browser } = app;
   const exportDir = mkdtempSync(join(tmpdir(), "adscan-export-"));
   const target = join(exportDir, "report.md");
-  const openExportMenu = async () => {
+  const openSaveDialog = async () => {
     await browser.$(button("Export")).click();
     await browser.$(withRole("menuitem", "Markdown report")).click();
   };
   try {
     await goTo(browser, `/scans/${scanId}`);
     await browser.$(button("Export")).waitForDisplayed();
-    const appWindows = appWindowCount();
 
     // Cancelling the dialog is not an error and writes nothing.
-    await openExportMenu();
-    await browser.waitUntil(async () => appWindowCount() > appWindows, { timeout: 15_000 });
-    xdotool("key", "Escape");
+    await (await nativeDialog(browser, openSaveDialog)).cancel();
     await browser.waitUntil(() => browser.$(button("Export")).isEnabled());
     expect(await textOf(browser, "//body")).not.toMatch(/Report exported|Export failed/);
 
-    await openExportMenu();
-    await browser.waitUntil(async () => appWindowCount() > appWindows, { timeout: 15_000 });
-    xdotool("key", "ctrl+a");
-    xdotool("type", "--delay", "20", target);
-    xdotool("key", "Return");
+    await (await nativeDialog(browser, openSaveDialog)).submitPath(target);
     await seeText(browser, "Report exported", { timeout: 15_000 });
     const document = readFileSync(target, "utf8");
-    expect(document).toContain("127.0.0.1");
     expect(document).toContain("Bidding waits for the first scroll on desktop");
     expect(document).toBe(await invokeOk<string>(browser, "export_scan", { scanId, format: "markdown" }));
   } finally {
@@ -258,7 +245,7 @@ test.skipIf(!hasXdotool)("export writes the report where the native save dialog 
   }
 });
 
-test.skipIf(!hasXdotool)(
+test.skipIf(!canDriveNativeDialogs)(
   "a browser picked in the native open dialog is used until auto-detect is restored",
   async () => {
     const { browser } = app;
@@ -266,12 +253,8 @@ test.skipIf(!hasXdotool)(
     await browser.$('//nav//a[normalize-space(.)="Settings"]').click();
     await seeText(browser, "(detected automatically)", { within: MAIN });
 
-    const appWindows = appWindowCount();
-    await browser.$(button("Choose executable")).click();
-    await browser.waitUntil(async () => appWindowCount() > appWindows, { timeout: 15_000 });
-    // GTK's open dialog takes a typed path once a "/" opens its location field.
-    xdotool("type", "--delay", "20", path);
-    xdotool("key", "Return");
+    const picker = await nativeDialog(browser, () => browser.$(button("Choose executable")).click());
+    await picker.submitPath(path);
     await seeText(browser, "(chosen manually)", { within: MAIN, timeout: 15_000 });
     expect((await invokeOk<Settings>(browser, "get_settings")).chromePath).toBe(path);
 

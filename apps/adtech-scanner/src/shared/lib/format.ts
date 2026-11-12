@@ -18,6 +18,13 @@ const dateTime = new Intl.DateTimeFormat("en-US", {
   hour: "numeric",
   minute: "2-digit",
 });
+const dateTimeWithYear = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "numeric",
+  minute: "2-digit",
+});
 const clock = new Intl.DateTimeFormat("en-US", {
   hour: "2-digit",
   minute: "2-digit",
@@ -78,8 +85,10 @@ export function formatOffset(ms: number | null): string {
   return ms === null ? EMPTY : `${integer.format(Math.round(ms))} ms`;
 }
 
-export function formatDateTime(epochMs: number): string {
-  return dateTime.format(epochMs);
+/** "Nov 12, 7:40 AM"; the year is added for any other year than the current one. */
+export function formatDateTime(epochMs: number, now: number = Date.now()): string {
+  const sameYear = new Date(epochMs).getFullYear() === new Date(now).getFullYear();
+  return (sameYear ? dateTime : dateTimeWithYear).format(epochMs);
 }
 
 export function formatClock(epochMs: number): string {
@@ -97,7 +106,7 @@ export function formatRelativeTime(epochMs: number, now: number = Date.now()): s
   const days = Math.round(hours / 24);
   if (days === 1) return "yesterday";
   if (days < 30) return `${days} days ago`;
-  return formatDateTime(epochMs);
+  return formatDateTime(epochMs, now);
 }
 
 export function pluralize(count: number, singular: string, plural = `${singular}s`): string {

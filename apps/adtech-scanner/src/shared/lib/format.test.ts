@@ -4,6 +4,7 @@ import {
   formatBytes,
   formatCompact,
   formatCpm,
+  formatDateTime,
   formatDuration,
   formatOffset,
   formatPercent,
@@ -93,6 +94,13 @@ describe("formatRelativeTime", () => {
   ])("%d ms ago → %s", (ago, expected) => {
     expect(formatRelativeTime(now - ago, now)).toBe(expected);
   });
+});
+
+test("dates from another year say which year", () => {
+  const now = new Date(2026, 10, 12, 12, 0).getTime();
+  expect(formatDateTime(new Date(2026, 2, 5, 9, 30).getTime(), now)).toBe("Mar 5, 9:30 AM");
+  expect(formatDateTime(new Date(2025, 2, 5, 9, 30).getTime(), now)).toBe("Mar 5, 2025, 9:30 AM");
+  expect(formatRelativeTime(new Date(2025, 2, 5, 9, 30).getTime(), now)).toBe("Mar 5, 2025, 9:30 AM");
 });
 
 test("pluralize picks the form by count", () => {
