@@ -1,9 +1,10 @@
 import { GavelIcon } from "lucide-react";
-import type { Auction } from "@/bindings";
+import type { Auction, BidderDiagnostics } from "@/bindings";
 import { BID_STATUS_META, BID_STATUSES } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { Empty } from "@/shared/ui/empty";
 import { AuctionWaterfall } from "./AuctionWaterfall";
+import { BidderChecks } from "./BidderChecks";
 import { BidderSummaryTable } from "./BidderSummaryTable";
 import { BID_STATUS_STYLE } from "./bid-status-style";
 
@@ -32,7 +33,14 @@ function Legend() {
   );
 }
 
-export function AuctionsTab({ auctions }: { auctions: Auction[] }) {
+export function AuctionsTab({
+  auctions,
+  diagnostics,
+}: {
+  auctions: Auction[];
+  /** `null` for scans whose bidder checks did not run. */
+  diagnostics: BidderDiagnostics | null;
+}) {
   if (auctions.length === 0) {
     return (
       <Empty
@@ -54,6 +62,7 @@ export function AuctionsTab({ auctions }: { auctions: Auction[] }) {
         <AuctionWaterfall key={auction.id} auction={auction} index={index} />
       ))}
       <BidderSummaryTable auctions={auctions} />
+      {diagnostics ? <BidderChecks diagnostics={diagnostics} /> : null}
     </div>
   );
 }

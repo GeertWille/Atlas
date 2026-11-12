@@ -24,6 +24,7 @@ export const settingsFixture: Settings = {
   hasApiKey: true,
   jevEnabled: false,
   hasTypesafeKey: false,
+  checkSellersJson: false,
 };
 
 export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
@@ -220,6 +221,7 @@ export function makeDetail(overrides: Partial<ScanDetail> = {}): ScanDetail {
     scripts: [],
     steps: [],
     overview: null,
+    bidderDiagnostics: null,
     ...overrides,
   };
 }

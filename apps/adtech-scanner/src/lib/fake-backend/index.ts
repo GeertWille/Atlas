@@ -29,6 +29,7 @@ const DEFAULT_SETTINGS: Settings = {
   hasApiKey: false,
   jevEnabled: false,
   hasTypesafeKey: false,
+  checkSellersJson: false,
 };
 
 const DEFAULT_BROWSER: BrowserInfo = {

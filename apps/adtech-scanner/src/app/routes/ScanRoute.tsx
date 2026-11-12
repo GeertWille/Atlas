@@ -76,7 +76,7 @@ function Report({ detail }: { detail: ScanDetail }) {
           />
         </TabsContent>
         <TabsContent value="auctions">
-          <AuctionsTab auctions={detail.auctions} />
+          <AuctionsTab auctions={detail.auctions} diagnostics={detail.bidderDiagnostics} />
         </TabsContent>
         <TabsContent value="slots">
           <SlotsTab slots={detail.slots} metrics={detail.metrics} />

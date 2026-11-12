@@ -192,6 +192,8 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
     observe: useId(),
     jev: useId(),
     jevDisclosure: useId(),
+    sellersJson: useId(),
+    sellersJsonDisclosure: useId(),
   };
 
   const save = (patch: SettingsPatch) =>
@@ -322,6 +324,29 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       </Section>
 
       <Section
+        title="Bidder checks"
+        description="Every scan verifies each bidder's adapter params, its endpoint's answers, the consent it was sent and the scanned site's own ads.txt."
+      >
+        <Field
+          label="Check sellers.json at ad exchanges"
+          htmlFor={ids.sellersJson}
+          description={
+            <span id={ids.sellersJsonDisclosure}>
+              Requests sellers.json from the ad exchanges the scanned site's ads.txt names (appnexus.com,
+              rubiconproject.com and the like) to verify its seller ids. Off: only the scanned site is contacted.
+            </span>
+          }
+        >
+          <Switch
+            id={ids.sellersJson}
+            aria-describedby={ids.sellersJsonDisclosure}
+            checked={settings.checkSellersJson}
+            onCheckedChange={(checkSellersJson) => save({ checkSellersJson })}
+          />
+        </Field>
+      </Section>
+
+      <Section
         title="Browser"
         description="Scans drive a Chromium-based browser on this computer over the DevTools protocol."
       >
@@ -394,7 +419,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       >
         <Field
           label="What is stored"
-          description="Reports keep findings with short code excerpts, derived auctions, slots, metrics, script metadata and the audit trail. Script bodies and raw network payloads are held in memory during a scan and then discarded."
+          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. Script bodies, raw network payloads, ads.txt and sellers.json files are held in memory during a scan and then discarded."
         >
           <DeleteAllScansButton />
         </Field>
@@ -403,7 +428,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the page being scanned, api.anthropic.com and, when Jev is enabled, api.typesafe.ai."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the page being scanned and its site's ads.txt, api.anthropic.com, api.typesafe.ai when Jev is enabled and, when the sellers.json check is on, the ad exchanges that ads.txt names."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

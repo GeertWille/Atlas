@@ -72,6 +72,7 @@ export function createRunningScan(id: string, options: ScanOptions, startedAt: n
       scripts: [],
       steps,
       overview: null,
+      bidderDiagnostics: null,
     },
     logs: [],
   };

@@ -11,6 +11,7 @@ import type {
 } from "@/bindings";
 import { aiAvailability } from "@/shared/domain/ai-availability";
 import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
+import { buildDiagnostics } from "./diagnostics";
 import { aiInvestigations, healthScore, heuristicFindings, overviewFor } from "./findings";
 import {
   buildScripts,
@@ -32,7 +33,10 @@ export type Beat = { at: number } & (
   | { type: "fail"; node: PipelineNode; message: string }
 );
 
-export type ScanResult = Pick<ScanDetail, "metrics" | "findings" | "auctions" | "slots" | "scripts" | "overview"> & {
+export type ScanResult = Pick<
+  ScanDetail,
+  "metrics" | "findings" | "auctions" | "slots" | "scripts" | "overview" | "bidderDiagnostics"
+> & {
   healthScore: number;
   prebidVersion: string | null;
   aiUsed: boolean;
@@ -277,6 +281,20 @@ export function buildScenario({
     `Fill rate ${Math.round(metrics.fillRate * 100)}%, timeout rate ${Math.round(metrics.timeoutRate * 100)}%`,
   );
 
+  timeline.start("bidderDiagnostics");
+  const diagnostics = buildDiagnostics(site, options.url, settings.checkSellersJson);
+  timeline.log(`Requesting ${diagnostics.adsTxt.url}`, { after: 60 });
+  timeline.log(`${diagnostics.adsTxt.url}: ${diagnostics.adsTxt.recordCount} seller records, 0 invalid lines`, {
+    after: 260,
+  });
+  if (settings.checkSellersJson) {
+    timeline.log("Requesting sellers.json from the exchanges that ads.txt names", { after: 420 });
+  }
+  const flaggedChecks = diagnostics.bidders
+    .flatMap((bidder) => bidder.checks)
+    .filter((check) => check.status === "problem" || check.status === "notice").length;
+  timeline.end(`${diagnostics.bidders.length} bidders checked, ${flaggedChecks} need attention`);
+
   const findings: Finding[] = [];
   const addFinding = (draft: Omit<Finding, "id" | "scanId">) => {
     const finding = { ...draft, id: `${scanId}-f${findings.length + 1}`, scanId };
@@ -339,6 +357,7 @@ export function buildScenario({
       slots: site.slots,
       scripts,
       overview,
+      bidderDiagnostics: diagnostics,
       healthScore: score,
       prebidVersion: site.prebidVersion,
       aiUsed: triageRan,
