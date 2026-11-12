@@ -664,6 +664,11 @@ impl Page {
     /// Makes the tracker hand over what it still buffers. Its batches arrive
     /// before the evaluation returns, so they are recorded when this resolves.
     pub(crate) async fn flush_tracker(&mut self) -> Result<(), CaptureError> {
+        // On a page of another site there is no tracker, and nothing of the
+        // scanner's is done there.
+        if !self.recorder.is_recording() {
+            return Ok(());
+        }
         self.evaluate(&format!(
             "window.dispatchEvent(new Event('{TRACKER_FLUSH_EVENT}'))"
         ))

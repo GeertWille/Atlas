@@ -346,6 +346,11 @@ impl Reader {
         let mut scrolled: Option<&'static str> = None;
         while planned_ms < dwell_ms && Instant::now() < self.deadline {
             consent_accepted |= self.consent.attempt_if_due(page).await?;
+            if scrolled.is_some() {
+                // The plan depends on where things are, so the page is
+                // measured at rest: the same visit then plans the same way.
+                rest_until_still(page).await?;
+            }
             let Some(facts) = page_facts(page, false).await? else {
                 // Between two documents: nothing to act on.
                 page.record_for(OBSERVATION_TICK).await?;
@@ -695,7 +700,7 @@ async fn is_still_the_link(
 /// Waits for the page to stop scrolling: gestures are animated, and a link
 /// measured in motion is somewhere else by the time the pointer gets there.
 async fn rest_until_still(page: &mut Page) -> Result<(), CaptureError> {
-    let mut last = None;
+    let mut last = page.scroll_position().await?.map(|position| position.top);
     for _ in 0..STILLNESS_CHECKS {
         page.record_for(STILLNESS_INTERVAL).await?;
         let top = page.scroll_position().await?.map(|position| position.top);

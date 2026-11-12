@@ -164,8 +164,24 @@ async fn quitting_the_browser_ends_a_manual_visit_and_keeps_what_was_recorded() 
 
     let _turn = ONE_BROWSER_AT_A_TIME.lock().await;
     let fixtures = Fixtures::start().await;
-    let running = tokio::spawn(Reported::new().run(manual(&fixtures.url("browse-hard.html"))));
+    let reported = Reported::new();
+    let activities = reported.activities();
+    let running = tokio::spawn(reported.run(manual(&fixtures.url("browse-hard.html"))));
     let browser = Browser::launched_by(std::process::id()).await;
+    let recording = |activities: &std::sync::Mutex<Vec<adscan_model::CaptureActivity>>| {
+        let reported = activities.lock().unwrap();
+        reported
+            .iter()
+            .any(|activity| activity.message.starts_with("Recording."))
+    };
+    let deadline = Instant::now() + Duration::from_secs(40);
+    while !recording(&activities) {
+        assert!(
+            Instant::now() < deadline,
+            "the visit never started recording"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     tokio::time::sleep(Duration::from_secs(4)).await;
 
     // What the person's "Quit" does.
