@@ -72,6 +72,10 @@ struct TestApp {
 }
 
 fn test_app() -> TestApp {
+    test_app_with_typesafe_key(None)
+}
+
+fn test_app_with_typesafe_key(typesafe_key: Option<&str>) -> TestApp {
     let data_dir = tempfile::tempdir().unwrap();
     let app = register_commands(mock_builder())
         .build(mock_context(noop_assets()))
@@ -89,7 +93,9 @@ fn test_app() -> TestApp {
             data_dir: data_dir.path().to_path_buf(),
             // Nothing listens here: key validation fails fast and offline.
             anthropic_base_url: "http://127.0.0.1:1".into(),
+            typesafe_base_url: "http://127.0.0.1:1".into(),
             api_key_override: Some("sk-ant-test".into()),
+            typesafe_api_key_override: typesafe_key.map(str::to_string),
         },
         Arc::new(NoBrowser),
         Arc::new(TauriEventSink {
@@ -220,6 +226,71 @@ fn settings_commands_round_trip_contract_types() {
         Value::Null
     );
     assert!(!invoke::<Settings>(&app, "get_settings", json!({})).has_api_key);
+}
+
+#[test]
+fn jev_cannot_be_turned_on_without_a_typesafe_key() {
+    let app = test_app();
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(!settings.has_typesafe_key && !settings.jev_enabled);
+
+    let error = invoke_error(
+        &app,
+        "update_settings",
+        json!({ "patch": { "jevEnabled": true } }),
+    );
+    assert_eq!(error.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        error.message,
+        "Add a TypeSafe API key before turning on Jev."
+    );
+    assert!(!invoke::<Settings>(&app, "get_settings", json!({})).jev_enabled);
+
+    let status: ApiKeyStatus = invoke(
+        &app,
+        "set_api_key",
+        json!({ "key": "typesafe-key", "provider": "typesafe" }),
+    );
+    assert!(!status.valid, "an unverifiable key is reported, not stored");
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(!settings.has_typesafe_key);
+    assert!(settings.has_api_key, "the Anthropic key is untouched");
+}
+
+#[test]
+fn key_commands_address_one_provider_and_clearing_the_typesafe_key_turns_jev_off() {
+    let app = test_app_with_typesafe_key(Some("typesafe-test-key"));
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(settings.has_api_key && settings.has_typesafe_key);
+    assert!(!settings.jev_enabled, "a stored key does not turn Jev on");
+
+    let enabled: Settings = invoke(
+        &app,
+        "update_settings",
+        json!({ "patch": { "jevEnabled": true } }),
+    );
+    assert!(enabled.jev_enabled);
+
+    // Without `provider` the commands mean Anthropic, as they always did.
+    assert_eq!(
+        invoke::<Value>(&app, "clear_api_key", json!({})),
+        Value::Null
+    );
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(!settings.has_api_key);
+    assert!(settings.has_typesafe_key && settings.jev_enabled);
+
+    assert_eq!(
+        invoke::<Value>(&app, "clear_api_key", json!({ "provider": "typesafe" })),
+        Value::Null
+    );
+    let settings: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(!settings.has_typesafe_key);
+    assert!(!settings.jev_enabled, "Jev is off once its key is gone");
+
+    let unknown =
+        invoke_raw(&app, "clear_api_key", json!({ "provider": "someone-else" })).unwrap_err();
+    assert!(unknown.to_string().contains("provider"), "{unknown}");
 }
 
 #[test]

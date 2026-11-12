@@ -4,6 +4,7 @@ use tokio_util::sync::CancellationToken;
 use crate::application::AppError;
 use crate::application::llm::LlmError;
 use crate::application::ports::{CaptureError, RepositoryError};
+use crate::domain::chunks::LineRange;
 use crate::domain::pricing::Budget;
 use crate::domain::scan::ValidatedScan;
 use crate::domain::scripts::DescribedScript;
@@ -14,8 +15,10 @@ pub struct ScanJob {
     pub summary: ScanSummary,
     pub scan: ValidatedScan,
     pub settings: Settings,
-    /// Held in memory for the duration of the scan only.
+    /// Anthropic key. Held in memory for the duration of the scan only.
     pub api_key: Option<String>,
+    /// TypeSafe key, present only when the scan uses Jev. In memory only.
+    pub jev_key: Option<String>,
     pub cancel: CancellationToken,
 }
 
@@ -25,6 +28,9 @@ pub struct SourceFile {
     /// Index into `ScanState::scripts`.
     pub script_index: usize,
     pub lines: Vec<String>,
+    /// The lines a search of all scripts covers. `None` is every line; a
+    /// stock vendor library is only covered where it holds publisher code.
+    pub default_search: Option<Vec<LineRange>>,
 }
 
 /// State shared by the nodes of one run. Raw capture data lives only here and
@@ -41,6 +47,8 @@ pub struct ScanState {
     pub model_overview: Option<String>,
     /// Set when an AI node failed; later AI nodes are skipped.
     pub ai_failure: Option<String>,
+    /// Set by the first Jev failure; the scan asks Jev nothing more.
+    pub jev_failed: bool,
     /// Caveats to surface in the overview (budget stop, unknown model price).
     pub caveats: Vec<String>,
 }
@@ -57,6 +65,7 @@ impl ScanState {
             findings: Vec::new(),
             model_overview: None,
             ai_failure: None,
+            jev_failed: false,
             caveats: Vec::new(),
         }
     }
@@ -67,6 +76,11 @@ impl ScanState {
 
     pub fn telemetry(&self) -> Result<&Telemetry, NodeError> {
         self.telemetry.as_ref().ok_or_else(|| missing("telemetry"))
+    }
+
+    /// The script's body as captured.
+    pub fn body(&self, script_index: usize) -> Result<&str, NodeError> {
+        Ok(&self.capture()?.scripts[script_index].body)
     }
 
     pub fn script_records(&self) -> Vec<ScriptRecord> {

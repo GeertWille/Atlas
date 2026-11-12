@@ -132,6 +132,9 @@ export function applyBeat(scan: StoredScan, beat: Beat, now: number): ScanEvent[
       step.inputTokens += beat.inputTokens;
       step.outputTokens += beat.outputTokens;
       step.costUsd += beat.costUsd;
+      // Like the backend: a step that called a second model (a fallback) names both.
+      if (step.model === null) step.model = beat.model;
+      else if (!step.model.split(", ").includes(beat.model)) step.model = `${step.model}, ${beat.model}`;
       summary.costUsd += beat.costUsd;
       summary.aiUsed = true;
       return [

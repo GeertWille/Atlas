@@ -103,7 +103,7 @@ pub enum LlmError {
     ApiKeyInvalid(String),
     #[error("the API key is not allowed to do this: {0}")]
     PermissionDenied(String),
-    #[error("billing problem on the Anthropic account: {0}")]
+    #[error("billing problem on the API account: {0}")]
     Billing(String),
     #[error("the request was rejected: {0}")]
     BadRequest(String),

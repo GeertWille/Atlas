@@ -4,7 +4,8 @@ import { toast } from "sonner";
 import type { BrowserInfo, Settings, SettingsPatch } from "@/bindings";
 import { useDeleteAllScans, useUpdateSettings } from "@/lib/query/hooks";
 import { Panel } from "@/shared/components/panel";
-import { PRICED_MODELS } from "@/shared/domain/model-pricing";
+import { aiAvailability } from "@/shared/domain/ai-availability";
+import { modelLabel, PRICED_MODELS } from "@/shared/domain/model-pricing";
 import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { notifyError } from "@/shared/lib/notify-error";
 import { chooseBrowserExecutable, openApiKeysPage } from "@/shared/lib/system";
@@ -19,6 +20,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/shared/ui/alert-dialog";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Field, FieldGroup } from "@/shared/ui/field";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -46,6 +48,53 @@ function Section({ title, description, children }: { title: string; description?
         <FieldGroup>{children}</FieldGroup>
       </Panel>
     </section>
+  );
+}
+
+function GetKeyLink({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline"
+      onClick={onClick}
+    >
+      Get a key
+      <ExternalLinkIcon className="size-3" />
+    </button>
+  );
+}
+
+/** Says which classifier a scan started now would use, so the effect of the keys and the Jev switch is never a guess. */
+function ScriptTriageStatus({ settings }: { settings: Settings }) {
+  const { triage, logicAnalysis } = aiAvailability(settings);
+  if (triage === "jev") {
+    return (
+      <Field
+        label="Script triage"
+        description={
+          logicAnalysis
+            ? `Jev classifies the scripts that vendor rules cannot place and builds a reading guide for the logic analysis. ${modelLabel(settings.filterModel)} takes over if Jev fails.`
+            : "Jev classifies the scripts that vendor rules cannot place. Logic analysis needs an Anthropic key."
+        }
+      >
+        <Badge tone="violet">Jev System One</Badge>
+      </Field>
+    );
+  }
+  if (triage === "claude") {
+    return (
+      <Field
+        label="Script triage"
+        description="The script filter model classifies the scripts that vendor rules cannot place."
+      >
+        <Badge tone="blue">{modelLabel(settings.filterModel)}</Badge>
+      </Field>
+    );
+  }
+  return (
+    <Field label="Script triage" description="No key stored: scripts are classified by vendor rules only.">
+      <Badge tone="outline">None</Badge>
+    </Field>
   );
 }
 
@@ -110,7 +159,7 @@ function DeleteAllScansButton() {
         <AlertDialogHeader>
           <AlertDialogTitle>Delete all scans?</AlertDialogTitle>
           <AlertDialogDescription>
-            Every report, finding and audit trail is removed from this computer. Settings and your API key are kept.
+            Every report, finding and audit trail is removed from this computer. Settings and your API keys are kept.
             This cannot be undone.
           </AlertDialogDescription>
         </AlertDialogHeader>
@@ -135,7 +184,15 @@ function DeleteAllScansButton() {
 
 export function SettingsScreen({ settings, browser }: { settings: Settings; browser: BrowserInfo | null | undefined }) {
   const updateSettings = useUpdateSettings();
-  const ids = { filter: useId(), analysis: useId(), budget: useId(), headless: useId(), observe: useId() };
+  const ids = {
+    filter: useId(),
+    analysis: useId(),
+    budget: useId(),
+    headless: useId(),
+    observe: useId(),
+    jev: useId(),
+    jevDisclosure: useId(),
+  };
 
   const save = (patch: SettingsPatch) =>
     updateSettings.mutate(patch, {
@@ -161,25 +218,54 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
           description={
             <>
               Stored in your system keychain, never in the app database or logs.{" "}
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 font-medium text-primary-text hover:underline"
-                onClick={openApiKeysPage}
-              >
-                Get a key
-                <ExternalLinkIcon className="size-3" />
-              </button>
+              <GetKeyLink onClick={() => openApiKeysPage("anthropic")} />
             </>
           }
         >
           <div className="w-full">
-            <ApiKeyField hasApiKey={settings.hasApiKey} />
+            <ApiKeyField provider="anthropic" stored={settings.hasApiKey} />
           </div>
         </Field>
         <Field
+          stacked
+          label="TypeSafe API key (optional)"
+          description={
+            <>
+              Lets Jev System One, a low-cost classifier, triage scripts. Stored in your system keychain.{" "}
+              <GetKeyLink onClick={() => openApiKeysPage("typesafe")} />
+            </>
+          }
+        >
+          <div className="w-full">
+            <ApiKeyField provider="typesafe" stored={settings.hasTypesafeKey} />
+          </div>
+        </Field>
+        <Field
+          label="Classify scripts with Jev"
+          htmlFor={ids.jev}
+          description={
+            <span id={ids.jevDisclosure}>
+              Sends excerpts of the scanned page's scripts to api.typesafe.ai, a second vendor. Jev is sent more of each
+              script than Claude Haiku.
+              {settings.hasTypesafeKey ? null : (
+                <span className="mt-1 block font-medium text-foreground">Add a TypeSafe key first.</span>
+              )}
+            </span>
+          }
+        >
+          <Switch
+            id={ids.jev}
+            aria-describedby={ids.jevDisclosure}
+            disabled={!settings.hasTypesafeKey}
+            checked={settings.jevEnabled && settings.hasTypesafeKey}
+            onCheckedChange={(jevEnabled) => save({ jevEnabled })}
+          />
+        </Field>
+        <ScriptTriageStatus settings={settings} />
+        <Field
           label="Script filter model"
           htmlFor={ids.filter}
-          description="Phase 1 classifies which scripts are ad-related. A small, fast model is enough."
+          description="Classifies which scripts are ad-related. Used when Jev is off, and as the fallback if Jev fails."
         >
           <CommitInput
             id={ids.filter}
@@ -317,7 +403,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. The only outbound traffic is the page being scanned and api.anthropic.com."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the page being scanned, api.anthropic.com and, when Jev is enabled, api.typesafe.ai."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

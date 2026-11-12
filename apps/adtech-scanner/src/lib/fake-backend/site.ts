@@ -5,6 +5,7 @@ import type {
   Bid,
   DeviceProfile,
   ScanMetrics,
+  ScriptCategory,
   ScriptRecord,
   SlotOutcome,
 } from "@/bindings";
@@ -394,8 +395,72 @@ function scriptHostname(url: string): string {
   return new URL(url.replace(/^inline:/, "https:")).hostname;
 }
 
-export function buildScripts(site: CapturedSite, aiRan: boolean): ScriptRecord[] {
+/** Jev routing cut-offs, mirroring the backend's (uncalibrated) triage constants. */
+export const JEV_THRESHOLDS = { analyse: 0.5, drop: 0.15, publisherSpecific: 0.5 } as const;
+
+export type JevRule = "jev-yes" | "jev-unsure" | "jev-no";
+
+export function jevRule(adProbability: number): JevRule {
+  if (adProbability >= JEV_THRESHOLDS.analyse) return "jev-yes";
+  return adProbability < JEV_THRESHOLDS.drop ? "jev-no" : "jev-unsure";
+}
+
+/** No script bodies exist here: the publisher's own ad code scores as its own, everything else as generic. */
+export function jevPublisherSpecific(firstParty: boolean, adProbability: number): number {
+  return ROUND((firstParty ? Math.min(0.97, adProbability + 0.02) : adProbability / 3) * 100) / 100;
+}
+
+/** How many parts of a script Jev was asked about, out of how many it was split into. */
+export function jevParts(sizeBytes: number): { total: number; judged: number } {
+  const total = Math.max(1, Math.ceil(sizeBytes / 8_000));
+  return { total, judged: Math.min(total, 3) };
+}
+
+function jevVerdict(script: Pick<ScriptRecord, "firstParty" | "sizeBytes">, adProbability: number) {
+  const p = adProbability.toFixed(2);
+  const { total, judged } = jevParts(script.sizeBytes);
+  const rule = jevRule(adProbability);
+  if (rule === "jev-yes") {
+    const publisherSpecific = jevPublisherSpecific(script.firstParty, adProbability);
+    return {
+      category: publisherSpecific >= JEV_THRESHOLDS.publisherSpecific ? "wrapper" : "unknown",
+      adRelated: true,
+      classificationConfidence: adProbability,
+      classificationReason: `Jev: ad orchestration ${p} in its best-scoring part, publisher-specific ${publisherSpecific.toFixed(2)}; rule jev-yes (>= 0.50)`,
+    } as const;
+  }
+  const screened = `Jev: ad orchestration ${p} at most over ${judged} screened parts of ${total}`;
+  if (rule === "jev-unsure") {
+    return {
+      category: "unknown",
+      adRelated: true,
+      classificationConfidence: adProbability,
+      classificationReason: `${screened}; rule jev-unsure (0.15 to 0.50), kept for analysis and ranked last`,
+    } as const;
+  }
+  return {
+    category: script.firstParty ? "application" : "library",
+    adRelated: false,
+    classificationConfidence: ROUND((1 - adProbability) * 100) / 100,
+    classificationReason: `${screened}; rule jev-no (< 0.15)`,
+  } as const;
+}
+
+/** Who classifies the scripts no vendor rule decides, and whether Phase 2 follows. */
+export type TriagePlan = {
+  /** Jev System One goes first and answers for this many undecided scripts (`Infinity` unless it fails mid-scan). */
+  jev: { model: string; answers: number } | null;
+  /** The Claude filter model takes whatever Jev did not answer. `null` without an Anthropic key. */
+  claudeModel: string | null;
+  logicAnalysis: boolean;
+};
+
+const AD_CATEGORIES: readonly ScriptCategory[] = ["prebid", "wrapper", "adServer", "bidder", "cmp", "adQuality"];
+
+export function buildScripts(site: CapturedSite, plan: TriagePlan): ScriptRecord[] {
   const rng = createRng(hashString(`${site.hostname}|scripts`));
+  // A separate stream, so switching Jev on changes nothing else about a site's scripts.
+  const jevRng = createRng(hashString(`${site.hostname}|jev`));
   const templates: ScriptTemplate[] = [...SCRIPT_TEMPLATES];
   if (site.archetype === "slow") {
     templates.push({
@@ -412,37 +477,78 @@ export function buildScripts(site: CapturedSite, aiRan: boolean): ScriptRecord[]
   const isNamedHost = /[a-z]$/i.test(site.hostname) && site.hostname.includes(".");
   const cdnHost = isNamedHost ? `cdn.${rootDomain}` : site.hostname;
   let loadedAt = 180;
+  let undecidedSeen = 0;
 
-  return templates.map((template, index) => {
+  return templates.map((template, index): ScriptRecord => {
     const url = template.url.replace("cdn.{host}", cdnHost).replaceAll("{host}", site.hostname);
     const hostname = scriptHostname(url);
     loadedAt += rng.between(20, 190);
-    const adCategories = ["prebid", "wrapper", "adServer", "bidder", "cmp", "adQuality"];
-    const classifiedByModel = aiRan && !template.byRule;
-    const unclassified = !aiRan && !template.byRule;
-    const category = unclassified && !url.includes("/ads/") ? "unknown" : template.category;
-    return {
+    const base = {
       id: `s${index + 1}`,
       url,
       hostname,
       inline: template.inline ?? false,
       sizeBytes: Math.round(template.sizeKb * 1024),
       hash: hexId(rng, 16),
-      category,
-      adRelated: adCategories.includes(category),
-      classificationReason: unclassified
-        ? url.includes("/ads/")
-          ? "Path matches the first-party ad asset rule (/ads/)."
-          : "No vendor rule matched and AI classification did not run."
-        : template.reason,
-      classificationConfidence: template.byRule ? 1 : aiRan ? Math.round(rng.between(0.78, 0.99) * 100) / 100 : null,
-      classifiedBy: classifiedByModel ? "ai" : "heuristic",
-      analyzed: aiRan && Boolean(template.analyzed),
       vendor: template.vendor,
       loadedAtMs: ROUND(loadedAt),
       firstParty: hostname.endsWith(rootDomain),
     };
+    const byTemplate = {
+      category: template.category,
+      adRelated: AD_CATEGORIES.includes(template.category),
+      classificationReason: template.reason,
+      analyzed: plan.logicAnalysis && Boolean(template.analyzed),
+      adProbability: null,
+    };
+    if (template.byRule) {
+      return { ...base, ...byTemplate, classificationConfidence: 1, classifiedBy: "heuristic", classifierModel: null };
+    }
+
+    undecidedSeen += 1;
+    if (plan.jev && undecidedSeen <= plan.jev.answers) {
+      const adProbability = ROUND(jevProbability(jevRng, template.category) * 100) / 100;
+      return {
+        ...base,
+        ...byTemplate,
+        ...jevVerdict(base, adProbability),
+        classifiedBy: "ai",
+        classifierModel: plan.jev.model,
+        adProbability,
+        analyzed: plan.logicAnalysis && (Boolean(template.analyzed) || jevRule(adProbability) === "jev-unsure"),
+      };
+    }
+    if (plan.claudeModel) {
+      return {
+        ...base,
+        ...byTemplate,
+        classificationConfidence: ROUND(rng.between(0.78, 0.99) * 100) / 100,
+        classifiedBy: "ai",
+        classifierModel: plan.claudeModel,
+      };
+    }
+    const adPath = url.includes("/ads/");
+    return {
+      ...base,
+      category: adPath ? template.category : "unknown",
+      adRelated: adPath && AD_CATEGORIES.includes(template.category),
+      classificationReason: adPath
+        ? "Path matches the first-party ad asset rule (/ads/)."
+        : "No vendor rule matched and AI classification did not run.",
+      classificationConfidence: null,
+      classifiedBy: "heuristic",
+      classifierModel: null,
+      adProbability: null,
+      analyzed: false,
+    };
   });
+}
+
+/** Clear ad scripts score high, plain application code low, and the categories Jev cannot tell apart land in between. */
+function jevProbability(rng: Rng, category: ScriptCategory): number {
+  if (AD_CATEGORIES.includes(category)) return rng.between(0.62, 0.98);
+  if (category === "unknown" || category === "analytics") return rng.between(0.18, 0.44);
+  return rng.between(0.01, 0.12);
 }
 
 export function computeMetrics(site: CapturedSite, scripts: ScriptRecord[]): ScanMetrics {

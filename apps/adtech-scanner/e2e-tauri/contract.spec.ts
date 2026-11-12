@@ -100,6 +100,8 @@ test("read commands answer with the contract's shapes", async () => {
     defaultObserveSeconds: 20,
     theme: "system",
     hasApiKey: false,
+    jevEnabled: false,
+    hasTypesafeKey: false,
   });
 
   const detected = await invokeOk<BrowserInfo | null>(browser, "detect_browser");

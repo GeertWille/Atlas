@@ -217,6 +217,22 @@ const WEAK_IDENTIFIERS: &[&str] = &[
     "cpm",
 ];
 
+/// Three letters that turn up by accident in any large minified bundle: good
+/// enough to call a script undecided, too weak to point at a place in it.
+const ACCIDENTAL_IDENTIFIER: &str = "cpm";
+
+/// Where a publisher hands its own configuration to the ad libraries.
+const CALL_SITES: &[&str] = &["pbjs.que", ".addAdUnits(", ".requestBids(", "googletag.cmd"];
+
+/// Browser APIs that viewport, device and lazy-load decisions are made with.
+const PAGE_STATE_APIS: &[&str] = &[
+    "IntersectionObserver",
+    "matchMedia",
+    "innerWidth",
+    "userAgent",
+    "scroll",
+];
+
 const PREBID_LIBRARY_MARKERS: &[&str] = &["registerBidAdapter", "auctionManager", "bidderSettings"];
 
 pub fn classify(facts: &ScriptFacts) -> Verdict {
@@ -293,7 +309,34 @@ pub fn classify(facts: &ScriptFacts) -> Verdict {
     }
 }
 
-/// How often each ad-tech identifier occurs, for the Phase 1 prompt.
+/// How many of the calls that only ad orchestration code makes occur in `body`.
+pub fn ad_api_calls(body: &str) -> usize {
+    present(body, STRONG_SIGNATURES).len()
+}
+
+/// The ad-tech identifiers in `text` that are specific enough to mark it as a
+/// place worth a closer look.
+pub fn ad_identifiers(text: &str) -> Vec<&'static str> {
+    STRONG_SIGNATURES
+        .iter()
+        .chain(WEAK_IDENTIFIERS)
+        .copied()
+        .filter(|needle| *needle != ACCIDENTAL_IDENTIFIER && text.contains(needle))
+        .collect()
+}
+
+/// [`ad_identifiers`] plus the browser APIs ad timing logic branches on.
+pub fn logic_anchors(text: &str) -> Vec<&'static str> {
+    let mut anchors = ad_identifiers(text);
+    anchors.extend(present(text, PAGE_STATE_APIS));
+    anchors
+}
+
+pub fn has_call_site(text: &str) -> bool {
+    !present(text, CALL_SITES).is_empty()
+}
+
+/// How often each ad-tech identifier occurs, for the script triage prompt.
 pub fn identifier_counts(body: &str) -> Vec<(&'static str, usize)> {
     STRONG_SIGNATURES
         .iter()
@@ -521,6 +564,25 @@ mod tests {
                 hints: vec!["adUnit".into(), "cpm".into()]
             }
         );
+    }
+
+    #[test]
+    fn anchors_ignore_the_accidental_identifier_and_add_page_state_apis() {
+        assert!(ad_identifiers("var cpm=0;").is_empty());
+        assert_eq!(
+            ad_identifiers("x.adUnits;pbjs.que.push(f)"),
+            ["pbjs.que", "pbjs", "adUnit"]
+        );
+        assert_eq!(
+            logic_anchors("if(window.innerWidth>768){googletag.display(id)}"),
+            ["googletag", "innerWidth"]
+        );
+        assert!(logic_anchors("document.title='x'").is_empty());
+        assert_eq!(
+            ad_api_calls("pbjs.que.push(function(){pbjs.requestBids({})})"),
+            2
+        );
+        assert!(has_call_site("a.requestBids({})") && !has_call_site("requestBids"));
     }
 
     #[test]

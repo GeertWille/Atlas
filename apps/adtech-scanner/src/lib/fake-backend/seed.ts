@@ -106,6 +106,7 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number): StoredScan {
 
 /** Deterministic history: the reference-bug site on both devices, a healthy site, failures and an archive. */
 export function seedScans(settings: Settings, now: number): StoredScan[] {
-  const seedSettings = { ...settings, hasApiKey: true };
+  // History predates whatever the Jev switch says now.
+  const seedSettings = { ...settings, hasApiKey: true, jevEnabled: false };
   return [...FEATURED, ...archiveSpecs()].map((spec) => runSeed(spec, seedSettings, now));
 }

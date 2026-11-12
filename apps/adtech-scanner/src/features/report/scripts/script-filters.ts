@@ -38,7 +38,7 @@ export function sortScripts(scripts: ScriptRecord[], sort: ScriptSort): ScriptRe
 
 export type FunnelStage = { key: ScriptScope; label: string; count: number; bytes: number; shareOfBytes: number };
 
-/** How Phase 1 narrows the volume: everything loaded → ad-related → handed to Phase 2. */
+/** How script triage narrows the volume: everything loaded → ad-related → handed to Phase 2. */
 export function scriptFunnel(scripts: ScriptRecord[]): FunnelStage[] {
   const bytesOf = (subset: ScriptRecord[]) => subset.reduce((sum, script) => sum + script.sizeBytes, 0);
   const totalBytes = bytesOf(scripts);

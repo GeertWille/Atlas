@@ -17,18 +17,24 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 
-const COPY: Record<ApiProvider, { stored: string; remove: string; confirmTitle: string; consequence: string }> = {
+// The two fields sit in one section, so every control of the TypeSafe one names its provider.
+const COPY: Record<
+  ApiProvider,
+  { save: string; stored: string; remove: string; confirmTitle: string; consequence: string }
+> = {
   anthropic: {
+    save: "Validate and save",
     stored: "A validated key is stored in your system keychain.",
     remove: "Remove key",
     confirmTitle: "Remove the API key?",
     consequence: "Scans keep working with the deterministic checks only.",
   },
   typesafe: {
+    save: "Save TypeSafe key",
     stored: "A validated TypeSafe key is stored in your system keychain.",
     remove: "Remove TypeSafe key",
     confirmTitle: "Remove the TypeSafe key?",
-    consequence: "Jev is turned off and script triage goes back to the script filter model.",
+    consequence: "Jev is turned off and scans stop sending script excerpts to api.typesafe.ai.",
   },
 };
 
@@ -73,5 +79,9 @@ function SavedKey({ provider }: { provider: ApiProvider }) {
 }
 
 export function ApiKeyField({ provider, stored }: { provider: ApiProvider; stored: boolean }) {
-  return stored ? <SavedKey provider={provider} /> : <ApiKeyForm provider={provider} submitLabel="Validate and save" />;
+  return stored ? (
+    <SavedKey provider={provider} />
+  ) : (
+    <ApiKeyForm provider={provider} submitLabel={COPY[provider].save} />
+  );
 }

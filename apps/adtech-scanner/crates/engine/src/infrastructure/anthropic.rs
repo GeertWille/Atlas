@@ -4,13 +4,13 @@ use std::time::Duration;
 
 use adscan_model::Effort;
 use async_trait::async_trait;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
-use reqwest::{RequestBuilder, Response, StatusCode};
+use reqwest::{RequestBuilder, StatusCode};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
-use url::{Host, Url};
 
+pub use super::http::RetryPolicy;
+use super::http::{Transport, is_safe_base_url, unsafe_base_url_error};
 use crate::application::llm::{
     AssistantBlock, AssistantTurn, LlmError, LlmMessage, LlmRequest, LlmResponse, StopReason,
     UserBlock,
@@ -27,30 +27,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const VALIDATE_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Clone, Copy)]
-pub struct RetryPolicy {
-    /// Total tries, including the first.
-    pub max_attempts: u32,
-    /// Delay before the first retry when the server sends no `retry-after`;
-    /// doubles on each further retry.
-    pub base_delay: Duration,
-    pub max_delay: Duration,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max_attempts: 4,
-            base_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(20),
-        }
-    }
-}
-
 pub struct AnthropicClient {
     http: reqwest::Client,
     base_url: String,
-    retry: RetryPolicy,
+    transport: Transport,
 }
 
 impl AnthropicClient {
@@ -59,10 +39,7 @@ impl AnthropicClient {
     /// this machine, because every request carries the API key.
     pub fn new(base_url: &str, retry: RetryPolicy) -> Result<Self, LlmError> {
         if !is_safe_base_url(base_url) {
-            return Err(LlmError::Network(
-                "the API base URL must use https (plain http is only accepted for localhost)"
-                    .into(),
-            ));
+            return Err(unsafe_base_url_error());
         }
         let http = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
@@ -73,7 +50,12 @@ impl AnthropicClient {
         Ok(Self {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
-            retry,
+            transport: Transport {
+                retry,
+                max_retry_after: MAX_RETRY_AFTER,
+                error_message,
+                permanent_error,
+            },
         })
     }
 
@@ -81,51 +63,6 @@ impl AnthropicClient {
         request
             .header("x-api-key", api_key)
             .header("anthropic-version", API_VERSION)
-    }
-
-    /// Sends the request, retrying rate limits, overload, server errors and
-    /// connection failures with backoff. Returns the first 2xx response.
-    async fn send_with_retry(
-        &self,
-        build: impl Fn() -> RequestBuilder,
-        cancel: &CancellationToken,
-    ) -> Result<Response, LlmError> {
-        let mut attempt = 1;
-        loop {
-            let outcome = tokio::select! {
-                outcome = build().send() => outcome,
-                () = cancel.cancelled() => return Err(LlmError::Cancelled),
-            };
-            let (failure, retry_after) = match outcome {
-                Ok(response) if response.status().is_success() => return Ok(response),
-                Ok(response) => {
-                    let status = response.status();
-                    let retry_after = retry_after(response.headers());
-                    let message = error_message(response).await;
-                    if !is_retryable(status) {
-                        return Err(permanent_error(status, message));
-                    }
-                    (exhausted_error(status, attempt), retry_after)
-                }
-                Err(error) => (LlmError::Network(describe_transport_error(error)), None),
-            };
-            if attempt >= self.retry.max_attempts {
-                return Err(failure);
-            }
-            let delay = retry_after.unwrap_or_else(|| self.backoff(attempt));
-            tokio::select! {
-                () = tokio::time::sleep(delay) => {}
-                () = cancel.cancelled() => return Err(LlmError::Cancelled),
-            }
-            attempt += 1;
-        }
-    }
-
-    fn backoff(&self, attempt: u32) -> Duration {
-        self.retry
-            .base_delay
-            .saturating_mul(2u32.saturating_pow(attempt - 1))
-            .min(self.retry.max_delay)
     }
 }
 
@@ -140,6 +77,7 @@ impl LlmClient for AnthropicClient {
         let body = request_body(request);
         let url = format!("{}/v1/messages", self.base_url);
         let response = self
+            .transport
             .send_with_retry(
                 || self.authorized(self.http.post(&url), api_key).json(&body),
                 cancel,
@@ -154,29 +92,17 @@ impl LlmClient for AnthropicClient {
 
     async fn validate_key(&self, api_key: &str) -> Result<(), LlmError> {
         let url = format!("{}/v1/models?limit=1", self.base_url);
-        self.send_with_retry(
-            || {
-                self.authorized(self.http.get(&url), api_key)
-                    .timeout(VALIDATE_TIMEOUT)
-            },
-            &CancellationToken::new(),
-        )
-        .await
-        .map(drop)
+        self.transport
+            .send_with_retry(
+                || {
+                    self.authorized(self.http.get(&url), api_key)
+                        .timeout(VALIDATE_TIMEOUT)
+                },
+                &CancellationToken::new(),
+            )
+            .await
+            .map(drop)
     }
-}
-
-fn is_safe_base_url(base_url: &str) -> bool {
-    let Ok(url) = Url::parse(base_url) else {
-        return false;
-    };
-    let loopback = match url.host() {
-        Some(Host::Domain(domain)) => domain == "localhost",
-        Some(Host::Ipv4(ip)) => ip.is_loopback(),
-        Some(Host::Ipv6(ip)) => ip.is_loopback(),
-        None => false,
-    };
-    url.scheme() == "https" || (url.scheme() == "http" && loopback)
 }
 
 // -- request ------------------------------------------------------------------
@@ -330,35 +256,6 @@ fn readable_block(block: &Value) -> Option<AssistantBlock> {
 
 // -- errors -------------------------------------------------------------------
 
-fn is_retryable(status: StatusCode) -> bool {
-    status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::REQUEST_TIMEOUT
-        || status.is_server_error()
-}
-
-fn retry_after(headers: &HeaderMap) -> Option<Duration> {
-    let seconds: f64 = headers
-        .get(RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    (seconds.is_finite() && seconds >= 0.0)
-        .then(|| Duration::from_secs_f64(seconds).min(MAX_RETRY_AFTER))
-}
-
-fn exhausted_error(status: StatusCode, attempts: u32) -> LlmError {
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        LlmError::RateLimited { attempts }
-    } else {
-        LlmError::Unavailable {
-            status: status.as_u16(),
-            attempts,
-        }
-    }
-}
-
 fn permanent_error(status: StatusCode, message: String) -> LlmError {
     match status.as_u16() {
         401 => LlmError::ApiKeyInvalid(message),
@@ -371,29 +268,9 @@ fn permanent_error(status: StatusCode, message: String) -> LlmError {
     }
 }
 
-/// `error.message` of the API's error envelope, or the HTTP reason.
-async fn error_message(response: Response) -> String {
-    let status = response.status();
-    let body: Option<Value> = response.json().await.ok();
-    body.as_ref()
-        .and_then(|body| body.pointer("/error/message"))
+/// `error.message` of the API's error envelope.
+fn error_message(body: &Value) -> Option<String> {
+    body.pointer("/error/message")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| {
-            status
-                .canonical_reason()
-                .unwrap_or("request failed")
-                .to_string()
-        })
-}
-
-/// reqwest errors can embed the request URL; keep only what went wrong.
-fn describe_transport_error(error: reqwest::Error) -> String {
-    if error.is_timeout() {
-        "the request timed out".into()
-    } else if error.is_connect() {
-        "could not connect".into()
-    } else {
-        error.without_url().to_string()
-    }
 }

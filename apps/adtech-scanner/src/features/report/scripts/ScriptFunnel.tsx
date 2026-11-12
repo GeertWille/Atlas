@@ -5,7 +5,7 @@ import { cn } from "@/shared/lib/cn";
 import { formatBytes, formatInteger, formatPercent } from "@/shared/lib/format";
 import { type ScriptScope, scriptFunnel } from "./script-filters";
 
-/** Summary of how Phase 1 cut the volume. Each stage doubles as a scope filter. */
+/** Summary of how script triage cut the volume. Each stage doubles as a scope filter. */
 export function ScriptFunnel({
   scripts,
   scope,

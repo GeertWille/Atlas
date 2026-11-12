@@ -1,16 +1,17 @@
-//! Phase 1 ("Jeff"): a low-cost model classifies the scripts the knowledge
-//! base could not decide, from short excerpts.
+//! Script triage by the filter model: it classifies scripts from short
+//! excerpts, many per call, and gives a one-sentence reason for each.
 
 use std::collections::BTreeMap;
 
-use adscan_model::{CapturedScript, Effort, FindingSource, LogKind, LogLevel, ScriptCategory};
+use adscan_model::{ApiProvider, CapturedScript, Effort, LogKind, LogLevel, ScriptCategory};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::{Candidate, ScriptVerdict, Tally, apply_verdict, audit_excerpt};
 use crate::application::AppError;
 use crate::application::llm::{LlmMessage, LlmRequest, StopReason, UserBlock};
-use crate::application::pipeline::audit::StepRun;
-use crate::application::pipeline::state::{NodeError, NodeResult};
+use crate::application::pipeline::audit::{ModelCall, StepRun};
+use crate::application::pipeline::state::NodeError;
 use crate::domain::knowledge::{identifier_counts, is_ad_related};
 use crate::domain::pricing::{TokenUsage, cost_of, estimate_tokens};
 use crate::domain::scripts::DescribedScript;
@@ -23,12 +24,9 @@ const TAIL_CHARS: usize = 700;
 const OUTPUT_TOKENS_PER_SCRIPT: u32 = 120;
 /// Room for the model's thinking, which counts towards the output limit.
 const BASE_OUTPUT_TOKENS: u32 = 3_000;
-/// Script source the audit trail keeps per classified script. The model sees
-/// more (head, middle and tail); the log must stay a short excerpt.
-const AUDIT_EXCERPT_CHARS: usize = 300;
 
 const SYSTEM_PROMPT: &str = "\
-You are Jeff, the script triage step of a scanner that finds revenue leaks in publishers' ad stacks.
+You are the script triage step of a scanner that finds revenue leaks in publishers' ad stacks.
 
 For every script from one page load, decide whether it takes part in advertising. A later, expensive \
 analysis only reads the scripts you mark as ad-related, so a missed ad script hides a bug and a wrongly \
@@ -101,38 +99,38 @@ struct Verdict {
     reason: String,
 }
 
-struct Candidate {
-    script_index: usize,
-    /// What the model is sent about the script.
+/// A candidate with what the model is sent about it and what the audit
+/// trail keeps of that.
+struct Prompted {
+    candidate: Candidate,
     prompt: String,
-    /// What the audit trail keeps of that.
     audit: String,
 }
 
-pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
+/// Classifies everything in `pending`. Scripts the model leaves out stay
+/// unclassified; scripts the budget cannot pay for are counted in the tally.
+pub(super) async fn classify(
+    run: &mut StepRun<'_>,
+    api_key: &str,
+    pending: &mut Vec<Candidate>,
+    tally: &mut Tally,
+) -> Result<(), NodeError> {
     let capture = run.state.capture()?;
-    let candidates: Vec<Candidate> = run
-        .state
-        .scripts
-        .iter()
-        .enumerate()
-        .filter_map(|(script_index, script)| {
-            let hints = script.ambiguous_hints.as_ref()?;
-            let captured = &capture.scripts[script_index];
-            Some(Candidate {
-                script_index,
-                prompt: describe_for_model(script, captured, hints),
-                audit: describe_for_audit(script, captured, hints),
-            })
+    let prompted: Vec<Prompted> = pending
+        .drain(..)
+        .map(|candidate| {
+            let script = &run.state.scripts[candidate.script_index];
+            let captured = &capture.scripts[candidate.script_index];
+            Prompted {
+                prompt: describe_for_model(script, captured, &candidate.hints),
+                audit: describe_for_audit(script, captured, &candidate.hints),
+                candidate,
+            }
         })
         .collect();
-    let asked = candidates.len();
     let model = run.job.settings.filter_model.clone();
-    let api_key = run.job.api_key.clone().ok_or(AppError::ApiKeyMissing)?;
 
-    let mut classified = 0;
-    let mut out_of_budget = 0;
-    for batch in batches(candidates) {
+    for batch in batches(prompted) {
         run.check_cancelled()?;
         let user_text = batch_prompt(&batch);
         let max_tokens = BASE_OUTPUT_TOKENS + OUTPUT_TOKENS_PER_SCRIPT * batch.len() as u32;
@@ -141,7 +139,10 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
             .budget
             .can_afford(worst_case_cost(&model, &user_text, max_tokens))
         {
-            out_of_budget += batch.len();
+            tally.out_of_budget += batch
+                .iter()
+                .map(|prompted| prompted.candidate.script_count())
+                .sum::<usize>();
             continue;
         }
         let request = LlmRequest {
@@ -168,45 +169,22 @@ pub async fn classify_scripts(run: &mut StepRun<'_>) -> NodeResult {
         let response = run
             .deps
             .llm
-            .complete(&api_key, &request, &run.job.cancel)
+            .complete(api_key, &request, &run.job.cancel)
             .await?;
-        run.record_llm_call(&model, response.usage).await?;
+        run.record_llm_call(ModelCall {
+            provider: ApiProvider::Anthropic,
+            model: &model,
+            usage: response.usage,
+            usage_estimated: false,
+        })
+        .await?;
         let text = response.turn.text();
         run.log(LogLevel::Debug, LogKind::LlmResponse, text.clone(), None)
             .await?;
         let answer = parse_answer(&response.stop_reason, &text)?;
-        classified += apply_verdicts(run, &batch, answer).await?;
+        tally.classified += apply_verdicts(run, &model, batch, answer).await?;
     }
-
-    let records = run.state.script_records();
-    let ad_related = records.iter().filter(|record| record.ad_related).count() as u32;
-    let scan_id = run.state.summary.id.clone();
-    run.deps.scans.save_scripts(&scan_id, &records).await?;
-    if let Some(telemetry) = run.state.telemetry.as_mut() {
-        telemetry.metrics.ad_script_count = ad_related;
-        run.deps
-            .scans
-            .save_telemetry(
-                &scan_id,
-                &telemetry.metrics,
-                &telemetry.auctions,
-                &telemetry.slots,
-            )
-            .await?;
-    }
-
-    let mut summary = format!(
-        "Classified {classified} of {asked} undecided scripts; {ad_related} scripts are ad-related"
-    );
-    if out_of_budget > 0 {
-        let caveat = format!(
-            "{out_of_budget} scripts were not classified by AI because the scan budget was reached"
-        );
-        run.warn(caveat.clone()).await?;
-        summary.push_str(&format!(" ({caveat})"));
-        run.state.caveats.push(caveat);
-    }
-    Ok(summary)
+    Ok(())
 }
 
 fn describe_for_model(
@@ -238,8 +216,8 @@ fn describe_for_audit(
 ) -> String {
     let record = &script.record;
     let total = captured.body.chars().count();
-    let kept = total.min(AUDIT_EXCERPT_CHARS);
-    let excerpt: String = captured.body.chars().take(kept).collect();
+    let excerpt = audit_excerpt(&captured.body);
+    let kept = excerpt.chars().count();
     format!(
         "{} {} ({} bytes, hints: {})\n[excerpt: first {kept} of {total} characters]\n{excerpt}",
         record.id,
@@ -266,8 +244,8 @@ fn excerpt(body: &str) -> String {
     )
 }
 
-fn batches(candidates: Vec<Candidate>) -> Vec<Vec<Candidate>> {
-    let mut batches: Vec<Vec<Candidate>> = Vec::new();
+fn batches(candidates: Vec<Prompted>) -> Vec<Vec<Prompted>> {
+    let mut batches: Vec<Vec<Prompted>> = Vec::new();
     let mut batch_chars = 0;
     for candidate in candidates {
         let fits = batches.last().is_some_and(|batch| {
@@ -286,7 +264,7 @@ fn batches(candidates: Vec<Candidate>) -> Vec<Vec<Candidate>> {
     batches
 }
 
-fn batch_prompt(batch: &[Candidate]) -> String {
+fn batch_prompt(batch: &[Prompted]) -> String {
     let scripts: Vec<&str> = batch
         .iter()
         .map(|candidate| candidate.prompt.as_str())
@@ -300,7 +278,7 @@ fn batch_prompt(batch: &[Candidate]) -> String {
 
 /// The request as the audit trail keeps it: the instructions in full, and of
 /// each script its metadata and a short excerpt instead of what was sent.
-fn audit_prompt(batch: &[Candidate]) -> String {
+fn audit_prompt(batch: &[Prompted]) -> String {
     let scripts: Vec<&str> = batch
         .iter()
         .map(|candidate| candidate.audit.as_str())
@@ -342,43 +320,49 @@ fn llm_failure(message: String) -> NodeError {
     NodeError::Failed(AppError::Llm(message))
 }
 
-/// Applies the verdicts for scripts of this batch. Ids the model invented are
-/// ignored and ids it omitted keep their undecided state; both are logged.
+/// Applies the verdicts for scripts of this batch and returns how many
+/// scripts they classified. Ids the model invented are ignored and ids it
+/// omitted keep their undecided state; both are logged.
 async fn apply_verdicts(
     run: &mut StepRun<'_>,
-    batch: &[Candidate],
+    model: &str,
+    batch: Vec<Prompted>,
     answer: Answer,
 ) -> Result<usize, NodeError> {
-    let mut applied = Vec::new();
+    let mut unanswered: Vec<Candidate> = batch
+        .into_iter()
+        .map(|prompted| prompted.candidate)
+        .collect();
+    let mut classified = 0;
     let mut invented = Vec::new();
     for verdict in answer.scripts {
-        let target = batch
-            .iter()
-            .map(|candidate| candidate.script_index)
-            .find(|&index| {
-                run.state.scripts[index].record.id == verdict.id && !applied.contains(&index)
-            });
-        let Some(script_index) = target else {
+        let target = unanswered.iter().position(|candidate| {
+            run.state.scripts[candidate.script_index].record.id == verdict.id
+        });
+        let Some(position) = target else {
             invented.push(verdict.id);
             continue;
         };
-        let script = &mut run.state.scripts[script_index];
-        script.ambiguous_hints = None;
-        let record = &mut script.record;
-        record.category = verdict.category;
-        // An ad category is ad-related even if the model's two fields disagree.
-        record.ad_related = verdict.ad_related || is_ad_related(verdict.category);
-        record.classification_confidence = Some(verdict.confidence.clamp(0.0, 1.0));
-        record.classification_reason = Some(verdict.reason);
-        record.classified_by = FindingSource::Ai;
-        applied.push(script_index);
+        let candidate = unanswered.remove(position);
+        classified += apply_verdict(
+            run.state,
+            &candidate,
+            ScriptVerdict {
+                category: verdict.category,
+                // An ad category is ad-related even if the model's two fields disagree.
+                ad_related: verdict.ad_related || is_ad_related(verdict.category),
+                confidence: verdict.confidence.clamp(0.0, 1.0),
+                reason: verdict.reason,
+                ad_probability: None,
+                model: model.to_string(),
+            },
+        );
     }
-    let omitted: Vec<&str> = batch
-        .iter()
-        .filter(|candidate| !applied.contains(&candidate.script_index))
-        .map(|candidate| run.state.scripts[candidate.script_index].record.id.as_str())
-        .collect();
-    if !omitted.is_empty() || !invented.is_empty() {
+    if !unanswered.is_empty() || !invented.is_empty() {
+        let omitted: Vec<&str> = unanswered
+            .iter()
+            .map(|candidate| run.state.scripts[candidate.script_index].record.id.as_str())
+            .collect();
         let message = format!(
             "The model skipped script ids [{}] and returned unknown ids [{}]; skipped scripts stay unclassified",
             omitted.join(", "),
@@ -386,7 +370,7 @@ async fn apply_verdicts(
         );
         run.warn(message).await?;
     }
-    Ok(applied.len())
+    Ok(classified)
 }
 
 #[cfg(test)]
@@ -427,8 +411,12 @@ mod tests {
 
     #[test]
     fn candidates_are_batched_by_count_and_size() {
-        let candidate = |chars: usize| Candidate {
-            script_index: 0,
+        let candidate = |chars: usize| Prompted {
+            candidate: Candidate {
+                script_index: 0,
+                duplicates: Vec::new(),
+                hints: Vec::new(),
+            },
             prompt: "x".repeat(chars),
             audit: String::new(),
         };

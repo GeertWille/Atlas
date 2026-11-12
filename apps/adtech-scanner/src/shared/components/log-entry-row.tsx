@@ -7,11 +7,14 @@ import {
   CornerDownRightIcon,
   FlagIcon,
   type LucideIcon,
+  ScaleIcon,
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
 import type { LogEntry, LogKind } from "@/bindings";
 import {
+  type ClassificationDetails,
+  classificationDetails,
   findingSeverity,
   isExpandable,
   logEntryAsText,
@@ -21,9 +24,10 @@ import {
   summarizeToolInput,
 } from "@/shared/domain/log-entry";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
-import { LOG_KIND_LABEL, LOG_LEVEL_LABEL } from "@/shared/domain/vocabulary";
+import { LOG_KIND_LABEL, LOG_LEVEL_LABEL, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatClock } from "@/shared/lib/format";
+import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { CodeBlock } from "./code-block";
 import { CopyButton } from "./copy-button";
@@ -37,6 +41,7 @@ export const LOG_KIND_ICON: Record<LogKind, LucideIcon> = {
   toolCall: WrenchIcon,
   toolResult: CornerDownRightIcon,
   finding: FlagIcon,
+  classification: ScaleIcon,
 };
 
 const KIND_ICON_TONE: Record<LogKind, string> = {
@@ -47,9 +52,14 @@ const KIND_ICON_TONE: Record<LogKind, string> = {
   toolCall: "text-amber-fg",
   toolResult: "text-amber-fg",
   finding: "text-red-fg",
+  classification: "text-violet-fg",
 };
 
 const ROW_BODY = "flex h-full min-w-0 flex-1 items-center gap-2 text-left";
+
+function AdRelatedBadge({ adRelated }: { adRelated: boolean }) {
+  return <Badge tone={adRelated ? "violet" : "gray"}>{adRelated ? "Ad-related" : "Not ad-related"}</Badge>;
+}
 
 function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
   if (entry.kind === "toolCall") {
@@ -69,6 +79,16 @@ function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
       </span>
     );
   }
+  // The verdict leads, like a finding's severity: the message itself is cut off in a narrow window.
+  const adRelated = classificationDetails(entry)?.adRelated ?? null;
+  if (adRelated !== null) {
+    return (
+      <span className="flex min-w-0 items-center gap-2">
+        <AdRelatedBadge adRelated={adRelated} />
+        <span className="truncate">{entry.message}</span>
+      </span>
+    );
+  }
   return (
     <span
       className={cn(
@@ -85,9 +105,70 @@ function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
   );
 }
 
+const probability = (value: number) => value.toFixed(2);
+
+/** What the classifier answered about one script, against the thresholds, and where that sent the script. */
+function ClassificationSummary({ details }: { details: ClassificationDetails }) {
+  const { answers, thresholds, category, rule } = details;
+  if (answers.length === 0 && thresholds.length === 0 && !category && !rule) return null;
+  return (
+    <div className="flex flex-col gap-2.5 rounded-md border bg-card px-3 py-2.5 text-xs">
+      {answers.length > 0 ? (
+        <dl className="grid grid-cols-[minmax(0,auto)_minmax(4rem,1fr)_auto] items-center gap-x-3 gap-y-1.5">
+          {answers.map((answer) => (
+            <div key={answer.question} className="col-span-full grid grid-cols-subgrid items-center">
+              <dt className="truncate font-mono text-muted-foreground">{answer.question}</dt>
+              {"probability" in answer ? (
+                <>
+                  <dd aria-hidden="true" className="relative h-1.5 rounded-full bg-muted">
+                    <span
+                      className="absolute inset-y-0 left-0 rounded-full bg-violet"
+                      style={{ width: `${answer.probability * 100}%` }}
+                    />
+                    {answer.thresholds.map((threshold) => (
+                      <span
+                        key={threshold.name}
+                        data-threshold={threshold.name}
+                        className="absolute -inset-y-1 w-px bg-foreground/60"
+                        style={{ left: `${threshold.value * 100}%` }}
+                      />
+                    ))}
+                  </dd>
+                  <dd className="text-right font-medium tabular-nums">{probability(answer.probability)}</dd>
+                </>
+              ) : (
+                <dd className="col-span-2">
+                  <span className="font-medium">{answer.selected}</span>
+                  {answer.confidence !== null ? (
+                    <span className="text-muted-foreground tabular-nums"> · {probability(answer.confidence)}</span>
+                  ) : null}
+                </dd>
+              )}
+            </div>
+          ))}
+        </dl>
+      ) : null}
+      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-muted-foreground empty:hidden">
+        {category ? <Badge tone="outline">{SCRIPT_CATEGORY_META[category].label}</Badge> : null}
+        {rule ? (
+          <span>
+            Rule <span className="font-mono font-medium text-foreground">{rule}</span>
+          </span>
+        ) : null}
+        {thresholds.length > 0 ? (
+          <span className="tabular-nums">
+            Thresholds {thresholds.map((threshold) => `${threshold.name} ${probability(threshold.value)}`).join(", ")}
+          </span>
+        ) : null}
+      </p>
+    </div>
+  );
+}
+
 function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (findingId: string) => void }) {
   const { text, json } = logPayload(entry);
   const findingId = reportedFindingId(entry);
+  const classification = classificationDetails(entry);
   // The headline already shows short one-line messages in full, and a tool call's name is never long.
   const showMessage = entry.kind !== "toolCall" && messageExceedsHeadline(entry);
   return (
@@ -102,11 +183,16 @@ function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (f
           {entry.message}
         </p>
       ) : null}
+      {classification ? <ClassificationSummary details={classification} /> : null}
       {text !== null ? (
         <pre
           // biome-ignore lint/a11y/noNoninteractiveTabindex: scroll container
           tabIndex={0}
-          className="selectable max-h-80 overflow-auto rounded-md border bg-code p-3 font-mono text-xs leading-[1.6] whitespace-pre"
+          className={cn(
+            "selectable max-h-80 overflow-auto rounded-md border bg-code p-3 font-mono text-xs leading-[1.6]",
+            // A script excerpt is usually one long minified line; tool output is line-oriented.
+            classification ? "break-all whitespace-pre-wrap" : "whitespace-pre",
+          )}
         >
           {text}
         </pre>

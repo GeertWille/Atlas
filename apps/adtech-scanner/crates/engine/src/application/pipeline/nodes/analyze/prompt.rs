@@ -4,6 +4,7 @@
 use adscan_model::{Capture, DeviceProfile, Finding};
 use serde_json::{Value, json};
 
+use super::aids::ReadingAids;
 use super::render;
 use super::toolbox::Toolbox;
 use crate::application::llm::ToolSpec;
@@ -86,7 +87,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                     "pattern": { "type": "string", "description": "Regular expression or literal text, case-insensitive" },
                     "script_id": {
                         "anyOf": [{ "type": "string" }, { "type": "null" }],
-                        "description": "Limit the search to one script, or null to search all"
+                        "description": "Limit the search to one script, or null to search all scripts except the internals of vendor libraries"
                     }
                 }),
                 &["pattern", "script_id"],
@@ -182,12 +183,14 @@ fn object_schema(properties: Value, required: &[&str]) -> Value {
     })
 }
 
-/// Opening user turn: everything about the scan except the script bodies.
+/// Opening user turn: everything about the scan, the reading guide when
+/// there is one, and the source the analysis should start with.
 pub fn opening_message(
     capture: &Capture,
     telemetry: &Telemetry,
     heuristic_findings: &[Finding],
     toolbox: &Toolbox,
+    aids: &ReadingAids,
 ) -> String {
     let device = match capture.device {
         DeviceProfile::Desktop => "desktop",
@@ -221,6 +224,7 @@ pub fn opening_message(
          # GPT slots\n{slots}\n\n\
          # Findings from deterministic rules\n{findings}\n\n\
          # Script index\n{index}\n\n\
+         {guide}{source}\
          Investigate why the telemetry looks the way it does, report what you can prove, then call `finish`.",
         url = capture.final_url,
         width = capture.viewport.width,
@@ -233,7 +237,29 @@ pub fn opening_message(
         auctions = render::auctions_overview(&telemetry.auctions),
         slots = render::slots(&telemetry.slots),
         index = toolbox.script_index(),
+        guide = section(
+            "# Reading guide\n\
+             A classifier marked where the publisher's ad logic most likely is, best first, with what it \
+             thinks each range does. It is a hint and can be wrong or incomplete; use `search_scripts` \
+             when it does not explain the telemetry.",
+            &aids.guide,
+        ),
+        source = section(
+            "# Source to start with\n\
+             These lines are given in full so you do not have to read them again. Cite them like any \
+             source you read with `read_script`.",
+            &aids.source,
+        ),
     )
+}
+
+/// The heading and body as one block, or nothing when there is no body.
+fn section(heading: &str, body: &str) -> String {
+    if body.is_empty() {
+        String::new()
+    } else {
+        format!("{heading}\n{body}\n\n")
+    }
 }
 
 fn list_or_dash(items: &[String]) -> String {

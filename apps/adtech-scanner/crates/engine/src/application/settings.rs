@@ -2,12 +2,12 @@
 
 use std::sync::Arc;
 
-use adscan_model::{ApiKeyStatus, Settings, SettingsPatch};
+use adscan_model::{ApiKeyStatus, ApiProvider, Settings, SettingsPatch};
 use tokio::sync::Mutex;
 
 use super::AppError;
 use super::llm::LlmError;
-use super::ports::{LlmClient, SecretStore, SettingsRepository};
+use super::ports::{JudgeClient, LlmClient, SecretStore, SettingsRepository};
 use crate::domain::DomainError;
 use crate::domain::pricing::Budget;
 use crate::domain::scan::validate_observe_seconds;
@@ -16,6 +16,7 @@ pub struct SettingsService {
     settings: Arc<dyn SettingsRepository>,
     secrets: Arc<dyn SecretStore>,
     llm: Arc<dyn LlmClient>,
+    judge: Arc<dyn JudgeClient>,
     /// Held from load to save: the UI sends one patch per changed field, and
     /// two patches working from the same copy would undo each other.
     updating: Mutex<()>,
@@ -26,59 +27,96 @@ impl SettingsService {
         settings: Arc<dyn SettingsRepository>,
         secrets: Arc<dyn SecretStore>,
         llm: Arc<dyn LlmClient>,
+        judge: Arc<dyn JudgeClient>,
     ) -> Self {
         Self {
             settings,
             secrets,
             llm,
+            judge,
             updating: Mutex::new(()),
         }
     }
 
     pub async fn get(&self) -> Result<Settings, AppError> {
         let mut settings = self.settings.load().await?.unwrap_or_default();
-        settings.has_api_key = self.api_key().await.is_some();
+        settings.has_api_key = self.api_key(ApiProvider::Anthropic).await.is_some();
+        settings.has_typesafe_key = self.api_key(ApiProvider::Typesafe).await.is_some();
+        // The key can disappear from the keychain behind the app's back.
+        settings.jev_enabled &= settings.has_typesafe_key;
         Ok(settings)
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, AppError> {
         let _updating = self.updating.lock().await;
+        if patch.jev_enabled == Some(true) && self.api_key(ApiProvider::Typesafe).await.is_none() {
+            return Err(AppError::InvalidInput(
+                "Add a TypeSafe API key before turning on Jev.".into(),
+            ));
+        }
         let mut settings = self.settings.load().await?.unwrap_or_default();
         apply_patch(&mut settings, patch)?;
-        settings.has_api_key = false;
-        self.settings.save(&settings).await?;
+        self.save(settings).await?;
         self.get().await
     }
 
-    /// Stores the key only when the API accepts it.
-    pub async fn set_api_key(&self, key: &str) -> Result<ApiKeyStatus, AppError> {
+    /// Stores the key only when the provider's API accepts it.
+    pub async fn set_api_key(
+        &self,
+        provider: ApiProvider,
+        key: &str,
+    ) -> Result<ApiKeyStatus, AppError> {
         let key = key.trim();
         if key.is_empty() {
             return Ok(rejected("Enter an API key."));
         }
-        match self.llm.validate_key(key).await {
+        let (validation, name) = match provider {
+            ApiProvider::Anthropic => (self.llm.validate_key(key).await, "Anthropic"),
+            ApiProvider::Typesafe => (self.judge.validate_key(key).await, "TypeSafe"),
+        };
+        match validation {
             Ok(()) => {
-                self.secrets.store_api_key(key).await?;
+                self.secrets.store_api_key(provider, key).await?;
                 Ok(ApiKeyStatus {
                     valid: true,
                     message: None,
                 })
             }
-            Err(LlmError::ApiKeyInvalid(_)) => Ok(rejected("Anthropic rejected this API key.")),
+            Err(LlmError::ApiKeyInvalid(_)) => {
+                Ok(rejected(&format!("{name} rejected this API key.")))
+            }
             Err(error) => Ok(rejected(&format!(
                 "The key could not be verified ({error}). It was not saved."
             ))),
         }
     }
 
-    pub async fn clear_api_key(&self) -> Result<(), AppError> {
-        Ok(self.secrets.clear_api_key().await?)
+    /// Jev cannot stay on without its key, so clearing that key turns it off.
+    pub async fn clear_api_key(&self, provider: ApiProvider) -> Result<(), AppError> {
+        self.secrets.clear_api_key(provider).await?;
+        if provider == ApiProvider::Typesafe {
+            let _updating = self.updating.lock().await;
+            if let Some(mut settings) = self.settings.load().await?
+                && settings.jev_enabled
+            {
+                settings.jev_enabled = false;
+                self.save(settings).await?;
+            }
+        }
+        Ok(())
     }
 
     /// `None` when no key is stored or the keychain cannot be read; scans then
-    /// run without the AI phases.
-    pub async fn api_key(&self) -> Option<String> {
-        self.secrets.api_key().await.ok().flatten()
+    /// run without what that provider would have done.
+    pub async fn api_key(&self, provider: ApiProvider) -> Option<String> {
+        self.secrets.api_key(provider).await.ok().flatten()
+    }
+
+    /// Whether a key exists is asked of the keychain on every read, never stored.
+    async fn save(&self, mut settings: Settings) -> Result<(), AppError> {
+        settings.has_api_key = false;
+        settings.has_typesafe_key = false;
+        Ok(self.settings.save(&settings).await?)
     }
 }
 
@@ -119,6 +157,9 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) -> Result<(), Doma
     }
     if let Some(theme) = patch.theme {
         settings.theme = theme;
+    }
+    if let Some(jev_enabled) = patch.jev_enabled {
+        settings.jev_enabled = jev_enabled;
     }
     Ok(())
 }

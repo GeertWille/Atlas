@@ -2,9 +2,9 @@
 
 use adscan_engine::application::AppError;
 use adscan_model::{
-    ApiKeyStatus, BrowserInfo, CommandError, DashboardStats, ErrorCode, ExportFormat, LogEntry,
-    LogSearchHit, ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanSummary, Settings,
-    SettingsPatch,
+    ApiKeyStatus, ApiProvider, BrowserInfo, CommandError, DashboardStats, ErrorCode, ExportFormat,
+    LogEntry, LogSearchHit, ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanSummary,
+    Settings, SettingsPatch,
 };
 use std::path::Path;
 
@@ -35,18 +35,30 @@ pub async fn update_settings(
     state.settings.update(patch).await.map_err(command_error)
 }
 
+/// `provider` defaults to Anthropic, the only provider older callers know.
 #[tauri::command]
-pub async fn set_api_key(state: State<'_, AppState>, key: String) -> CommandResult<ApiKeyStatus> {
+pub async fn set_api_key(
+    state: State<'_, AppState>,
+    key: String,
+    provider: Option<ApiProvider>,
+) -> CommandResult<ApiKeyStatus> {
     state
         .settings
-        .set_api_key(&key)
+        .set_api_key(provider.unwrap_or(ApiProvider::Anthropic), &key)
         .await
         .map_err(command_error)
 }
 
 #[tauri::command]
-pub async fn clear_api_key(state: State<'_, AppState>) -> CommandResult<()> {
-    state.settings.clear_api_key().await.map_err(command_error)
+pub async fn clear_api_key(
+    state: State<'_, AppState>,
+    provider: Option<ApiProvider>,
+) -> CommandResult<()> {
+    state
+        .settings
+        .clear_api_key(provider.unwrap_or(ApiProvider::Anthropic))
+        .await
+        .map_err(command_error)
 }
 
 #[tauri::command]

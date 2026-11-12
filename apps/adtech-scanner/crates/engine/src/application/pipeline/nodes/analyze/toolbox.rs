@@ -8,6 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::render;
+use crate::domain::chunks::LineRange;
 use crate::domain::finding::FindingDraft;
 use crate::domain::telemetry::Telemetry;
 
@@ -32,6 +33,37 @@ pub struct ScriptSource {
     pub category: ScriptCategory,
     pub size_bytes: f64,
     pub lines: Vec<String>,
+    /// The lines a search of all scripts covers; `None` is every line.
+    pub default_search: Option<Vec<LineRange>>,
+}
+
+impl ScriptSource {
+    /// A stock vendor library: only searched in full when asked for by id.
+    pub fn is_vendor_library(&self) -> bool {
+        self.default_search.is_some()
+    }
+
+    fn in_default_search(&self, line: usize) -> bool {
+        self.default_search
+            .as_ref()
+            .is_none_or(|ranges| ranges.iter().any(|range| range.contains(line)))
+    }
+
+    /// What the script index says about the limited search, if anything.
+    fn search_note(&self) -> String {
+        match self.default_search.as_deref() {
+            None => String::new(),
+            Some([]) => " | vendor library, searched only when script_id is given".into(),
+            Some(ranges) => format!(
+                " | vendor library, only lines {} are searched unless script_id is given",
+                ranges
+                    .iter()
+                    .map(|range| format!("{}-{}", range.start, range.end))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        }
+    }
 }
 
 struct TelemetrySections {
@@ -148,16 +180,36 @@ impl Toolbox {
             .iter()
             .map(|script| {
                 format!(
-                    "{} | {:?} | {} bytes | {} lines | {}",
+                    "{} | {:?} | {} bytes | {} lines | {}{}",
                     script.id,
                     script.category,
                     script.size_bytes,
                     script.lines.len(),
                     script.url,
+                    script.search_note(),
                 )
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    pub fn scripts(&self) -> &[ScriptSource] {
+        &self.scripts
+    }
+
+    /// The lines as `read_script` shows them, so that line numbers quoted
+    /// from this text verify like any other citation.
+    pub fn excerpt(&self, script: usize, range: LineRange) -> String {
+        let script = &self.scripts[script];
+        format!(
+            "{} lines {}-{} of {} ({})\n{}",
+            script.id,
+            range.start,
+            range.end,
+            script.lines.len(),
+            script.url,
+            numbered(script, range.start, range.end)
+        )
     }
 
     /// Runs one tool call. Unknown tools and malformed input come back as
@@ -225,13 +277,15 @@ impl Toolbox {
     }
 
     fn search_scripts(&self, args: SearchScriptsInput) -> ToolOutcome {
-        let scripts: Vec<&ScriptSource> =
+        // A named script is searched in full; a search of everything leaves
+        // out the vendor-library lines and says how many matches that hid.
+        let (scripts, everything): (Vec<&ScriptSource>, bool) =
             match args.script_id.as_deref().filter(|id| !id.trim().is_empty()) {
                 Some(id) => match self.script(id) {
-                    Ok(script) => vec![script],
+                    Ok(script) => (vec![script], false),
                     Err(outcome) => return outcome,
                 },
-                None => self.scripts.iter().collect(),
+                None => (self.scripts.iter().collect(), true),
             };
         if args.pattern.is_empty() {
             return ToolOutcome::error("`pattern` must not be empty.");
@@ -249,9 +303,15 @@ impl Toolbox {
         let mut out = String::new();
         let mut shown = 0;
         let mut total = 0;
+        let mut hidden_notes = Vec::new();
         for script in scripts {
+            let mut hidden = 0;
             for (index, line) in script.lines.iter().enumerate() {
                 if !regex.is_match(line) {
+                    continue;
+                }
+                if everything && !script.in_default_search(index + 1) {
+                    hidden += 1;
                     continue;
                 }
                 total += 1;
@@ -268,9 +328,22 @@ impl Toolbox {
                     numbered(script, start, end)
                 ));
             }
+            if hidden > 0 {
+                hidden_notes.push(format!(
+                    "{hidden} more matching lines in vendor library {} hidden; pass script_id to see them",
+                    script.id
+                ));
+            }
         }
-        if total == 0 {
+        if total == 0 && hidden_notes.is_empty() {
             return ToolOutcome::ok(format!("No matches for `{}`.", args.pattern));
+        }
+        let hidden_notes = hidden_notes.join("\n");
+        if total == 0 {
+            return ToolOutcome::ok(format!(
+                "No matches for `{}` in the publisher's scripts.\n{hidden_notes}",
+                args.pattern
+            ));
         }
         let mut header = format!("{total} matching lines for `{}`", args.pattern);
         if literal_fallback {
@@ -281,7 +354,7 @@ impl Toolbox {
                 " [truncated: showing the first {shown}; narrow the pattern or pass script_id]"
             ));
         }
-        ToolOutcome::ok(format!("{header}\n{out}"))
+        ToolOutcome::ok(format!("{header}\n{out}{hidden_notes}"))
     }
 
     fn get_telemetry(&self, args: TelemetryInput) -> ToolOutcome {
@@ -538,6 +611,7 @@ mod tests {
                 category: ScriptCategory::Wrapper,
                 size_bytes: 200.0,
                 lines: source.iter().map(|line| line.to_string()).collect(),
+                default_search: None,
             }],
             &capture,
             &telemetry,
@@ -618,6 +692,119 @@ mod tests {
             &json!({ "pattern": "requestBids", "script_id": null }),
         );
         assert_eq!(none.content, "No matches for `requestBids`.");
+    }
+
+    /// The publisher's wrapper plus a Prebid build whose last lines hold the
+    /// publisher's ad units.
+    fn toolbox_with_vendor_library(default_search: Vec<LineRange>) -> Toolbox {
+        let mut toolbox = toolbox();
+        let mut library: Vec<String> = (0..50)
+            .map(|n| format!("adapter{n}.timeout = startAuction;"))
+            .collect();
+        library.push("pbjs.addAdUnits([{ code: 'ad-leaderboard', timeout: 250 }]);".into());
+        toolbox.scripts.push(ScriptSource {
+            id: "s7".into(),
+            url: "https://cdn.pub.example/prebid.js".into(),
+            category: ScriptCategory::Prebid,
+            size_bytes: 9000.0,
+            lines: library,
+            default_search: Some(default_search),
+        });
+        toolbox
+    }
+
+    #[test]
+    fn a_search_of_all_scripts_leaves_vendor_library_internals_out_and_says_so() {
+        let toolbox = toolbox_with_vendor_library(vec![]);
+        let everywhere = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "startAuction", "script_id": null }),
+        );
+        assert!(
+            everywhere.content.starts_with("2 matching lines"),
+            "{}",
+            everywhere.content
+        );
+        assert!(!everywhere.content.contains("--- s7"));
+        assert!(everywhere.content.ends_with(
+            "50 more matching lines in vendor library s7 hidden; pass script_id to see them"
+        ));
+
+        let only_in_the_library = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "adapter\\d+", "script_id": null }),
+        );
+        assert_eq!(
+            only_in_the_library.content,
+            "No matches for `adapter\\d+` in the publisher's scripts.\n50 more matching lines in vendor library s7 hidden; pass script_id to see them"
+        );
+
+        let by_id = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "startAuction", "script_id": "s7" }),
+        );
+        assert!(by_id.content.starts_with("50 matching lines"));
+        assert!(by_id.content.contains("--- s7 line 1\n"));
+        assert!(!by_id.content.contains("hidden"));
+
+        let read = toolbox.execute(
+            "read_script",
+            &json!({ "script_id": "s7", "start_line": 1, "end_line": 3 }),
+        );
+        assert!(
+            read.content
+                .contains("    1| adapter0.timeout = startAuction;")
+        );
+    }
+
+    #[test]
+    fn publisher_code_inside_a_vendor_library_stays_in_the_default_search() {
+        let toolbox = toolbox_with_vendor_library(vec![LineRange { start: 51, end: 51 }]);
+        let outcome = toolbox.execute(
+            "search_scripts",
+            &json!({ "pattern": "timeout", "script_id": null }),
+        );
+        assert!(outcome.content.starts_with("1 matching lines"));
+        assert!(outcome.content.contains("--- s7 line 51\n"));
+        assert!(outcome.content.contains("code: 'ad-leaderboard'"));
+        assert!(
+            outcome
+                .content
+                .contains("50 more matching lines in vendor library s7 hidden")
+        );
+    }
+
+    #[test]
+    fn the_script_index_says_which_scripts_a_search_of_everything_covers() {
+        let index = toolbox_with_vendor_library(vec![]).script_index();
+        assert_eq!(
+            index.lines().collect::<Vec<_>>(),
+            [
+                "s1 | Wrapper | 200 bytes | 8 lines | https://pub.example/ads.js",
+                "s7 | Prebid | 9000 bytes | 51 lines | https://cdn.pub.example/prebid.js | vendor library, searched only when script_id is given",
+            ]
+        );
+        let partly = toolbox_with_vendor_library(vec![
+            LineRange { start: 1, end: 2 },
+            LineRange { start: 51, end: 51 },
+        ])
+        .script_index();
+        assert!(partly.ends_with(
+            "| vendor library, only lines 1-2, 51-51 are searched unless script_id is given"
+        ));
+    }
+
+    #[test]
+    fn an_excerpt_reads_like_a_read_script_result() {
+        let toolbox = toolbox();
+        let read = toolbox.execute(
+            "read_script",
+            &json!({ "script_id": "s1", "start_line": 1, "end_line": 3 }),
+        );
+        assert_eq!(
+            toolbox.excerpt(0, LineRange { start: 1, end: 3 }),
+            read.content
+        );
     }
 
     #[test]

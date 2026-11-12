@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { openApp } from "./app";
 
 const VALID_KEY = "sk-ant-api03-abcdefghijklmnopqrstuv";
+const TYPESAFE_KEY = "typesafe-e2e-key-0123456789";
 
 test("settings changes are saved and survive a reload", async ({ page }) => {
   await openApp(page, "/settings");
@@ -78,6 +79,57 @@ test("API key: remove, reject an invalid key, validate and save a good one", asy
   await expect(page.locator("body")).not.toContainText(VALID_KEY);
 
   await page.reload();
+  await expect(page.getByText("A validated key is stored in your system keychain.")).toBeVisible();
+});
+
+test("TypeSafe key and the Jev switch: rejected key, stored key, enable, reload, remove", async ({ page }) => {
+  await openApp(page, "/settings");
+  const jev = page.getByRole("switch", { name: "Classify scripts with Jev" });
+  const triage = page.locator("[data-slot=field]", { hasText: "Script triage" });
+  await expect(jev).toBeDisabled();
+  await expect(page.getByText("Add a TypeSafe key first.")).toBeVisible();
+  await expect(triage).toContainText("Claude Haiku 5.5");
+  // The second vendor is disclosed before anything can be switched on.
+  await expect(page.getByText(/Sends excerpts of the scanned page's scripts to api\.typesafe\.ai/)).toBeVisible();
+
+  const input = page.getByLabel("TypeSafe API key");
+  await expect(input).toHaveAttribute("type", "password");
+  await input.fill("invalid-key");
+  await page.getByRole("button", { name: "Save TypeSafe key" }).click();
+  await expect(page.getByRole("alert")).toHaveText("TypeSafe rejected this API key.");
+  await expect(jev).toBeDisabled();
+
+  await input.fill(TYPESAFE_KEY);
+  await input.press("Enter");
+  await expect(page.getByText("A validated TypeSafe key is stored in your system keychain.")).toBeVisible();
+  await expect(page.locator("body")).not.toContainText(TYPESAFE_KEY);
+  // Saving a key does not flip the switch.
+  await expect(jev).toBeEnabled();
+  await expect(jev).not.toBeChecked();
+  await expect(triage).toContainText("Claude Haiku 5.5");
+
+  // The switch is reachable and operable from the keyboard.
+  await jev.focus();
+  await page.keyboard.press("Space");
+  await expect(jev).toBeChecked();
+  await expect(triage).toContainText("Jev System One");
+  await expect(triage).toContainText("Claude Haiku 5.5 takes over if Jev fails.");
+  await expect(page.getByText("Settings saved")).toBeVisible();
+
+  await page.reload();
+  await expect(jev).toBeChecked();
+  await expect(triage).toContainText("Jev System One");
+  await expect(page.getByText(/api\.anthropic\.com and, when Jev is enabled, api\.typesafe\.ai/)).toBeVisible();
+
+  await page.getByRole("button", { name: "Remove TypeSafe key" }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Remove the TypeSafe key?" });
+  await expect(dialog).toContainText("Jev is turned off");
+  await dialog.getByRole("button", { name: "Remove TypeSafe key" }).click();
+  await expect(page.getByLabel("TypeSafe API key")).toBeVisible();
+  await expect(jev).toBeDisabled();
+  await expect(jev).not.toBeChecked();
+  await expect(triage).toContainText("Claude Haiku 5.5");
+  // The Anthropic key was never touched.
   await expect(page.getByText("A validated key is stored in your system keychain.")).toBeVisible();
 });
 

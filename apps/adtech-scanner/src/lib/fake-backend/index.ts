@@ -27,6 +27,8 @@ const DEFAULT_SETTINGS: Settings = {
   defaultObserveSeconds: 20,
   theme: "system",
   hasApiKey: false,
+  jevEnabled: false,
+  hasTypesafeKey: false,
 };
 
 const DEFAULT_BROWSER: BrowserInfo = {
@@ -59,7 +61,8 @@ class FakeBackend {
   constructor(private readonly config: FakeConfig) {
     this.storageKey = `adscan.fake.db.${config.profile}`;
     const persisted = this.load();
-    this.settings = persisted?.settings ?? { ...DEFAULT_SETTINGS, hasApiKey: config.profile === "seeded" };
+    // State persisted before a setting existed lacks it; the defaults fill the gap.
+    this.settings = { ...DEFAULT_SETTINGS, hasApiKey: config.profile === "seeded", ...persisted?.settings };
     this.deletedSeedIds = persisted?.deletedSeedIds ?? [];
     const seeds = config.profile === "seeded" ? seedScans(this.settings, Date.now()) : [];
     this.scans = [
@@ -113,6 +116,7 @@ class FakeBackend {
       options: scan.detail.options,
       settings: this.settings,
       browserVersion: this.browser()?.version ?? FAKE_BROWSER_VERSION,
+      jevFails: this.config.jevFails,
     });
     const startedAt = performance.now();
     let cursor = 0;
@@ -152,24 +156,43 @@ class FakeBackend {
       if (patch.budgetUsd !== undefined && patch.budgetUsd <= 0) {
         throw new ApiError("invalidInput", "The per-scan budget must be greater than zero");
       }
+      if (patch.jevEnabled && !this.settings.hasTypesafeKey) {
+        throw new ApiError("invalidInput", "Add a TypeSafe API key before turning on Jev.");
+      }
       const { chromePath, ...rest } = patch;
       this.settings = { ...this.settings, ...rest };
       if (chromePath !== undefined) this.settings.chromePath = chromePath;
       this.persist();
       return clone(this.settings);
     },
-    setApiKey: async (key) => {
+    setApiKey: async (key, provider = "anthropic") => {
       await latency(500);
-      if (!/^sk-ant-[\w-]{16,}$/.test(key.trim())) {
-        return { valid: false, message: "Anthropic rejected this key (401 authentication_error: invalid x-api-key)." };
+      if (provider === "typesafe") {
+        // TypeSafe documents no key format, so any key passes unless it announces itself as invalid.
+        if (key.trim() === "" || key.includes("invalid")) {
+          return { valid: false, message: "TypeSafe rejected this API key." };
+        }
+        this.settings.hasTypesafeKey = true;
+      } else {
+        if (!/^sk-ant-[\w-]{16,}$/.test(key.trim())) {
+          return {
+            valid: false,
+            message: "Anthropic rejected this key (401 authentication_error: invalid x-api-key).",
+          };
+        }
+        this.settings.hasApiKey = true;
       }
-      this.settings.hasApiKey = true;
       this.persist();
       return { valid: true, message: null };
     },
-    clearApiKey: async () => {
+    clearApiKey: async (provider = "anthropic") => {
       await latency();
-      this.settings.hasApiKey = false;
+      if (provider === "typesafe") {
+        this.settings.hasTypesafeKey = false;
+        this.settings.jevEnabled = false;
+      } else {
+        this.settings.hasApiKey = false;
+      }
       this.persist();
     },
     detectBrowser: async () => {

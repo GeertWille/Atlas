@@ -48,6 +48,18 @@ const SONNET_5_5: Rates = Rates {
     cache_read: 0.10,
     cache_write: 2.50,
 };
+/// The Jev System One release the triage thresholds are written against. The
+/// versioned id is used instead of the `jev-latest` alias, which moves between
+/// releases and would change answers without a change here.
+pub const JEV_SYSTEM_ONE: &str = "jev-1.14.0";
+
+/// Jev bills input only; one price for every published release and alias.
+const JEV: Rates = Rates {
+    input: 0.042,
+    output: 0.0,
+    cache_read: 0.0,
+    cache_write: 0.0,
+};
 /// Applied to models missing from the table so an unknown model can never
 /// under-count against the budget.
 const CONSERVATIVE: Rates = Rates {
@@ -64,6 +76,7 @@ fn rates_for(model: &str, usage: TokenUsage) -> Option<Rates> {
         }
         "claude-haiku-5-5" => Some(HAIKU_5_5),
         "claude-sonnet-5-5" => Some(SONNET_5_5),
+        JEV_SYSTEM_ONE | "jev-1.13.0" | "jev-latest" | "jev-preview" => Some(JEV),
         _ => None,
     }
 }
@@ -199,6 +212,16 @@ mod tests {
             0
         );
         assert!(affordable_output_tokens("unknown", usage(0, 0, 0, 0), 0.75) == 10_000);
+    }
+
+    #[test]
+    fn jev_bills_input_only_under_its_versioned_ids_and_aliases() {
+        for model in [JEV_SYSTEM_ONE, "jev-1.13.0", "jev-latest", "jev-preview"] {
+            let cost = cost_of(model, usage(1_000_000, 500_000, 0, 0));
+            assert!(cost.known_model, "{model}");
+            assert!((cost.usd - 0.042).abs() < 1e-12, "{model}: {}", cost.usd);
+        }
+        assert!(!cost_of("jev-9.0.0", usage(1, 0, 0, 0)).known_model);
     }
 
     #[test]

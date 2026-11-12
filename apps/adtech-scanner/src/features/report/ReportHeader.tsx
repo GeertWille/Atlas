@@ -74,6 +74,9 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
   const { launch, isPending } = useLaunchScan();
   const other = otherDevice(summary.device);
   const completed = summary.status === "completed";
+  // With only a TypeSafe key the model classified scripts but nothing analysed their logic.
+  const logicAnalysed = detail.steps.some((step) => step.node === "analyzeLogic" && step.status !== "skipped");
+  const aiLabel = logicAnalysed ? "AI analysis" : "AI script triage";
 
   return (
     <header className="flex items-start justify-between gap-6">
@@ -107,7 +110,7 @@ export function ReportHeader({ detail }: { detail: ScanDetail }) {
             {completed ? (
               <Badge tone={summary.aiUsed ? "violet" : "outline"}>
                 {summary.aiUsed ? <SparklesIcon /> : null}
-                {summary.aiUsed ? "AI analysis" : "Deterministic checks only"}
+                {summary.aiUsed ? aiLabel : "Deterministic checks only"}
               </Badge>
             ) : null}
           </div>

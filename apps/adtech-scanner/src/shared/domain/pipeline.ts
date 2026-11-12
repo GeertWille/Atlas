@@ -23,7 +23,7 @@ export const PIPELINE_NODE_META: Record<PipelineNode, { label: string; descripti
   heuristics: { label: "Deterministic checks", description: "Run revenue-leak rules", usesModel: false },
   filterScripts: {
     label: "Filter scripts",
-    description: "Phase 1: classify which scripts are ad-related",
+    description: "Script triage: classify which scripts are ad-related",
     usesModel: true,
   },
   beautify: { label: "Beautify", description: "Format the selected scripts", usesModel: false },

@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod export;
+pub mod judge;
 pub mod llm;
 pub mod pipeline;
 pub mod ports;

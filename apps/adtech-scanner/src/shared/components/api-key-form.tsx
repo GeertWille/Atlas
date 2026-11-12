@@ -15,10 +15,10 @@ const apiKeySchema = z
   .min(1, "Paste your API key.")
   .refine((value) => !/\s/.test(value), "An API key cannot contain spaces.");
 
-const PROVIDER_COPY: Record<ApiProvider, { name: string; placeholder: string }> = {
-  anthropic: { name: "Anthropic", placeholder: "sk-ant-…" },
+const PROVIDER_COPY: Record<ApiProvider, { name: string; placeholder: string; keyNoun: string }> = {
+  anthropic: { name: "Anthropic", placeholder: "sk-ant-…", keyNoun: "key" },
   // TypeSafe does not document a key format, so there is no prefix to hint at.
-  typesafe: { name: "TypeSafe", placeholder: "Paste your key" },
+  typesafe: { name: "TypeSafe", placeholder: "Paste your key", keyNoun: "TypeSafe key" },
 };
 
 /** Validates an API key against its provider and stores it in the keychain when it is accepted. */
@@ -31,12 +31,13 @@ export function ApiKeyForm({
   submitLabel: string;
   submitVariant?: "default" | "outline";
 }) {
-  const { name, placeholder } = PROVIDER_COPY[provider];
+  const { name, placeholder, keyNoun } = PROVIDER_COPY[provider];
   const setApiKey = useSetApiKey();
   const errorId = useId();
   const [key, setKey] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const revealLabel = `${revealed ? "Hide" : "Show"} ${keyNoun}`;
 
   const save = (event: FormEvent) => {
     event.preventDefault();
@@ -82,10 +83,10 @@ export function ApiKeyForm({
             }}
             className="px-8 font-mono"
           />
-          <Hint label={revealed ? "Hide key" : "Show key"}>
+          <Hint label={revealLabel}>
             <button
               type="button"
-              aria-label={revealed ? "Hide key" : "Show key"}
+              aria-label={revealLabel}
               aria-pressed={revealed}
               onClick={() => setRevealed((current) => !current)}
               className="absolute top-1/2 right-1.5 flex size-6 -translate-y-1/2 items-center justify-center rounded-sm text-subtle-foreground hover:bg-accent hover:text-foreground"

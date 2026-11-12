@@ -5,19 +5,29 @@ import type {
   PipelineNode,
   ScanDetail,
   ScanOptions,
+  ScriptRecord,
   Settings,
   StepStatus,
 } from "@/bindings";
-import { costOf } from "@/shared/domain/model-pricing";
+import { aiAvailability } from "@/shared/domain/ai-availability";
+import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
 import { aiInvestigations, healthScore, heuristicFindings, overviewFor } from "./findings";
-import { buildScripts, captureSite, computeMetrics } from "./site";
+import {
+  buildScripts,
+  captureSite,
+  computeMetrics,
+  JEV_THRESHOLDS,
+  jevParts,
+  jevPublisherSpecific,
+  jevRule,
+} from "./site";
 
 /** One scripted moment of a simulated scan, `at` ms after it started. */
 export type Beat = { at: number } & (
   | { type: "stepStart"; node: PipelineNode; model: string | null }
   | { type: "stepEnd"; node: PipelineNode; status: StepStatus; summary: string }
   | { type: "log"; node: PipelineNode; level: LogLevel; kind: LogKind; message: string; data: unknown }
-  | { type: "usage"; node: PipelineNode; inputTokens: number; outputTokens: number; costUsd: number }
+  | { type: "usage"; node: PipelineNode; model: string; inputTokens: number; outputTokens: number; costUsd: number }
   | { type: "finding"; finding: Finding }
   | { type: "fail"; node: PipelineNode; message: string }
 );
@@ -73,7 +83,7 @@ class Timeline {
 
   usage(model: string, inputTokens: number, outputTokens: number): number {
     const costUsd = costOf(model, { input: inputTokens, output: outputTokens }).usd;
-    this.beats.push({ at: this.now, type: "usage", node: this.node, inputTokens, outputTokens, costUsd });
+    this.beats.push({ at: this.now, type: "usage", node: this.node, model, inputTokens, outputTokens, costUsd });
     return costUsd;
   }
 
@@ -102,22 +112,76 @@ class Timeline {
 
 const VIEWPORT = { desktop: "1280×900", mobile: "390×844 @3x, touch" } as const;
 
+/** The questions Jev answers about each part of an undecided script; the first one routes the script. */
+const JEV_TRIAGE_QUESTIONS = [
+  {
+    id: "ad_orchestration",
+    instructions: "Does the JavaScript in `code` call or configure an advertising stack for a web page?",
+  },
+  {
+    id: "publisher_specific",
+    instructions:
+      "Is the JavaScript in `code` written or configured for one specific website, rather than being a generic library?",
+  },
+];
+const JEV_GUIDE_QUESTIONS = [
+  "ad_orchestration",
+  "publisher_specific",
+  "auction_gating",
+  "device_detection",
+  "timing_config",
+  "lazy_load",
+  "slot_definition",
+  "consent_gating",
+];
+const JEV_QUESTION_SET = "jev-questions-v1";
+const JEV_OUTCOME = {
+  "jev-yes": "ad-related, Phase 2 candidate",
+  "jev-unsure": "kept for analysis, ranked last",
+  "jev-no": "not ad-related",
+} as const;
+/** Stand-ins for the (at most 300-character) excerpt of the best-scoring part that an audit entry keeps. */
+const JEV_EXCERPT = {
+  "jev-yes":
+    "var IS_MOBILE = window.screen.width < 1440; pbjs.que.push(function () { pbjs.addAdUnits(adUnits); if (!IS_MOBILE) { pbjs.requestBids({ timeout: PREBID_TIMEOUT, bidsBackHandler: sendAdServerRequest }); } });",
+  "jev-unsure":
+    "window.dataLayer = window.dataLayer || []; dataLayer.push({ event: 'page_view', adSlotsOnPage: document.querySelectorAll('[id^=div-gpt-]').length });",
+  "jev-no":
+    "function hydrate(root, routes) { var match = routes.find(function (route) { return route.test(location.pathname); }); return match ? match.render(root) : null; }",
+} as const;
+/** A simulated outage lets Jev answer for this many scripts before it starts failing. */
+const JEV_ANSWERS_BEFORE_FAILURE = 4;
+const JEV_FAILURE = "rate limited by the API after 3 attempts";
+
+const NO_ANTHROPIC_KEY = "No Anthropic API key configured";
+const AI_DISABLED = "AI analysis disabled for this scan";
+
 export type ScenarioContext = {
   scanId: string;
   options: ScanOptions;
   settings: Settings;
   browserVersion: string;
+  /** Jev stops answering part-way through script triage. */
+  jevFails?: boolean;
 };
 
-export function buildScenario({ scanId, options, settings, browserVersion }: ScenarioContext): Scenario {
+export function buildScenario({
+  scanId,
+  options,
+  settings,
+  browserVersion,
+  jevFails = false,
+}: ScenarioContext): Scenario {
   const hostname = new URL(options.url).hostname;
   const timeline = new Timeline();
-  const aiSkipReason = !settings.hasApiKey
-    ? "No Anthropic API key configured"
-    : !options.aiEnabled
-      ? "AI analysis disabled for this scan"
-      : null;
-  const aiRan = aiSkipReason === null;
+  const ai = aiAvailability(settings);
+  const triageSkipReason = ai.triage === null ? NO_ANTHROPIC_KEY : options.aiEnabled ? null : AI_DISABLED;
+  const analysisSkipReason = !ai.logicAnalysis ? NO_ANTHROPIC_KEY : options.aiEnabled ? null : AI_DISABLED;
+  const triageRan = triageSkipReason === null;
+  const analysisRan = analysisSkipReason === null;
+  const jevTriage = triageRan && ai.triage === "jev";
+  const jevFailed = jevTriage && jevFails;
+  const caveats: string[] = [];
 
   timeline.start("launchBrowser");
   timeline.log(`Using ${browserVersion}${settings.headless ? " (headless)" : ""}`, { after: 80 });
@@ -143,7 +207,11 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
   }
 
   const site = captureSite(hostname, options.device);
-  const scripts = buildScripts(site, aiRan);
+  const scripts = buildScripts(site, {
+    jev: jevTriage ? { model: JEV_MODEL, answers: jevFailed ? JEV_ANSWERS_BEFORE_FAILURE : Infinity } : null,
+    claudeModel: triageRan && settings.hasApiKey ? settings.filterModel : null,
+    logicAnalysis: analysisRan,
+  });
   const metrics = computeMetrics(site, scripts);
   const firstAuction = site.auctions[0];
   const observeMs = options.observeSeconds * 1000;
@@ -221,20 +289,28 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
   const heuristicCount = findings.length;
   timeline.end(`${heuristicCount} of 14 rules matched`);
 
-  if (aiRan) {
-    runAiPhases();
+  let spent = 0;
+  if (triageRan) {
+    runScriptTriage();
   } else {
-    timeline.log(`Skipping AI phases: ${aiSkipReason}`, { after: 0, level: "warn" });
-    for (const node of ["filterScripts", "beautify", "analyzeLogic"] as const) {
-      timeline.skip(node, aiSkipReason);
-    }
+    timeline.log(`Skipping AI phases: ${triageSkipReason}`, { after: 0, level: "warn" });
+    timeline.skip("filterScripts", triageSkipReason);
+  }
+  if (analysisRan) {
+    runLogicAnalysis();
+  } else {
+    if (triageRan) timeline.log(`Skipping logic analysis: ${analysisSkipReason}`, { after: 0, level: "warn" });
+    timeline.skip("beautify", analysisSkipReason);
+    timeline.skip("analyzeLogic", analysisSkipReason);
   }
 
-  timeline.start("synthesize", aiRan ? settings.filterModel : null);
+  timeline.start("synthesize", analysisRan ? settings.filterModel : null);
   const score = healthScore(findings);
-  const overview = overviewFor(site, findings, aiRan);
+  const overview = [overviewFor(site, findings, analysisRan), ...caveats.map((caveat) => `**Note:** ${caveat}.`)].join(
+    "\n\n",
+  );
   timeline.log(`Ranked ${findings.length} findings; no duplicates between rule and model findings`, { after: 200 });
-  if (aiRan) {
+  if (analysisRan) {
     timeline.log(`Writing overview with ${settings.filterModel}`, {
       after: 150,
       kind: "llmRequest",
@@ -262,26 +338,17 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
       overview,
       healthScore: score,
       prebidVersion: site.prebidVersion,
-      aiUsed: aiRan,
+      aiUsed: triageRan,
     },
   };
 
-  function runAiPhases() {
-    const toClassify = scripts.filter((script) => script.classifiedBy === "ai");
-    const analyzed = scripts.filter((script) => script.analyzed);
-    let spent = 0;
-
-    timeline.start("filterScripts", settings.filterModel);
-    timeline.log(
-      `${scripts.length - toClassify.length} scripts matched known-vendor rules; ${toClassify.length} sent to the model`,
-      { after: 100 },
-    );
+  function classifyWithClaude(toClassify: ScriptRecord[]) {
     timeline.log(`Classify ${toClassify.length} scripts as ad-related or not`, {
       kind: "llmRequest",
       data: {
         model: settings.filterModel,
         system:
-          "You are Jeff, an ad-tech script triage assistant. For each script decide its category and whether it takes part in ad delivery. You see the URL, size and the first 1,200 characters only.",
+          "You triage scripts for an ad-tech audit. For each script decide its category and whether it takes part in ad delivery. You see the URL, size and the first 1,200 characters only.",
         scripts: toClassify.map((script) => ({ id: script.id, url: script.url, bytes: script.sizeBytes })),
       },
     });
@@ -304,7 +371,110 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
         },
       },
     );
+  }
+
+  function classifyWithJev(toClassify: ScriptRecord[]) {
+    const parts = toClassify.map((script) => jevParts(script.sizeBytes));
+    const requests = parts.reduce((sum, { judged }) => sum + judged, 0);
+    timeline.log(
+      `Jev System One: ${toClassify.length} scripts, up to ${requests} parts to judge, ${JEV_TRIAGE_QUESTIONS.length} questions each. Each request carries one part of one script; script source is not stored.`,
+      {
+        level: "debug",
+        kind: "llmRequest",
+        data: {
+          model: JEV_MODEL,
+          questionSet: JEV_QUESTION_SET,
+          questions: JEV_TRIAGE_QUESTIONS,
+          thresholds: JEV_THRESHOLDS,
+        },
+      },
+    );
+    for (const [index, script] of toClassify.entries()) {
+      const adProbability = script.adProbability ?? 0;
+      const rule = jevRule(adProbability);
+      const { total, judged } = parts[index] ?? { total: 1, judged: 1 };
+      timeline.log(
+        `${script.id} ${script.url}: ad orchestration ${adProbability.toFixed(2)} (analyse >= 0.50, drop < 0.15) over ${judged} of ${total} parts -> ${JEV_OUTCOME[rule]} [${rule}]`,
+        {
+          after: 90,
+          kind: "classification",
+          data: {
+            scriptId: script.id,
+            classifier: "jev",
+            model: JEV_MODEL,
+            modelAnswered: JEV_MODEL,
+            questionSet: JEV_QUESTION_SET,
+            answers: [
+              { questionId: "ad_orchestration", pYes: adProbability },
+              { questionId: "publisher_specific", pYes: jevPublisherSpecific(script.firstParty, adProbability) },
+            ],
+            thresholds: JEV_THRESHOLDS,
+            decision: { adRelated: script.adRelated, category: script.category, route: rule },
+            parts: { total, chosen: judged },
+            excerpt: JEV_EXCERPT[rule],
+          },
+        },
+      );
+    }
+    spent += timeline.usage(JEV_MODEL, requests * 2_400, 0);
+  }
+
+  function runScriptTriage() {
+    const byJev = scripts.filter((script) => script.classifierModel !== null && isJevModel(script.classifierModel));
+    const byClaude = scripts.filter((script) => script.classifiedBy === "ai" && !byJev.includes(script));
+    // Only a script that neither a rule nor a model decided has no confidence.
+    const unclassified = scripts.filter((script) => script.classificationConfidence === null);
+    const undecided = byJev.length + byClaude.length + unclassified.length;
+
+    timeline.start("filterScripts", jevTriage ? JEV_MODEL : settings.filterModel);
+    timeline.log(
+      `${scripts.length - undecided} scripts matched known-vendor rules; ${undecided} sent to ${jevTriage ? "Jev System One" : "the model"}`,
+      { after: 100 },
+    );
+    if (jevTriage) classifyWithJev(byJev);
+    if (jevFailed) {
+      const remaining = byClaude.length + unclassified.length;
+      const fallback = settings.hasApiKey ? settings.filterModel : "the knowledge base";
+      const outcome = settings.hasApiKey ? `fall back to ${fallback}` : "stay as the knowledge base left them";
+      const caveat = `Jev System One failed during script triage (${JEV_FAILURE}); ${remaining} scripts ${outcome}`;
+      caveats.push(caveat);
+      timeline.log(caveat, {
+        level: "warn",
+        data: { from: JEV_MODEL, to: fallback, reason: JEV_FAILURE, remainingScripts: remaining },
+      });
+    }
+    if (byClaude.length > 0) classifyWithClaude(byClaude);
     timeline.end(`Classified ${scripts.length} scripts, ${metrics.adScriptCount} ad-related`);
+  }
+
+  /** Jev marks where in the selected scripts the logic worth reading is, before the analysis model starts. */
+  function buildReadingGuide(analyzed: ScriptRecord[]) {
+    const chunks = analyzed.flatMap((script, index) =>
+      Array.from({ length: Math.min(4, jevParts(script.sizeBytes).total) }, (_, part) => ({
+        scriptId: script.id,
+        lines: [1 + part * 160, (part + 1) * 160],
+        rank: Math.round((0.94 - index * 0.09 - part * 0.21) * 100) / 100,
+      })),
+    );
+    timeline.log(
+      `Jev System One reading guide: ${chunks.length} chunks of the selected scripts, ${JEV_GUIDE_QUESTIONS.length} questions each. Each request carries one chunk; script source is not stored.`,
+      {
+        after: 200,
+        level: "debug",
+        kind: "llmRequest",
+        data: { model: JEV_MODEL, questionSet: JEV_QUESTION_SET, questions: JEV_GUIDE_QUESTIONS, minRank: 0.3 },
+      },
+    );
+    timeline.wait(600);
+    spent += timeline.usage(JEV_MODEL, chunks.length * 2_600, 0);
+    timeline.log(
+      `Jev System One judged ${chunks.length} chunks; ${chunks.filter((chunk) => chunk.rank >= 0.3).length} ranked high enough for the reading guide`,
+      { after: 0, level: "debug", kind: "llmResponse", data: { model: JEV_MODEL, chunks } },
+    );
+  }
+
+  function runLogicAnalysis() {
+    const analyzed = scripts.filter((script) => script.analyzed);
 
     timeline.start("beautify");
     for (const script of analyzed) {
@@ -342,6 +512,7 @@ export function buildScenario({ scanId, options, settings, browserVersion }: Sce
         },
       },
     });
+    if (jevTriage && !jevFailed) buildReadingGuide(analyzed);
 
     const effortScale = { low: 0.7, medium: 1, high: 1.45 }[settings.analysisEffort];
     let reported = 0;

@@ -16,6 +16,7 @@ use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::secrets::MemorySecretStore;
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
+use adscan_engine::infrastructure::typesafe::TypesafeClient;
 use adscan_model::{
     BrowserInfo, Capture, CaptureRequest, CapturedScript, DeviceProfile, ScanDetail, ScanEvent,
     ScanOptions, ScanStatus, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, Viewport,
@@ -439,16 +440,48 @@ pub fn harness_with_formatter(
     api_key: Option<&str>,
     formatter: Arc<dyn SourceFormatter>,
 ) -> Harness {
+    build_harness(
+        behavior,
+        Providers {
+            anthropic_base_url,
+            api_key,
+            // Nothing listens here; these scans never use Jev.
+            typesafe_base_url: "http://127.0.0.1:1",
+            typesafe_key: None,
+        },
+        formatter,
+    )
+}
+
+pub struct Providers<'a> {
+    pub anthropic_base_url: &'a str,
+    pub api_key: Option<&'a str>,
+    pub typesafe_base_url: &'a str,
+    pub typesafe_key: Option<&'a str>,
+}
+
+/// Like [`harness`], with the real TypeSafe client pointed at a mock as well.
+pub fn harness_with_providers(behavior: CaptureBehavior, providers: Providers) -> Harness {
+    build_harness(behavior, providers, Arc::new(OxcFormatter::default()))
+}
+
+fn build_harness(
+    behavior: CaptureBehavior,
+    providers: Providers,
+    formatter: Arc<dyn SourceFormatter>,
+) -> Harness {
     let store = SqliteStore::open_in_memory().unwrap();
-    let llm = Arc::new(AnthropicClient::new(anthropic_base_url, fast_retry()).unwrap());
-    let secrets = Arc::new(match api_key {
-        Some(key) => MemorySecretStore::with_key(key),
-        None => MemorySecretStore::default(),
-    });
+    let llm = Arc::new(AnthropicClient::new(providers.anthropic_base_url, fast_retry()).unwrap());
+    let judge = Arc::new(TypesafeClient::new(providers.typesafe_base_url, fast_retry()).unwrap());
+    let secrets = Arc::new(MemorySecretStore::with_keys(
+        providers.api_key.map(str::to_string),
+        providers.typesafe_key.map(str::to_string),
+    ));
     let settings = Arc::new(SettingsService::new(
         Arc::new(store.clone()),
         secrets,
         llm.clone(),
+        judge.clone(),
     ));
     let events = Arc::new(RecordingSink::default());
     let capture = Arc::new(FakeCaptureSource::new(behavior));
@@ -456,6 +489,7 @@ pub fn harness_with_formatter(
         scans: Arc::new(store.clone()),
         logs: Arc::new(store.clone()),
         llm,
+        judge,
         capture: capture.clone(),
         formatter,
         events: events.clone(),

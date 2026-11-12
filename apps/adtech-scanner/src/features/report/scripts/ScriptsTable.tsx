@@ -1,7 +1,8 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDownIcon, CpuIcon, MegaphoneIcon, SparklesIcon } from "lucide-react";
+import { ArrowDownIcon, CpuIcon, GaugeIcon, MegaphoneIcon, SparklesIcon } from "lucide-react";
 import { useEffect, useRef } from "react";
 import type { ScriptRecord } from "@/bindings";
+import { isJevModel } from "@/shared/domain/model-pricing";
 import { SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatBytes, formatOffset, formatPercent } from "@/shared/lib/format";
@@ -34,9 +35,27 @@ function SortHeader({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+/** Who made the call. Jev reports the probability that the script is ad-related; Claude and the rules report a confidence. */
+function ClassifiedBy({ script }: { script: ScriptRecord }) {
+  const byJev = script.classifierModel !== null && isJevModel(script.classifierModel);
+  const Icon = byJev ? GaugeIcon : script.classifiedBy === "ai" ? SparklesIcon : CpuIcon;
+  const who = byJev ? "Jev" : script.classifiedBy === "ai" ? "AI" : "Rule";
+  const score =
+    script.adProbability !== null
+      ? `${formatPercent(script.adProbability)} ad`
+      : script.classificationConfidence !== null
+        ? formatPercent(script.classificationConfidence)
+        : null;
+  return (
+    <span role="cell" className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground tabular-nums">
+      <Icon className="size-3.5 text-subtle-foreground" />
+      {score === null ? who : `${who} · ${score}`}
+    </span>
+  );
+}
+
 function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selected: boolean; onSelect: () => void }) {
   const category = SCRIPT_CATEGORY_META[script.category];
-  const ClassifierIcon = script.classifiedBy === "ai" ? SparklesIcon : CpuIcon;
   return (
     <div
       role="row"
@@ -85,11 +104,7 @@ function ScriptRow({ script, selected, onSelect }: { script: ScriptRecord; selec
       <span role="cell" className="text-right text-muted-foreground tabular-nums">
         {formatOffset(script.loadedAtMs)}
       </span>
-      <span role="cell" className="flex items-center justify-end gap-1.5 text-xs text-muted-foreground tabular-nums">
-        <ClassifierIcon className="size-3.5 text-subtle-foreground" />
-        {script.classifiedBy === "ai" ? "AI" : "Rule"}
-        {script.classificationConfidence !== null ? ` · ${formatPercent(script.classificationConfidence)}` : ""}
-      </span>
+      <ClassifiedBy script={script} />
     </div>
   );
 }

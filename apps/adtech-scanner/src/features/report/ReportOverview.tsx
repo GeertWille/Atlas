@@ -1,15 +1,28 @@
+import { TriangleAlertIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { Stat, StatGrid } from "@/shared/components/stat";
 import { Badge } from "@/shared/ui/badge";
 import { buildKeyMetrics, detectedStack } from "./key-metrics";
+import { splitOverview } from "./overview-caveats";
 
 export function ReportOverview({ detail }: { detail: ScanDetail }) {
   const stack = detectedStack(detail.metrics, detail.summary.prebidVersion);
+  const { summary, caveats } = splitOverview(detail.overview ?? "");
   return (
     <section aria-label="Overview" className="flex flex-col gap-4">
       {detail.overview ? (
         <div className="flex flex-col gap-2.5 rounded-xl border bg-card px-4 py-3.5 shadow-xs">
-          <p className="selectable text-sm leading-relaxed text-pretty">{detail.overview}</p>
+          <p className="selectable text-sm leading-relaxed text-pretty">{summary}</p>
+          {caveats.length > 0 ? (
+            <ul aria-label="Scan caveats" className="flex flex-col gap-1">
+              {caveats.map((caveat) => (
+                <li key={caveat} className="selectable flex items-start gap-2 text-[13px] text-pretty text-amber-fg">
+                  <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+                  {caveat}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {stack.length > 0 ? (
             <div className="flex flex-wrap items-center gap-1.5">
               <span className="text-xs text-subtle-foreground">Detected</span>

@@ -1,6 +1,5 @@
-import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, openApp } from "./app";
+import { expectNoAxeViolations, expectNoHorizontalOverflow, openApp } from "./app";
 
 const REPORT = "/scans/seed-sportsdesk-desktop";
 
@@ -114,30 +113,18 @@ for (const colorScheme of ["light", "dark"] as const) {
   test.describe(`accessibility, ${colorScheme}`, () => {
     test.use({ colorScheme });
 
-    const audit = async (page: Page, disabledRules: string[] = []) => {
-      const results = await new AxeBuilder({ page })
-        .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
-        .disableRules(disabledRules)
-        .analyze();
-      expect(
-        results.violations.map(
-          (violation) => `${violation.id}: ${violation.nodes.map((node) => node.target.join(" ")).join(" | ")}`,
-        ),
-      ).toEqual([]);
-    };
-
     for (const screen of SCREENS) {
       test(`${screen.name} has no axe violations`, async ({ page }) => {
         await openApp(page, screen.route);
         await screen.ready(page);
-        await audit(page);
+        await expectNoAxeViolations(page);
       });
     }
 
     test("onboarding has no axe violations", async ({ page }) => {
       await openApp(page, "/", { profile: "fresh" });
       await expect(page.getByRole("heading", { name: "Browser detected" })).toBeVisible();
-      await audit(page);
+      await expectNoAxeViolations(page);
     });
 
     test("the live view has no axe violations", async ({ page }) => {
@@ -147,14 +134,14 @@ for (const colorScheme of ["light", "dark"] as const) {
       await expect(page.getByRole("region", { name: "Findings" }).getByRole("listitem").first()).toBeVisible({
         timeout: 20_000,
       });
-      await audit(page);
+      await expectNoAxeViolations(page);
     });
 
     test("overlays have no axe violations: palette, menus, dialogs, expanded finding", async ({ page }) => {
       await openApp(page, REPORT);
       await page.keyboard.press("Control+k");
       await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
-      await audit(page);
+      await expectNoAxeViolations(page);
       await page.keyboard.press("Escape");
 
       // An open menu is modal: the page behind it is aria-hidden and its controls are unreachable,
@@ -166,13 +153,13 @@ for (const colorScheme of ["light", "dark"] as const) {
         await page.keyboard.press("Tab");
         expect(await menu.evaluate((element) => element.contains(document.activeElement))).toBe(true);
       }
-      await audit(page, ["aria-hidden-focus"]);
+      await expectNoAxeViolations(page, ["aria-hidden-focus"]);
       await page.keyboard.press("Escape");
 
       await openApp(page, "/history");
       await page.getByRole("button", { name: "Delete all…" }).click();
       await expect(page.getByRole("alertdialog")).toBeVisible();
-      await audit(page);
+      await expectNoAxeViolations(page);
     });
   });
 }

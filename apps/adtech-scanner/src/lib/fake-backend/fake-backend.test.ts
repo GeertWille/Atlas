@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "vitest";
-import type { ScanEvent, ScanOptions, ScanStatus } from "@/bindings";
+import type { ScanEvent, ScanOptions, ScanStatus, ScriptRecord } from "@/bindings";
 import { ApiError } from "@/lib/api/error";
 import type { ApiPort } from "@/lib/api/port";
 import { createFakeBackend } from "./index";
@@ -14,6 +14,7 @@ const options: ScanOptions = {
 };
 
 const VALID_KEY = "sk-ant-api03-abcdefghijklmnopqrstuv";
+const TYPESAFE_KEY = "typesafe-test-key";
 
 /** Starts a scan and resolves with every event up to and including its final status. */
 async function runToEnd(api: ApiPort, scanOptions: ScanOptions) {
@@ -183,6 +184,175 @@ describe("API key", () => {
     expect((await api.getSettings()).hasApiKey).toBe(true);
     await api.clearApiKey();
     expect((await api.getSettings()).hasApiKey).toBe(false);
+  });
+});
+
+describe("TypeSafe key and the Jev switch", () => {
+  test("keys are stored per provider and a rejected key stores nothing", async () => {
+    const api = createFakeBackend({ profile: "fresh", speed: 5000 });
+    expect(await api.setApiKey("this-key-is-invalid", "typesafe")).toEqual({
+      valid: false,
+      message: "TypeSafe rejected this API key.",
+    });
+    expect(await api.getSettings()).toMatchObject({ hasApiKey: false, hasTypesafeKey: false });
+
+    expect(await api.setApiKey("any-format-works", "typesafe")).toEqual({ valid: true, message: null });
+    expect(await api.getSettings()).toMatchObject({ hasApiKey: false, hasTypesafeKey: true, jevEnabled: false });
+
+    await api.setApiKey(VALID_KEY, "anthropic");
+    await api.clearApiKey("anthropic");
+    expect(await api.getSettings()).toMatchObject({ hasApiKey: false, hasTypesafeKey: true });
+  });
+
+  test("Jev cannot be enabled without a key, and removing the key turns it off", async () => {
+    const api = createFakeBackend({ profile: "fresh", speed: 5000 });
+    await expect(api.updateSettings({ jevEnabled: true })).rejects.toMatchObject({ code: "invalidInput" });
+    expect((await api.getSettings()).jevEnabled).toBe(false);
+
+    await api.setApiKey(TYPESAFE_KEY, "typesafe");
+    expect((await api.updateSettings({ jevEnabled: true })).jevEnabled).toBe(true);
+    await api.clearApiKey("typesafe");
+    expect(await api.getSettings()).toMatchObject({ hasTypesafeKey: false, jevEnabled: false });
+  });
+
+  test("state saved before the Jev settings existed loads with them switched off", async () => {
+    const { jevEnabled, hasTypesafeKey, ...legacySettings } = await createFakeBackend({
+      profile: "fresh",
+      speed: 5000,
+    }).updateSettings({ budgetUsd: 1.25 });
+    expect([jevEnabled, hasTypesafeKey]).toEqual([false, false]);
+    localStorage.setItem(
+      "adscan.fake.db.fresh",
+      JSON.stringify({ settings: legacySettings, scans: [], deletedSeedIds: [] }),
+    );
+    expect(await createFakeBackend({ profile: "fresh", speed: 5000 }).getSettings()).toMatchObject({
+      budgetUsd: 1.25,
+      jevEnabled: false,
+      hasTypesafeKey: false,
+    });
+  });
+});
+
+describe("scans with Jev System One", () => {
+  async function withJev(config: { anthropicKey: boolean; jevFails?: boolean }) {
+    const api = createFakeBackend({ profile: "fresh", speed: 5000, jevFails: config.jevFails });
+    if (config.anthropicKey) await api.setApiKey(VALID_KEY);
+    await api.setApiKey(TYPESAFE_KEY, "typesafe");
+    await api.updateSettings({ jevEnabled: true });
+    const { scanId, status } = await runToEnd(api, options);
+    expect(status).toBe("completed");
+    const detail = await api.getScan(scanId);
+    const step = (node: string) => detail.steps.find((candidate) => candidate.node === node);
+    return { detail, step, logs: await api.getLogs(scanId) };
+  }
+  const byModel = (scripts: ScriptRecord[], model: string) =>
+    scripts.filter((script) => script.classifierModel === model);
+
+  test("Jev classifies every undecided script, logs each decision, and guides the logic analysis", async () => {
+    const { detail, step, logs } = await withJev({ anthropicKey: true });
+    const judged = byModel(detail.scripts, "jev-1.14.0");
+    expect(judged.length).toBeGreaterThan(10);
+    expect(byModel(detail.scripts, "claude-haiku-5-5")).toHaveLength(0);
+    for (const script of judged) {
+      expect(script.classifiedBy).toBe("ai");
+      expect(script.adProbability).toBeGreaterThanOrEqual(0);
+      expect(script.adProbability).toBeLessThanOrEqual(1);
+      // Only a probability under the drop threshold removes a script from the ad-related set.
+      expect(script.adRelated).toBe((script.adProbability ?? 0) >= 0.15);
+    }
+    const byRule = detail.scripts.filter((script) => script.classifiedBy === "heuristic");
+    expect(byRule.every((script) => script.classifierModel === null && script.adProbability === null)).toBe(true);
+
+    const decisions = logs.filter((entry) => entry.kind === "classification");
+    expect(decisions.map((entry) => (entry.data as { scriptId: string }).scriptId)).toEqual(
+      judged.map((script) => script.id),
+    );
+    expect(new Set(decisions.map((entry) => (entry.data as { decision: { route: string } }).decision.route))).toEqual(
+      new Set(["jev-yes", "jev-unsure", "jev-no"]),
+    );
+    for (const entry of decisions) {
+      expect((entry.data as { excerpt: string }).excerpt.length).toBeLessThanOrEqual(300);
+    }
+
+    expect(step("filterScripts")).toMatchObject({ status: "completed", model: "jev-1.14.0", outputTokens: 0 });
+    expect(step("filterScripts")?.costUsd).toBeLessThan(0.01);
+    expect(step("analyzeLogic")).toMatchObject({ status: "completed", model: "claude-sonnet-5-5, jev-1.14.0" });
+    expect(logs.some((entry) => entry.message.startsWith("Jev System One reading guide:"))).toBe(true);
+    expect(logs.some((entry) => entry.message.includes("Jev System One failed"))).toBe(false);
+    expect(detail.summary.costUsd).toBeCloseTo(
+      detail.steps.reduce((sum, candidate) => sum + candidate.costUsd, 0),
+      10,
+    );
+  });
+
+  test("with only a TypeSafe key, scripts are classified and the logic analysis is skipped", async () => {
+    const { detail, step } = await withJev({ anthropicKey: false });
+    expect(byModel(detail.scripts, "jev-1.14.0").length).toBeGreaterThan(10);
+    expect(step("filterScripts")).toMatchObject({ status: "completed", model: "jev-1.14.0" });
+    expect(step("beautify")).toMatchObject({ status: "skipped", summary: "No Anthropic API key configured" });
+    expect(step("analyzeLogic")).toMatchObject({ status: "skipped", summary: "No Anthropic API key configured" });
+    expect(step("synthesize")).toMatchObject({ status: "completed", model: null });
+    expect(detail.scripts.some((script) => script.analyzed)).toBe(false);
+    expect(detail.findings.every((finding) => finding.source === "heuristic")).toBe(true);
+    expect(detail.summary.aiUsed).toBe(true);
+    expect(detail.summary.costUsd).toBeGreaterThan(0);
+    expect(detail.summary.costUsd).toBeLessThan(0.01);
+  });
+
+  test("when Jev fails mid-scan the remaining scripts go to Claude Haiku, with a warning and a caveat", async () => {
+    const { detail, step, logs } = await withJev({ anthropicKey: true, jevFails: true });
+    const byJev = byModel(detail.scripts, "jev-1.14.0");
+    const byHaiku = byModel(detail.scripts, "claude-haiku-5-5");
+    expect(byJev).toHaveLength(4);
+    expect(byHaiku.length).toBeGreaterThan(5);
+    expect(byHaiku.every((script) => script.adProbability === null)).toBe(true);
+
+    const warning = logs.find((entry) => entry.level === "warn" && entry.message.includes("Jev System One failed"));
+    expect(warning?.message).toBe(
+      `Jev System One failed during script triage (rate limited by the API after 3 attempts); ${byHaiku.length} scripts fall back to claude-haiku-5-5`,
+    );
+    expect(warning?.data).toEqual({
+      from: "jev-1.14.0",
+      to: "claude-haiku-5-5",
+      reason: "rate limited by the API after 3 attempts",
+      remainingScripts: byHaiku.length,
+    });
+    expect(step("filterScripts")).toMatchObject({ status: "completed", model: "jev-1.14.0, claude-haiku-5-5" });
+    expect(detail.overview).toContain(`\n\n**Note:** ${warning?.message}.`);
+    // Jev is done for this scan: no reading guide either.
+    expect(step("analyzeLogic")).toMatchObject({ status: "completed", model: "claude-sonnet-5-5" });
+    expect(logs.some((entry) => entry.message.includes("reading guide"))).toBe(false);
+    expect(detail.findings.some((finding) => finding.source === "ai")).toBe(true);
+  });
+
+  test("when Jev fails and there is no Anthropic key, the remaining scripts stay with the knowledge base", async () => {
+    const { detail, step, logs } = await withJev({ anthropicKey: false, jevFails: true });
+    expect(byModel(detail.scripts, "jev-1.14.0")).toHaveLength(4);
+    expect(detail.scripts.filter((script) => script.classifiedBy === "ai")).toHaveLength(4);
+    const warning = logs.find((entry) => entry.message.includes("Jev System One failed"));
+    expect(warning).toMatchObject({ level: "warn", data: { to: "the knowledge base" } });
+    expect(warning?.message).toMatch(/\d+ scripts stay as the knowledge base left them$/);
+    expect(step("filterScripts")).toMatchObject({ status: "completed", model: "jev-1.14.0" });
+    expect(step("analyzeLogic")?.status).toBe("skipped");
+  });
+
+  test("a stored key alone changes nothing: Jev is only used while the switch is on", async () => {
+    const api = createFakeBackend({ profile: "fresh", speed: 5000 });
+    await api.setApiKey(VALID_KEY);
+    await api.setApiKey(TYPESAFE_KEY, "typesafe");
+    const { scanId } = await runToEnd(api, options);
+    const detail = await api.getScan(scanId);
+    expect(detail.scripts.some((script) => script.adProbability !== null)).toBe(false);
+    expect(detail.steps.find((step) => step.node === "filterScripts")?.model).toBe("claude-haiku-5-5");
+  });
+
+  test("history seeded before Jev was switched on keeps its Claude classification", async () => {
+    const api = createFakeBackend({ profile: "seeded", speed: 5000 });
+    await api.setApiKey(TYPESAFE_KEY, "typesafe");
+    await api.updateSettings({ jevEnabled: true });
+    const reloaded = createFakeBackend({ profile: "seeded", speed: 5000 });
+    const detail = await reloaded.getScan("seed-sportsdesk-desktop");
+    expect(detail.scripts.some((script) => script.adProbability !== null)).toBe(false);
   });
 });
 

@@ -12,9 +12,9 @@ use adscan_engine::application::pipeline::graph::NODES;
 use adscan_engine::application::ports::{CaptureError, FormattedSource, SourceFormatter};
 use adscan_engine::application::scans::MAX_CONCURRENT_SCANS;
 use adscan_model::{
-    ApiKeyStatus, DeviceProfile, Effort, EvidenceKind, FindingCategory, FindingSource, LogEntry,
-    LogKind, PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory, SettingsPatch,
-    Severity, StepStatus,
+    ApiKeyStatus, ApiProvider, DeviceProfile, Effort, EvidenceKind, FindingCategory, FindingSource,
+    LogEntry, LogKind, PipelineNode, ScanDetail, ScanEvent, ScanStatus, ScriptCategory,
+    SettingsPatch, Severity, StepStatus,
 };
 use common::*;
 use serde_json::{Value, json};
@@ -359,9 +359,26 @@ async fn full_scan_runs_every_node_and_merges_ai_and_heuristic_findings() {
         "heuristic findings are part of the context"
     );
     assert!(opening.contains("s3 | Wrapper"));
+    let script_index = opening.split("# Script index\n").nth(1).unwrap();
     assert!(
-        !opening.contains("innerWidth"),
-        "script bodies are not in the opening message"
+        script_index.find("s3 | Wrapper").unwrap() < script_index.find("s5 | Wrapper").unwrap()
+            && script_index.find("s5 | Wrapper").unwrap()
+                < script_index.find("s1 | Prebid").unwrap(),
+        "publisher code is listed first and the vendor library last: {script_index}"
+    );
+    assert!(
+        script_index
+            .contains("prebid9.20.0.js | vendor library, searched only when script_id is given")
+    );
+    // The two publisher scripts are small, so the model gets them up front
+    // instead of spending turns on fetching them.
+    let inlined = opening.split("# Source to start with\n").nth(1).unwrap();
+    assert!(inlined.contains("s3 lines 1-"));
+    assert!(inlined.contains("return window.innerWidth > 768;"));
+    assert!(inlined.contains("s5 lines 1-"));
+    assert!(
+        !opening.contains("# Reading guide"),
+        "there is no reading guide without Jev"
     );
     assert_eq!(sonnet[0]["output_config"]["effort"], "medium");
     assert_eq!(sonnet[0]["max_tokens"], 8000);
@@ -460,6 +477,17 @@ async fn full_scan_runs_every_node_and_merges_ai_and_heuristic_findings() {
         logs.iter()
             .all(|entry| !entry.message.contains(WRAPPER_SOURCE)),
         "raw script bodies are never logged"
+    );
+    let logged_opening = &logs
+        .iter()
+        .find(|entry| entry.kind == LogKind::LlmRequest && entry.node == PipelineNode::AnalyzeLogic)
+        .unwrap()
+        .message;
+    assert!(logged_opening.contains("# Source to start with"));
+    assert!(
+        logged_opening.contains("characters; inlined source is not stored in full]")
+            && !logged_opening.contains("return window.innerWidth > 768;"),
+        "the audit trail keeps an excerpt of the inlined source, not the source"
     );
     assert_eq!(
         step(&detail, PipelineNode::AnalyzeLogic).log_count as usize,
@@ -1223,7 +1251,11 @@ async fn persisted_audit_trail_holds_bounded_excerpts_never_script_bodies() {
             entry.kind == LogKind::LlmRequest && entry.node == PipelineNode::FilterScripts
         })
         .unwrap();
-    assert!(filter_request.message.contains("You are Jeff"));
+    assert!(
+        filter_request
+            .message
+            .contains("You are the script triage step")
+    );
     assert!(
         filter_request
             .message
@@ -1743,7 +1775,11 @@ async fn api_key_is_stored_only_when_the_api_accepts_it() {
         .await;
     let harness = harness(gated_desktop(), &server.uri(), None);
 
-    let rejected = harness.settings.set_api_key("sk-ant-bad").await.unwrap();
+    let rejected = harness
+        .settings
+        .set_api_key(ApiProvider::Anthropic, "sk-ant-bad")
+        .await
+        .unwrap();
     assert_eq!(
         rejected,
         ApiKeyStatus {
@@ -1752,11 +1788,18 @@ async fn api_key_is_stored_only_when_the_api_accepts_it() {
         }
     );
     assert!(!harness.settings.get().await.unwrap().has_api_key);
-    assert!(!harness.settings.set_api_key("   ").await.unwrap().valid);
+    assert!(
+        !harness
+            .settings
+            .set_api_key(ApiProvider::Anthropic, "   ")
+            .await
+            .unwrap()
+            .valid
+    );
 
     let accepted = harness
         .settings
-        .set_api_key("  sk-ant-good\n")
+        .set_api_key(ApiProvider::Anthropic, "  sk-ant-good\n")
         .await
         .unwrap();
     assert_eq!(
@@ -1768,7 +1811,11 @@ async fn api_key_is_stored_only_when_the_api_accepts_it() {
     );
     assert!(harness.settings.get().await.unwrap().has_api_key);
     assert_eq!(
-        harness.settings.api_key().await.as_deref(),
+        harness
+            .settings
+            .api_key(ApiProvider::Anthropic)
+            .await
+            .as_deref(),
         Some("sk-ant-good")
     );
     let stored = serde_json::to_string(&harness.settings.get().await.unwrap()).unwrap();
@@ -1777,14 +1824,22 @@ async fn api_key_is_stored_only_when_the_api_accepts_it() {
         "the key is never part of the settings"
     );
 
-    harness.settings.clear_api_key().await.unwrap();
+    harness
+        .settings
+        .clear_api_key(ApiProvider::Anthropic)
+        .await
+        .unwrap();
     assert!(!harness.settings.get().await.unwrap().has_api_key);
 }
 
 #[tokio::test]
 async fn unreachable_api_does_not_store_the_key() {
     let harness = harness(gated_desktop(), "http://127.0.0.1:1", None);
-    let status = harness.settings.set_api_key("sk-ant-any").await.unwrap();
+    let status = harness
+        .settings
+        .set_api_key(ApiProvider::Anthropic, "sk-ant-any")
+        .await
+        .unwrap();
     assert!(!status.valid);
     assert!(
         status

@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adscan_model::{
-    BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit, ScanDetail, ScanEvent,
-    ScanList, ScanListQuery, ScanOptions, ScanStatus, ScanSummary, SeverityCounts, StepStatus,
+    ApiProvider, BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit, ScanDetail,
+    ScanEvent, ScanList, ScanListQuery, ScanOptions, ScanStatus, ScanSummary, SeverityCounts,
+    StepStatus,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -68,8 +69,15 @@ impl ScanService {
     pub async fn start(&self, options: ScanOptions) -> Result<ScanSummary, AppError> {
         let scan = ValidatedScan::new(options)?;
         let settings = self.settings.get().await?;
-        let api_key = if scan.options.ai_enabled {
-            self.settings.api_key().await
+        let ai_enabled = scan.options.ai_enabled;
+        let api_key = if ai_enabled {
+            self.settings.api_key(ApiProvider::Anthropic).await
+        } else {
+            None
+        };
+        // Which classifier a scan uses is fixed here, when it starts.
+        let jev_key = if ai_enabled && settings.jev_enabled {
+            self.settings.api_key(ApiProvider::Typesafe).await
         } else {
             None
         };
@@ -115,6 +123,7 @@ impl ScanService {
             scan,
             settings,
             api_key,
+            jev_key,
             cancel,
         };
         tokio::spawn(supervise(

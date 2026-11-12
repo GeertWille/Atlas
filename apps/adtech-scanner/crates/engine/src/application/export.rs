@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use adscan_model::{
-    EvidenceKind, Finding, LogEntry, LogKind, PipelineNode, ScanDetail, ScanMetrics,
+    EvidenceKind, Finding, LogEntry, LogKind, PipelineNode, ScanDetail, ScanMetrics, ScriptRecord,
 };
 
 use super::AppError;
@@ -258,14 +258,24 @@ fn scripts_section(out: &mut String, detail: &ScanDetail) {
     for script in ad_scripts {
         let _ = writeln!(
             out,
-            "| {} | {:?} | {} | {:.0} | {:?} | {} |",
+            "| {} | {:?} | {} | {:.0} | {} | {} |",
             cell(&script.url),
             script.category,
             cell(script.vendor.as_deref().unwrap_or("-")),
             script.size_bytes,
-            script.classified_by,
+            cell(&classified_by(script)),
             if script.analyzed { "yes" } else { "no" },
         );
+    }
+}
+
+/// The rule base, or the model that made the call with the ad probability
+/// when it reported one.
+fn classified_by(script: &ScriptRecord) -> String {
+    match (&script.classifier_model, script.ad_probability) {
+        (Some(model), Some(probability)) => format!("{model} (ad probability {probability:.2})"),
+        (Some(model), None) => model.clone(),
+        (None, _) => format!("{:?}", script.classified_by),
     }
 }
 
@@ -328,4 +338,49 @@ fn ai_trail_section(out: &mut String, logs: &[LogEntry]) {
 
 fn cell(text: &str) -> String {
     text.replace('|', "\\|").replace('\n', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use adscan_model::{FindingSource, ScriptCategory};
+
+    fn script(classifier_model: Option<&str>, ad_probability: Option<f64>) -> ScriptRecord {
+        ScriptRecord {
+            id: "s1".into(),
+            url: "https://pub.example/js/lazy.js".into(),
+            hostname: "pub.example".into(),
+            inline: false,
+            size_bytes: 100.0,
+            hash: "0".repeat(16),
+            category: ScriptCategory::Wrapper,
+            ad_related: true,
+            classification_reason: None,
+            classification_confidence: None,
+            classified_by: if classifier_model.is_some() {
+                FindingSource::Ai
+            } else {
+                FindingSource::Heuristic
+            },
+            classifier_model: classifier_model.map(str::to_string),
+            ad_probability,
+            analyzed: false,
+            vendor: None,
+            loaded_at_ms: None,
+            first_party: true,
+        }
+    }
+
+    #[test]
+    fn the_script_table_names_the_model_that_classified_a_script() {
+        assert_eq!(classified_by(&script(None, None)), "Heuristic");
+        assert_eq!(
+            classified_by(&script(Some("claude-haiku-5-5"), None)),
+            "claude-haiku-5-5"
+        );
+        assert_eq!(
+            classified_by(&script(Some("jev-1.14.0"), Some(0.934))),
+            "jev-1.14.0 (ad probability 0.93)"
+        );
+    }
 }

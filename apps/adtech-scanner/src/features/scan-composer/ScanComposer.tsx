@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import { ChevronDownIcon, GlobeIcon, MonitorIcon, ScanSearchIcon, SmartphoneIcon, SparklesIcon } from "lucide-react";
 import { type FormEvent, useEffect, useId, useState } from "react";
 import type { Settings } from "@/bindings";
+import { type AiAvailability, aiAvailability } from "@/shared/domain/ai-availability";
 import { OBSERVE_SECONDS } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
@@ -41,8 +42,8 @@ function OptionSwitch({
   );
 }
 
-function AiSummary({ settings, aiEnabled }: { settings: Settings; aiEnabled: boolean }) {
-  if (!settings.hasApiKey) {
+function AiSummary({ settings, ai, aiEnabled }: { settings: Settings; ai: AiAvailability; aiEnabled: boolean }) {
+  if (ai.triage === null) {
     return (
       <p className="text-xs text-muted-foreground">
         No API key: this scan runs the deterministic checks only.{" "}
@@ -57,11 +58,24 @@ function AiSummary({ settings, aiEnabled }: { settings: Settings; aiEnabled: boo
     return <p className="text-xs text-muted-foreground">Deterministic checks only. No LLM cost.</p>;
   }
   const estimate = estimateScanCost(settings);
+  const amount = <span className="font-medium text-foreground tabular-nums">{formatUsd(estimate.expectedUsd)}</span>;
+  if (!ai.logicAnalysis) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        <SparklesIcon className="mr-1 inline size-3.5 -translate-y-px text-primary-text" />
+        Estimated {amount} for Jev script triage.{" "}
+        <Link to="/settings" className="font-medium text-primary-text hover:underline">
+          Add an Anthropic key
+        </Link>{" "}
+        to analyse wrapper logic.
+      </p>
+    );
+  }
   return (
     <p className="text-xs text-muted-foreground">
       <SparklesIcon className="mr-1 inline size-3.5 -translate-y-px text-primary-text" />
-      Estimated <span className="font-medium text-foreground tabular-nums">{formatUsd(estimate.expectedUsd)}</span> with{" "}
-      {settings.analysisModel}, hard cap {formatUsd(settings.budgetUsd)} per scan
+      Estimated {amount} with {settings.analysisModel}
+      {ai.triage === "jev" ? " and Jev script triage" : ""}, hard cap {formatUsd(settings.budgetUsd)} per scan
       {estimate.cappedByBudget ? ". Analysis may stop early at the cap." : "."}
       {estimate.fallbackPricing ? " No list price is known for this model, so a conservative rate applies." : ""}
     </p>
@@ -82,7 +96,9 @@ export function ScanComposer({ settings }: { settings: Settings }) {
   });
   const [urlError, setUrlError] = useState<string | null>(null);
   const [optionsOpen, setOptionsOpen] = useState(false);
-  const aiEnabled = form.aiEnabled && settings.hasApiKey;
+  const ai = aiAvailability(settings);
+  const aiEnabled = form.aiEnabled && ai.triage !== null;
+  const triageOnly = ai.triage !== null && !ai.logicAnalysis;
 
   useEffect(() => {
     if (takePendingComposerFocus()) document.getElementById(SCAN_URL_INPUT_ID)?.focus();
@@ -153,7 +169,7 @@ export function ScanComposer({ settings }: { settings: Settings }) {
 
       <Collapsible open={optionsOpen} onOpenChange={setOptionsOpen} className="border-t">
         <div className="flex min-h-10 items-center justify-between gap-4 px-4 py-2">
-          <AiSummary settings={settings} aiEnabled={aiEnabled} />
+          <AiSummary settings={settings} ai={ai} aiEnabled={aiEnabled} />
           <CollapsibleTrigger asChild>
             <Button variant="ghost" size="sm" className="-mr-2 shrink-0">
               Options
@@ -184,10 +200,14 @@ export function ScanComposer({ settings }: { settings: Settings }) {
               </p>
             </div>
             <OptionSwitch
-              label="AI logic analysis"
-              description="Classify scripts, then hunt for wrapper logic bugs."
+              label={triageOnly ? "AI script triage" : "AI logic analysis"}
+              description={
+                triageOnly
+                  ? "Classify scripts with Jev. Logic analysis needs an Anthropic key."
+                  : "Classify scripts, then hunt for wrapper logic bugs."
+              }
               checked={aiEnabled}
-              disabled={!settings.hasApiKey}
+              disabled={ai.triage === null}
               onCheckedChange={(checked) => update({ aiEnabled: checked })}
             />
             <OptionSwitch

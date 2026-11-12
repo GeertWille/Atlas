@@ -22,6 +22,8 @@ export const settingsFixture: Settings = {
   defaultObserveSeconds: 20,
   theme: "system",
   hasApiKey: true,
+  jevEnabled: false,
+  hasTypesafeKey: false,
 };
 
 export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
@@ -133,6 +135,8 @@ export function makeScript(overrides: Partial<ScriptRecord> = {}): ScriptRecord 
     classificationReason: "Application bundle.",
     classificationConfidence: 0.9,
     classifiedBy: "ai",
+    classifierModel: "claude-haiku-5-5",
+    adProbability: null,
     analyzed: false,
     vendor: null,
     loadedAtMs: 500,

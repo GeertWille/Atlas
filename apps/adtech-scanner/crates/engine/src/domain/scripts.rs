@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 use url::Url;
 
 use super::knowledge::{self, ScriptFacts, Verdict};
+use super::triage::ANALYSE_THRESHOLD;
 
 /// Script categories that can contain the publisher's own bidding logic.
 const ANALYZABLE: &[ScriptCategory] = &[
@@ -20,8 +21,10 @@ const MAX_STORED_URL_CHARS: usize = 2_000;
 #[derive(Debug, Clone, PartialEq)]
 pub struct DescribedScript {
     pub record: ScriptRecord,
-    /// `Some` when the knowledge base left the decision to Phase 1.
+    /// `Some` when the knowledge base left the decision to script triage.
     pub ambiguous_hints: Option<Vec<String>>,
+    /// How many kinds of ad stack calls the body makes.
+    pub ad_api_calls: usize,
 }
 
 /// One record per captured script, in capture order, with ids `s1`, `s2`, ...
@@ -96,42 +99,72 @@ fn describe_one(
     DescribedScript {
         record,
         ambiguous_hints,
+        ad_api_calls: knowledge::ad_api_calls(&script.body),
     }
 }
 
-/// Indexes (into the script list) of the scripts worth handing to Phase 2:
-/// ad-related code that can hold publisher logic, wrappers and first-party
-/// code first, bounded in count and total size.
+/// Indexes (into the script list) of the scripts worth handing to Phase 2,
+/// most relevant first: ad-related code that can hold publisher logic,
+/// bounded in count and total size. Of scripts with identical bodies only the
+/// first is taken.
 pub fn select_for_analysis(
-    records: &[ScriptRecord],
+    scripts: &[DescribedScript],
     max_scripts: usize,
     max_total_bytes: f64,
 ) -> Vec<usize> {
-    let mut candidates: Vec<usize> = records
+    let mut candidates: Vec<usize> = scripts
         .iter()
         .enumerate()
-        .filter(|(_, record)| record.ad_related && ANALYZABLE.contains(&record.category))
+        .filter(|(_, script)| {
+            script.record.ad_related && ANALYZABLE.contains(&script.record.category)
+        })
         .map(|(index, _)| index)
         .collect();
-    candidates.sort_by_key(|&index| {
-        let record = &records[index];
-        (
-            record.category != ScriptCategory::Wrapper,
-            !record.first_party,
-            index,
-        )
+    candidates.sort_by(|&a, &b| {
+        analysis_rank(&scripts[a])
+            .partial_cmp(&analysis_rank(&scripts[b]))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
     });
     let mut total = 0.0;
-    let mut selected = Vec::new();
+    let mut selected: Vec<usize> = Vec::new();
     for index in candidates {
-        let size = records[index].size_bytes;
-        if selected.len() < max_scripts && total + size <= max_total_bytes {
-            total += size;
+        let record = &scripts[index].record;
+        let duplicate = selected
+            .iter()
+            .any(|&taken| scripts[taken].record.hash == record.hash);
+        if !duplicate
+            && selected.len() < max_scripts
+            && total + record.size_bytes <= max_total_bytes
+        {
+            total += record.size_bytes;
             selected.push(index);
         }
     }
-    selected.sort_unstable();
     selected
+}
+
+/// Sort key that puts the publisher's own orchestration code first and stock
+/// vendor libraries last. Smaller sorts earlier.
+fn analysis_rank(script: &DescribedScript) -> (u8, bool, std::cmp::Reverse<usize>, f64) {
+    let record = &script.record;
+    let unsure = record
+        .ad_probability
+        .is_some_and(|probability| probability < ANALYSE_THRESHOLD);
+    let tier = match record.category {
+        ScriptCategory::Wrapper => 0,
+        ScriptCategory::Prebid => 3,
+        _ if unsure => 2,
+        _ => 1,
+    };
+    (
+        tier,
+        !record.first_party,
+        // A real wrapper makes several kinds of ad calls; a one-line inline
+        // snippet makes one.
+        std::cmp::Reverse(script.ad_api_calls),
+        -record.ad_probability.unwrap_or(0.0),
+    )
 }
 
 /// The URL as it may be persisted. A `data:` URL is the script body itself,
@@ -290,9 +323,55 @@ mod tests {
             ),
             script("https://static.example.co.uk/app.js", false, "boot()"),
         ]));
-        let records: Vec<ScriptRecord> = described.into_iter().map(|d| d.record).collect();
-        assert_eq!(select_for_analysis(&records, 10, 1e6), vec![0, 2]);
-        assert_eq!(select_for_analysis(&records, 1, 1e6), vec![2]);
-        assert_eq!(select_for_analysis(&records, 10, 500.0), vec![2]);
+        assert_eq!(select_for_analysis(&described, 10, 1e6), vec![2, 0]);
+        assert_eq!(select_for_analysis(&described, 1, 1e6), vec![2]);
+        assert_eq!(select_for_analysis(&described, 10, 500.0), vec![2]);
+    }
+
+    #[test]
+    fn analysis_selection_ranks_publisher_orchestration_first_and_vendor_libraries_last() {
+        let wrapper = "pbjs.que.push(function(){pbjs.addAdUnits(u);pbjs.requestBids({})});googletag.cmd.push(function(){googletag.defineSlot(p,s,i)})";
+        let mut described = describe(&capture_with(vec![
+            script("https://cdn.jsdelivr.net/npm/prebid.js", false, "lib()"),
+            script(
+                "inline:1",
+                true,
+                "googletag.cmd.push(function(){googletag.display('a')})",
+            ),
+            script("https://static.example.co.uk/unsure.js", false, "x.adUnits"),
+            script("https://static.example.co.uk/likely.js", false, "y.adUnits"),
+            script("https://static.example.co.uk/ads.js", false, wrapper),
+            script(
+                "https://other.example/third-party-wrapper.js",
+                false,
+                &format!("{wrapper};"),
+            ),
+        ]));
+        for (index, probability) in [(2, 0.2), (3, 0.8)] {
+            described[index].record.ad_related = true;
+            described[index].record.ad_probability = Some(probability);
+        }
+        assert_eq!(
+            select_for_analysis(&described, 10, 1e6),
+            vec![4, 1, 5, 3, 2, 0],
+            "first-party wrapper with most ad calls, inline snippet, third-party wrapper, likely, unsure, Prebid"
+        );
+    }
+
+    #[test]
+    fn analysis_selection_takes_identical_bodies_once() {
+        let described = describe(&capture_with(vec![
+            script(
+                "https://static.example.co.uk/ads.js",
+                false,
+                "pbjs.que.push(f)",
+            ),
+            script(
+                "https://static.example.co.uk/ads.js?again",
+                false,
+                "pbjs.que.push(f)",
+            ),
+        ]));
+        assert_eq!(select_for_analysis(&described, 10, 1e6), vec![0]);
     }
 }

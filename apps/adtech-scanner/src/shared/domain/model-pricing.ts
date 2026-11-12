@@ -16,14 +16,14 @@ const CONSERVATIVE: Rates = { input: 15, output: 75 };
 
 /** The pinned TypeSafe Jev System One version the backend sends script triage to. */
 export const JEV_MODEL = "jev-1.14.0";
-/** The alias TypeSafe may report instead of the versioned id; priced the same. */
-const JEV_ALIAS = "jev-latest";
+/** Every id a Jev response may report (the previous version and the aliases); all priced alike. */
+const JEV_PRICED_MODELS = [JEV_MODEL, "jev-1.13.0", "jev-latest", "jev-preview"];
 
 function ratesFor(model: string, promptTokens: number): Rates | null {
   if (model === "claude-haiku-5-5") {
     return promptTokens > HAIKU_LONG_PROMPT_TOKENS ? HAIKU_5_5_LONG_PROMPT : HAIKU_5_5;
   }
-  if (model === JEV_MODEL || model === JEV_ALIAS) return JEV;
+  if (JEV_PRICED_MODELS.includes(model)) return JEV;
   return model === "claude-sonnet-5-5" ? SONNET_5_5 : null;
 }
 

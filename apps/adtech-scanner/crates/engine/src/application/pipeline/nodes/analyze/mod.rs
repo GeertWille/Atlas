@@ -1,20 +1,23 @@
 //! Phase 2: an agentic tool loop in which the analysis model reads the
 //! beautified ad scripts and the telemetry and reports proven logic bugs.
 
+mod aids;
+mod guide;
 mod prompt;
 mod render;
 mod toolbox;
 
-use adscan_model::{Effort, FindingSource, LogKind, LogLevel};
+use adscan_model::{ApiProvider, Effort, FindingSource, LogKind, LogLevel};
 use serde_json::json;
 
+use self::aids::{ReadingAids, reading_aids};
 use self::prompt::SYSTEM_PROMPT;
 use self::toolbox::{ScriptSource, ToolEffect, ToolOutcome, Toolbox};
 use crate::application::AppError;
 use crate::application::llm::{
     AssistantBlock, AssistantTurn, LlmMessage, LlmRequest, StopReason, UserBlock,
 };
-use crate::application::pipeline::audit::StepRun;
+use crate::application::pipeline::audit::{ModelCall, StepRun};
 use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::domain::pricing::{TokenUsage, affordable_output_tokens, estimate_tokens};
 
@@ -22,12 +25,14 @@ const MAX_TOKENS_PER_TURN: u32 = 8_000;
 /// Below this a turn cannot hold thinking plus a useful tool call, so the
 /// loop stops instead of paying for a turn that will be cut off.
 const MIN_USEFUL_OUTPUT_TOKENS: u64 = 1_000;
-/// Tool results are stretches of captured script source and raw telemetry,
-/// which must not be persisted. The audit trail keeps a short excerpt of each
-/// result and stops keeping any once a scan's results add up to the total, so
-/// reading a script chunk by chunk cannot copy it into the log.
+/// Tool results and the source inlined in the opening message are stretches
+/// of captured script source and raw telemetry, which must not be persisted.
+/// The audit trail keeps a short excerpt of each and stops keeping any once a
+/// scan's excerpts add up to the total, so reading a script chunk by chunk
+/// cannot copy it into the log.
 const MAX_LOGGED_TOOL_RESULT_CHARS: usize = 800;
-const MAX_LOGGED_TOOL_RESULT_CHARS_PER_SCAN: usize = 24_000;
+const MAX_LOGGED_INLINED_SOURCE_CHARS: usize = 300;
+const MAX_LOGGED_SOURCE_CHARS_PER_SCAN: usize = 24_000;
 
 fn max_iterations(effort: Effort) -> u32 {
     match effort {
@@ -64,8 +69,16 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
     let model = run.job.settings.analysis_model.clone();
     let effort = run.job.settings.analysis_effort;
     let api_key = run.job.api_key.clone().ok_or(AppError::ApiKeyMissing)?;
+    let guide = match run.job.jev_key.clone() {
+        Some(jev_key) if !run.state.jev_failed => guide::build(run, &jev_key).await?,
+        _ => Vec::new(),
+    };
     let toolbox = build_toolbox(run)?;
     mark_scripts_analyzed(run).await?;
+    let aids = reading_aids(&toolbox, &guide);
+    let mut audit_excerpts = AuditExcerpts {
+        remaining_chars: MAX_LOGGED_SOURCE_CHARS_PER_SCAN,
+    };
 
     let heuristic_findings: Vec<_> = run
         .state
@@ -79,6 +92,23 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
         run.state.telemetry()?,
         &heuristic_findings,
         &toolbox,
+        &aids,
+    );
+    // The inlined source is captured script text: the audit trail gets the
+    // same message with an excerpt in its place.
+    let logged_opening = prompt::opening_message(
+        run.state.capture()?,
+        run.state.telemetry()?,
+        &heuristic_findings,
+        &toolbox,
+        &ReadingAids {
+            guide: aids.guide.clone(),
+            source: audit_excerpts.take(
+                &aids.source,
+                MAX_LOGGED_INLINED_SOURCE_CHARS,
+                "inlined source",
+            ),
+        },
     );
     let tools = prompt::tool_specs();
     let prefix_chars = SYSTEM_PROMPT.len()
@@ -91,7 +121,7 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
     run.log(
         LogLevel::Debug,
         LogKind::LlmRequest,
-        format!("System:\n{SYSTEM_PROMPT}\n\nUser:\n{opening}"),
+        format!("System:\n{SYSTEM_PROMPT}\n\nUser:\n{logged_opening}"),
         Some(json!({
             "model": model,
             "effort": effort,
@@ -103,9 +133,6 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
     let mut messages = vec![LlmMessage::User(vec![UserBlock::Text(opening.clone())])];
     let mut last_usage: Option<TokenUsage> = None;
     let mut pending_chars = prefix_chars + opening.len();
-    let mut audit_excerpts = AuditExcerpts {
-        remaining_chars: MAX_LOGGED_TOOL_RESULT_CHARS_PER_SCAN,
-    };
     let mut reported = 0;
     let mut iterations = 0;
     let mut stop = StopCause::IterationLimit;
@@ -139,7 +166,13 @@ pub async fn analyze_logic(run: &mut StepRun<'_>) -> NodeResult {
             .llm
             .complete(&api_key, &request, &run.job.cancel)
             .await?;
-        run.record_llm_call(&model, response.usage).await?;
+        run.record_llm_call(ModelCall {
+            provider: ApiProvider::Anthropic,
+            model: &model,
+            usage: response.usage,
+            usage_estimated: false,
+        })
+        .await?;
         last_usage = Some(response.usage);
         log_model_output(run, &response.turn).await?;
 
@@ -221,6 +254,7 @@ fn build_toolbox(run: &StepRun<'_>) -> Result<Toolbox, NodeError> {
                 category: record.category,
                 size_bytes: record.size_bytes,
                 lines: source.lines.clone(),
+                default_search: source.default_search.clone(),
             }
         })
         .collect();
@@ -277,19 +311,18 @@ struct AuditExcerpts {
 }
 
 impl AuditExcerpts {
-    /// The part of a tool result that goes into the audit trail.
-    fn take(&mut self, content: &str) -> String {
+    /// The part of captured data (`what` names it) that goes into the audit
+    /// trail: at most `limit` characters of it.
+    fn take(&mut self, content: &str, limit: usize, what: &str) -> String {
         let total = content.chars().count();
-        let kept = total
-            .min(MAX_LOGGED_TOOL_RESULT_CHARS)
-            .min(self.remaining_chars);
+        let kept = total.min(limit).min(self.remaining_chars);
         self.remaining_chars -= kept;
         if kept == total {
             return content.to_string();
         }
         let excerpt: String = content.chars().take(kept).collect();
         format!(
-            "{excerpt}\n[audit excerpt: {kept} of {total} characters; tool output is not stored in full]"
+            "{excerpt}\n[audit excerpt: {kept} of {total} characters; {what} is not stored in full]"
         )
     }
 }
@@ -347,7 +380,7 @@ async fn run_tool_calls(
         // acknowledgements are our own short messages.
         let carries_captured_data = !is_error && effect == ToolEffect::None;
         let logged = if carries_captured_data {
-            audit_excerpts.take(&content)
+            audit_excerpts.take(&content, MAX_LOGGED_TOOL_RESULT_CHARS, "tool output")
         } else {
             content.clone()
         };
@@ -458,19 +491,21 @@ mod tests {
         let mut excerpts = AuditExcerpts {
             remaining_chars: MAX_LOGGED_TOOL_RESULT_CHARS + 100,
         };
-        assert_eq!(excerpts.take("3 matching lines"), "3 matching lines");
+        let mut take =
+            |content: &str| excerpts.take(content, MAX_LOGGED_TOOL_RESULT_CHARS, "tool output");
+        assert_eq!(take("3 matching lines"), "3 matching lines");
 
         let source = "z".repeat(5_000);
-        let first = excerpts.take(&source);
+        let first = take(&source);
         assert!(first.starts_with(&"z".repeat(MAX_LOGGED_TOOL_RESULT_CHARS)));
         assert!(first.ends_with(
             "[audit excerpt: 800 of 5000 characters; tool output is not stored in full]"
         ));
         assert_eq!(first.matches('z').count(), MAX_LOGGED_TOOL_RESULT_CHARS);
 
-        let second = excerpts.take(&source);
+        let second = take(&source);
         assert_eq!(second.matches('z').count(), 100 - "3 matching lines".len());
-        let third = excerpts.take(&source);
+        let third = take(&source);
         assert_eq!(
             third,
             "\n[audit excerpt: 0 of 5000 characters; tool output is not stored in full]"

@@ -3,13 +3,14 @@
 use std::sync::Arc;
 
 use adscan_model::{
-    AdSlot, Auction, BrowserInfo, Capture, CaptureRequest, DashboardStats, Finding, LogEntry,
-    LogSearchHit, PipelineStep, ScanDetail, ScanEvent, ScanList, ScanListQuery, ScanMetrics,
-    ScanOptions, ScanSummary, ScriptRecord, Settings,
+    AdSlot, ApiProvider, Auction, BrowserInfo, Capture, CaptureRequest, DashboardStats, Finding,
+    LogEntry, LogSearchHit, PipelineStep, ScanDetail, ScanEvent, ScanList, ScanListQuery,
+    ScanMetrics, ScanOptions, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
 
+use super::judge::{JudgeRequest, JudgeResponse};
 use super::llm::{LlmError, LlmRequest, LlmResponse};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -70,12 +71,12 @@ pub enum SecretError {
     Failed(String),
 }
 
-/// Where the Anthropic API key lives.
+/// Where the API keys live, one per provider.
 #[async_trait]
 pub trait SecretStore: Send + Sync {
-    async fn api_key(&self) -> Result<Option<String>, SecretError>;
-    async fn store_api_key(&self, key: &str) -> Result<(), SecretError>;
-    async fn clear_api_key(&self) -> Result<(), SecretError>;
+    async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, SecretError>;
+    async fn store_api_key(&self, provider: ApiProvider, key: &str) -> Result<(), SecretError>;
+    async fn clear_api_key(&self, provider: ApiProvider) -> Result<(), SecretError>;
 }
 
 #[async_trait]
@@ -86,6 +87,20 @@ pub trait LlmClient: Send + Sync {
         request: &LlmRequest,
         cancel: &CancellationToken,
     ) -> Result<LlmResponse, LlmError>;
+
+    /// Cheap check that the key is accepted.
+    async fn validate_key(&self, api_key: &str) -> Result<(), LlmError>;
+}
+
+/// A decision model: probabilities for yes/no questions about a state.
+#[async_trait]
+pub trait JudgeClient: Send + Sync {
+    async fn judge(
+        &self,
+        api_key: &str,
+        request: &JudgeRequest,
+        cancel: &CancellationToken,
+    ) -> Result<JudgeResponse, LlmError>;
 
     /// Cheap check that the key is accepted.
     async fn validate_key(&self, api_key: &str) -> Result<(), LlmError>;

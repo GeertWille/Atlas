@@ -13,17 +13,21 @@ One scan runs these pipeline steps:
    activity, GPT slot lifecycle and timings, Amazon TAM calls and every JavaScript body.
 2. **Telemetry and heuristics**: derives auctions, slots and metrics, then runs 18 deterministic rules.
    Works with no API key.
-3. **Phase 1 ("Jeff")**: `claude-haiku-5-5` classifies which scripts are ad-related.
+3. **Script triage (Phase 1)**: classifies the scripts the built-in knowledge base cannot decide.
+   `claude-haiku-5-5` does it by default. With the optional "Classify scripts with Jev" setting on,
+   TypeSafe's Jev System One (`jev-1.14.0`) does it, and Haiku is the fallback.
 4. **Phase 2**: `claude-sonnet-5-5` reads the beautified ad scripts and telemetry in a tool loop and
-   reports logic bugs that lose revenue.
+   reports logic bugs that lose revenue. With Jev on it starts from a reading guide Jev built.
 5. **Synthesize**: dedupes findings, scores ad-stack health, writes an overview.
 
 Rules that came from you and must keep holding:
 
-- Local only. A SQLite file in the app data dir, no server, no cloud storage.
+- Local only. A SQLite file in the app data dir, no server, no cloud storage. Outbound traffic is the
+  scanned site (through Chrome), api.anthropic.com, and api.typesafe.ai only while Jev is on.
 - No raw payloads stored. Script bodies stay in memory; only findings, derived telemetry and the audit
   trail (steps plus AI debug logs, full-text indexed) are persisted.
-- The API key lives in the macOS Keychain, never in SQLite, logs or the frontend.
+- API keys live in the macOS Keychain (service `com.webclew.adtech-scanner`, accounts
+  `anthropic-api-key` and `typesafe-api-key`), never in SQLite, logs or the frontend.
 - Per-scan LLM budget cap, default $0.50.
 - `clew-app` is read-only inspiration.
 - Run a simplify pass and a review pass after every change, fix, repeat.
@@ -34,10 +38,10 @@ Rules that came from you and must keep holding:
 |---|---|---|
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 52 unit and 29 integration tests pass. |
-| Engine (domain, pipeline, SQLite, Anthropic client) | `crates/engine` | Done, reviewed, fixes applied. 133+ tests pass. |
+| Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
 | Tauri shell (16 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 2 real-browser pipeline tests pass on Linux. |
 | React frontend | `src/` | **In progress.** Feature slices, shell and fake backend exist. Not yet confirmed to typecheck, no e2e tests yet, never reviewed. |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, and every command's contract. Not run on macOS. |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, and every command's contract. Not run on macOS. |
 
 The checkpoint commit that adds this file contains the frontend exactly as the build agent left it
 mid-work. Expect `pnpm typecheck` and `pnpm lint` to fail until the frontend is finished.
@@ -75,7 +79,10 @@ Environment overrides for tests and local runs:
 
 - `ADSCAN_DATA_DIR`: directory for the SQLite file.
 - `ADSCAN_ANTHROPIC_BASE_URL`: replaces `https://api.anthropic.com` (must be https unless loopback).
-- `ADSCAN_API_KEY`: use this key and skip the Keychain.
+- `ADSCAN_API_KEY`: use this Anthropic key and skip the Keychain.
+- `ADSCAN_TYPESAFE_BASE_URL`: replaces `https://api.typesafe.ai` (must be https unless loopback).
+- `ADSCAN_TYPESAFE_API_KEY`: use this TypeSafe key and skip the Keychain. When either key variable is
+  set, both keys live in memory only and the Keychain is never touched.
 - `ADSCAN_CHROME_PATH`: browser executable.
 
 The built-in demo publisher page is the fastest way to see a full scan. It is served on a random
@@ -109,6 +116,14 @@ loopback port and has four planted bugs, documented in `crates/browser/demo-site
 - Real Prebid, GPT, Amazon TAM and consent platforms. The tracker has only run against local stand-ins.
 - The real cost per scan against the $0.50 target.
 
+- The real TypeSafe API. The client was written from the published API reference and tested against
+  a mock only: request and response shape, the `jev-1.14.0` model id, the $0.042 per million input
+  tokens price, 401/403 handling, `GET /v1/models` as the key check, rate-limit behaviour.
+- Whether Jev judges minified JavaScript well at all. Every threshold, chunk size, question wording,
+  ranking weight and token estimate on the Jev path is a starting value. They are named constants in
+  `crates/engine/src/domain/{triage,guide,chunks,questions}.rs`, each marked as uncalibrated.
+- Whether a second Keychain item makes macOS prompt a second time.
+
 ## Known open issues
 
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
@@ -119,6 +134,46 @@ loopback port and has four planted bugs, documented in `crates/browser/demo-site
 - The Prebid-age rule flags major version 7 and below; that threshold was not checked against current
   Prebid releases.
 
+## Jev System One (optional second provider)
+
+One switch in Settings, off by default and only available while a valid TypeSafe key is stored. Saving
+a key does not turn it on; removing the key turns it off. A scan decides at its start whether it uses
+Jev. The switch enables two things:
+
+- **Script triage.** Each undecided script is cut into parts of about 6,000 characters of raw source.
+  The first part and every part naming an ad-tech identifier (at most 24 per script) go to Jev, one
+  part per request, with two yes/no questions. The script's score is the highest "ad orchestration"
+  probability: 0.50 or more is analysed, below 0.15 is dropped, in between it is kept for analysis and
+  ranked last. Scripts the knowledge base decided are never sent, so a strong ad signature cannot be
+  dropped by a probability. Identical bodies are asked about once.
+- **Reading guide.** After Beautify, chunks of the scripts selected for Phase 2 (about 160 lines each,
+  at most 60 per scan) get eight yes/no questions. The ranked line ranges, and the best ones as
+  numbered source, go into the Phase 2 opening message. Kept in memory only.
+
+Fallback: the first Jev failure ends Jev for that scan. Scripts without a verdict go to the filter
+model when an Anthropic key exists and stay with the knowledge base otherwise; the step logs a warning
+and the overview gets a note. Scripts the budget could not pay for are never sent to the dearer model.
+A failed reading guide only shortens the guide. With a TypeSafe key and no Anthropic key, scripts are
+classified and Phase 2 is skipped.
+
+Jev returns numbers and no reasons. The audit trail therefore records the question set once per step
+and one `classification` entry per script: the probabilities, the thresholds, the rule that routed it
+(`jev-yes`, `jev-unsure`, `jev-no`) and at most 300 characters of the best-scoring part.
+
+Three Phase 2 cost levers apply to every AI scan, with or without Jev:
+
+- The scripts handed to Phase 2 are ordered by relevance (publisher wrappers first, stock Prebid
+  last), not by load order. That order decides which scripts make the cap of 12 and whose matches fill
+  a search result.
+- `search_scripts` without a script id skips the internals of stock Prebid builds and says how many
+  matches it hid. Lines of such a file that name one of the page's ad placements stay searchable, and
+  the whole file stays readable by id.
+- Publisher scripts that together stay under 400 beautified lines and 15,000 characters are inlined
+  in the opening message, so a small wrapper costs no tool turns.
+
+Not built, on purpose: any switch that writes script bodies to disk, Jev answers inside the
+deterministic rules, and a Jev-versus-Haiku compare mode.
+
 ## Architecture in one screen
 
 ```
@@ -126,14 +181,15 @@ crates/model     shared types, serde camelCase, ts-rs export
 crates/browser   detect/, cdp/, capture/, injected/tracker.js, injected/consent.js, demo-site/
 crates/engine    domain/          pure: scan, pricing, telemetry, heuristics (Rule trait), synthesis
                  application/     use cases, ports, pipeline graph and nodes
-                 infrastructure/  sqlite, anthropic (reqwest), keychain, oxc beautifier
+                 infrastructure/  sqlite, anthropic and typesafe (reqwest, shared http retry),
+                                  keychain, oxc beautifier
 src-tauri        composition root: state.rs, adapters.rs, commands.rs
 src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake-backend/
 ```
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
-`SecretStore`, `LlmClient`, `CaptureSource`, `SourceFormatter`, `EventSink`, `Clock`, `IdGenerator`),
-so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
+`SecretStore`, `LlmClient`, `JudgeClient`, `CaptureSource`, `SourceFormatter`, `EventSink`, `Clock`,
+`IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
 ## Tauri commands
@@ -144,8 +200,8 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 |---|---|---|
 | `get_settings` | – | `Settings` |
 | `update_settings` | `{ patch }` | `Settings` |
-| `set_api_key` | `{ key }` | `ApiKeyStatus` (stored only if the API accepts it) |
-| `clear_api_key` | – | `null` |
+| `set_api_key` | `{ key, provider? }` | `ApiKeyStatus` (stored only if that provider's API accepts it) |
+| `clear_api_key` | `{ provider? }` | `null` (clearing the TypeSafe key also turns Jev off) |
 | `detect_browser` | – | `BrowserInfo \| null` |
 | `get_demo_url` | – | `string` |
 | `start_scan` | `{ options }` | `ScanSummary` (work continues in the background) |
@@ -158,6 +214,8 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `search_logs` | `{ query, limit? }` | `LogSearchHit[]` |
 | `get_dashboard_stats` | – | `DashboardStats` |
 | `export_scan` | `{ scanId, format, path? }` | `string` |
+
+`provider` is `"anthropic"` (the default when omitted) or `"typesafe"`.
 
 The backend emits the Tauri event `scan-event` with a `ScanEvent` payload for every scan, step, log
 and finding change.

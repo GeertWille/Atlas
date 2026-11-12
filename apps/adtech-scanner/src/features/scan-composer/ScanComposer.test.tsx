@@ -84,6 +84,43 @@ test("without an API key the AI option is off and locked, and the scan runs dete
   expect((await api.getScan(scan?.id ?? "")).options.aiEnabled).toBe(false);
 });
 
+test("with only a TypeSafe key the scan is script triage only, priced as such, and can still be turned off", async () => {
+  const user = userEvent.setup();
+  const jevOnly = { ...settingsFixture, hasApiKey: false, hasTypesafeKey: true, jevEnabled: true };
+  await renderWithApp(<ScanComposer settings={jevOnly} />);
+
+  expect(screen.getByText(/Estimated/)).toHaveTextContent(
+    "Estimated $0.006 for Jev script triage. Add an Anthropic key to analyse wrapper logic.",
+  );
+  expect(screen.getByRole("link", { name: "Add an Anthropic key" })).toHaveAttribute("href", "/settings");
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(screen.queryByRole("switch", { name: "AI logic analysis" })).toBeNull();
+  const triageSwitch = screen.getByRole("switch", { name: "AI script triage" });
+  expect(triageSwitch).toBeChecked();
+  expect(triageSwitch).toBeEnabled();
+  expect(screen.getByText("Classify scripts with Jev. Logic analysis needs an Anthropic key.")).toBeInTheDocument();
+
+  await user.type(urlInput(), "example.com{Enter}");
+  await waitFor(async () => expect((await api.listScans({})).total).toBe(1));
+  const [scan] = (await api.listScans({})).items;
+  expect((await api.getScan(scan?.id ?? "")).options.aiEnabled).toBe(true);
+});
+
+test("a TypeSafe key with the Jev switch off does not unlock AI on its own", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={{ ...settingsFixture, hasApiKey: false, hasTypesafeKey: true }} />);
+  expect(screen.getByText(/this scan runs the deterministic checks only/)).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(screen.getByRole("switch", { name: "AI logic analysis" })).toBeDisabled();
+});
+
+test("with both keys and Jev on, the cost line names both models", async () => {
+  await renderWithApp(<ScanComposer settings={{ ...settingsFixture, hasTypesafeKey: true, jevEnabled: true }} />);
+  expect(screen.getByText(/Estimated/)).toHaveTextContent(
+    "Estimated $0.37 with claude-sonnet-5-5 and Jev script triage, hard cap $0.50 per scan.",
+  );
+});
+
 test("the cost line reflects the settings and the AI switch", async () => {
   const user = userEvent.setup();
   await renderWithApp(<ScanComposer settings={{ ...settingsFixture, analysisEffort: "high" }} />);

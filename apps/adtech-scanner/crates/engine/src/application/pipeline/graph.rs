@@ -41,7 +41,7 @@ pub fn on_failure(node: PipelineNode) -> OnFailure {
 pub fn skip_reason(node: PipelineNode, job: &ScanJob, state: &ScanState) -> Option<String> {
     match node {
         LaunchBrowser | Capture | Telemetry | Heuristics | Synthesize => None,
-        FilterScripts => ai_unavailable(job, state).or_else(|| {
+        FilterScripts => ai_unavailable(job, state, job.jev_key.is_some()).or_else(|| {
             let ambiguous = state
                 .scripts
                 .iter()
@@ -54,12 +54,12 @@ pub fn skip_reason(node: PipelineNode, job: &ScanJob, state: &ScanState) -> Opti
                 )
             })
         }),
-        Beautify => ai_unavailable(job, state).or_else(|| {
+        Beautify => ai_unavailable(job, state, false).or_else(|| {
             analysis_selection(state)
                 .is_empty()
                 .then(|| "No ad-related publisher scripts to analyze".to_string())
         }),
-        AnalyzeLogic => ai_unavailable(job, state).or_else(|| {
+        AnalyzeLogic => ai_unavailable(job, state, false).or_else(|| {
             state
                 .sources
                 .is_empty()
@@ -68,19 +68,17 @@ pub fn skip_reason(node: PipelineNode, job: &ScanJob, state: &ScanState) -> Opti
     }
 }
 
+/// The scripts handed to Phase 2, most relevant first.
 pub fn analysis_selection(state: &ScanState) -> Vec<usize> {
-    select_for_analysis(
-        &state.script_records(),
-        MAX_ANALYZED_SCRIPTS,
-        MAX_ANALYZED_BYTES,
-    )
+    select_for_analysis(&state.scripts, MAX_ANALYZED_SCRIPTS, MAX_ANALYZED_BYTES)
 }
 
-fn ai_unavailable(job: &ScanJob, state: &ScanState) -> Option<String> {
+/// `jev_suffices` is true for the one node Jev can run without an Anthropic key.
+fn ai_unavailable(job: &ScanJob, state: &ScanState, jev_suffices: bool) -> Option<String> {
     if !job.scan.options.ai_enabled {
         return Some("AI analysis is turned off for this scan".into());
     }
-    if job.api_key.is_none() {
+    if job.api_key.is_none() && !jev_suffices {
         return Some("No Anthropic API key is configured".into());
     }
     if state.ai_failure.is_some() {

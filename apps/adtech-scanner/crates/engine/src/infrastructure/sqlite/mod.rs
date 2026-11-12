@@ -17,7 +17,8 @@ use crate::application::ports::{RepoResult, RepositoryError};
 const DATABASE_FILE: &str = "adtech-scanner.sqlite3";
 
 /// Each entry migrates the schema from `user_version = index` to `index + 1`.
-const MIGRATIONS: &[&str] = &["
+const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE scans (
         id TEXT PRIMARY KEY,
         url TEXT NOT NULL,
@@ -101,7 +102,14 @@ const MIGRATIONS: &[&str] = &["
         id INTEGER PRIMARY KEY CHECK (id = 1),
         data TEXT NOT NULL
     );
-    "];
+    ",
+    // Settings are one JSON document and every field is required on load, so
+    // fields added to the contract are written into the stored document here.
+    "
+    UPDATE settings
+    SET data = json_set(data, '$.jevEnabled', json('false'), '$.hasTypesafeKey', json('false'));
+    ",
+];
 
 /// Implements the scan, log and settings repositories on one database.
 #[derive(Clone)]
@@ -234,5 +242,44 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 5);
+    }
+
+    #[test]
+    fn settings_saved_by_schema_version_one_load_after_the_upgrade() {
+        const V1_SETTINGS: &str = r#"{"filterModel":"claude-haiku-5-5","analysisModel":"claude-sonnet-5-5","analysisEffort":"high","budgetUsd":1.25,"chromePath":null,"headless":false,"defaultDevice":"mobile","defaultObserveSeconds":30,"theme":"dark","hasApiKey":false}"#;
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .execute(
+                "INSERT INTO settings (id, data) VALUES (1, ?1)",
+                [V1_SETTINGS],
+            )
+            .unwrap();
+
+        migrate(&mut connection).unwrap();
+
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 2);
+        let stored: String = connection
+            .query_row("SELECT data FROM settings WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let settings: adscan_model::Settings = from_json(&stored).unwrap();
+        assert_eq!(
+            settings,
+            adscan_model::Settings {
+                analysis_effort: adscan_model::Effort::High,
+                budget_usd: 1.25,
+                headless: false,
+                default_device: adscan_model::DeviceProfile::Mobile,
+                default_observe_seconds: 30,
+                theme: adscan_model::ThemePreference::Dark,
+                ..adscan_model::Settings::default()
+            }
+        );
     }
 }

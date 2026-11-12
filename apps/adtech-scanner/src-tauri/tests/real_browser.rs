@@ -76,7 +76,9 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
         AppConfig {
             data_dir: data_dir.path().to_path_buf(),
             anthropic_base_url: server.uri(),
+            typesafe_base_url: "http://127.0.0.1:1".into(),
             api_key_override: Some("sk-ant-real-browser-test".into()),
+            typesafe_api_key_override: None,
         },
         Arc::new(ChromeCaptureSource),
         Arc::new(CollectedEvents::default()),

@@ -1,6 +1,7 @@
 import { XIcon } from "lucide-react";
 import type { ScriptRecord } from "@/bindings";
 import { CopyButton } from "@/shared/components/copy-button";
+import { modelLabel } from "@/shared/domain/model-pricing";
 import { FINDING_SOURCE_LABEL, SCRIPT_CATEGORY_META } from "@/shared/domain/vocabulary";
 import { EMPTY, formatBytes, formatOffset, formatPercent } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
@@ -35,11 +36,21 @@ export function ScriptDetails({ script, onClose }: { script: ScriptRecord; onClo
         <Fact label="Vendor" value={script.vendor ?? EMPTY} />
         <Fact label="Size" value={formatBytes(script.sizeBytes)} />
         <Fact label="Loaded at" value={formatOffset(script.loadedAtMs)} />
-        <Fact label="Classified by" value={FINDING_SOURCE_LABEL[script.classifiedBy]} />
         <Fact
-          label="Confidence"
-          value={script.classificationConfidence === null ? EMPTY : formatPercent(script.classificationConfidence)}
+          label="Classified by"
+          value={
+            script.classifierModel ? modelLabel(script.classifierModel) : FINDING_SOURCE_LABEL[script.classifiedBy]
+          }
         />
+        {script.adProbability !== null ? (
+          // Jev's confidence is this probability seen from the nearer end, so the raw number says more.
+          <Fact label="Ad probability" value={formatPercent(script.adProbability)} />
+        ) : (
+          <Fact
+            label="Confidence"
+            value={script.classificationConfidence === null ? EMPTY : formatPercent(script.classificationConfidence)}
+          />
+        )}
       </dl>
       <p className="selectable text-[13px] text-pretty text-muted-foreground">
         <span className="font-medium text-foreground">{script.adRelated ? "Ad-related. " : "Not ad-related. "}</span>

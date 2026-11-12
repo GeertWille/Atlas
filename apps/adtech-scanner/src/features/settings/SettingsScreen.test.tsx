@@ -21,6 +21,7 @@ function ConnectedSettings() {
 
 beforeEach(async () => {
   await api.clearApiKey();
+  await api.clearApiKey("typesafe");
   await api.updateSettings({ budgetUsd: 0.5, theme: "system", filterModel: "claude-haiku-5-5", chromePath: null });
 });
 
@@ -56,6 +57,82 @@ test("API key: empty is caught locally, a rejected key shows the reason, a valid
   await user.click(within(dialog).getByRole("button", { name: "Remove key" }));
   expect(await keyInput()).toHaveValue("");
   expect((await api.getSettings()).hasApiKey).toBe(false);
+});
+
+const jevSwitch = () => screen.findByRole("switch", { name: "Classify scripts with Jev" });
+const triageStatus = () => screen.getByText("Script triage").closest("[data-slot=field]");
+
+test("TypeSafe key: a rejected key shows the reason; a stored key unlocks the Jev switch without flipping it", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ConnectedSettings />);
+  const input = await screen.findByLabelText("TypeSafe API key");
+  expect(input).toHaveAttribute("type", "password");
+  expect(await jevSwitch()).toBeDisabled();
+  expect(await jevSwitch()).not.toBeChecked();
+  expect(await jevSwitch()).toHaveAccessibleDescription(/api\.typesafe\.ai.*Add a TypeSafe key first\./);
+  expect(triageStatus()).toHaveTextContent("None");
+
+  await user.type(input, "invalid-key");
+  await user.click(screen.getByRole("button", { name: "Save TypeSafe key" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("TypeSafe rejected this API key.");
+  expect(input).toBeInvalid();
+  expect((await api.getSettings()).hasTypesafeKey).toBe(false);
+
+  await user.clear(input);
+  await user.type(input, "typesafe-test-key");
+  await user.click(screen.getByRole("button", { name: "Save TypeSafe key" }));
+  expect(await screen.findByText("A validated TypeSafe key is stored in your system keychain.")).toBeInTheDocument();
+  expect(screen.queryByLabelText("TypeSafe API key")).toBeNull();
+  // The Anthropic field is untouched by all of this.
+  expect(screen.getByLabelText("Anthropic API key")).toHaveValue("");
+
+  await waitFor(async () => expect(await jevSwitch()).toBeEnabled());
+  expect(await jevSwitch()).not.toBeChecked();
+  expect(await jevSwitch()).toHaveAccessibleDescription(/Jev is sent more of each script than Claude Haiku\.$/);
+  expect(await api.getSettings()).toMatchObject({ hasTypesafeKey: true, jevEnabled: false });
+});
+
+test("the Jev switch decides who triages scripts, and removing the TypeSafe key switches it back off", async () => {
+  const user = userEvent.setup();
+  await api.setApiKey(VALID_KEY);
+  await api.setApiKey("typesafe-test-key", "typesafe");
+  await renderWithApp(<ConnectedSettings />);
+
+  expect(await jevSwitch()).toBeEnabled();
+  expect(triageStatus()).toHaveTextContent("Claude Haiku 5.5");
+
+  await user.click(await jevSwitch());
+  await waitFor(async () => expect((await api.getSettings()).jevEnabled).toBe(true));
+  expect(await jevSwitch()).toBeChecked();
+  expect(triageStatus()).toHaveTextContent("Jev System One");
+  expect(triageStatus()).toHaveTextContent("Claude Haiku 5.5 takes over if Jev fails.");
+
+  // Without the Anthropic key Jev still triages, but nothing analyses the logic.
+  await user.click(screen.getByRole("button", { name: "Remove key" }));
+  await user.click(
+    within(await screen.findByRole("alertdialog", { name: "Remove the API key?" })).getByRole("button", {
+      name: "Remove key",
+    }),
+  );
+  await waitFor(() => expect(triageStatus()).toHaveTextContent("Logic analysis needs an Anthropic key."));
+  expect(triageStatus()).toHaveTextContent("Jev System One");
+
+  await user.click(screen.getByRole("button", { name: "Remove TypeSafe key" }));
+  const dialog = await screen.findByRole("alertdialog", { name: "Remove the TypeSafe key?" });
+  expect(dialog).toHaveTextContent("Jev is turned off");
+  await user.click(within(dialog).getByRole("button", { name: "Remove TypeSafe key" }));
+  expect(await screen.findByLabelText("TypeSafe API key")).toHaveValue("");
+  expect(await jevSwitch()).toBeDisabled();
+  expect(await jevSwitch()).not.toBeChecked();
+  expect(triageStatus()).toHaveTextContent("None");
+  expect(await api.getSettings()).toMatchObject({ hasTypesafeKey: false, jevEnabled: false });
+});
+
+test("About names every host the app talks to", async () => {
+  await renderWithApp(<ConnectedSettings />);
+  expect(await screen.findByText(/Outbound traffic goes only to/)).toHaveTextContent(
+    "the page being scanned, api.anthropic.com and, when Jev is enabled, api.typesafe.ai.",
+  );
 });
 
 test("the key can be revealed while typing", async () => {

@@ -2,6 +2,7 @@
 
 pub mod audit;
 pub mod graph;
+mod judging;
 pub mod nodes;
 pub mod state;
 
@@ -16,8 +17,8 @@ use self::graph::OnFailure;
 use self::state::{NodeError, NodeResult, ScanJob, ScanState};
 use super::AppError;
 use super::ports::{
-    CaptureSource, Clock, EventSink, IdGenerator, LlmClient, LogRepository, RepoResult,
-    ScanRepository, SourceFormatter,
+    CaptureSource, Clock, EventSink, IdGenerator, JudgeClient, LlmClient, LogRepository,
+    RepoResult, ScanRepository, SourceFormatter,
 };
 use crate::domain::pricing::Budget;
 
@@ -26,6 +27,7 @@ pub struct PipelineDeps {
     pub scans: Arc<dyn ScanRepository>,
     pub logs: Arc<dyn LogRepository>,
     pub llm: Arc<dyn LlmClient>,
+    pub judge: Arc<dyn JudgeClient>,
     pub capture: Arc<dyn CaptureSource>,
     pub formatter: Arc<dyn SourceFormatter>,
     pub events: Arc<dyn EventSink>,

@@ -1,6 +1,8 @@
 //! One running pipeline step: its audit trail, token accounting and findings.
 
-use adscan_model::{Finding, LogEntry, LogKind, LogLevel, PipelineStep, ScanEvent, StepStatus};
+use adscan_model::{
+    ApiProvider, Finding, LogEntry, LogKind, LogLevel, PipelineStep, ScanEvent, StepStatus,
+};
 use serde_json::{Value, json};
 
 use super::PipelineDeps;
@@ -13,6 +15,15 @@ use crate::domain::synthesis::severity_counts;
 /// tool output) cut it down to short excerpts themselves before it gets here.
 const MAX_LOG_MESSAGE_CHARS: usize = 20_000;
 const MAX_LOG_DATA_STRING_CHARS: usize = 4_000;
+
+/// One billed model call.
+pub struct ModelCall<'a> {
+    pub provider: ApiProvider,
+    pub model: &'a str,
+    pub usage: TokenUsage,
+    /// True when the provider reported no usage and `usage` is our estimate.
+    pub usage_estimated: bool,
+}
 
 pub struct StepRun<'a> {
     pub deps: &'a PipelineDeps,
@@ -65,13 +76,20 @@ impl StepRun<'_> {
     }
 
     /// Books one model call against the step, the scan and the budget.
-    pub async fn record_llm_call(
-        &mut self,
-        model: &str,
-        usage: TokenUsage,
-    ) -> Result<f64, NodeError> {
+    pub async fn record_llm_call(&mut self, call: ModelCall<'_>) -> Result<f64, NodeError> {
+        let ModelCall {
+            provider,
+            model,
+            usage,
+            usage_estimated,
+        } = call;
         let cost = cost_of(model, usage);
-        self.step.model = Some(model.to_string());
+        // A step that fell back from one classifier to another names both.
+        self.step.model = Some(match self.step.model.take() {
+            Some(models) if models.split(", ").any(|used| used == model) => models,
+            Some(models) => format!("{models}, {model}"),
+            None => model.to_string(),
+        });
         self.step.input_tokens =
             saturating_u32(self.step.input_tokens as u64 + usage.prompt_tokens());
         self.step.output_tokens = saturating_u32(self.step.output_tokens as u64 + usage.output);
@@ -92,7 +110,9 @@ impl StepRun<'_> {
                 self.state.budget.limit_usd(),
             ),
             Some(json!({
+                "provider": provider,
                 "model": model,
+                "usageEstimated": usage_estimated,
                 "inputTokens": usage.input,
                 "outputTokens": usage.output,
                 "cacheReadTokens": usage.cache_read,

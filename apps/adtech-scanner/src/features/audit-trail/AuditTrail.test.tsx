@@ -168,3 +168,98 @@ test("a finding entry links to the finding it reported", async () => {
   await user.click(screen.getByRole("button", { name: "Open finding" }));
   expect(onOpenFinding).toHaveBeenCalledWith("scan-1-f5");
 });
+
+const triageStep = makeStep({ id: "step-filter", node: "filterScripts", model: "jev-1.14.0" });
+const decision = makeLog({
+  id: "c1",
+  stepId: "step-filter",
+  node: "filterScripts",
+  kind: "classification",
+  message:
+    "s7 https://www.example.com/ads/lazy.js: ad orchestration 0.93 (analyse >= 0.50, drop < 0.15) over 3 of 12 parts -> ad-related, Phase 2 candidate [jev-yes]",
+  data: {
+    scriptId: "s7",
+    classifier: "jev",
+    model: "jev-1.14.0",
+    answers: [
+      { questionId: "ad_orchestration", pYes: 0.93 },
+      { questionId: "publisher_specific", pYes: 0.4 },
+    ],
+    thresholds: { analyse: 0.5, drop: 0.15, publisherSpecific: 0.5 },
+    decision: { adRelated: true, category: "wrapper", route: "jev-yes" },
+    parts: { total: 12, chosen: 3 },
+    excerpt: "pbjs.requestBids({ timeout: PREBID_TIMEOUT });",
+  },
+});
+
+test("a classification entry shows the probabilities, thresholds, routing decision and excerpt", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<AuditTrail steps={[triageStep]} logs={[...logs, decision]} onOpenFinding={() => {}} />);
+
+  expect(screen.getByRole("img", { name: "Classification, Info" })).toBeInTheDocument();
+  // The verdict is readable without opening the row.
+  const row = screen.getByRole("button", { name: /lazy\.js/, expanded: false });
+  expect(row).toHaveTextContent(/Ad-related.*s7 https:\/\/www\.example\.com\/ads\/lazy\.js/);
+  await user.click(row);
+
+  const answers = screen
+    .getAllByRole("term")
+    .map((term) => [term.textContent, term.parentElement?.querySelector("dd:last-child")?.textContent]);
+  expect(answers).toEqual([
+    ["ad_orchestration", "0.93"],
+    ["publisher_specific", "0.40"],
+  ]);
+  expect(screen.getByText("Wrapper")).toBeInTheDocument();
+  expect(screen.getByText("jev-yes", { selector: "span" })).toBeInTheDocument();
+  expect(screen.getByText("Thresholds analyse 0.50, drop 0.15, publisherSpecific 0.50")).toBeInTheDocument();
+  // Each bar carries the cut-offs its question was held against.
+  expect(
+    screen.getAllByRole("term").map((term) => term.parentElement?.querySelectorAll("[data-threshold]").length),
+  ).toEqual([2, 1]);
+  expect(screen.getByText("pbjs.requestBids({ timeout: PREBID_TIMEOUT });")).toBeInTheDocument();
+  // The raw data stays available underneath, without repeating the excerpt.
+  expect(screen.getByText('"scriptId"', { exact: false })).toBeInTheDocument();
+  expect(screen.queryByText('"excerpt"', { exact: false })).toBeNull();
+
+  await user.click(screen.getByRole("button", { name: "Filter by kind" }));
+  await user.click(await screen.findByRole("menuitemcheckbox", { name: /^Classification/ }));
+  await user.keyboard("{Escape}");
+  expect(entries()).toBe(1);
+});
+
+test("a classification entry in a shape this version does not know still shows its message and raw data", async () => {
+  const user = userEvent.setup();
+  const unfamiliar = makeLog({
+    id: "c2",
+    stepId: "step-filter",
+    node: "filterScripts",
+    kind: "classification",
+    message: "s9 app.js -> DROP by jev-no",
+    data: { script: "s9", scores: { ad: 0.04 }, verdict: "drop" },
+  });
+  await renderWithApp(<AuditTrail steps={[triageStep]} logs={[unfamiliar]} onOpenFinding={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: /s9 app\.js -> DROP by jev-no/, expanded: false }));
+  expect(screen.queryByRole("term")).toBeNull();
+  expect(screen.getByText('"verdict"', { exact: false })).toBeInTheDocument();
+});
+
+test("a fallback warning stands out and is found by the level filter", async () => {
+  const user = userEvent.setup();
+  const fallback = makeLog({
+    id: "w1",
+    stepId: "step-filter",
+    node: "filterScripts",
+    level: "warn",
+    message: "Jev failed (HTTP 429); 9 scripts fell back to claude-haiku-5-5",
+    data: { from: "jev-1.14.0", to: "claude-haiku-5-5", reason: "HTTP 429", remainingScripts: 9 },
+  });
+  await renderWithApp(<AuditTrail steps={[triageStep]} logs={[decision, fallback]} onOpenFinding={() => {}} />);
+
+  expect(screen.getByText(/Jev failed/)).toHaveClass("text-amber-fg");
+  await user.click(screen.getByRole("button", { name: "Filter by level" }));
+  await user.click(await screen.findByRole("menuitemcheckbox", { name: /^Warning/ }));
+  await user.keyboard("{Escape}");
+  expect(entries()).toBe(1);
+  expect(screen.getByText(/Jev failed/)).toBeInTheDocument();
+});

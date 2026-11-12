@@ -14,17 +14,23 @@ use adscan_engine::infrastructure::beautify::OxcFormatter;
 use adscan_engine::infrastructure::secrets::{KeychainSecretStore, MemorySecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
+use adscan_engine::infrastructure::typesafe::{self, TypesafeClient};
 
 const DATA_DIR_ENV: &str = "ADSCAN_DATA_DIR";
 const BASE_URL_ENV: &str = "ADSCAN_ANTHROPIC_BASE_URL";
 const API_KEY_ENV: &str = "ADSCAN_API_KEY";
+const TYPESAFE_BASE_URL_ENV: &str = "ADSCAN_TYPESAFE_BASE_URL";
+const TYPESAFE_API_KEY_ENV: &str = "ADSCAN_TYPESAFE_API_KEY";
 
 pub struct AppConfig {
     /// Directory of the SQLite file.
     pub data_dir: PathBuf,
     pub anthropic_base_url: String,
-    /// When set, this key is used and the keychain is never touched.
+    pub typesafe_base_url: String,
+    /// When either key override is set, keys live in memory for both
+    /// providers and the keychain is never touched.
     pub api_key_override: Option<String>,
+    pub typesafe_api_key_override: Option<String>,
 }
 
 impl AppConfig {
@@ -40,7 +46,10 @@ impl AppConfig {
             data_dir: non_empty(DATA_DIR_ENV).map_or(default_data_dir, PathBuf::from),
             anthropic_base_url: non_empty(BASE_URL_ENV)
                 .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+            typesafe_base_url: non_empty(TYPESAFE_BASE_URL_ENV)
+                .unwrap_or_else(|| typesafe::DEFAULT_BASE_URL.to_string()),
             api_key_override: non_empty(API_KEY_ENV),
+            typesafe_api_key_override: non_empty(TYPESAFE_API_KEY_ENV),
         }
     }
 }
@@ -63,20 +72,29 @@ impl AppState {
             &config.anthropic_base_url,
             RetryPolicy::default(),
         )?);
-        let secrets: Arc<dyn SecretStore> = match config.api_key_override {
-            Some(key) => Arc::new(MemorySecretStore::with_key(key)),
-            None => Arc::new(KeychainSecretStore),
-        };
+        let judge = Arc::new(TypesafeClient::new(
+            &config.typesafe_base_url,
+            typesafe::default_retry(),
+        )?);
+        let secrets: Arc<dyn SecretStore> =
+            match (config.api_key_override, config.typesafe_api_key_override) {
+                (None, None) => Arc::new(KeychainSecretStore),
+                (anthropic, typesafe) => {
+                    Arc::new(MemorySecretStore::with_keys(anthropic, typesafe))
+                }
+            };
         let settings = Arc::new(SettingsService::new(
             Arc::new(store.clone()),
             secrets,
             llm.clone(),
+            judge.clone(),
         ));
         let scans = Arc::new(ScanService::new(
             PipelineDeps {
                 scans: Arc::new(store.clone()),
                 logs: Arc::new(store),
                 llm,
+                judge,
                 capture,
                 formatter: Arc::new(OxcFormatter::default()),
                 events,
