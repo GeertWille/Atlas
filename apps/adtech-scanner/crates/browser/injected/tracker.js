@@ -241,6 +241,8 @@
   // ------------------------------------------------------------------ Prebid
 
   var PREBID_EVENTS = [
+    'requestBids',
+    'addAdUnits',
     'auctionInit',
     'bidRequested',
     'bidResponse',
@@ -282,6 +284,8 @@
   var MAX_PARAMS_CHARS = 2000;
   var MAX_SCHAIN_NODES = 10;
 
+  // Instances whose `requestBids` calls are reported with their arguments.
+  var watchedRequests = new WeakSet();
   var prebidInstances = new WeakSet();
   var configReported = new WeakSet();
   var hookedQueues = new WeakSet();
@@ -355,6 +359,39 @@
         });
       })();
     });
+    guard(watchBidRequests)(instance);
+  }
+
+  // What the page asks Prebid for is only in the arguments of `requestBids`;
+  // the event Prebid emits for the call carries none. Prebid's own hook on
+  // the function (the one its modules use) shows them. The call goes on
+  // exactly as made, whatever happens here.
+  function watchBidRequests(instance) {
+    var request = instance.requestBids;
+    if (typeof request !== 'function' || typeof request.before !== 'function') return;
+    request.before(function (next, options) {
+      guard(reportBidsRequested)(instance, options);
+      return next.apply(this, Array.prototype.slice.call(arguments, 1));
+    });
+    watchedRequests.add(instance);
+  }
+
+  function registeredAdUnits(instance) {
+    return isArray(instance.adUnits) ? instance.adUnits.length : null;
+  }
+
+  function reportBidsRequested(instance, options) {
+    var asked = options || {};
+    var codes = [];
+    for (var i = 0; isArray(asked.adUnitCodes) && i < asked.adUnitCodes.length && i < MAX_LIST; i++) {
+      pushUnique(codes, str(asked.adUnitCodes[i]));
+    }
+    emit('bidsRequested', {
+      adUnitCodes: codes,
+      // Ad units passed with the call replace the registered ones.
+      adUnitCount: isArray(asked.adUnits) ? asked.adUnits.length : registeredAdUnits(instance),
+      timeout: num(asked.timeout),
+    });
   }
 
   function moduleNames(modules) {
@@ -371,7 +408,21 @@
 
   function onPrebidEvent(instance, eventType, payload, at) {
     var data = payload || {};
+    // `at` is set for an event replayed from Prebid's history: what Prebid
+    // holds now says nothing about then.
+    var live = num(at) === null;
     switch (eventType) {
+      case 'requestBids':
+        if (live && watchedRequests.has(instance)) break;
+        emit(
+          'bidsRequested',
+          { adUnitCodes: [], adUnitCount: live ? registeredAdUnits(instance) : null, timeout: null },
+          at
+        );
+        break;
+      case 'addAdUnits':
+        emit('adUnitsAdded', { registered: live ? registeredAdUnits(instance) : null }, at);
+        break;
       case 'auctionInit':
         guard(reportPrebidConfig)(instance, at);
         emit(

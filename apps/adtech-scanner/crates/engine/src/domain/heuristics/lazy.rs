@@ -1,11 +1,13 @@
-use adscan_model::{FindingCategory, ScriptCategory, Severity, SlotOutcome};
+use adscan_model::{
+    FindingCategory, ScriptCategory, Severity, SlotOutcome, TrackerEventKind as Ev,
+};
 
 use super::visit::unbid_after_navigation;
 use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
     RuleContext, RuleScope, estimate_impact, heuristic, ms,
 };
-use crate::domain::finding::{FindingDraft, timeline};
+use crate::domain::finding::{FindingDraft, metric, timeline};
 
 /// Share of header-bidding revenue assumed lost when bidding waits for a
 /// scroll: the above-the-fold impressions of users who never scroll.
@@ -206,4 +208,159 @@ fn slots_waiting_for_bids(ctx: &RuleContext) -> Vec<String> {
         .filter(|slot| slot.outcome != SlotOutcome::Filled)
         .map(|slot| slot.element_id.clone())
         .collect()
+}
+
+/// Hosts of ad servers whose requests the scanner does not read (it follows
+/// Google Publisher Tag only). Seeing them says ads were requested there.
+const OTHER_AD_SERVERS: &[(&str, &str)] = &[
+    ("ib.adnxs.com", "Xandr"),
+    ("smartadserver.com", "Equativ (Smart AdServer)"),
+    ("adform.net", "Adform"),
+];
+
+/// The wrapper asked Prebid for bids while Prebid had no ad unit to auction.
+/// Prebid then does nothing: no auction, no bids, and the ad server is
+/// asked without header bidding. Bidding was not gated and did not fail to
+/// start; it was asked for with nothing to sell.
+pub struct BidsRequestedWithoutAdUnits;
+
+impl Rule for BidsRequestedWithoutAdUnits {
+    fn id(&self) -> &'static str {
+        "bids-requested-without-ad-units"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
+    }
+
+    fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
+        let empty_requests = ctx.empty_bid_requests();
+        if empty_requests.is_empty() || !ctx.auctions().is_empty() {
+            return Vec::new();
+        }
+        let mut codes: Vec<&str> = empty_requests
+            .iter()
+            .flat_map(|(_, codes)| codes.iter().map(String::as_str))
+            .collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let unbid: Vec<String> = ctx
+            .slots()
+            .iter()
+            .filter(|slot| slot.requested_at_ms.is_some())
+            .filter(|slot| slot.had_prebid_targeting == Some(false))
+            .map(|slot| slot.element_id.clone())
+            .collect();
+        let other_ad_servers: Vec<String> = OTHER_AD_SERVERS
+            .iter()
+            .filter(|(host, _)| {
+                ctx.capture
+                    .environment
+                    .request_hosts
+                    .iter()
+                    .any(|seen| seen == host || seen.ends_with(&format!(".{host}")))
+            })
+            .map(|(host, name)| format!("{name} ({host})"))
+            .collect();
+
+        let mut finding = heuristic(
+            Severity::High,
+            FindingCategory::LogicBug,
+            0.85,
+            "Bids are requested while Prebid has no ad units",
+        );
+        finding.description = format!(
+            "The page called `requestBids` {} time(s){} while Prebid had no ad unit to auction, so Prebid \
+             started no auction and asked no bidder. {} A wrapper that only adds an ad unit when at least one \
+             bidder is active for it ends up here when its list of active bidders is empty for this visitor: \
+             every bidder was filtered out (by country, device, consent state or a user group), every ad \
+             unit was dropped, and the request went ahead with nothing in it.",
+            empty_requests.len(),
+            if codes.is_empty() {
+                String::new()
+            } else {
+                format!(" for {} placement(s)", codes.len())
+            },
+            if unbid.is_empty() && other_ad_servers.is_empty() {
+                "No ad request was seen either."
+            } else {
+                "The ad server was asked all the same, without header bidding."
+            },
+        );
+        finding.recommendation = "Find where the wrapper builds the ad units it passes to `addAdUnits` or \
+             `requestBids` and log why each bidder is switched off for this visit (geo, device, consent, \
+             A/B group). Decide what should happen when none is left: usually that is a configuration error \
+             to alert on, not a state to ship. Repeat the scan from the audience the site is sold to (a \
+             proxy in that country, the other device profile) to see whether bidders are active there."
+            .into();
+        finding.impact =
+            "No header bidding demand at all for this visitor; every impression is sold without bids".into();
+        finding.evidence.push(timeline(
+            "requestBids calls with nothing to auction",
+            empty_requests
+                .iter()
+                .map(|(at, codes)| {
+                    format!(
+                        "{}: ad units available 0, placements asked for: {}",
+                        ms(*at),
+                        if codes.is_empty() {
+                            "not named".to_string()
+                        } else {
+                            codes.join(", ")
+                        }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        if !unbid.is_empty() {
+            finding.evidence.push(metric(
+                "Ad requests without header bidding",
+                format!(
+                    "requested from Google Publisher Tag without hb_* keys: {}",
+                    unbid.join(", ")
+                ),
+            ));
+        }
+        if !other_ad_servers.is_empty() {
+            finding.evidence.push(metric(
+                "Other ad servers that were called",
+                format!(
+                    "{}. The scanner does not read these ad requests; that they were made is all it knows.",
+                    other_ad_servers.join(", ")
+                ),
+            ));
+        }
+        finding.affected_slots = if unbid.is_empty() {
+            codes.into_iter().map(str::to_string).collect()
+        } else {
+            unbid
+        };
+        estimate_impact(
+            &mut finding,
+            HEADER_BIDDING_REVENUE_SHARE_PCT,
+            &format!(
+                "all header bidding revenue for visitors like this one; {HEADER_BIDDING_SHARE_ASSUMPTION}"
+            ),
+        );
+        vec![finding]
+    }
+}
+
+impl RuleContext<'_> {
+    /// The `requestBids` calls of the scope that had no ad unit to auction:
+    /// when, and the placements they named.
+    pub(crate) fn empty_bid_requests(&self) -> Vec<(f64, &Vec<String>)> {
+        self.events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                Ev::BidsRequested {
+                    ad_unit_codes,
+                    ad_unit_count: Some(0),
+                    ..
+                } => Some((event.t, ad_unit_codes)),
+                _ => None,
+            })
+            .collect()
+    }
 }

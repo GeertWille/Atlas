@@ -328,6 +328,20 @@ pub fn page_events(capture: &Capture, page: u32) -> String {
             Ev::PrebidDetected { .. } => "prebid detected".into(),
             Ev::GptDetected { .. } => "gpt detected".into(),
             Ev::AmazonDetected {} => "amazon apstag detected".into(),
+            Ev::BidsRequested {
+                ad_unit_codes,
+                ad_unit_count,
+                timeout,
+            } => format!(
+                "pbjs.requestBids called: adUnitCodes=[{}] adUnitsToAuction={} timeout={}",
+                ad_unit_codes.join(", "),
+                ad_unit_count.map_or("unknown".to_string(), |count| count.to_string()),
+                ms(*timeout),
+            ),
+            Ev::AdUnitsAdded { registered } => format!(
+                "pbjs.addAdUnits called: adUnitsRegisteredAfter={}",
+                registered.map_or("unknown".to_string(), |count| count.to_string()),
+            ),
             Ev::AuctionInit { auction_id, .. } => format!("auctionInit {}", short_id(auction_id)),
             Ev::AuctionEnd { auction_id } => format!("auctionEnd {}", short_id(auction_id)),
             Ev::SetTargeting { ad_unit_codes } => {

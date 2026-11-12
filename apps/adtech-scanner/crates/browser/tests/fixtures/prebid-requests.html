@@ -1,0 +1,60 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Prebid: bids requested with nothing to auction</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// A stand-in for Prebid with the parts a wrapper and the tracker use: events
+// with a history, and `requestBids` as a hookable function (before-hooks run
+// first and pass the call on, as in Prebid).
+(function () {
+  var handlers = {};
+  var history = [];
+  function emit(eventType, args) {
+    history.push({ eventType: eventType, args: args, elapsedTime: performance.now() });
+    (handlers[eventType] || []).forEach(function (handler) { handler(args); });
+  }
+  var pbjs = (window.pbjs = {
+    version: '10.25.0',
+    installedModules: [],
+    adUnits: [],
+    onEvent: function (eventType, handler) { (handlers[eventType] = handlers[eventType] || []).push(handler); },
+    getEvents: function () { return history.slice(); },
+    setConfig: function () {},
+    getConfig: function () { return {}; },
+  });
+  pbjs.addAdUnits = function (units) {
+    [].concat(units || []).forEach(function (unit) { pbjs.adUnits.push(unit); });
+    emit('addAdUnits');
+  };
+  var befores = [];
+  function requestBids(options) {
+    emit('requestBids');
+    console.log('REQUEST this=' + (this === pbjs) + ' ' + JSON.stringify(options));
+    var units = options.adUnits || pbjs.adUnits;
+    if (!units.length) {
+      emit('auctionDebug', { type: 'WARNING', arguments: ['No adUnits configured. No bids requested.'] });
+    }
+  }
+  pbjs.requestBids = function () {
+    var self = this;
+    var next = 0;
+    (function run() {
+      var args = [].slice.call(arguments);
+      if (next < befores.length) befores[next++].apply(self, [run].concat(args));
+      else requestBids.apply(self, args);
+    }).apply(null, arguments);
+  };
+  pbjs.requestBids.before = function (hook) { befores.push(hook); };
+})();
+
+// The wrapper: every bidder was filtered out for this visitor, so no ad unit
+// is left to add, and bids are asked for all the same. Once right away,
+// before anything could subscribe, and once later.
+var placements = ['top', 'side'];
+function ask() {
+  pbjs.addAdUnits([]);
+  pbjs.requestBids({ adUnitCodes: placements, adUnits: [], timeout: 900 });
+}
+ask();
+setTimeout(ask, 600);
+</script>
+</body></html>

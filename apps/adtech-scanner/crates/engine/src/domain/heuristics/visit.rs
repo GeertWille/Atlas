@@ -2,11 +2,11 @@
 //! slot, or the visit's environment: what a single passive page load cannot
 //! show.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use adscan_model::{
-    AdSlot, FindingCategory, PageReach, PageView, ScanEnvironment, Severity, SlotRequest,
-    TrackerEvent, TrackerEventKind as Ev,
+    AdSlot, BidStatus, FindingCategory, PageReach, PageView, ScanEnvironment, Severity,
+    SlotRequest, TrackerEvent, TrackerEventKind as Ev,
 };
 
 use super::{AUTOMATION_RULE, CONSENT_WAIT_RULE, Rule, RuleContext, heuristic, ms, page_label};
@@ -702,6 +702,46 @@ pub(super) fn automation_indicators(environment: Option<&ScanEnvironment>) -> Op
     (!indicators.is_empty()).then(|| indicators.join(", "))
 }
 
+/// An auction timeout below this cuts off bidders that would have answered;
+/// a timeout under it says nothing about the bidder.
+const SHORT_AUCTION_TIMEOUT_MS: f64 = 1000.0;
+
+/// Bidders that were asked at least twice and chose not to bid every time:
+/// they answered without a bid, or stayed silent although the page gave them
+/// a reasonable time. That is what filtering automated traffic looks like.
+/// A bidder that errored, was still pending when the scan ended, or was cut
+/// off by a short timeout of the page's own is explained by that instead.
+fn declining_bidders<'a>(ctx: &RuleContext<'a>) -> Vec<&'a str> {
+    let mut outcomes: BTreeMap<&str, (u32, bool)> = BTreeMap::new();
+    for auction in ctx.auctions() {
+        let short_timeout = auction
+            .timeout_ms
+            .is_some_and(|timeout| timeout < SHORT_AUCTION_TIMEOUT_MS);
+        for bid in auction.ad_units.iter().flat_map(|unit| &unit.bids) {
+            let declined = match bid.status {
+                BidStatus::NoBid => true,
+                BidStatus::Timeout => !short_timeout,
+                BidStatus::Bid
+                | BidStatus::Won
+                | BidStatus::Rendered
+                | BidStatus::Error
+                | BidStatus::Pending => false,
+            };
+            let (requests, always_declined) =
+                outcomes.entry(bid.bidder.as_str()).or_insert((0, true));
+            *requests += 1;
+            *always_declined &= declined;
+        }
+    }
+    outcomes
+        .into_iter()
+        .filter(|(_, (requests, always_declined))| {
+            *requests >= MIN_REQUESTS_TO_SUSPECT_FILTERING && *always_declined
+        })
+        .map(|(bidder, _)| bidder)
+        .collect()
+}
+
 /// R6. Not a fault of the page: the visit was recognisable as automated,
 /// and something on the page had a reason to act on that. A bidder that
 /// stays silent may be filtering the scan, not broken.
@@ -726,14 +766,7 @@ impl Rule for ScanIdentifiableAsAutomated {
                     .collect()
             })
             .unwrap_or_default();
-        let silent: Vec<&str> = ctx
-            .bidder_stats()
-            .into_iter()
-            .filter(|(_, stats)| {
-                stats.requests >= MIN_REQUESTS_TO_SUSPECT_FILTERING && stats.bids == 0
-            })
-            .map(|(bidder, _)| bidder)
-            .collect();
+        let silent = declining_bidders(ctx);
         if detectors.is_empty() && silent.is_empty() {
             return Vec::new();
         }
@@ -757,14 +790,14 @@ impl Rule for ScanIdentifiableAsAutomated {
         }
         if silent.is_empty() {
             description.push_str(
-                " Every bidder that was asked more than once did bid, so nothing in this scan points at \
-                 filtering; this only says how the visit looked to the page.",
+                " No bidder that was asked more than once declined every time, so nothing in this scan \
+                 points at filtering; this only says how the visit looked to the page.",
             );
         } else {
             let others_bid = ctx.bidder_stats().values().any(|stats| stats.bids > 0);
             description.push_str(&format!(
-                " {} {} asked for bids and never bid, which is what a bidder that filters automated traffic \
-                 looks like.{}",
+                " {} {} asked for bids and declined every time, which is what a bidder that filters \
+                 automated traffic looks like.{}",
                 silent.join(", "),
                 if silent.len() == 1 { "was" } else { "were" },
                 if others_bid {
@@ -803,7 +836,7 @@ impl Rule for ScanIdentifiableAsAutomated {
         }
         if !silent.is_empty() {
             finding.evidence.push(metric(
-                "Bidders that were asked and never bid",
+                "Bidders that were asked and declined every time",
                 silent.join(", "),
             ));
             finding.affected_bidders = silent.into_iter().map(str::to_string).collect();

@@ -13,7 +13,7 @@
     "format": "biome check --write .",
     "test": "vitest run",
     "test:e2e": "playwright test --trace off",
-    "test:tauri": "tauri build --debug --no-bundle && xvfb-run -a -s \"-screen 0 1440x900x24\" vitest run --config e2e-tauri/vitest.config.ts",
+    "test:tauri": "tauri build --debug --no-bundle && mkdir -p target/e2e && cp target/debug/adtech-scanner target/e2e/adtech-scanner && xvfb-run -a -s \"-screen 0 1440x900x24\" vitest run --config e2e-tauri/vitest.config.ts",
     "tauri": "tauri"
   },
   "dependencies": {

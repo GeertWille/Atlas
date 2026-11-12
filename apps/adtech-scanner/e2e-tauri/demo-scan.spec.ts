@@ -188,7 +188,7 @@ test("every report tab shows what the scan captured, including the planted bugs"
   expect(details).toContain("Wrapper");
 
   await browser.$(reportTab("Audit trail")).click();
-  const steps = await seeText(browser, "34 rules evaluated, 10 findings", { within: labelled("Pipeline steps") });
+  const steps = await seeText(browser, "35 rules evaluated, 10 findings", { within: labelled("Pipeline steps") });
   expect(steps).toContain("7 bidders checked: 3 problems, 0 notices; ads.txt has 6 records; sellers.json not checked");
   expect(steps).toContain("AI analysis is turned off for this scan");
   await browser.$(`${labelled("Pipeline steps")}//button[contains(., "Deterministic checks")]`).click();

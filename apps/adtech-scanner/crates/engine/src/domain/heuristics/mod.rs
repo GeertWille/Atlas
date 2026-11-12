@@ -49,6 +49,7 @@ pub trait Rule: Send + Sync {
 pub fn all_rules() -> Vec<Box<dyn Rule>> {
     vec![
         Box::new(lazy::AuctionGatedOnInteraction),
+        Box::new(lazy::BidsRequestedWithoutAdUnits),
         Box::new(timing::AuctionTimeoutTooShort),
         Box::new(timing::BidderTimeouts),
         Box::new(timing::LateFirstAuction),
@@ -414,6 +415,11 @@ impl<'a> RuleContext<'a> {
         let interaction_at_ms = self.first_interaction_at();
         let consent_at = self.held_up_by_consent_until();
         if self.auctions().is_empty() {
+            // Bids were asked for, with nothing to auction: that has a rule
+            // of its own, and no gate held anything back.
+            if !self.empty_bid_requests().is_empty() {
+                return None;
+            }
             // Prebid that arrived, or was allowed to start, moments before
             // the page view ended had no chance to run an auction.
             let could_start_at = prebid_ready_at.max(consent_at.unwrap_or(0.0));

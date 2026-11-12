@@ -19,6 +19,8 @@ fn variant(kind: &Kind) -> &'static str {
         Kind::PrebidConfig { .. } => "prebidConfig",
         Kind::GptDetected { .. } => "gptDetected",
         Kind::AmazonDetected {} => "amazonDetected",
+        Kind::BidsRequested { .. } => "bidsRequested",
+        Kind::AdUnitsAdded { .. } => "adUnitsAdded",
         Kind::AuctionInit { .. } => "auctionInit",
         Kind::BidRequested { .. } => "bidRequested",
         Kind::BidResponse { .. } => "bidResponse",
@@ -771,4 +773,64 @@ async fn the_tracker_stays_out_of_the_pages_way() {
         injected.initiator.as_deref(),
         Some(capture.final_url.as_str())
     );
+}
+
+/// A wrapper that asks Prebid for bids with no ad unit to auction: once
+/// before the tracker could subscribe, once after.
+#[tokio::test]
+async fn what_the_page_asks_prebid_for_is_reported_and_the_call_goes_on_as_made() {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(
+        &fixtures.url("prebid-requests.html"),
+        DeviceProfile::Desktop,
+    );
+    request.visitor = VisitorBehavior::None;
+    request.observe_seconds = 3;
+    let capture = support::capture_ok(request).await;
+
+    let asked: Vec<&Kind> = kinds(&capture, "bidsRequested");
+    assert_eq!(
+        asked,
+        [
+            // From Prebid's history: that it happened, not with what.
+            &Kind::BidsRequested {
+                ad_unit_codes: vec![],
+                ad_unit_count: None,
+                timeout: None,
+            },
+            &Kind::BidsRequested {
+                ad_unit_codes: strings(&["top", "side"]),
+                ad_unit_count: Some(0),
+                timeout: Some(900.0),
+            },
+        ]
+    );
+    assert_eq!(
+        kinds(&capture, "adUnitsAdded"),
+        [
+            &Kind::AdUnitsAdded { registered: None },
+            &Kind::AdUnitsAdded {
+                registered: Some(0)
+            },
+        ]
+    );
+    assert!(kinds(&capture, "auctionInit").is_empty());
+    // The first request is timed when it happened, not when it was replayed.
+    let times: Vec<f64> = capture
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, Kind::BidsRequested { .. }))
+        .map(|event| event.t)
+        .collect();
+    assert!(times[0] < 300.0 && times[1] >= 600.0, "{times:?}");
+
+    // Both calls reached Prebid once each, with the arguments and the
+    // receiver the page gave them.
+    let made: Vec<&str> = capture
+        .console
+        .iter()
+        .filter_map(|line| line.text.strip_prefix("REQUEST "))
+        .collect();
+    let as_made = r#"this=true {"adUnitCodes":["top","side"],"adUnits":[],"timeout":900}"#;
+    assert_eq!(made, [as_made, as_made]);
 }

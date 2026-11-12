@@ -771,6 +771,130 @@ fn a_prompt_the_visitor_opened_themselves_is_not_the_choice_being_forgotten() {
     assert!(!fired(&capture).contains(&"consent-asked-again"));
 }
 
+// -- bids requested with nothing to auction ---------------------------------------------------
+
+/// What a publisher's page did after consent: its wrapper found no active
+/// bidder for this visitor, added no ad unit, asked Prebid for bids for its
+/// eight placements all the same, and then called the ad servers.
+fn page_that_asks_for_bids_without_ad_units(ad_unit_count: Option<u32>) -> Capture {
+    let placements = [
+        "superbanner",
+        "sky",
+        "mrec",
+        "mrec2",
+        "billboard",
+        "footer",
+        "inread",
+        "wallpaper",
+    ];
+    let mut events = page_setup();
+    events.push(ev(
+        400.0,
+        Ev::AdUnitsAdded {
+            registered: Some(0),
+        },
+    ));
+    events.push(ev(
+        420.0,
+        Ev::BidsRequested {
+            ad_unit_codes: strings(&placements),
+            ad_unit_count,
+            timeout: Some(900.0),
+        },
+    ));
+    for slot in ["top", "side", "footer"] {
+        events.push(slot_requested(600.0, slot, false));
+        events.push(slot_rendered(900.0, slot, true));
+    }
+    events.push(lifecycle(950.0, "load"));
+    events.extend(scroll_events(4_000.0));
+    let mut capture = visit(vec![(entry(12_000.0), events)]);
+    capture.environment.request_hosts = strings(&["ib.adnxs.com", "www8.smartadserver.com"]);
+    capture
+}
+
+#[test]
+fn bids_requested_while_prebid_has_no_ad_units_is_its_own_finding() {
+    let capture = page_that_asks_for_bids_without_ad_units(Some(0));
+    let rules = fired(&capture);
+    assert!(
+        !rules.contains(&"auction-gated-on-interaction"),
+        "nothing was gated and nothing failed to start: {rules:?}"
+    );
+    let finding = only(&capture, "bids-requested-without-ad-units");
+    assert_eq!(
+        (
+            finding.severity,
+            finding.confidence,
+            finding.pages.as_slice()
+        ),
+        (Severity::High, 0.85, [0].as_slice())
+    );
+    assert_eq!(
+        finding.title,
+        "Bids are requested while Prebid has no ad units"
+    );
+    assert!(
+        finding.description.starts_with(
+            "The page called `requestBids` 1 time(s) for 8 placement(s) while Prebid had no ad unit to \
+             auction, so Prebid started no auction and asked no bidder. The ad server was asked all the \
+             same, without header bidding."
+        ),
+        "{}",
+        finding.description
+    );
+    assert!(
+        finding
+            .description
+            .contains("every bidder was filtered out")
+    );
+    let evidence: Vec<(&str, &str)> = finding
+        .evidence
+        .iter()
+        .map(|evidence| (evidence.label.as_str(), evidence.body.as_str()))
+        .collect();
+    assert_eq!(
+        evidence[0],
+        (
+            "requestBids calls with nothing to auction",
+            "420 ms: ad units available 0, placements asked for: superbanner, sky, mrec, mrec2, billboard, \
+             footer, inread, wallpaper"
+        )
+    );
+    assert_eq!(
+        evidence[1],
+        (
+            "Ad requests without header bidding",
+            "requested from Google Publisher Tag without hb_* keys: top, side, footer"
+        )
+    );
+    assert!(
+        evidence[2]
+            .1
+            .starts_with("Xandr (ib.adnxs.com), Equativ (Smart AdServer) (smartadserver.com)."),
+        "{}",
+        evidence[2].1
+    );
+    assert_eq!(finding.affected_slots, ["top", "side", "footer"]);
+}
+
+#[test]
+fn a_request_with_ad_units_or_of_unknown_size_is_not_that_finding() {
+    let rule = "bids-requested-without-ad-units";
+    // Read from Prebid's history: how many ad units there were is not known.
+    assert!(!fired(&page_that_asks_for_bids_without_ad_units(None)).contains(&rule));
+    assert!(!fired(&page_that_asks_for_bids_without_ad_units(Some(3))).contains(&rule));
+    // An auction ran on the page view: whatever the empty call was, bidding works.
+    let mut with_auction = page_that_asks_for_bids_without_ad_units(Some(0));
+    let mut auction = auction_round(1_000.0, "auction-1");
+    for event in &mut auction {
+        event.page = 0;
+    }
+    with_auction.events.extend(auction);
+    with_auction.events.sort_by(|a, b| a.t.total_cmp(&b.t));
+    assert!(!fired(&with_auction).contains(&rule));
+}
+
 // -- consent the scan gave late or not at all ------------------------------------------------
 
 fn consent_note(page: u32, t: f64, kind: ConsentNoteKind, banner: &str) -> ConsentNote {
@@ -940,18 +1064,73 @@ fn visit_environment(webdriver: Option<bool>, headless: bool, detector: bool) ->
     }
 }
 
-/// `appnexus` is asked for bids in two auctions and never bids.
-fn capture_with_a_silent_bidder() -> Capture {
+/// `appnexus` is asked for bids in two auctions and never bids: it answers
+/// every request without a bid, or (`timed_out_under`) is cut off by the
+/// auction timeout of that many ms every time.
+fn capture_where_appnexus_never_bids(timed_out_under: Option<f64>) -> Capture {
     let mut events = healthy_page();
     events.extend(auction_round(6_000.0, "auction-2"));
     events.retain(|event| {
-        !matches!(&event.kind, Ev::BidResponse { bidder, .. } if bidder == "appnexus")
-            && !matches!(
-                &event.kind,
-                Ev::BidWon { .. } | Ev::AdRenderSucceeded { .. }
-            )
+        !matches!(
+            &event.kind,
+            Ev::BidWon { .. } | Ev::AdRenderSucceeded { .. }
+        )
     });
+    for event in &mut events {
+        match &mut event.kind {
+            Ev::BidResponse {
+                auction_id,
+                bidder,
+                ad_unit_code,
+                ..
+            } if bidder == "appnexus" => {
+                event.kind = Ev::NoBid {
+                    auction_id: auction_id.clone(),
+                    bidder: bidder.clone(),
+                    ad_unit_code: ad_unit_code.clone(),
+                };
+            }
+            Ev::AuctionInit { timeout, .. } => *timeout = timed_out_under.or(*timeout),
+            _ => {}
+        }
+    }
+    if timed_out_under.is_some() {
+        for event in &mut events {
+            if let Ev::NoBid {
+                auction_id,
+                bidder,
+                ad_unit_code,
+            } = &event.kind
+            {
+                event.kind = Ev::BidTimeout {
+                    auction_id: auction_id.clone(),
+                    bidder: bidder.clone(),
+                    ad_unit_code: ad_unit_code.clone(),
+                };
+            }
+        }
+    }
     visit(vec![(entry(12_000.0), events)])
+}
+
+fn capture_with_a_silent_bidder() -> Capture {
+    capture_where_appnexus_never_bids(None)
+}
+
+#[test]
+fn a_bidder_cut_off_by_the_pages_own_short_timeout_is_not_taken_for_one_that_filters() {
+    let headless = visit_environment(Some(false), true, false);
+    // A 250 ms auction timeout explains a bidder that never made it.
+    let cut_off = capture_where_appnexus_never_bids(Some(250.0));
+    assert!(automation_finding(&cut_off, &headless).is_none());
+    // Given a second and a half and still silent every time: that one counts.
+    let silent = capture_where_appnexus_never_bids(Some(1_500.0));
+    assert_eq!(
+        automation_finding(&silent, &headless)
+            .unwrap()
+            .affected_bidders,
+        ["appnexus"]
+    );
 }
 
 fn automation_finding(capture: &Capture, environment: &ScanEnvironment) -> Option<FindingDraft> {
@@ -975,8 +1154,8 @@ fn an_automated_visit_with_a_detection_vendor_on_the_page_is_flagged_as_informat
         finding.description,
         "A scripted visit (scroll, or \"Browse like a visitor\") is automated by design, and the pages could \
          tell: navigator.webdriver was true, the browser ran headless. DoubleVerify is on the page, a service \
-         that tells automated visits apart. Every bidder that was asked more than once did bid, so nothing in \
-         this scan points at filtering; this only says how the visit looked to the page. To rule it out, run \
+         that tells automated visits apart. No bidder that was asked more than once declined every time, so \
+         nothing in this scan points at filtering; this only says how the visit looked to the page. To rule it out, run \
          the scan again as \"I'll browse myself\": a person drives the browser and it is not flagged as \
          automated."
     );
@@ -994,8 +1173,8 @@ fn an_automated_visit_with_a_bidder_that_never_bid_is_flagged_and_the_bidder_fin
     // ones that did.
     assert!(
         finding.description.contains(
-            "appnexus was asked for bids and never bid, which is what a bidder that filters automated \
-             traffic looks like. Other bidders did bid, so the scan was not filtered as a whole."
+            "appnexus was asked for bids and declined every time, which is what a bidder that filters \
+             automated traffic looks like. Other bidders did bid, so the scan was not filtered as a whole."
         ),
         "{}",
         finding.description

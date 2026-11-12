@@ -106,7 +106,9 @@
 
   function textOf(anchor) {
     var image = anchor.querySelector('img[alt]');
-    var text = anchor.textContent || anchor.getAttribute('aria-label') || (image && image.alt) || '';
+    // `innerText` keeps the breaks between a kicker and a headline that are
+    // blocks of their own; `textContent` would run them together.
+    var text = anchor.innerText || anchor.textContent || anchor.getAttribute('aria-label') || (image && image.alt) || '';
     return text.replace(/\s+/g, ' ').trim().slice(0, MAX_TEXT);
   }
 

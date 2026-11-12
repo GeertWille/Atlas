@@ -80,7 +80,9 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e && pnpm build
 pnpm test:tauri         # Linux only: builds the app and drives the real window (see below)
 ```
 
-`pnpm test:tauri` needs `tauri-driver` (`cargo install tauri-driver --locked`), `WebKitWebDriver`
+`pnpm test:tauri` runs the app from `target/e2e/adtech-scanner`, a copy it makes right after
+`tauri build`: any other `cargo build`/`cargo test` rewrites `target/debug/adtech-scanner` without the
+frontend embedded, which used to break a test run that was under way. It needs `tauri-driver` (`cargo install tauri-driver --locked`), `WebKitWebDriver`
 (package `webkit2gtk-driver`) and `xvfb-run`; with `xdotool` and `xclip` installed it also drives the
 native save and open dialogs, otherwise those two tests are skipped. tauri-driver has no macOS backend,
 so the suite cannot run on a Mac. `TAURI_E2E_SCREENSHOTS=<dir> pnpm test:tauri screens` saves a picture
@@ -157,6 +159,18 @@ without destroying the old ones.
 - The detection-vendor table against real pages.
 
 ## Known open issues
+
+- **Ad servers other than Google Publisher Tag are not read.** Slots, ad requests, `hb_*` targeting on
+  the request, fill and render timing all come from hooks on `googletag`. A page that serves through
+  Xandr AST (`apntag`, `ib.adnxs.com/ut/v3`), Equativ/Smart AdServer (`sas`), Adform or a direct ad
+  server has Prebid telemetry only: no slots, no "requested without bids", no fill rate, and the slot
+  rules (`slots-never-requested`, `ad-request-before-auction-end`, `slots-outside-header-bidding`,
+  refresh rules) cannot fire. `ScanMetrics.hasGpt` is the only ad-server flag. The host table
+  (`domain/knowledge.rs`) lists `adnxs.com` and `smartadserver.com` as bidders, which is right for
+  their Prebid endpoints (`/ut/v3/prebid`) and wrong for their ad-server calls. What is missing: a
+  tracker hook per ad server (AST `apntag.defineTag`/`loadTags`/`onEvent`, Smart `sas.call`/`sas.render`)
+  mapped onto the same slot events, an ad-server category for those hosts by path, and `hasAdServer`
+  next to `hasGpt`. Today only `bids-requested-without-ad-units` mentions such servers, by host name.
 
 - Turning on Prebid debug logging (`setConfig({debug:true})`) has minor side effects on real sites.
 - A cancelled step shows as Failed with summary "Cancelled"; there is no cancelled step status.
@@ -246,6 +260,14 @@ What the backend guarantees about it:
   Phase 2 prompt's visit block. The gate rule does not report "no auction ever started" unless Prebid
   had at least 5 s after it loaded and consent was given; late-auction and slow-GPT are counted from the
   consent choice.
+- **What the page asks of Prebid.** The tracker reports every `requestBids` call (`bidsRequested`: the
+  ad unit codes named, how many ad units Prebid had to auction, the timeout) through Prebid's own
+  `requestBids.before` hook, and `addAdUnits` calls (`adUnitsAdded`); calls made before it subscribed
+  are replayed from `pbjs.getEvents()` without those details. The rule
+  `bids-requested-without-ad-units` (high) fires when bids were asked for with zero ad units and no
+  auction ran on that page view: the wrapper dropped every ad unit, usually because it filtered out
+  every bidder for this visitor. The gate rule stands down for it. Both events are in the Phase 2
+  page timeline.
 - **Back/forward cache.** When a person presses Back and Chrome restores the earlier document instead
   of loading it, that is a new page view (`userNavigation`, no `loadMs`) of the old document: what the
   document reports from then on is on the new page view, timed from the restore. Console lines and bid

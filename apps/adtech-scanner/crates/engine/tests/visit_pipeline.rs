@@ -594,6 +594,39 @@ async fn scans_in_the_persistent_profile_run_one_at_a_time() {
 }
 
 #[tokio::test]
+async fn finishing_a_visit_that_waits_for_the_profile_is_remembered_until_its_capture_starts() {
+    let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
+        two_page_capture(),
+    )));
+    let holder = harness.scans.start(persistent_options()).await.unwrap();
+    wait_for_capture(&harness, 1).await;
+    let queued = harness.scans.start(persistent_options()).await.unwrap();
+    let waiting = "Waiting for another scan to release the scan profile";
+    for _ in 0..400 {
+        let logs = harness.scans.logs(&queued.id, None).await.unwrap();
+        if logs.iter().any(|entry| entry.message == waiting) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // Finished while it waits: nothing to end yet, and not forgotten.
+    harness.scans.finish_capture(&queued.id).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(harness.capture.requests.lock().unwrap().len(), 1);
+
+    harness.scans.finish_capture(&holder.id).await.unwrap();
+    // No second request: the queued visit ends by itself once it has started.
+    for id in [&holder.id, &queued.id] {
+        assert_eq!(
+            wait_for_end(&harness, id).await.summary.status,
+            ScanStatus::Completed
+        );
+    }
+    assert_eq!(harness.capture.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn a_scan_waiting_for_the_profile_can_be_cancelled_and_a_throwaway_scan_does_not_wait() {
     let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
         two_page_capture(),

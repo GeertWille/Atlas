@@ -347,6 +347,28 @@ pub enum TrackerEventKind {
     AmazonDetected {},
 
     // -- Prebid auction lifecycle --------------------------------------------
+    /// The page asked Prebid for bids (`requestBids`), whether or not an
+    /// auction followed. Reported from Prebid's own hook on that call, or
+    /// from its event history for calls made before the tracker subscribed
+    /// (then without the details).
+    BidsRequested {
+        /// The ad unit codes the call named; empty when it named none or
+        /// they are not known.
+        #[serde(default)]
+        ad_unit_codes: Vec<String>,
+        /// How many ad units Prebid had to auction at that moment: those
+        /// passed with the call, else those registered. `None` when unknown.
+        #[serde(default)]
+        ad_unit_count: Option<u32>,
+        #[serde(default)]
+        timeout: Option<f64>,
+    },
+    /// `addAdUnits` was called; `registered` is how many ad units Prebid
+    /// holds afterwards (`None` when read from the event history).
+    AdUnitsAdded {
+        #[serde(default)]
+        registered: Option<u32>,
+    },
     AuctionInit {
         auction_id: String,
         timeout: Option<f64>,

@@ -8,7 +8,10 @@ import type { ScanList } from "../../src/bindings";
 
 export type Browser = Awaited<ReturnType<typeof remote>>;
 
-const APP_BINARY = resolve(import.meta.dirname, "../../target/debug/adtech-scanner");
+// A copy `pnpm test:tauri` makes of the binary `tauri build` produced. Any
+// other `cargo build` or `cargo test` rewrites target/debug/adtech-scanner
+// without the frontend embedded; the copy is out of its way.
+const APP_BINARY = resolve(import.meta.dirname, "../../target/e2e/adtech-scanner");
 const DEFAULT_CHROME = "/opt/pw-browsers/chromium-1243/chrome-linux64/chrome";
 
 export type App = {

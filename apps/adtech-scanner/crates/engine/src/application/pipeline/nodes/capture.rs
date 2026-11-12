@@ -28,6 +28,10 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     let start = start_line(&request, run.job.scan.proxy.usage().name);
     run.info(start).await?;
 
+    // Listening from here on: a visit that is finished while it waits for
+    // the scan profile ends as soon as its page has loaded, instead of
+    // losing the request.
+    let finish = run.job.finish.arm();
     // Held until the browser is gone, so the next scan finds the profile free.
     let _profile_turn = if request.persistent_profile {
         let scan_profile = Arc::clone(&run.job.scan_profile);
@@ -49,7 +53,7 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     });
     let session = CaptureSession {
         cancel: run.job.cancel.clone(),
-        finish: run.job.finish.arm(),
+        finish,
         on_activity,
         proxy_password: run.job.proxy_password.clone(),
     };
