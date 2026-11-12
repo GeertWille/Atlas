@@ -78,17 +78,21 @@ pub(crate) struct BidRequest {
 }
 
 /// The bidder a request URL belongs to, if it is a known bid endpoint: one
-/// of the adapters' own hosts. A page served from this machine, as the
-/// built-in demo site is, may stand in for an exchange at its own origin, so
+/// of the adapters' own hosts. For a page served from this machine, as the
+/// built-in demo site is, a server on this machine may stand in for an
+/// exchange (the demo's does, at its own origin and at a second one), so
 /// there the path alone decides. On any real host a path proves nothing: the
 /// site chooses what it serves under it.
 pub(crate) fn bid_request(url: &str, page_url: &str) -> Option<BidRequest> {
     let url = Url::parse(url).ok()?;
     let host = url.host_str()?.to_ascii_lowercase();
     let path = url.path();
-    let is_local_stand_in = Url::parse(page_url).is_ok_and(|page| {
-        page.origin() == url.origin() && page.host().is_some_and(|host| is_this_machine(&host))
-    });
+    let on_this_machine = |url: &Url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.host().is_some_and(|host| is_this_machine(&host))
+    };
+    let is_local_stand_in =
+        on_this_machine(&url) && Url::parse(page_url).is_ok_and(|page| on_this_machine(&page));
     ENDPOINTS
         .iter()
         .find(|endpoint| {
@@ -199,6 +203,7 @@ struct Observation {
     request: BidRequest,
     status: Option<u16>,
     reason: Option<String>,
+    request_seq: Option<u32>,
 }
 
 /// What the bidders' endpoints answered during one capture.
@@ -214,6 +219,7 @@ impl BidResponseLog {
         at_epoch_ms: Option<f64>,
         status: Option<u16>,
         reason: Option<String>,
+        request_seq: Option<u32>,
     ) {
         if self.observations.len() < MAX_OBSERVATIONS {
             self.observations.push(Observation {
@@ -221,6 +227,7 @@ impl BidResponseLog {
                 request,
                 status,
                 reason,
+                request_seq,
             });
         }
     }
@@ -244,7 +251,7 @@ impl BidResponseLog {
                     host: observation.request.host,
                     status: observation.status,
                     reason: observation.reason,
-                    request_seq: None,
+                    request_seq: observation.request_seq,
                 })
             })
             .collect();
@@ -299,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_alone_only_counts_at_the_own_origin_of_a_page_on_this_machine() {
+    fn a_path_alone_only_counts_between_a_page_and_a_server_on_this_machine() {
         let demo = "http://127.0.0.1:4455/";
         let on = |url: &str, page: &str| bid_request(url, page).map(|request| request.bidder);
         assert_eq!(
@@ -322,10 +329,17 @@ mod tests {
             on("http://127.0.0.1:4455/openrtbb/prebidjs/extra", demo),
             None
         );
-        // Another service on this machine is not the page's stand-in.
-        assert_eq!(on("http://127.0.0.1:9999/openrtbb/prebidjs", demo), None);
-        assert_eq!(on("https://127.0.0.1:4455/openrtbb/prebidjs", demo), None);
-        assert_eq!(on("http://localhost:4455/openrtbb/prebidjs", demo), None);
+        // The stand-in may be at another origin of this machine: the demo
+        // site's second one, a Prebid Server run locally.
+        assert_eq!(
+            on("http://127.0.0.1:9999/openrtbb/prebidjs", demo),
+            Some("openx")
+        );
+        assert_eq!(
+            on("http://localhost:4456/ut/v3/prebid", demo),
+            Some("appnexus")
+        );
+        assert_eq!(on("ws://127.0.0.1:4455/openrtbb/prebidjs", demo), None);
 
         // Real hosts: the site, its subdomains, anyone else's server.
         for (url, page) in [
@@ -456,16 +470,18 @@ mod tests {
             Some(1_500.0),
             Some(200),
             Some("no-bid reason 7".into()),
+            Some(41),
         );
         log.record(
             request(),
             Some(1_200.0),
             None,
             Some("net::ERR_FAILED".into()),
+            None,
         );
         // From the document before a reload, and one that could not be dated.
-        log.record(request(), Some(900.0), Some(200), None);
-        log.record(request(), None, Some(200), None);
+        log.record(request(), Some(900.0), Some(200), None, None);
+        log.record(request(), None, Some(200), None, None);
 
         let observed = log.into_observed(|at| (0, at - 1_000.0));
         assert_eq!(
@@ -487,14 +503,14 @@ mod tests {
                     host: "rtb.openx.net".into(),
                     status: Some(200),
                     reason: Some("no-bid reason 7".into()),
-                    request_seq: None,
+                    request_seq: Some(41),
                 },
             ]
         );
 
         let mut full = BidResponseLog::default();
         for _ in 0..MAX_OBSERVATIONS + 10 {
-            full.record(request(), Some(1.0), Some(204), None);
+            full.record(request(), Some(1.0), Some(204), None, None);
         }
         assert_eq!(full.into_observed(|at| (0, at)).len(), MAX_OBSERVATIONS);
     }

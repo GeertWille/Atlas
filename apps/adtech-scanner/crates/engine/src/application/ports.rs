@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adscan_model::{
-    AdLink, AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureActivity,
-    CaptureProxy, CaptureRequest, DashboardStats, Finding, InitiatorKind, LogEntry, LogSearchHit,
-    NetworkCategory, NetworkSink, PageView, BodyState, RequestContext, ResourceKind, ServedFrom, PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
+    AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureActivity,
+    CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit, NetworkSink,
+    PageView, PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
     ScanListQuery, ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
@@ -14,7 +14,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::judge::{JudgeRequest, JudgeResponse};
 use super::llm::{LlmError, LlmRequest, LlmResponse};
-use crate::domain::archive::{BodyKind, Location};
+use crate::domain::archive::Location;
+pub use crate::domain::archive::index::{BodyIndexRow, RequestEndKind, RequestIndexRow};
+pub use crate::domain::network::exchange::RequestAdLink;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{0}")]
@@ -333,76 +335,6 @@ pub struct ArchiveRecord {
     pub created_at: f64,
 }
 
-/// One distinct body of a scan and where its frame is in the pack.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BodyIndexRow {
-    pub body_no: u32,
-    /// Of the stored bytes.
-    pub sha256: [u8; 32],
-    pub kind: BodyKind,
-    /// Stored bytes, before compression.
-    pub raw_len: u64,
-    pub pack_offset: u64,
-    pub pack_length: u32,
-    pub truncated: bool,
-}
-
-/// What the index keeps of a request: enough to list, sort, count and link
-/// without opening the pack. Never a query string, a header or a body.
-#[derive(Debug, Clone, PartialEq)]
-pub struct RequestIndexRow {
-    pub seq: u32,
-    pub page: u32,
-    pub context: RequestContext,
-    pub started_ms: f64,
-    /// From the start of the request to the first byte of the answer.
-    pub ttfb_ms: Option<f64>,
-    pub duration_ms: Option<f64>,
-    pub method: String,
-    pub scheme: String,
-    pub host: String,
-    /// Registrable domain of `host`.
-    pub site: String,
-    /// Without the query string, at most 512 characters.
-    pub path: String,
-    pub query_len: u32,
-    pub kind: ResourceKind,
-    pub mime: Option<String>,
-    pub status: Option<u16>,
-    pub end: RequestEndKind,
-    /// Network error or blocked reason, at most 80 characters.
-    pub error: Option<String>,
-    pub third_party: bool,
-    pub served_from: ServedFrom,
-    pub no_hb_targeting: bool,
-    pub encoded_bytes: u64,
-    pub decoded_bytes: u64,
-    pub post_bytes: u64,
-    pub initiator_kind: InitiatorKind,
-    pub redirect_from: Option<u32>,
-    pub preflight_of: Option<u32>,
-    pub bidder: Option<String>,
-    pub category: NetworkCategory,
-    pub body_state: BodyState,
-    pub body_no: Option<u32>,
-    /// The record frame that holds the request's document, and its line.
-    pub record_offset: u64,
-    pub record_length: u32,
-    pub record_index: u32,
-    /// Set after the capture, when the request was matched to an auction.
-    pub ad: Option<AdLink>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestEndKind {
-    Finished,
-    Redirected,
-    Failed,
-    Blocked,
-    Cancelled,
-    Pending,
-}
-
 /// Totals written when a scan's pack is sealed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArchiveTotals {
@@ -444,7 +376,7 @@ pub trait ArchiveRepository: Send + Sync {
     async fn rows_by_seq(&self, scan_id: &str, seqs: &[u32]) -> RepoResult<Vec<RequestIndexRow>>;
     async fn body(&self, scan_id: &str, body_no: u32) -> RepoResult<Option<BodyIndexRow>>;
     async fn body_by_sha(&self, scan_id: &str, sha256: [u8; 32]) -> RepoResult<Option<BodyIndexRow>>;
-    async fn save_ad_links(&self, scan_id: &str, links: Vec<(u32, AdLink)>) -> RepoResult<()>;
+    async fn save_ad_links(&self, scan_id: &str, links: Vec<RequestAdLink>) -> RepoResult<()>;
     /// Removes the archive's bookkeeping and all its rows. False when the
     /// scan has none.
     async fn remove(&self, scan_id: &str) -> RepoResult<bool>;

@@ -3,6 +3,7 @@
 //! rows. Pure: the bytes are moved by the application layer.
 
 pub mod document;
+pub mod index;
 pub mod kinds;
 pub mod location;
 pub mod pack;

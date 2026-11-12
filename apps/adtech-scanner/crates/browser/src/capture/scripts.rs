@@ -1,6 +1,6 @@
 //! The set of script bodies kept for one capture: dedupe and size budgets. No I/O.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use adscan_model::CapturedScript;
@@ -30,6 +30,8 @@ struct Entry {
     /// When the same script was loaded again, on a later page view.
     loaded_again_at_epoch_ms: Vec<f64>,
     initiator: Option<String>,
+    /// `seq` of the request that delivered it first.
+    request_seq: Option<u32>,
 }
 
 #[derive(Default)]
@@ -37,6 +39,8 @@ pub(crate) struct ScriptLibrary {
     entries: Vec<Entry>,
     /// Position in `entries` by fingerprint.
     fingerprints: HashMap<u64, usize>,
+    /// URLs of the external scripts held.
+    external_urls: HashSet<String>,
     total_bytes: usize,
     inline_count: usize,
 }
@@ -50,6 +54,7 @@ impl ScriptLibrary {
         body: String,
         loaded_at_epoch_ms: Option<f64>,
         initiator: Option<String>,
+        request_seq: Option<u32>,
     ) -> Admission {
         let fingerprint = fingerprint(&url, &body);
         if let Some(rejection) = self.rejection(fingerprint, &body, loaded_at_epoch_ms) {
@@ -64,6 +69,7 @@ impl ScriptLibrary {
                 loaded_at_epoch_ms,
                 loaded_again_at_epoch_ms: Vec::new(),
                 initiator,
+                request_seq,
             },
         )
     }
@@ -76,7 +82,7 @@ impl ScriptLibrary {
         loaded_at_epoch_ms: Option<f64>,
         document_url: Option<String>,
     ) -> Admission {
-        let fingerprint = fingerprint("inline:", &body);
+        let fingerprint = inline_fingerprint(&body);
         if let Some(rejection) = self.rejection(fingerprint, &body, loaded_at_epoch_ms) {
             return rejection;
         }
@@ -91,8 +97,25 @@ impl ScriptLibrary {
                 loaded_at_epoch_ms,
                 loaded_again_at_epoch_ms: Vec::new(),
                 initiator: document_url,
+                request_seq: None,
             },
         )
+    }
+
+    /// The `inline:<n>` name of the inline or runtime script with this
+    /// fingerprint (see [`inline_fingerprint`]), when it is held.
+    pub(crate) fn inline_url(&self, fingerprint: u64) -> Option<&str> {
+        let entry = &self.entries[*self.fingerprints.get(&fingerprint)?];
+        entry.inline.then_some(entry.url.as_str())
+    }
+
+    /// The URL under which the external script loaded from `url` is held.
+    pub(crate) fn external_url(&self, url: &str) -> Option<String> {
+        if url.is_empty() {
+            return None;
+        }
+        let held_as = without_embedded_payload(url.to_string());
+        self.external_urls.contains(&held_as).then_some(held_as)
     }
 
     /// A script held already keeps its one body; the repeated load is noted,
@@ -122,6 +145,9 @@ impl ScriptLibrary {
         entry.url = without_embedded_payload(entry.url);
         entry.initiator = entry.initiator.map(without_embedded_payload);
         self.total_bytes += entry.body.len();
+        if !entry.inline {
+            self.external_urls.insert(entry.url.clone());
+        }
         self.fingerprints.insert(fingerprint, self.entries.len());
         self.entries.push(entry);
         Admission::Stored
@@ -156,11 +182,16 @@ impl ScriptLibrary {
                     loaded_at_ms: first_load.map(|(_, since_page_start)| since_page_start),
                     initiator: entry.initiator,
                     pages,
-                    request_seq: None,
+                    request_seq: entry.request_seq,
                 }
             })
             .collect()
     }
+}
+
+/// What tells one inline or runtime script from another: its source.
+pub(crate) fn inline_fingerprint(body: &str) -> u64 {
+    fingerprint("inline:", body)
 }
 
 fn fingerprint(url: &str, body: &str) -> u64 {
@@ -183,7 +214,7 @@ fn truncate_at_char_boundary(text: &mut String, max_bytes: usize) {
 /// metadata, which must stay small and free of raw payloads, so a long one is
 /// reduced to its media type, its length and a fingerprint that keeps it
 /// distinct.
-fn without_embedded_payload(url: String) -> String {
+pub(crate) fn without_embedded_payload(url: String) -> String {
     const MAX_DATA_URL_BYTES: usize = 120;
     const MAX_MEDIA_TYPE_BYTES: usize = 60;
     if !url.starts_with("data:") || url.len() <= MAX_DATA_URL_BYTES {
@@ -255,7 +286,7 @@ mod tests {
     use super::*;
 
     fn external(library: &mut ScriptLibrary, url: &str, body: &str) -> Admission {
-        library.add_external(url.into(), body.into(), None, None)
+        library.add_external(url.into(), body.into(), None, None, None)
     }
 
     #[test]
@@ -320,7 +351,7 @@ mod tests {
     fn a_script_lists_every_page_view_that_loaded_it() {
         let mut library = ScriptLibrary::default();
         let mut load = |url: &str, at: f64| {
-            library.add_external(url.into(), "wrapper()".into(), Some(at), None)
+            library.add_external(url.into(), "wrapper()".into(), Some(at), None, None)
         };
         assert_eq!(load("https://a.test/hb.js", 21_500.0), Admission::Stored);
         assert_eq!(load("https://a.test/hb.js", 41_200.0), Admission::Duplicate);
@@ -390,6 +421,7 @@ mod tests {
             "x()".into(),
             None,
             Some(data_url("a()%3B")),
+            None,
         );
 
         let scripts = library.into_captured(|at| (0, at));

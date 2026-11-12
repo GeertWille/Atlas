@@ -1,12 +1,16 @@
-//! Listens to the CDP events of the tab being scanned and records page views,
-//! scripts, console lines and tracker telemetry into the pure collectors.
-//! Nothing is recorded while the tab shows a page of another site.
+//! Listens to the CDP events of the tab being scanned, and of the iframes
+//! and workers below it, and records page views, requests, scripts, console
+//! lines and tracker telemetry into the pure collectors. Nothing is recorded
+//! while the tab shows a page of another site.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use adscan_model::{ActivityKind, CaptureActivity, ConsentNoteKind, PageReach};
+use adscan_model::{
+    ActivityKind, BodyAdmission, BodyOffer, BodySkip, CaptureActivity, CapturedBody,
+    ConsentNoteKind, NetworkSink, PageReach, ResourceKind,
+};
 
 use futures_util::future::BoxFuture;
 use futures_util::stream::FuturesUnordered;
@@ -17,13 +21,17 @@ use url::Url;
 use crate::cdp::{Cdp, CdpError, CdpEvent};
 
 use super::bid_endpoints::{
-    BidRequest, BidResponseLog, MAX_BODY_BYTES, bid_request, no_bid_reason, short,
+    BidRequest, BidResponseLog, MAX_BODY_BYTES, no_bid_reason, short,
 };
 use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, is_tracker_script};
+use super::network::assembly::{Assembler, Ended, Finished, Output, Reporter, Source};
+use super::network::fields::captured_body;
 use super::pages::{Change, Committed, PageLog};
 use super::progress::Milestones;
-use super::scripts::{Admission, ScriptLibrary, initiator_url, is_page_script_url, response_text};
+use super::scripts::{
+    Admission, ScriptLibrary, inline_fingerprint, is_page_script_url, response_text,
+};
 use super::tracker_log::TrackerLog;
 use super::visitor::links::loggable;
 use super::visitor::site::Site;
@@ -33,37 +41,65 @@ pub(crate) type ActivitySink = Arc<dyn Fn(CaptureActivity) + Send + Sync>;
 /// The environment report lists at most this many third-party hosts.
 const MAX_REQUEST_HOSTS: usize = 500;
 
-/// A network request that may turn out to be a script, or that asks a
-/// bidder for bids.
-struct Request {
-    url: String,
-    initiator: Option<String>,
-    is_script: bool,
-    status: Option<u16>,
-    bid: Option<BidRequest>,
+/// The session an event was reported on, as the page knows it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Reported<'a> {
+    pub session: &'a str,
+    pub reporter: Reporter,
+    /// Target of the session, unless it is a tab's own.
+    pub target_id: Option<&'a str>,
+    /// Main frame of the tab, for a tab's own session.
+    pub main_frame_id: Option<&'a str>,
+    /// The session is the recorded tab's, or belongs to a target below it.
+    pub in_recorded_tab: bool,
 }
 
-/// A script body on its way from the browser.
+/// A script file the page loaded, for the script library.
+struct ScriptLoad {
+    url: String,
+    initiator: Option<String>,
+    loaded_at_epoch_ms: f64,
+}
+
+/// A bidder's answer, read for its stated no-bid reason.
+struct BidAnswer {
+    request: BidRequest,
+    status: Option<u16>,
+    answered_at_epoch_ms: f64,
+}
+
+/// Something on its way from the browser.
 enum Fetched {
-    External {
-        url: String,
-        initiator: Option<String>,
-        loaded_at_epoch_ms: Option<f64>,
+    /// A response body, read once for everyone who wants it.
+    Response {
+        seq: u32,
+        /// How many bytes the sink admitted, or what the record says instead.
+        for_sink: Result<usize, CapturedBody>,
+        script: Option<ScriptLoad>,
+        bid: Option<BidAnswer>,
+        response: Result<Value, CdpError>,
+    },
+    RequestBody {
+        seq: u32,
         response: Result<Value, CdpError>,
     },
     Inline {
+        /// The session that parsed the script and the browser's id for it.
+        session: String,
+        script_id: String,
         parsed_at_epoch_ms: f64,
         /// URL of the document or script that contains or created the code.
         creator: String,
         response: Result<Value, CdpError>,
     },
-    /// A bidder's answer, read for its stated no-bid reason and then dropped.
-    BidAnswer {
-        request: BidRequest,
-        status: Option<u16>,
-        answered_at_epoch_ms: Option<f64>,
-        response: Result<Value, CdpError>,
-    },
+}
+
+/// How many requests were handed over, and how many of them were made in
+/// an out-of-process iframe or a worker.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct RequestCounts {
+    pub total: u32,
+    pub in_child_targets: u32,
 }
 
 /// The full address of the document a `Page.frameNavigated` event reports.
@@ -105,23 +141,33 @@ pub(crate) struct Recorder {
     /// URL of the main frame's current document, on the site or not.
     document_url: String,
     main_frame_id: String,
-    requests: HashMap<String, Request>,
+    requests: Assembler,
+    /// Where finished requests go. `None`: the scan keeps no network data.
+    sink: Option<Arc<dyn NetworkSink>>,
+    request_counts: RequestCounts,
+    /// The library's name of each inline and runtime script, by the session
+    /// that parsed it and the browser's script id.
+    inline_scripts: HashMap<String, HashMap<String, String>>,
     /// HTTP status of main-frame documents, by loader id.
     document_statuses: HashMap<String, u16>,
     /// Wall-clock start of the latest main-frame document request, epoch ms.
     document_requested_at: Option<f64>,
-    /// Epoch ms minus the browser's monotonic clock, to date network events.
-    wall_clock_offset_ms: Option<f64>,
     fetches: FuturesUnordered<BoxFuture<'static, Fetched>>,
     third_party_hosts: BTreeSet<String>,
     milestones: Milestones,
     on_activity: ActivitySink,
     budget_announced: bool,
+    overflow_announced: bool,
     malformed_announced: usize,
 }
 
 impl Recorder {
-    pub(crate) fn new(main_frame_id: String, pages: PageLog, on_activity: ActivitySink) -> Self {
+    pub(crate) fn new(
+        main_frame_id: String,
+        pages: PageLog,
+        on_activity: ActivitySink,
+        sink: Option<Arc<dyn NetworkSink>>,
+    ) -> Self {
         Self {
             consent_notes: Vec::new(),
             dialog_without_accept_seen: 0,
@@ -136,15 +182,18 @@ impl Recorder {
             on_site: false,
             document_url: String::new(),
             main_frame_id,
-            requests: HashMap::new(),
+            requests: Assembler::default(),
+            sink,
+            request_counts: RequestCounts::default(),
+            inline_scripts: HashMap::new(),
             document_statuses: HashMap::new(),
             document_requested_at: None,
-            wall_clock_offset_ms: None,
             fetches: FuturesUnordered::new(),
             third_party_hosts: BTreeSet::new(),
             milestones: Milestones::default(),
             on_activity,
             budget_announced: false,
+            overflow_announced: false,
             malformed_announced: 0,
         }
     }
@@ -155,8 +204,6 @@ impl Recorder {
         self.main_frame_id = main_frame_id;
         self.document_url = url.to_string();
         self.on_site = self.site.is_some() && self.is_on_site(url);
-        // Request ids are only unique within a tab.
-        self.requests.clear();
         self.load_fired = false;
     }
 
@@ -200,12 +247,21 @@ impl Recorder {
         self.document_statuses.get(loader_id).copied()
     }
 
+    /// Whether the visit's requests are recorded, on every target.
+    pub(crate) fn keeps_requests(&self) -> bool {
+        self.sink.is_some()
+    }
+
+    pub(crate) fn request_counts(&self) -> RequestCounts {
+        self.request_counts
+    }
+
     pub(crate) fn has_pending_bodies(&self) -> bool {
         !self.fetches.is_empty()
     }
 
-    /// Resolves once the next requested script body has been stored; never
-    /// resolves while none is pending.
+    /// Resolves once the next body asked of the browser has been stored;
+    /// never resolves while none is pending.
     pub(crate) async fn store_next_body(&mut self) {
         match self.fetches.next().await {
             Some(fetched) => self.store(fetched),
@@ -221,17 +277,30 @@ impl Recorder {
             }
             "Runtime.consoleAPICalled" if self.on_site => self.console.record_api_call(params),
             "Log.entryAdded" if self.on_site => self.console.record_log_entry(params),
-            "Network.requestWillBeSent" => self.on_request(params),
-            "Network.responseReceived" => self.on_response(params),
-            "Network.loadingFinished" => self.on_loading_finished(params, cdp, session_id),
-            "Network.loadingFailed" => self.on_loading_failed(params),
+            method if method.starts_with("Network.") => {
+                match method {
+                    "Network.requestWillBeSent" => self.on_document_request(params),
+                    "Network.responseReceived" => self.on_document_response(params),
+                    _ => {}
+                }
+                let main_frame_id = self.main_frame_id.clone();
+                let tab = Reported {
+                    session: session_id,
+                    reporter: Reporter::Tab,
+                    target_id: None,
+                    main_frame_id: Some(&main_frame_id),
+                    in_recorded_tab: true,
+                };
+                self.observe_network(&tab, event, cdp);
+            }
             "Debugger.scriptParsed" if self.on_site => {
                 self.on_script_parsed(params, cdp, session_id)
             }
             "Page.loadEventFired" => self.load_fired = true,
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
                 let restored = params["type"] == "BackForwardCacheRestore";
-                self.on_document_committed(committed_address(params), restored);
+                let loader_id = params["frame"]["loaderId"].as_str().unwrap_or_default();
+                self.on_document_committed(committed_address(params), loader_id, restored);
             }
             "Page.navigatedWithinDocument" if params["frameId"] == self.main_frame_id.as_str() => {
                 self.document_url = params["url"].as_str().unwrap_or_default().to_string();
@@ -240,7 +309,7 @@ impl Recorder {
         }
     }
 
-    fn on_document_committed(&mut self, url: String, restored: bool) {
+    fn on_document_committed(&mut self, url: String, loader_id: &str, restored: bool) {
         self.document_url = url;
         let web_address = Url::parse(&self.document_url)
             .ok()
@@ -285,6 +354,11 @@ impl Recorder {
             Change::OverCap | Change::None => {}
         }
         self.announce_page_cap();
+        // After the page view exists: the document's request opens it.
+        let released = self
+            .requests
+            .navigation_committed(loader_id, self.on_site, now);
+        self.hand_over(released);
     }
 
     fn announce_page_view(&self, page: u32) {
@@ -354,42 +428,50 @@ impl Recorder {
         }
     }
 
-    fn on_request(&mut self, params: &Value) {
-        let (Some(request_id), Some(url)) = (
-            params["requestId"].as_str(),
-            params["request"]["url"].as_str(),
-        ) else {
-            return;
-        };
-        let wall_ms = params["wallTime"].as_f64().map(|seconds| seconds * 1000.0);
-        if let (Some(wall_ms), Some(monotonic)) = (wall_ms, params["timestamp"].as_f64()) {
-            self.wall_clock_offset_ms
-                .get_or_insert(wall_ms - monotonic * 1000.0);
+    /// Takes a `Network` event of any session of the visit.
+    pub(crate) fn observe_network(&mut self, reported: &Reported<'_>, event: &CdpEvent, cdp: &Cdp) {
+        let recording = reported.in_recorded_tab && self.on_site;
+        if recording
+            && event.method == "Network.requestWillBeSent"
+            && let Some(url) = event.params["request"]["url"].as_str()
+        {
+            self.note_third_party(url);
         }
+        let source = Source {
+            session: reported.session,
+            reporter: reported.reporter,
+            target_id: reported.target_id,
+            main_frame_id: reported.main_frame_id,
+            recording,
+            page_url: &self.document_url,
+            now_ms: epoch_ms_now(),
+        };
+        let outputs = self
+            .requests
+            .observe(&source, &event.method, &event.params);
+        for output in outputs {
+            match output {
+                Output::PostDataWanted {
+                    seq,
+                    session,
+                    request_id,
+                } => self.ask_for_request_body(seq, &session, &request_id, cdp),
+                Output::Finished(finished) => self.on_response_finished(finished, cdp),
+                Output::Ended(ended) => self.hand_over_one(*ended),
+            }
+        }
+    }
+
+    /// The start of a main-frame document request of the recorded tab.
+    fn on_document_request(&mut self, params: &Value) {
         let is_main_document =
             params["type"] == "Document" && params["frameId"] == self.main_frame_id.as_str();
         if is_main_document && params["redirectResponse"].is_null() {
-            self.document_requested_at = wall_ms;
+            self.document_requested_at =
+                params["wallTime"].as_f64().map(|seconds| seconds * 1000.0);
             self.document_requests += 1;
             self.load_fired = false;
         }
-        if !self.on_site {
-            return;
-        }
-        self.note_third_party(url);
-        let initiator = initiator_url(&params["initiator"])
-            .or_else(|| params["documentURL"].as_str().map(str::to_string));
-        self.requests.insert(
-            request_id.to_string(),
-            Request {
-                url: url.to_string(),
-                initiator,
-                is_script: params["type"] == "Script",
-                status: None,
-                // A CORS preflight goes to the same URL and is not the bid request.
-                bid: bid_request(url, &self.document_url).filter(|_| params["type"] != "Preflight"),
-            },
-        );
     }
 
     fn note_third_party(&mut self, url: &str) {
@@ -413,7 +495,7 @@ impl Recorder {
         }
     }
 
-    fn on_response(&mut self, params: &Value) {
+    fn on_document_response(&mut self, params: &Value) {
         let Some(request_id) = params["requestId"].as_str() else {
             return;
         };
@@ -426,97 +508,168 @@ impl Recorder {
             self.document_statuses
                 .insert(request_id.to_string(), status);
         }
-        if let Some(request) = self.requests.get_mut(request_id) {
-            request.is_script |= params["type"] == "Script";
-            request.status = status;
-        }
     }
 
-    /// A bid request that never got an answer: blocked, refused or aborted.
-    fn on_loading_failed(&mut self, params: &Value) {
-        let Some(request) = self
-            .requests
-            .remove(params["requestId"].as_str().unwrap_or_default())
-        else {
-            return;
-        };
-        if let Some(bid) = request.bid {
-            let failure = match params["blockedReason"].as_str() {
-                Some(blocked_by) => format!("blocked ({blocked_by})"),
-                None => params["errorText"]
-                    .as_str()
-                    .unwrap_or("the request failed")
-                    .to_string(),
-            };
-            let failed_at = self.epoch_ms(&params["timestamp"]);
-            self.bid_responses
-                .record(bid, failed_at, None, Some(short(&failure)));
-        }
-    }
-
-    /// Wall-clock time of a network event's monotonic `timestamp`.
-    fn epoch_ms(&self, timestamp: &Value) -> Option<f64> {
-        self.wall_clock_offset_ms
-            .zip(timestamp.as_f64())
-            .map(|(offset, monotonic)| offset + monotonic * 1000.0)
-    }
-
-    /// Bodies are requested the moment loading finishes: Chrome evicts them
-    /// from its buffer as the page keeps loading.
-    fn on_loading_finished(&mut self, params: &Value, cdp: &Cdp, session_id: &str) {
-        let Some(request_id) = params["requestId"].as_str() else {
-            return;
-        };
-        let Some(request) = self.requests.remove(request_id) else {
-            return;
-        };
-        let loaded_at_epoch_ms = self.epoch_ms(&params["timestamp"]);
-        let failed_status = request.status.is_some_and(|status| status >= 400);
-        if let Some(bid) = request.bid {
-            let small_enough = params["encodedDataLength"]
-                .as_f64()
-                .is_some_and(|length| length <= MAX_BODY_BYTES as f64);
-            if !small_enough {
-                self.bid_responses
-                    .record(bid, loaded_at_epoch_ms, request.status, None);
-                return;
-            }
-            let status = request.status;
-            let response = cdp.send(
-                Some(session_id),
-                "Network.getResponseBody",
-                json!({ "requestId": request_id }),
-            );
-            self.fetches.push(
-                response
-                    .map(move |response| Fetched::BidAnswer {
-                        request: bid,
-                        status,
-                        answered_at_epoch_ms: loaded_at_epoch_ms,
-                        response,
-                    })
-                    .boxed(),
-            );
-            return;
-        }
-        if !request.is_script || failed_status || !is_page_script_url(&request.url) {
-            return;
+    fn ask_for_request_body(&mut self, seq: u32, session: &str, request_id: &str, cdp: &Cdp) {
+        if self.sink.is_none() {
+            let settled = self.requests.post_data_settled(seq, None, epoch_ms_now());
+            return self.hand_over(settled);
         }
         let response = cdp.send(
-            Some(session_id),
-            "Network.getResponseBody",
+            Some(session),
+            "Network.getRequestPostData",
             json!({ "requestId": request_id }),
         );
         self.fetches.push(
             response
-                .map(move |response| Fetched::External {
-                    url: request.url,
-                    initiator: request.initiator,
-                    loaded_at_epoch_ms,
+                .map(move |response| Fetched::RequestBody { seq, response })
+                .boxed(),
+        );
+    }
+
+    /// A response finished loading. Its body is asked for at once, when
+    /// anyone wants it: Chrome discards bodies as the page keeps loading,
+    /// and with the frame that loaded them.
+    fn on_response_finished(&mut self, finished: Finished, cdp: &Cdp) {
+        let showing_the_site =
+            self.on_site || (finished.main_document && self.is_on_site(&finished.url));
+        let for_sink = match &self.sink {
+            None => Err(CapturedBody::Absent),
+            Some(_) if !finished.has_address_on_the_network => {
+                Err(CapturedBody::Skipped(BodySkip::Type))
+            }
+            Some(_) if !showing_the_site => Err(CapturedBody::Unavailable(
+                "the tab had left the scanned site".into(),
+            )),
+            Some(sink) => {
+                let admission = sink.admit_body(&BodyOffer {
+                    seq: finished.seq,
+                    kind: finished.kind,
+                    mime_type: finished.mime_type.as_deref(),
+                    status: finished.status,
+                    expected_bytes: finished.expected_bytes,
+                });
+                match admission {
+                    BodyAdmission::Read { max_bytes } => Ok(max_bytes),
+                    BodyAdmission::Skip(why) => Err(CapturedBody::Skipped(why)),
+                }
+            }
+        };
+        let request_seq = self.sink.is_some().then_some(finished.seq);
+        let failed_status = finished.status.is_some_and(|status| status >= 400);
+        let is_page_script = finished.in_tab
+            && finished.kind == ResourceKind::Script
+            && !failed_status
+            && is_page_script_url(&finished.url);
+        let script = is_page_script.then(|| ScriptLoad {
+            url: finished.url.clone(),
+            initiator: finished.initiator_url.clone(),
+            loaded_at_epoch_ms: finished.finished_epoch_ms,
+        });
+        let mut bid = finished.bid.map(|request| BidAnswer {
+            request,
+            status: finished.status,
+            answered_at_epoch_ms: finished.finished_epoch_ms,
+        });
+        if finished.encoded_bytes > MAX_BODY_BYTES as u64
+            && let Some(answer) = bid.take()
+        {
+            // An answer this large carries bids, not an explanation.
+            self.bid_responses.record(
+                answer.request,
+                Some(answer.answered_at_epoch_ms),
+                answer.status,
+                None,
+                request_seq,
+            );
+        }
+        let for_sink = match for_sink {
+            Err(instead) if script.is_none() && bid.is_none() => {
+                // Nobody wants it read.
+                let settled = self
+                    .requests
+                    .body_settled(finished.seq, instead, epoch_ms_now());
+                return self.hand_over(settled);
+            }
+            wanted => wanted,
+        };
+        let response = cdp.send(
+            Some(&finished.session),
+            "Network.getResponseBody",
+            json!({ "requestId": finished.request_id }),
+        );
+        let seq = finished.seq;
+        self.fetches.push(
+            response
+                .map(move |response| Fetched::Response {
+                    seq,
+                    for_sink,
+                    script,
+                    bid,
                     response,
                 })
                 .boxed(),
         );
+    }
+
+    fn hand_over(&mut self, outputs: Vec<Output>) {
+        for output in outputs {
+            if let Output::Ended(ended) = output {
+                self.hand_over_one(*ended);
+            }
+        }
+    }
+
+    /// A request has ended: it goes to the sink, placed on its page view.
+    fn hand_over_one(&mut self, ended: Ended) {
+        let request_seq = self.sink.is_some().then_some(ended.seq());
+        if let Some((bid, failed_at, failure)) = ended.failed_bid() {
+            // A bid request that never got an answer: blocked, refused or aborted.
+            self.bid_responses.record(
+                bid.clone(),
+                Some(failed_at),
+                None,
+                Some(short(&failure)),
+                request_seq,
+            );
+        }
+        let Some(sink) = &self.sink else {
+            return;
+        };
+        self.request_counts.total += 1;
+        if ended.is_of_child_target() {
+            self.request_counts.in_child_targets += 1;
+        }
+        let record = ended.into_record(
+            |epoch_ms| self.pages.place_at(epoch_ms),
+            |session, frame| {
+                self.inline_scripts
+                    .get(session)
+                    .and_then(|scripts| scripts.get(&frame.script_id))
+                    .cloned()
+                    .or_else(|| self.scripts.external_url(&frame.url))
+            },
+        );
+        sink.record(record);
+    }
+
+    /// The capture is over: hands over what is still open, as it stands.
+    pub(crate) fn finish_requests(&mut self) {
+        for ended in self.requests.finish() {
+            self.hand_over_one(ended);
+        }
+        self.announce_overflow();
+    }
+
+    fn announce_overflow(&mut self) {
+        let left_out = self.requests.overflowed();
+        if left_out > 0 && !self.overflow_announced && self.sink.is_some() {
+            self.overflow_announced = true;
+            self.progress(format!(
+                "The page kept more requests open than the scan follows at once; \
+                 at least {left_out} were not recorded"
+            ));
+        }
     }
 
     /// External files are captured from the network; this picks up the scripts
@@ -529,6 +682,10 @@ impl Recorder {
         if !in_page_world || !(is_inline_block(params) || is_substantial_runtime_script(params)) {
             return;
         }
+        let Some(script_id) = params["scriptId"].as_str().map(str::to_string) else {
+            return;
+        };
+        let session = session_id.to_string();
         let parsed_at_epoch_ms = epoch_ms_now();
         let creator = params["stackTrace"]["callFrames"][0]["url"]
             .as_str()
@@ -538,11 +695,13 @@ impl Recorder {
         let response = cdp.send(
             Some(session_id),
             "Debugger.getScriptSource",
-            json!({ "scriptId": params["scriptId"] }),
+            json!({ "scriptId": script_id }),
         );
         self.fetches.push(
             response
                 .map(move |response| Fetched::Inline {
+                    session,
+                    script_id,
                     parsed_at_epoch_ms,
                     creator,
                     response,
@@ -553,34 +712,56 @@ impl Recorder {
 
     fn store(&mut self, fetched: Fetched) {
         let admission = match fetched {
-            Fetched::BidAnswer {
-                request,
-                status,
-                answered_at_epoch_ms,
+            Fetched::Response {
+                seq,
+                for_sink,
+                script,
+                bid,
                 response,
             } => {
-                let reason = response
-                    .ok()
-                    .as_ref()
-                    .and_then(response_text)
-                    .and_then(|body| no_bid_reason(request.bidder, &body));
-                self.bid_responses
-                    .record(request, answered_at_epoch_ms, status, reason);
-                return;
-            }
-            Fetched::External {
-                url,
-                initiator,
-                loaded_at_epoch_ms,
-                response,
-            } => {
-                let Some(body) = response.ok().as_ref().and_then(response_text) else {
-                    return;
+                let request_seq = self.sink.is_some().then_some(seq);
+                let text = || response.as_ref().ok().and_then(response_text);
+                if let Some(answer) = bid {
+                    let reason = text().and_then(|body| no_bid_reason(answer.request.bidder, &body));
+                    self.bid_responses.record(
+                        answer.request,
+                        Some(answer.answered_at_epoch_ms),
+                        answer.status,
+                        reason,
+                        request_seq,
+                    );
+                }
+                let admission = script.and_then(|script| {
+                    Some(self.scripts.add_external(
+                        script.url,
+                        text()?,
+                        Some(script.loaded_at_epoch_ms),
+                        script.initiator,
+                        request_seq,
+                    ))
+                });
+                let body = match for_sink {
+                    Ok(max_bytes) => captured_body(response, max_bytes),
+                    Err(instead) => instead,
                 };
-                self.scripts
-                    .add_external(url, body, loaded_at_epoch_ms, initiator)
+                let settled = self.requests.body_settled(seq, body, epoch_ms_now());
+                self.hand_over(settled);
+                admission
+            }
+            Fetched::RequestBody { seq, response } => {
+                let text = response.ok().and_then(|mut result| match result["postData"].take() {
+                    Value::String(text) => Some(text),
+                    _ => None,
+                });
+                let settled =
+                    self.requests
+                        .post_data_settled(seq, text.as_deref(), epoch_ms_now());
+                self.hand_over(settled);
+                None
             }
             Fetched::Inline {
+                session,
+                script_id,
                 parsed_at_epoch_ms,
                 creator,
                 response,
@@ -594,16 +775,26 @@ impl Recorder {
                 if is_tracker_script(&body) {
                     return;
                 }
-                self.scripts
-                    .add_inline(body, Some(parsed_at_epoch_ms), Some(creator))
+                let fingerprint = inline_fingerprint(&body);
+                let admission =
+                    self.scripts
+                        .add_inline(body, Some(parsed_at_epoch_ms), Some(creator));
+                if let Some(held_as) = self.scripts.inline_url(fingerprint) {
+                    self.inline_scripts
+                        .entry(session)
+                        .or_default()
+                        .insert(script_id, held_as.to_string());
+                }
+                Some(admission)
             }
         };
-        if admission == Admission::OverBudget && !self.budget_announced {
+        if admission == Some(Admission::OverBudget) && !self.budget_announced {
             self.budget_announced = true;
             self.progress(
                 "Script memory budget reached; further script bodies are not kept".into(),
             );
         }
+        self.announce_overflow();
     }
 }
 

@@ -11,6 +11,7 @@ mod input;
 mod interception;
 mod manual;
 mod navigation;
+mod network;
 mod page;
 mod pages;
 mod progress;
@@ -228,7 +229,7 @@ impl Visit<'_> {
         let request = self.request;
         let on_activity = &self.hooks.on_activity;
         let proxy_host = self.proxy_login.as_ref().map(|proxy| proxy.host.clone());
-        let mut page = attach(cdp, events, request, self.proxy_login, on_activity).await?;
+        let mut page = attach(cdp, events, request, self.proxy_login, self.hooks).await?;
         on_activity(CaptureActivity::progress(format!(
             "Opening {} as {}",
             self.address,
@@ -295,7 +296,7 @@ async fn attach(
     events: UnboundedReceiver<CdpEvent>,
     request: &CaptureRequest,
     proxy_login: Option<ProxyLogin>,
-    on_activity: &recorder::ActivitySink,
+    hooks: &CaptureHooks,
 ) -> Result<Page, CaptureError> {
     // A scanned page must not be able to put files in the user's Downloads.
     cdp.send(
@@ -322,9 +323,11 @@ async fn attach(
     } else {
         MAX_PAGE_VIEWS
     };
-    let on_activity = on_activity.clone();
+    let on_activity = hooks.on_activity.clone();
+    let network = hooks.network.clone();
     let mut page = Page::attach(cdp, events, setup, interception, |main_frame_id| {
-        Recorder::new(main_frame_id, PageLog::new(page_views, manual), on_activity)
+        let pages = PageLog::new(page_views, manual);
+        Recorder::new(main_frame_id, pages, on_activity, network)
     })
     .await?;
     if !request.headless {
@@ -349,6 +352,14 @@ async fn collect(
         page.flush_tracker().await?;
         page.note_title().await?;
         page.settle_bodies(BODY_PATIENCE).await?;
+    }
+    page.recorder.finish_requests();
+    let requests = page.recorder.request_counts();
+    if page.recorder.keeps_requests() {
+        page.recorder.report(CaptureActivity::progress(format!(
+            "Recorded {} requests, {} of them in iframes and workers with a process of their own",
+            requests.total, requests.in_child_targets
+        )));
     }
     let ended_at = epoch_ms_now();
     let emulated = page.emulation().clone();
@@ -458,7 +469,7 @@ mod tests {
             Interception::new(None, false),
             |main_frame_id| {
                 let pages = PageLog::new(MAX_PAGE_VIEWS_MANUAL, true);
-                Recorder::new(main_frame_id, pages, Arc::new(|_| {}))
+                Recorder::new(main_frame_id, pages, Arc::new(|_| {}), None)
             },
         )
         .await

@@ -12,7 +12,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use super::{SqliteStore, from_json, to_json};
 use crate::application::ports::{
     ArchiveRecord, ArchiveRepository, ArchiveState, ArchiveTotals, BodyIndexRow, RepoResult,
-    RequestEndKind, RequestIndexRow,
+    RequestAdLink, RequestEndKind, RequestIndexRow,
 };
 use crate::domain::archive::BodyKind;
 use crate::domain::archive::pack::FORMAT_VERSION;
@@ -209,7 +209,7 @@ impl ArchiveRepository for SqliteStore {
                         request.record_offset as i64,
                         request.record_length,
                         request.record_index,
-                        request.ad.as_ref().map(to_json).transpose()?,
+                        stored_ad(request.ad.as_ref(), &request.bid_units)?,
                     ])?;
                 }
             }
@@ -341,15 +341,19 @@ impl ArchiveRepository for SqliteStore {
         .await
     }
 
-    async fn save_ad_links(&self, scan_id: &str, links: Vec<(u32, AdLink)>) -> RepoResult<()> {
+    async fn save_ad_links(&self, scan_id: &str, links: Vec<RequestAdLink>) -> RepoResult<()> {
         let scan_id = scan_id.to_string();
         self.call(move |connection| {
             let transaction = connection.transaction()?;
             if let Some(scan_no) = scan_no(&transaction, &scan_id)? {
                 let mut update = transaction
                     .prepare_cached("UPDATE requests SET ad = ?3 WHERE scan_no = ?1 AND seq = ?2")?;
-                for (seq, link) in &links {
-                    update.execute(params![scan_no, seq, to_json(link)?])?;
+                for link in &links {
+                    update.execute(params![
+                        scan_no,
+                        link.seq,
+                        stored_ad(Some(&link.link), &link.bid_units)?
+                    ])?;
                 }
             }
             transaction.commit()
@@ -525,7 +529,12 @@ fn read_body(row: &Row) -> rusqlite::Result<BodyIndexRow> {
 
 fn read_request(row: &Row) -> rusqlite::Result<RequestIndexRow> {
     let flags: i64 = row.get(17)?;
-    let ad: Option<String> = row.get(32)?;
+    let ad: Option<StoredAd> = row
+        .get::<_, Option<String>>(32)?
+        .as_deref()
+        .map(from_json)
+        .transpose()?;
+    let (ad, bid_units) = ad.map_or((None, Vec::new()), |ad| (Some(ad.link), ad.bid_units));
     Ok(RequestIndexRow {
         seq: row.get(0)?,
         page: row.get(1)?,
@@ -560,8 +569,28 @@ fn read_request(row: &Row) -> rusqlite::Result<RequestIndexRow> {
         record_offset: row.get::<_, i64>(29)? as u64,
         record_length: row.get(30)?,
         record_index: row.get(31)?,
-        ad: ad.as_deref().map(from_json).transpose()?,
+        ad,
+        bid_units,
     })
+}
+
+/// The `ad` column: the link and the bid ids it was made with.
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAd {
+    link: AdLink,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    bid_units: Vec<(String, String)>,
+}
+
+fn stored_ad(link: Option<&AdLink>, bid_units: &[(String, String)]) -> rusqlite::Result<Option<String>> {
+    link.map(|link| {
+        to_json(&StoredAd {
+            link: link.clone(),
+            bid_units: bid_units.to_vec(),
+        })
+    })
+    .transpose()
 }
 
 fn state_name(state: ArchiveState) -> &'static str {

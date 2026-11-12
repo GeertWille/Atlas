@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use adscan_model::{ActivityKind, CaptureActivity, VisitorBehavior};
+use adscan_model::{ActivityKind, CaptureActivity, MAX_POST_DATA_BYTES, VisitorBehavior};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
@@ -17,7 +17,9 @@ use crate::device::Emulation;
 use super::error::CaptureError;
 use super::injected::{TRACKER_BINDING, TRACKER_FLUSH_EVENT, tracker_script};
 use super::interception::{DocumentRequest, Interception, Paused};
-use super::recorder::{Recorder, committed_address};
+use super::network::assembly::Reporter;
+use super::network::targets::ChildTargets;
+use super::recorder::{Recorder, Reported, committed_address};
 use super::tabs::{NewTab, Tab, Tabs, on_new_tab};
 use super::visitor::links::loggable;
 use super::visitor::site::Site;
@@ -29,6 +31,29 @@ const CLICK_OPENS_TAB_WITHIN: Duration = Duration::from_secs(3);
 
 /// Isolated world for the scanner's own evaluations, invisible to page scripts.
 const SCANNER_WORLD: &str = "adscan";
+
+/// How much of what a tab loaded the browser keeps for the scanner to read.
+const TAB_BODY_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
+/// The same for each iframe and worker below it: bodies are read the moment
+/// they are complete, and there can be dozens of such targets.
+const CHILD_BODY_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Parameters of `Network.enable`. Request bodies up to the size that is
+/// kept come with the request itself.
+fn network_recording(body_buffer_bytes: u64) -> Value {
+    json!({
+        "maxTotalBufferSize": body_buffer_bytes,
+        "maxResourceBufferSize": 32 * 1024 * 1024,
+        "maxPostDataSize": MAX_POST_DATA_BYTES,
+    })
+}
+
+/// Parameters of `Target.setAutoAttach` for a session: what starts below it
+/// (an iframe in a process of its own, a worker) is attached to and held
+/// until it is set up.
+fn attach_to_what_starts_below() -> Value {
+    json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true })
+}
 
 /// What every tab of the scan is set up with.
 pub(crate) struct TabSetup {
@@ -52,17 +77,11 @@ impl TabSetup {
             ("Page.enable", json!({})),
             ("Runtime.enable", json!({})),
             ("Log.enable", json!({})),
-            (
-                "Network.enable",
-                json!({ "maxTotalBufferSize": 256 * 1024 * 1024, "maxResourceBufferSize": 32 * 1024 * 1024 }),
-            ),
+            ("Network.enable", network_recording(TAB_BODY_BUFFER_BYTES)),
             ("Debugger.enable", json!({})),
             // An attached debugger must not stop pages that contain `debugger;`.
             ("Debugger.setSkipAllPauses", json!({ "skip": true })),
-            (
-                "Target.setAutoAttach",
-                json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }),
-            ),
+            ("Target.setAutoAttach", attach_to_what_starts_below()),
             (
                 "Emulation.setTouchEmulationEnabled",
                 json!({ "enabled": self.emulation.touch, "maxTouchPoints": 5 }),
@@ -118,6 +137,8 @@ pub(crate) struct Page {
     pub(super) cdp: Arc<Cdp>,
     events: UnboundedReceiver<CdpEvent>,
     pub(super) tabs: Tabs,
+    /// The iframes and workers below the tabs that have a session of their own.
+    children: ChildTargets,
     setup: TabSetup,
     pub recorder: Recorder,
     pub interception: Interception,
@@ -141,7 +162,8 @@ impl Page {
         recorder: impl FnOnce(String) -> Recorder,
     ) -> Result<Self, CaptureError> {
         // Every page target, the first tab and any opened later, is attached
-        // to and held until it is set up.
+        // to and held until it is set up. So is a shared worker, which
+        // belongs to no tab.
         cdp.send(
             None,
             "Target.setAutoAttach",
@@ -149,7 +171,7 @@ impl Page {
                 "autoAttach": true,
                 "waitForDebuggerOnStart": true,
                 "flatten": true,
-                "filter": [{ "type": "page" }],
+                "filter": [{ "type": "page" }, { "type": "shared_worker" }],
             }),
         )
         .await?;
@@ -160,6 +182,7 @@ impl Page {
             events,
             recorder: recorder(first.main_frame_id.clone()),
             tabs: Tabs::starting_with(first),
+            children: ChildTargets::default(),
             setup,
             interception,
             tracker_script_id: None,
@@ -281,16 +304,49 @@ impl Page {
             Some(session_id) if self.tabs.contains(&session_id) => {
                 self.on_other_tab_event(&session_id, &event)
             }
-            // Iframes and workers: set up when they attached, then left alone.
-            Some(_) => {}
+            Some(session_id) => self.on_child_event(&session_id, &event),
+        }
+    }
+
+    /// An event of an iframe or worker below a tab, or of a shared worker.
+    fn on_child_event(&mut self, session_id: &str, event: &CdpEvent) {
+        match event.method.as_str() {
+            "Target.attachedToTarget" => {
+                self.adopt_child_target(Some(session_id), &event.params)
+            }
+            "Target.detachedFromTarget" => self
+                .children
+                .detached(event.params["sessionId"].as_str().unwrap_or_default()),
+            method if method.starts_with("Network.") => {
+                let Some(child) = self.children.get(session_id) else {
+                    return;
+                };
+                let reported = Reported {
+                    session: session_id,
+                    reporter: child.reporter,
+                    target_id: Some(&child.target_id),
+                    main_frame_id: None,
+                    in_recorded_tab: child
+                        .tab_session
+                        .as_deref()
+                        .is_none_or(|tab| self.tabs.is_recorded(tab)),
+                };
+                self.recorder.observe_network(&reported, event, &self.cdp);
+            }
+            _ => {}
         }
     }
 
     fn on_browser_event(&mut self, event: &CdpEvent) {
         match event.method.as_str() {
-            "Target.attachedToTarget" => self.on_tab_opened(&event.params),
+            "Target.attachedToTarget" if event.params["targetInfo"]["type"] == "page" => {
+                self.on_tab_opened(&event.params)
+            }
+            "Target.attachedToTarget" => self.adopt_child_target(None, &event.params),
             "Target.detachedFromTarget" => {
-                self.on_tab_closed(event.params["sessionId"].as_str().unwrap_or_default());
+                let session_id = event.params["sessionId"].as_str().unwrap_or_default();
+                self.children.detached(session_id);
+                self.on_tab_closed(session_id);
             }
             "Browser.downloadWillBegin" => self.download_began = true,
             _ => {}
@@ -327,6 +383,25 @@ impl Page {
                     self.recorder.observe(event, &self.cdp, session_id);
                 }
             }
+            // The document this tab loads opens a page view of the visit if
+            // the visit moves here; until then nothing else of it counts.
+            method if method.starts_with("Network.") => {
+                let Some(main_frame_id) = self
+                    .tabs
+                    .by_session(session_id)
+                    .map(|tab| tab.main_frame_id.clone())
+                else {
+                    return;
+                };
+                let reported = Reported {
+                    session: session_id,
+                    reporter: Reporter::Tab,
+                    target_id: None,
+                    main_frame_id: Some(&main_frame_id),
+                    in_recorded_tab: false,
+                };
+                self.recorder.observe_network(&reported, event, &self.cdp);
+            }
             _ => {
                 self.on_any_tab_event(session_id, event);
             }
@@ -336,11 +411,14 @@ impl Page {
     /// What is handled the same way in every tab. Returns whether it was.
     fn on_any_tab_event(&mut self, session_id: &str, event: &CdpEvent) -> bool {
         match event.method.as_str() {
-            "Target.attachedToTarget" => self.adopt_child_target(session_id, &event.params),
+            "Target.attachedToTarget" => {
+                self.adopt_child_target(Some(session_id), &event.params)
+            }
             "Target.detachedFromTarget" => {
+                let child = event.params["sessionId"].as_str().unwrap_or_default();
+                self.children.detached(child);
                 if let Some(tab) = self.tabs.by_session(session_id) {
-                    tab.frame_sessions
-                        .retain(|session| event.params["sessionId"] != session.as_str());
+                    tab.frame_sessions.retain(|session| session != child);
                 }
             }
             "Page.javascriptDialogOpening" => self.on_dialog(session_id, &event.params),
@@ -449,20 +527,41 @@ impl Page {
         }
     }
 
-    /// Cross-site iframes and workers start paused so the emulated identity is
-    /// in place before their first request.
-    fn adopt_child_target(&mut self, tab_session: &str, params: &Value) {
-        let Some(child) = params["sessionId"].as_str() else {
+    /// Cross-site iframes and workers start paused, so that the emulated
+    /// identity and the recording of their requests are in place before
+    /// their first request. `parent_session` is the session that reported
+    /// the target: a tab's, another child's, or none for a shared worker.
+    fn adopt_child_target(&mut self, parent_session: Option<&str>, attached: &Value) {
+        let Some(child) = attached["sessionId"].as_str() else {
             return;
         };
-        if params["targetInfo"]["type"] == "iframe" {
-            if let Some(identity) = self.setup.emulation.user_agent_override() {
-                self.cdp
-                    .notify(Some(child), "Emulation.setUserAgentOverride", identity);
+        let parent_is_tab = parent_session.is_some_and(|parent| self.tabs.contains(parent));
+        let adopted = self
+            .children
+            .attached(parent_session, parent_is_tab, attached);
+        if let Some((_, reporter)) = adopted {
+            if reporter == Reporter::Iframe {
+                if let Some(identity) = self.setup.emulation.user_agent_override() {
+                    self.cdp
+                        .notify(Some(child), "Emulation.setUserAgentOverride", identity);
+                }
+                // Consent dialogs are looked for in the iframes of the tab itself.
+                if let Some(tab) = parent_session.and_then(|parent| self.tabs.by_session(parent)) {
+                    tab.frame_sessions.push(child.to_string());
+                }
             }
-            if let Some(tab) = self.tabs.by_session(tab_session) {
-                tab.frame_sessions.push(child.to_string());
+            if self.recorder.keeps_requests() {
+                self.cdp.notify(
+                    Some(child),
+                    "Network.enable",
+                    network_recording(CHILD_BODY_BUFFER_BYTES),
+                );
             }
+            self.cdp.notify(
+                Some(child),
+                "Target.setAutoAttach",
+                attach_to_what_starts_below(),
+            );
         }
         self.cdp
             .notify(Some(child), "Runtime.runIfWaitingForDebugger", json!({}));
@@ -558,6 +657,7 @@ impl Page {
     }
 
     fn on_tab_closed(&mut self, session_id: &str) {
+        self.children.tab_closed(session_id);
         if let Some(successor) = self.tabs.closed(session_id) {
             self.recorder
                 .switch_tab(successor.main_frame_id.clone(), &successor.url);

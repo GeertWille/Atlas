@@ -300,8 +300,10 @@ impl Ended {
         self.flight.seq
     }
 
-    pub(crate) fn context(&self) -> RequestContext {
-        self.flight.context
+    /// Made in an out-of-process iframe or a worker, not in the tab's own
+    /// process.
+    pub(crate) fn is_of_child_target(&self) -> bool {
+        self.flight.target_id.is_some()
     }
 
     /// A bid request that got no answer: the bidder, when it failed (epoch

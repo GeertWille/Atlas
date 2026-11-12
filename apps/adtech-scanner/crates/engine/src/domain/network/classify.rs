@@ -108,12 +108,17 @@ pub fn category(facts: &RequestFacts) -> NetworkCategory {
         let path = facts.path.to_ascii_lowercase();
         SYNC_PATH_MARKS.iter().any(|mark| path.contains(mark))
     };
+    // An image an ad host serves into the page itself is a tracking pixel;
+    // inside a frame it is part of a creative.
     let renders = || {
         matches!(
             facts.kind,
-            ResourceKind::Image | ResourceKind::Media | ResourceKind::Font | ResourceKind::Stylesheet
+            ResourceKind::Media | ResourceKind::Font | ResourceKind::Stylesheet
         ) || (facts.context == RequestContext::Iframe
-            && matches!(facts.kind, ResourceKind::Document | ResourceKind::Script))
+            && matches!(
+                facts.kind,
+                ResourceKind::Image | ResourceKind::Document | ResourceKind::Script
+            ))
     };
     match known {
         Some(ScriptCategory::Cmp) => Consent,

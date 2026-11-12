@@ -65,6 +65,12 @@ impl ChildTargets {
         self.by_session.remove(session_id);
     }
 
+    /// A tab closed: what was below it is gone with it.
+    pub(crate) fn tab_closed(&mut self, tab_session: &str) {
+        self.by_session
+            .retain(|_, child| child.tab_session.as_deref() != Some(tab_session));
+    }
+
     pub(crate) fn get(&self, session_id: &str) -> Option<&ChildTarget> {
         self.by_session.get(session_id)
     }
@@ -123,8 +129,15 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_target_is_forgotten() {
+    fn a_detached_target_and_those_of_a_closed_tab_are_forgotten() {
         let mut targets = ChildTargets::default();
+        targets.attached(Some("tab"), true, &attached("iframe", "frame"));
+        targets.attached(Some("frame"), false, &attached("worker", "worker"));
+        targets.attached(Some("other-tab"), true, &attached("iframe", "other"));
+        targets.tab_closed("tab");
+        assert!(targets.get("frame").is_none() && targets.get("worker").is_none());
+        assert!(targets.get("other").is_some());
+
         targets.attached(Some("tab"), true, &attached("iframe", "frame"));
         targets.detached("frame");
         assert!(targets.get("frame").is_none());

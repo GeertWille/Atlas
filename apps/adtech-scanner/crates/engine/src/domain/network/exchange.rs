@@ -100,6 +100,15 @@ pub fn ad_unit_of_bid(announcements: &[Announcement], bid_id: &str) -> Option<St
         .map(|bid| bid.ad_unit_code.clone())
 }
 
+/// What linking found out about one request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RequestAdLink {
+    pub seq: u32,
+    pub link: AdLink,
+    /// (bid id, ad unit code) for Prebid's bid ids found in the request.
+    pub bid_units: Vec<(String, String)>,
+}
+
 struct Match<'a> {
     request: &'a ExchangeRequest,
     exact: bool,
@@ -113,7 +122,7 @@ pub fn link(
     announcements: &[Announcement],
     requests: &[ExchangeRequest],
     page_starts: &[f64],
-) -> Vec<(u32, AdLink)> {
+) -> Vec<RequestAdLink> {
     let absolute = |page: u32, at_ms: f64| page_starts.get(page as usize).copied().unwrap_or(0.0) + at_ms;
     let visible_bidders: HashSet<&str> = requests
         .iter()
@@ -154,7 +163,7 @@ pub fn link(
         }
     }
 
-    let mut links: BTreeMap<u32, AdLink> = BTreeMap::new();
+    let mut links: BTreeMap<u32, RequestAdLink> = BTreeMap::new();
     for (announcement, matches) in announcements.iter().zip(&matched) {
         let Some(auction) = auctions
             .iter_mut()
@@ -226,16 +235,24 @@ pub fn link(
                 network_ms: request.ended_ms.map(|ended| ended - request.started_ms),
                 exact: found.exact,
             });
-            let link = links.entry(request.seq).or_insert_with(|| AdLink {
-                auction_id: auction.id.clone(),
-                ad_units: Vec::new(),
-                via_server: request.via_server,
-                exact: found.exact,
-                verdict,
-                late_by_ms,
-                cpm: request.best_cpm,
-                nbr: request.nbr,
+            let entry = links.entry(request.seq).or_insert_with(|| RequestAdLink {
+                seq: request.seq,
+                link: AdLink {
+                    auction_id: auction.id.clone(),
+                    ad_units: Vec::new(),
+                    via_server: request.via_server,
+                    exact: found.exact,
+                    verdict,
+                    late_by_ms,
+                    cpm: request.best_cpm,
+                    nbr: request.nbr,
+                },
+                bid_units: Vec::new(),
             });
+            if let Some(id) = bid_id.filter(|id| contains_id(&request.haystack, id)) {
+                entry.bid_units.push((id.to_string(), code.clone()));
+            }
+            let link = &mut entry.link;
             if !link.ad_units.contains(code) {
                 link.ad_units.push(code.clone());
             }
@@ -252,7 +269,7 @@ pub fn link(
             }
         }
     }
-    links.into_iter().collect()
+    links.into_values().collect()
 }
 
 fn exact_matches<'a>(announcement: &Announcement, requests: &'a [ExchangeRequest]) -> Vec<Match<'a>> {
@@ -429,9 +446,9 @@ mod tests {
         assert_eq!(exchange.network_ms, Some(172.0));
         assert_eq!(
             links,
-            vec![(
-                2,
-                AdLink {
+            vec![RequestAdLink {
+                seq: 2,
+                link: AdLink {
                     auction_id: "auction-0001".into(),
                     ad_units: vec!["top".into()],
                     via_server: false,
@@ -440,8 +457,9 @@ mod tests {
                     late_by_ms: Some(-38.0),
                     cpm: None,
                     nbr: Some(7),
-                }
-            )]
+                },
+                bid_units: vec![("bid-openx-top".into(), "top".into())],
+            }]
         );
     }
 
@@ -464,7 +482,8 @@ mod tests {
         assert_eq!(exchange.verdict, ExchangeVerdict::LateOnNetwork);
         assert_eq!(exchange.late_by_ms, Some(84.0));
         assert_eq!(links.len(), 1);
-        assert!(!links[0].1.exact);
+        assert!(!links[0].link.exact);
+        assert!(links[0].bid_units.is_empty());
     }
 
     #[test]
@@ -499,8 +518,8 @@ mod tests {
             assert_eq!(exchange.verdict, ExchangeVerdict::NotSent, "{unit}");
             assert_eq!(exchange.request_id, None);
         }
-        assert_eq!(links[0].1.ad_units, ["top"]);
-        assert_eq!(links[0].1.cpm, Some(0.4), "from Prebid's bid when the answer was not decoded");
+        assert_eq!(links[0].link.ad_units, ["top"]);
+        assert_eq!(links[0].link.cpm, Some(0.4), "from Prebid's bid when the answer was not decoded");
     }
 
     #[test]
@@ -563,7 +582,7 @@ mod tests {
             ExchangeVerdict::InTimeButTimedOut
         );
         assert_eq!(links.len(), 1);
-        let link = &links[0].1;
+        let link = &links[0].link;
         assert!(link.via_server);
         assert_eq!(link.verdict, ExchangeVerdict::InTimeButTimedOut);
         assert_eq!(link.cpm, Some(0.88));
