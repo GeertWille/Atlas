@@ -1688,6 +1688,43 @@ async fn settings_are_patched_validated_and_persisted() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn settings_patches_sent_at_the_same_moment_are_all_kept() {
+    let harness = harness(gated_desktop(), "http://127.0.0.1:1", None);
+    for round in 0..50 {
+        let budget_usd = 1.0 + f64::from(round);
+        let observe_seconds = 5 + round % 50;
+        let headless = round % 2 == 0;
+        let (budget, observe, browser) = tokio::join!(
+            harness.settings.update(SettingsPatch {
+                budget_usd: Some(budget_usd),
+                ..SettingsPatch::default()
+            }),
+            harness.settings.update(SettingsPatch {
+                default_observe_seconds: Some(observe_seconds),
+                ..SettingsPatch::default()
+            }),
+            harness.settings.update(SettingsPatch {
+                headless: Some(headless),
+                ..SettingsPatch::default()
+            }),
+        );
+        budget.unwrap();
+        observe.unwrap();
+        browser.unwrap();
+        let saved = harness.settings.get().await.unwrap();
+        assert_eq!(
+            (
+                saved.budget_usd,
+                saved.default_observe_seconds,
+                saved.headless
+            ),
+            (budget_usd, observe_seconds, headless),
+            "round {round}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn api_key_is_stored_only_when_the_api_accepts_it() {
     let server = MockServer::start().await;

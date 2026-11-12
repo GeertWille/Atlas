@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use adscan_model::{ApiKeyStatus, Settings, SettingsPatch};
+use tokio::sync::Mutex;
 
 use super::AppError;
 use super::llm::LlmError;
@@ -15,6 +16,9 @@ pub struct SettingsService {
     settings: Arc<dyn SettingsRepository>,
     secrets: Arc<dyn SecretStore>,
     llm: Arc<dyn LlmClient>,
+    /// Held from load to save: the UI sends one patch per changed field, and
+    /// two patches working from the same copy would undo each other.
+    updating: Mutex<()>,
 }
 
 impl SettingsService {
@@ -27,6 +31,7 @@ impl SettingsService {
             settings,
             secrets,
             llm,
+            updating: Mutex::new(()),
         }
     }
 
@@ -37,6 +42,7 @@ impl SettingsService {
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, AppError> {
+        let _updating = self.updating.lock().await;
         let mut settings = self.settings.load().await?.unwrap_or_default();
         apply_patch(&mut settings, patch)?;
         settings.has_api_key = false;
