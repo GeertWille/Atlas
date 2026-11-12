@@ -5,7 +5,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use adscan_model::{Capture, DeviceProfile, TrackerEventKind as Kind};
+use adscan_model::{Capture, DeviceProfile, TrackerEventKind as Kind, VisitorBehavior};
 use support::{events_where, first_time};
 
 const SCROLL_GATED_UNITS: [&str; 4] = [
@@ -19,7 +19,9 @@ const CONFIGURED_TIMEOUT_MS: f64 = 250.0;
 async fn scan(device: DeviceProfile, auto_scroll: bool) -> Capture {
     let site = adscan_browser::start_demo_site().await.unwrap();
     let mut request = support::request(&site.url, device);
-    request.auto_scroll = auto_scroll;
+    if auto_scroll {
+        request.visitor = VisitorBehavior::Scroll;
+    }
     request.observe_seconds = if auto_scroll { 9 } else { 3 };
     let capture = support::capture_ok(request).await;
     assert_eq!(capture.final_url, site.url);
@@ -95,6 +97,7 @@ fn requested_targeting(capture: &Capture, element: &str) -> Option<Vec<String>> 
         Kind::SlotRequested {
             element_id,
             prebid_targeting_keys,
+            ..
         } if element_id == element => Some(prebid_targeting_keys.clone()),
         _ => None,
     })

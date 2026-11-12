@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use crate::application::AppError;
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::state::{NodeError, NodeResult};
-use crate::application::ports::{FetchError, PublicFileFetcher, PublicFileRequest};
+use crate::application::ports::{FetchError, FetchProxy, PublicFileFetcher, PublicFileRequest};
 use crate::domain::diagnostics::ads_txt::{self, AdsTxt, AdsTxtOutcome};
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
 use crate::domain::diagnostics::site::{
@@ -101,6 +101,15 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
     Ok(summary)
 }
 
+/// The files are read the way the pages were: through the scan's proxy, so
+/// a site that answers differently per country is judged by the same answer.
+fn scan_proxy(run: &StepRun<'_>) -> FetchProxy {
+    FetchProxy {
+        route: run.job.scan.proxy.capture.clone(),
+        password: run.job.proxy_password.clone(),
+    }
+}
+
 /// Returns the address that was read and what came of it.
 async fn read_ads_txt(
     run: &mut StepRun<'_>,
@@ -135,6 +144,7 @@ async fn fetch_ads_txt(
         max_bytes: ADS_TXT_MAX_BYTES,
         timeout: ADS_TXT_TIMEOUT,
         loopback_origin: location.loopback_origin.clone(),
+        proxy: scan_proxy(run),
     };
     let outcome = match run.deps.files.fetch(&request, &run.job.cancel).await {
         Ok(file) => ads_txt::read_response(file.status, file.content_type.as_deref(), &file.body),
@@ -178,6 +188,7 @@ async fn read_sellers_json(
         pending.spawn(look_up_sellers(
             Arc::clone(&run.deps.files),
             lookup,
+            scan_proxy(run),
             run.job.cancel.clone(),
         ));
     }
@@ -209,6 +220,7 @@ async fn read_sellers_json(
 async fn look_up_sellers(
     files: Arc<dyn PublicFileFetcher>,
     lookup: SellersLookup,
+    proxy: FetchProxy,
     cancel: CancellationToken,
 ) -> (String, Result<SellersOutcome, NodeError>) {
     let Some(url) = sellers_json_url(&lookup.ad_system_domain) else {
@@ -220,6 +232,7 @@ async fn look_up_sellers(
         max_bytes: SELLERS_JSON_MAX_BYTES,
         timeout: SELLERS_JSON_TIMEOUT,
         loopback_origin: None,
+        proxy,
     };
     let outcome = match files.fetch(&request, &cancel).await {
         Ok(file) if (200..300).contains(&file.status) => {

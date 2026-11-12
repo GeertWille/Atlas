@@ -19,6 +19,7 @@ fn summary(
     started_at: f64,
 ) -> ScanSummary {
     ScanSummary {
+        configuration: None,
         id: id.into(),
         url: url.into(),
         hostname: url
@@ -41,6 +42,13 @@ fn summary(
 
 fn options(url: &str) -> ScanOptions {
     ScanOptions {
+        visitor: None,
+        extra_pages: None,
+        seed: None,
+        headless: None,
+        persistent_profile: None,
+        proxy: None,
+        budget_usd: None,
         url: url.into(),
         device: DeviceProfile::Desktop,
         observe_seconds: 20,
@@ -52,6 +60,7 @@ fn options(url: &str) -> ScanOptions {
 
 fn finding(id: &str, scan_id: &str, severity: Severity) -> Finding {
     Finding {
+        pages: Vec::new(),
         id: id.into(),
         scan_id: scan_id.into(),
         severity,
@@ -292,6 +301,7 @@ async fn scan_round_trips_through_summary_and_detail() {
             requests: 4,
             bids: 0,
             checks: vec![DiagnosticCheck {
+                pages: Vec::new(),
                 area: DiagnosticArea::AdsTxt,
                 status: DiagnosticStatus::Problem,
                 code: "ads-txt-not-listed".into(),
@@ -364,6 +374,7 @@ async fn list_filters_paginates_and_orders_newest_first() {
         }
     };
     let query = |search: Option<&str>, status, device, limit, offset| ScanListQuery {
+        configuration_id: None,
         search: search.map(str::to_string),
         status,
         device,
@@ -473,6 +484,7 @@ async fn deleting_a_scan_cascades_to_everything_including_the_search_index() {
         ScanRepository::list(
             &store,
             &ScanListQuery {
+                configuration_id: None,
                 search: None,
                 status: None,
                 device: None,

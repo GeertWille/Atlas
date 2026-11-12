@@ -11,7 +11,7 @@ mod support;
 use std::time::{Duration, Instant};
 
 use adscan_browser::{BrowserError, CaptureHooks, capture};
-use adscan_model::DeviceProfile;
+use adscan_model::{DeviceProfile, VisitorBehavior};
 use tokio_util::sync::CancellationToken;
 
 use support::chrome_processes::Browser;
@@ -24,7 +24,7 @@ async fn cancelling_returns_promptly_and_leaves_no_chrome_behind() {
     let site = adscan_browser::start_demo_site().await.unwrap();
     let mut request = support::request(&site.url, DeviceProfile::Desktop);
     request.observe_seconds = 60;
-    request.auto_scroll = true;
+    request.visitor = VisitorBehavior::Scroll;
     let cancel = CancellationToken::new();
     let running = tokio::spawn(support::run_cancellable(request, cancel.clone()));
 

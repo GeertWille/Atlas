@@ -104,7 +104,7 @@ pub(super) async fn build(
 
 /// The chunks worth asking about, publisher scripts first, up to the cap.
 fn plan(run: &StepRun<'_>) -> Result<Vec<Chunk>, NodeError> {
-    let placements = telemetry_literals(run.state.telemetry()?);
+    let placements = telemetry_literals(&run.state.telemetry()?.total);
     let mut chunks = Vec::new();
     for (source, file) in run.state.sources.iter().enumerate() {
         let record = &run.state.scripts[file.script_index].record;

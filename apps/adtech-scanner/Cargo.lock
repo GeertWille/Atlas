@@ -17,6 +17,7 @@ dependencies = [
  "base64 0.23.1",
  "futures-util",
  "nix",
+ "psl",
  "serde",
  "serde_json",
  "tempfile",

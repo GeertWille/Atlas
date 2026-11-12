@@ -1,6 +1,7 @@
 //! SQLite persistence. One connection in WAL mode, used only from blocking
 //! threads so the async runtime's workers never wait on disk.
 
+mod configurations;
 mod logs;
 mod scans;
 mod settings;
@@ -113,9 +114,39 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE scans ADD COLUMN diagnostics TEXT;
     UPDATE settings SET data = json_set(data, '$.checkSellersJson', json('false'));
     ",
+    // Page views and the visit's environment per scan, saved configurations,
+    // and the settings that came with visitor behaviours and proxies.
+    "
+    ALTER TABLE scans ADD COLUMN pages TEXT;
+    ALTER TABLE scans ADD COLUMN environment TEXT;
+    ALTER TABLE scans ADD COLUMN configuration_id TEXT;
+    ALTER TABLE scans ADD COLUMN configuration_name TEXT;
+    CREATE INDEX scans_by_configuration ON scans (configuration_id, started_at DESC);
+
+    CREATE TABLE scan_configurations (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        options TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL,
+        last_scan_id TEXT,
+        last_run_at REAL
+    );
+
+    UPDATE settings
+    SET data = json_set(
+        data,
+        '$.defaultVisitor', 'scroll',
+        '$.defaultExtraPages', 2,
+        '$.persistentProfile', json('false'),
+        '$.proxies', json('[]'),
+        '$.defaultProxy', json('{\"kind\":\"system\"}')
+    );
+    ",
 ];
 
-/// Implements the scan, log and settings repositories on one database.
+/// Implements the scan, configuration, log and settings repositories on one
+/// database.
 #[derive(Clone)]
 pub struct SqliteStore {
     connection: Arc<Mutex<Connection>>,

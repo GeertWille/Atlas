@@ -42,6 +42,12 @@ analyzed: boolean,
  */
 vendor: string | null, 
 /**
- * ms since navigation start when the response finished.
+ * ms since the start of the first page view that loaded it when the
+ * response finished.
  */
-loadedAtMs: number | null, firstParty: boolean, };
+loadedAtMs: number | null, firstParty: boolean, 
+/**
+ * Page views that loaded the script, ascending. Empty for scans
+ * stored before multi-page visits existed.
+ */
+pages: Array<number>, };

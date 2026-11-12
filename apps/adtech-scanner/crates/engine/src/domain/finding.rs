@@ -16,6 +16,8 @@ pub struct FindingDraft {
     pub evidence: Vec<Evidence>,
     pub affected_slots: Vec<String>,
     pub affected_bidders: Vec<String>,
+    /// Page views it was seen on; empty when it is not specific to a page.
+    pub pages: Vec<u32>,
 }
 
 impl FindingDraft {
@@ -37,6 +39,7 @@ impl FindingDraft {
             evidence: self.evidence,
             affected_slots: self.affected_slots,
             affected_bidders: self.affected_bidders,
+            pages: self.pages,
         }
     }
 }

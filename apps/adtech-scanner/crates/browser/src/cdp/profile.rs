@@ -1,14 +1,15 @@
-//! The throwaway Chrome profile of one launch, and the removal of profiles
-//! whose owning process died before it could remove them.
+//! Chrome profiles: the throwaway profile of one launch, the removal of
+//! throwaway profiles whose owning process died before it could remove them,
+//! and the scan profile a user chose to keep between scans.
 //!
 //! A profile is owned through an advisory lock on a file inside it. The
 //! operating system releases the lock when the owning process ends, however it
 //! ends, so "nobody holds the lock" means "nobody is using this profile"
 //! without relying on process ids, which get reused.
 
-use std::fs::File;
+use std::fs::{File, TryLockError};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 const PREFIX: &str = "adscan-profile-";
 /// A profile is created under this prefix and renamed once it is locked, so
@@ -61,6 +62,118 @@ impl Drop for Profile {
     }
 }
 
+/// A profile that outlives the launch: cookies, storage and cache stay for
+/// the next scan. Nothing in this crate deletes it except [`clear`], which
+/// the user asks for.
+pub(crate) struct PersistentProfile {
+    path: PathBuf,
+    /// Holds the lock for as long as the profile is in use.
+    _owner: File,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PersistentProfileError {
+    #[error("the scan profile is in use by another scan")]
+    Busy,
+    #[error("the scan profile could not be opened: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// What a browser that was killed leaves in its profile. A new browser takes
+/// them for a running instance, hands its start over to it and exits.
+const SINGLETON_FILES: [&str; 3] = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+
+impl PersistentProfile {
+    /// Takes the profile at `path` for one launch, creating it when needed.
+    pub(crate) fn open(path: &Path) -> Result<Self, PersistentProfileError> {
+        std::fs::create_dir_all(path)?;
+        let owner = lock(path)?;
+        // The lock file's age is when the profile was last used.
+        owner.set_modified(SystemTime::now())?;
+        for name in SINGLETON_FILES {
+            // `SingletonLock` is a dangling symlink, which `exists` denies.
+            let _ = std::fs::remove_file(path.join(name));
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            _owner: owner,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// [`inspect`] holds the lock for an instant to see whether anyone else does.
+/// A scan that starts in that instant must not be told the profile is busy.
+const LOCK_ATTEMPTS: u32 = 5;
+const LOCK_RETRY_PAUSE: Duration = Duration::from_millis(20);
+
+fn lock(profile: &Path) -> Result<File, PersistentProfileError> {
+    let owner = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(profile.join(LOCK_FILE))?;
+    for attempt in 1..=LOCK_ATTEMPTS {
+        match owner.try_lock() {
+            Ok(()) => return Ok(owner),
+            Err(TryLockError::WouldBlock) if attempt < LOCK_ATTEMPTS => {
+                std::thread::sleep(LOCK_RETRY_PAUSE)
+            }
+            Err(TryLockError::WouldBlock) => break,
+            Err(TryLockError::Error(error)) => return Err(error.into()),
+        }
+    }
+    Err(PersistentProfileError::Busy)
+}
+
+/// What is on disk for the persistent profile at `path`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct PersistentProfileState {
+    pub exists: bool,
+    pub size_bytes: u64,
+    pub last_used: Option<SystemTime>,
+    pub in_use: bool,
+}
+
+pub(crate) fn inspect(path: &Path) -> PersistentProfileState {
+    let owner = File::open(path.join(LOCK_FILE));
+    PersistentProfileState {
+        exists: path.is_dir(),
+        size_bytes: size_of(path),
+        last_used: owner
+            .as_ref()
+            .ok()
+            .and_then(|owner| owner.metadata().ok()?.modified().ok()),
+        in_use: owner.is_ok_and(|owner| matches!(owner.try_lock(), Err(TryLockError::WouldBlock))),
+    }
+}
+
+fn size_of(directory: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => size_of(&entry.path()),
+            Ok(kind) if kind.is_file() => entry.metadata().map_or(0, |metadata| metadata.len()),
+            _ => 0,
+        })
+        .sum()
+}
+
+/// Deletes the persistent profile at `path`, unless a scan is using it.
+pub(crate) fn clear(path: &Path) -> Result<(), PersistentProfileError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let _owner = lock(path)?;
+    Ok(std::fs::remove_dir_all(path)?)
+}
+
 /// Removes the profiles in `root` that no live process owns and returns how
 /// many were removed. Profiles of running captures, in this process or in
 /// another instance of the app, are left alone.
@@ -96,8 +209,6 @@ fn is_abandoned(profile: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::time::SystemTime;
-
     use super::*;
 
     fn profile_names(root: &Path) -> Vec<String> {
@@ -222,6 +333,98 @@ mod tests {
 
         assert!(other_app.exists() && starting.exists() && file.exists());
         assert!(link.is_symlink() && precious.join("file").exists());
+    }
+
+    #[test]
+    fn a_persistent_profile_is_created_locked_and_left_on_disk_when_dropped() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("scan-profile/desktop");
+
+        let profile = PersistentProfile::open(&path).unwrap();
+        std::fs::create_dir(profile.path().join("Default")).unwrap();
+        std::fs::write(profile.path().join("Default/Cookies"), "data").unwrap();
+        assert!(matches!(
+            PersistentProfile::open(&path),
+            Err(PersistentProfileError::Busy)
+        ));
+        let in_use = inspect(&path);
+        assert!(in_use.exists && in_use.in_use);
+
+        drop(profile);
+
+        assert!(path.join("Default/Cookies").exists());
+        assert!(!inspect(&path).in_use);
+        assert!(PersistentProfile::open(&path).is_ok(), "free again");
+    }
+
+    #[test]
+    fn opening_a_persistent_profile_removes_what_a_killed_browser_left() {
+        let root = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("gone-host-12345", root.path().join("SingletonLock")).unwrap();
+        std::fs::write(root.path().join("SingletonCookie"), "").unwrap();
+        std::fs::write(root.path().join("Local State"), "{}").unwrap();
+
+        let _profile = PersistentProfile::open(root.path()).unwrap();
+
+        assert!(!root.path().join("SingletonLock").is_symlink());
+        assert!(!root.path().join("SingletonCookie").exists());
+        assert!(root.path().join("Local State").exists());
+    }
+
+    #[test]
+    fn a_persistent_profile_reports_its_size_and_when_it_was_last_used() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("profile");
+        assert_eq!(
+            inspect(&path),
+            PersistentProfileState {
+                exists: false,
+                size_bytes: 0,
+                last_used: None,
+                in_use: false
+            }
+        );
+
+        let before = SystemTime::now() - Duration::from_secs(1);
+        let profile = PersistentProfile::open(&path).unwrap();
+        std::fs::create_dir_all(path.join("Default/Cache")).unwrap();
+        std::fs::write(path.join("Default/Cookies"), [0u8; 1_000]).unwrap();
+        std::fs::write(path.join("Default/Cache/entry"), [0u8; 234]).unwrap();
+        drop(profile);
+
+        let state = inspect(&path);
+        assert!(state.exists && !state.in_use);
+        assert_eq!(state.size_bytes, 1_234);
+        assert!(state.last_used.unwrap() > before);
+    }
+
+    #[test]
+    fn clearing_removes_a_persistent_profile_unless_it_is_in_use() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("profile");
+        assert!(clear(&path).is_ok(), "nothing to clear is not an error");
+
+        let profile = PersistentProfile::open(&path).unwrap();
+        std::fs::write(path.join("Cookies"), "data").unwrap();
+        assert!(matches!(clear(&path), Err(PersistentProfileError::Busy)));
+        assert!(path.join("Cookies").exists());
+
+        drop(profile);
+        clear(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn the_sweep_of_abandoned_profiles_never_takes_a_persistent_one() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("scan-profile");
+        drop(PersistentProfile::open(&path).unwrap());
+        age(&path, UNLOCKED_PROFILE_GRACE * 2);
+
+        assert_eq!(remove_abandoned(root.path()), 0);
+        assert_eq!(remove_abandoned(&path), 0);
+
+        assert!(path.join(LOCK_FILE).exists());
     }
 
     #[test]

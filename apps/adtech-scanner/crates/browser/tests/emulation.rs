@@ -2,13 +2,13 @@
 
 mod support;
 
-use adscan_model::{Capture, DeviceProfile};
+use adscan_model::{Capture, DeviceProfile, VisitorBehavior};
 use serde_json::Value;
 
 async fn probe(device: DeviceProfile) -> (Capture, Value) {
     let fixtures = support::Fixtures::start().await;
     let mut request = support::request(&fixtures.url("emulation.html"), device);
-    request.auto_scroll = true;
+    request.visitor = VisitorBehavior::Scroll;
     request.observe_seconds = 3;
     let capture = support::capture_ok(request).await;
     let seen = capture

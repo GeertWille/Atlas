@@ -1,4 +1,12 @@
-import type { LogEntry, PipelineStep, ScanDetail, ScanEvent, ScanOptions, ScanSummary } from "@/bindings";
+import type {
+  LogEntry,
+  PipelineStep,
+  ScanConfigurationRef,
+  ScanDetail,
+  ScanEvent,
+  ScanOptions,
+  ScanSummary,
+} from "@/bindings";
 import { PIPELINE_NODES } from "@/shared/domain/pipeline";
 import type { Beat, ScanResult } from "./scenario";
 
@@ -30,7 +38,12 @@ const EMPTY_METRICS: ScanDetail["metrics"] = {
   hasAmazonTam: false,
 };
 
-export function createRunningScan(id: string, options: ScanOptions, startedAt: number): StoredScan {
+export function createRunningScan(
+  id: string,
+  options: ScanOptions,
+  startedAt: number,
+  configuration: ScanConfigurationRef | null = null,
+): StoredScan {
   const steps: PipelineStep[] = PIPELINE_NODES.map((node) => ({
     id: `${id}-${node}`,
     scanId: id,
@@ -60,6 +73,7 @@ export function createRunningScan(id: string, options: ScanOptions, startedAt: n
     prebidVersion: null,
     aiUsed: false,
     error: null,
+    configuration,
   };
   return {
     detail: {
@@ -73,6 +87,8 @@ export function createRunningScan(id: string, options: ScanOptions, startedAt: n
       steps,
       overview: null,
       bidderDiagnostics: null,
+      pages: [],
+      environment: null,
     },
     logs: [],
   };
@@ -97,6 +113,8 @@ const snapshot = <T>(value: T): T => structuredClone(value);
 export function applyBeat(scan: StoredScan, beat: Beat, now: number): ScanEvent[] {
   const { summary } = scan.detail;
   switch (beat.type) {
+    case "awaitFinish":
+      return [];
     case "stepStart": {
       const step = stepOf(scan, beat.node);
       step.status = "running";

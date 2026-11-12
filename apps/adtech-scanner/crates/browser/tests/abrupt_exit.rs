@@ -13,7 +13,7 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use adscan_browser::DemoSite;
-use adscan_model::DeviceProfile;
+use adscan_model::{DeviceProfile, VisitorBehavior};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use support::chrome_processes::{Browser, children_named, command_line};
@@ -32,7 +32,7 @@ async fn capture_in_a_process_of_its_own() {
     };
     let mut request = support::request(&url, DeviceProfile::Desktop);
     request.observe_seconds = std::env::var(OBSERVE_SECONDS_ENV).unwrap().parse().unwrap();
-    request.auto_scroll = true;
+    request.visitor = VisitorBehavior::Scroll;
     support::capture_ok(request).await;
 }
 

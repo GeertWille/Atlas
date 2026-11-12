@@ -1,6 +1,6 @@
 //! The set of script bodies kept for one capture: dedupe and size budgets. No I/O.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use adscan_model::CapturedScript;
@@ -27,13 +27,16 @@ struct Entry {
     inline: bool,
     body: String,
     loaded_at_epoch_ms: Option<f64>,
+    /// When the same script was loaded again, on a later page view.
+    loaded_again_at_epoch_ms: Vec<f64>,
     initiator: Option<String>,
 }
 
 #[derive(Default)]
 pub(crate) struct ScriptLibrary {
     entries: Vec<Entry>,
-    fingerprints: HashSet<u64>,
+    /// Position in `entries` by fingerprint.
+    fingerprints: HashMap<u64, usize>,
     total_bytes: usize,
     inline_count: usize,
 }
@@ -49,7 +52,7 @@ impl ScriptLibrary {
         initiator: Option<String>,
     ) -> Admission {
         let fingerprint = fingerprint(&url, &body);
-        if let Some(rejection) = self.rejection(fingerprint, &body) {
+        if let Some(rejection) = self.rejection(fingerprint, &body, loaded_at_epoch_ms) {
             return rejection;
         }
         self.store(
@@ -59,6 +62,7 @@ impl ScriptLibrary {
                 inline: false,
                 body,
                 loaded_at_epoch_ms,
+                loaded_again_at_epoch_ms: Vec::new(),
                 initiator,
             },
         )
@@ -73,7 +77,7 @@ impl ScriptLibrary {
         document_url: Option<String>,
     ) -> Admission {
         let fingerprint = fingerprint("inline:", &body);
-        if let Some(rejection) = self.rejection(fingerprint, &body) {
+        if let Some(rejection) = self.rejection(fingerprint, &body, loaded_at_epoch_ms) {
             return rejection;
         }
         self.inline_count += 1;
@@ -85,15 +89,26 @@ impl ScriptLibrary {
                 inline: true,
                 body,
                 loaded_at_epoch_ms,
+                loaded_again_at_epoch_ms: Vec::new(),
                 initiator: document_url,
             },
         )
     }
 
-    fn rejection(&self, fingerprint: u64, body: &str) -> Option<Admission> {
+    /// A script held already keeps its one body; the repeated load is noted,
+    /// because every page view that loaded the script lists it.
+    fn rejection(
+        &mut self,
+        fingerprint: u64,
+        body: &str,
+        loaded_at_epoch_ms: Option<f64>,
+    ) -> Option<Admission> {
         if body.trim().is_empty() {
             Some(Admission::Empty)
-        } else if self.fingerprints.contains(&fingerprint) {
+        } else if let Some(held) = self.fingerprints.get(&fingerprint) {
+            self.entries[*held]
+                .loaded_again_at_epoch_ms
+                .extend(loaded_at_epoch_ms);
             Some(Admission::Duplicate)
         } else if self.total_bytes >= MAX_TOTAL_BYTES {
             Some(Admission::OverBudget)
@@ -107,7 +122,7 @@ impl ScriptLibrary {
         entry.url = without_embedded_payload(entry.url);
         entry.initiator = entry.initiator.map(without_embedded_payload);
         self.total_bytes += entry.body.len();
-        self.fingerprints.insert(fingerprint);
+        self.fingerprints.insert(fingerprint, self.entries.len());
         self.entries.push(entry);
         Admission::Stored
     }
@@ -117,15 +132,31 @@ impl ScriptLibrary {
         self.entries.len()
     }
 
-    pub(crate) fn into_captured(self, navigation_start: f64) -> Vec<CapturedScript> {
+    /// `place` turns an epoch time into the page view showing then and the
+    /// time since that page view started.
+    pub(crate) fn into_captured(self, place: impl Fn(f64) -> (u32, f64)) -> Vec<CapturedScript> {
         self.entries
             .into_iter()
-            .map(|entry| CapturedScript {
-                url: entry.url,
-                inline: entry.inline,
-                body: entry.body,
-                loaded_at_ms: entry.loaded_at_epoch_ms.map(|at| at - navigation_start),
-                initiator: entry.initiator,
+            .map(|entry| {
+                let first_load = entry.loaded_at_epoch_ms.map(&place);
+                let mut pages: Vec<u32> = first_load
+                    .iter()
+                    .map(|(page, _)| *page)
+                    .chain(entry.loaded_again_at_epoch_ms.iter().map(|at| place(*at).0))
+                    .collect();
+                pages.sort_unstable();
+                pages.dedup();
+                if pages.is_empty() {
+                    pages.push(0);
+                }
+                CapturedScript {
+                    url: entry.url,
+                    inline: entry.inline,
+                    body: entry.body,
+                    loaded_at_ms: first_load.map(|(_, since_page_start)| since_page_start),
+                    initiator: entry.initiator,
+                    pages,
+                }
             })
             .collect()
     }
@@ -276,12 +307,39 @@ mod tests {
             Admission::Stored
         );
 
-        let scripts = library.into_captured(1_000.0);
+        let scripts = library.into_captured(|at| (0, at - 1_000.0));
         let urls: Vec<&str> = scripts.iter().map(|script| script.url.as_str()).collect();
         assert_eq!(urls, ["inline:1", "inline:2"]);
         assert!(scripts.iter().all(|script| script.inline));
         assert_eq!(scripts[0].loaded_at_ms, Some(500.0));
         assert_eq!(scripts[0].initiator.as_deref(), Some("https://a.test/"));
+    }
+
+    #[test]
+    fn a_script_lists_every_page_view_that_loaded_it() {
+        let mut library = ScriptLibrary::default();
+        let mut load = |url: &str, at: f64| {
+            library.add_external(url.into(), "wrapper()".into(), Some(at), None)
+        };
+        assert_eq!(load("https://a.test/hb.js", 21_500.0), Admission::Stored);
+        assert_eq!(load("https://a.test/hb.js", 41_200.0), Admission::Duplicate);
+        assert_eq!(load("https://a.test/hb.js", 22_900.0), Admission::Duplicate);
+        assert_eq!(
+            load("https://a.test/only-once.js", 1_300.0),
+            Admission::Stored
+        );
+
+        // Page views of 20 seconds each.
+        let scripts = library.into_captured(|at| ((at / 20_000.0).floor() as u32, at % 20_000.0));
+
+        assert_eq!(scripts[0].pages, [1, 2]);
+        assert_eq!(
+            scripts[0].loaded_at_ms,
+            Some(1_500.0),
+            "counted from page 1"
+        );
+        assert_eq!(scripts[1].pages, [0]);
+        assert_eq!(scripts[1].loaded_at_ms, Some(1_300.0));
     }
 
     #[test]
@@ -292,7 +350,7 @@ mod tests {
             external(&mut library, "https://a.test/big.js", &body),
             Admission::Stored
         );
-        let scripts = library.into_captured(0.0);
+        let scripts = library.into_captured(|at| (0, at));
         assert!(scripts[0].body.len() <= MAX_SCRIPT_BYTES);
         assert!(scripts[0].body.len() >= MAX_SCRIPT_BYTES - 1);
         assert!(scripts[0].body.chars().all(|c| c == 'é'));
@@ -333,7 +391,7 @@ mod tests {
             Some(data_url("a()%3B")),
         );
 
-        let scripts = library.into_captured(0.0);
+        let scripts = library.into_captured(|at| (0, at));
         assert_eq!(
             scripts[0].url,
             format!(

@@ -196,6 +196,7 @@ function buildAuction(rng: Rng, spec: AuctionSpec): Auction {
   const endedAtMs = timedOut ? spec.startedAtMs + spec.timeoutMs : lastResponse + 6;
   return {
     id: spec.id,
+    page: 0,
     startedAtMs: spec.startedAtMs,
     endedAtMs,
     durationMs: endedAtMs - spec.startedAtMs,
@@ -219,6 +220,7 @@ function buildSlot(
 ): AdSlot {
   const definedAtMs = ROUND(rng.between(360, 540));
   const slot: AdSlot = {
+    page: 0,
     elementId: plan.elementId,
     adUnitPath: `/${site.networkCode}/${siteSlug(site.hostname)}/${plan.pathSuffix}`,
     sizes: plan.sizes,
@@ -234,6 +236,7 @@ function buildSlot(
     requestedBeforeAuctionEnd: null,
     advertiserId: null,
     lineItemId: null,
+    requests: [],
   };
   if (fate.outcome === "neverRequested" || !auction) return slot;
 
@@ -244,6 +247,19 @@ function buildSlot(
   );
   slot.requestedBeforeAuctionEnd = early && slot.requestedAtMs < auctionEnd;
   slot.hadPrebidTargeting = !slot.requestedBeforeAuctionEnd;
+  const unit = auction.adUnits.find((candidate) => candidate.code === plan.elementId);
+  const winner = unit?.bids.find((bid) => bid.status === "won");
+  slot.requests = [
+    {
+      atMs: slot.requestedAtMs,
+      hadPrebidTargeting: slot.hadPrebidTargeting,
+      // `hb_adid` is only on the slot when a winning bid's targeting was set before the request.
+      prebidAdId:
+        winner && slot.hadPrebidTargeting
+          ? hashString(`${site.hostname}|${plan.elementId}|${auction.id}`).toString(16).padStart(8, "0")
+          : null,
+    },
+  ];
   if (fate.outcome === "pending") return slot;
 
   slot.responseAtMs = ROUND(slot.requestedAtMs + rng.between(110, 290));
@@ -254,17 +270,16 @@ function buildSlot(
   slot.advertiserId = String(rng.int(4_500_000_000, 5_900_000_000));
   slot.lineItemId = String(rng.int(6_100_000_000, 6_900_000_000));
 
-  const unit = auction.adUnits.find((candidate) => candidate.code === plan.elementId);
-  const winner = unit?.bids.find((bid) => bid.status === "won");
   const prebidRendered = winner && slot.hadPrebidTargeting && (winner.cpm ?? 0) > 0.9;
   if (winner && prebidRendered) winner.status = "rendered";
   slot.renderedSize = (prebidRendered ? winner.size : null) ?? plan.sizes[0] ?? null;
   return slot;
 }
 
-export function captureSite(hostname: string, device: DeviceProfile): CapturedSite {
+/** `salt` varies what one site does between the page views of a visit; the entry page has none. */
+export function captureSite(hostname: string, device: DeviceProfile, salt = ""): CapturedSite {
   const archetype = archetypeFor(hostname);
-  const rng = createRng(hashString(`${hostname}|${device}`));
+  const rng = createRng(hashString(`${hostname}|${device}${salt}`));
   const slotPlans = device === "desktop" ? DESKTOP_SLOTS : MOBILE_SLOTS;
   const site = { hostname, networkCode: String(21_000_000_000 + (hashString(hostname) % 900_000_000)) };
   const pageLoadMs = ROUND(rng.between(1900, 3300) * (device === "mobile" ? 1.25 : 1));
@@ -463,7 +478,8 @@ export type TriagePlan = {
 
 const AD_CATEGORIES: readonly ScriptCategory[] = ["prebid", "wrapper", "adServer", "bidder", "cmp", "adQuality"];
 
-export function buildScripts(site: CapturedSite, plan: TriagePlan): ScriptRecord[] {
+/** `documentPages`: the page views that loaded a document, and with it every script of the site. */
+export function buildScripts(site: CapturedSite, plan: TriagePlan, documentPages: number[]): ScriptRecord[] {
   const rng = createRng(hashString(`${site.hostname}|scripts`));
   // A separate stream, so switching Jev on changes nothing else about a site's scripts.
   const jevRng = createRng(hashString(`${site.hostname}|jev`));
@@ -499,6 +515,8 @@ export function buildScripts(site: CapturedSite, plan: TriagePlan): ScriptRecord
       vendor: template.vendor,
       loadedAtMs: ROUND(loadedAt),
       firstParty: hostname.endsWith(rootDomain),
+      // The inline bootstrap differs per document, so later documents carry their own copy.
+      pages: template.inline ? documentPages.slice(0, 1) : documentPages,
     };
     const byTemplate = {
       category: template.category,

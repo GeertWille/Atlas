@@ -101,6 +101,13 @@ async fn scan_demo_site(device: DeviceProfile) -> (ScanDetail, MockServer) {
     let started = state
         .scans
         .start(ScanOptions {
+            visitor: None,
+            extra_pages: None,
+            seed: None,
+            headless: None,
+            persistent_profile: None,
+            proxy: None,
+            budget_usd: None,
             url: state.demo_site.url.clone(),
             device,
             observe_seconds: 6,

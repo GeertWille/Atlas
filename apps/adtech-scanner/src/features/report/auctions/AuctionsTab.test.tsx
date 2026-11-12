@@ -43,6 +43,7 @@ const diagnostics: BidderDiagnostics = {
           summary: "ads.txt lists appnexus.com (1 entry)",
           excerpt: "appnexus.com, 958, DIRECT",
           adUnits: [],
+          pages: [],
         },
       ],
     },
@@ -58,6 +59,7 @@ const diagnostics: BidderDiagnostics = {
           summary: "ads.txt has no entry for seedtag.com",
           excerpt: null,
           adUnits: [],
+          pages: [],
         },
         {
           area: "params",
@@ -66,6 +68,7 @@ const diagnostics: BidderDiagnostics = {
           summary: "All 3 ad units use the same `adUnitId` (27) although their sizes differ",
           excerpt: "adUnitId: 27",
           adUnits: ["div-gpt-top", "div-gpt-rail"],
+          pages: [],
         },
         {
           area: "consent",
@@ -74,6 +77,7 @@ const diagnostics: BidderDiagnostics = {
           summary: "The page exposes no TCF consent API, so there was no consent to check",
           excerpt: null,
           adUnits: [],
+          pages: [],
         },
       ],
     },

@@ -150,6 +150,7 @@ export const LOG_KINDS: readonly LogKind[] = [
   "toolResult",
   "finding",
   "classification",
+  "visitor",
 ];
 
 export const LOG_KIND_LABEL: Record<LogKind, string> = {
@@ -161,6 +162,7 @@ export const LOG_KIND_LABEL: Record<LogKind, string> = {
   toolResult: "Tool result",
   finding: "Finding",
   classification: "Classification",
+  visitor: "Visitor",
 };
 
 export const LOG_LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];

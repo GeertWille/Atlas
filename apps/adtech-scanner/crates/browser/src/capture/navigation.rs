@@ -19,6 +19,11 @@ pub(crate) enum NavigationFailure {
         "{host} did not answer within {seconds} seconds. Check that the site is up and try again"
     )]
     Timeout { host: String, seconds: u64 },
+    #[error(
+        "The proxy {proxy} asked for a user name and password and did not accept what the scan \
+         has for it. Check the proxy's user name and password in Settings"
+    )]
+    ProxyLogin { proxy: String },
 }
 
 pub(crate) fn parse_address(address: &str) -> Result<Url, NavigationFailure> {
@@ -32,10 +37,36 @@ pub(crate) fn host_of(url: &Url) -> String {
     url.host_str().unwrap_or_default().to_string()
 }
 
-/// `error_text` is Chrome's `net::ERR_*` code from `Page.navigate`.
-pub(crate) fn network_failure(error_text: &str, host: &str) -> NavigationFailure {
+/// `error_text` is Chrome's `net::ERR_*` code from `Page.navigate`; `proxy`
+/// names the proxy the scan was told to use, if any.
+pub(crate) fn network_failure(
+    error_text: &str,
+    host: &str,
+    proxy: Option<&str>,
+) -> NavigationFailure {
     let code = error_text.trim_start_matches("net::");
+    let the_proxy = match proxy {
+        Some(proxy) => format!("The proxy {proxy}"),
+        None => "The system's proxy".to_string(),
+    };
     let explanation = match code {
+        "ERR_PROXY_CONNECTION_FAILED"
+        | "ERR_SOCKS_CONNECTION_FAILED"
+        | "ERR_NO_SUPPORTED_PROXIES"
+        | "ERR_MANDATORY_PROXY_CONFIGURATION_FAILED" => {
+            format!(
+                "{the_proxy} could not be reached. Check its address and port, and that it is running"
+            )
+        }
+        "ERR_TUNNEL_CONNECTION_FAILED" | "ERR_SOCKS_CONNECTION_HOST_UNREACHABLE" => {
+            format!("{the_proxy} could not or would not connect to {host}")
+        }
+        "ERR_PROXY_AUTH_UNSUPPORTED" | "ERR_PROXY_AUTH_REQUESTED" | "ERR_INVALID_AUTH_CREDENTIALS" => {
+            format!("{the_proxy} asked for a login the scan could not give")
+        }
+        "ERR_PROXY_CERTIFICATE_INVALID" => {
+            format!("{the_proxy} presented a security certificate that is not valid")
+        }
         "ERR_NAME_NOT_RESOLVED" | "ERR_NAME_RESOLUTION_FAILED" => {
             format!(
                 "The address {host} does not exist (DNS lookup failed). Check the spelling of the domain"
@@ -90,9 +121,13 @@ fn is_certificate_error(code: &str) -> bool {
 pub(crate) fn http_failure(status: u16, host: &str) -> Option<NavigationFailure> {
     let (reason, advice) = match status {
         0..=399 => return None,
-        401 | 407 => (
+        401 => (
             "Unauthorized",
             "The page needs a login the scanner does not have",
+        ),
+        407 => (
+            "Proxy Authentication Required",
+            "The proxy between the scan and the site needs a user name and password",
         ),
         403 => (
             "Forbidden",
@@ -162,11 +197,39 @@ mod tests {
             ("net::ERR_SOMETHING_NEW", "ERR_SOMETHING_NEW"),
         ];
         for (code, expected) in cases {
-            let message = network_failure(code, "news.example").to_string();
+            let message = network_failure(code, "news.example", None).to_string();
             assert!(message.contains(expected), "{code}: {message}");
             assert!(message.contains("news.example"), "{code}: {message}");
             assert!(!message.contains("net::"), "{code}: {message}");
         }
+    }
+
+    #[test]
+    fn proxy_failures_name_the_proxy_and_not_the_site_as_the_problem() {
+        let cases = [
+            ("net::ERR_PROXY_CONNECTION_FAILED", "could not be reached"),
+            ("net::ERR_SOCKS_CONNECTION_FAILED", "could not be reached"),
+            ("net::ERR_TUNNEL_CONNECTION_FAILED", "connect to news.example"),
+            ("net::ERR_PROXY_CERTIFICATE_INVALID", "certificate"),
+            ("net::ERR_INVALID_AUTH_CREDENTIALS", "login"),
+        ];
+        for (code, expected) in cases {
+            let message =
+                network_failure(code, "news.example", Some("proxy.corp.example")).to_string();
+            assert!(message.contains(expected), "{code}: {message}");
+            assert!(
+                message.starts_with("The proxy proxy.corp.example"),
+                "{code}: {message}"
+            );
+        }
+        let system = network_failure("net::ERR_PROXY_CONNECTION_FAILED", "a.test", None);
+        assert!(system.to_string().starts_with("The system's proxy"));
+        let login = NavigationFailure::ProxyLogin {
+            proxy: "proxy.corp.example".into(),
+        }
+        .to_string();
+        assert!(login.contains("proxy.corp.example") && login.contains("password"));
+        assert!(http_failure(407, "a.test").unwrap().to_string().contains("proxy"));
     }
 
     #[test]

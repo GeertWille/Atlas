@@ -2,15 +2,15 @@ import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
 import type { ScanOptions } from "@/bindings";
 import { toApiError } from "@/lib/api";
-import { useStartScan } from "@/lib/query/hooks";
+import { type ScanStart, useStartScan } from "@/lib/query/hooks";
 
 /** Starts a scan and opens its live view; failures become toasts with a way forward. */
 export function useLaunchScan() {
   const startScan = useStartScan();
   const navigate = useNavigate();
 
-  const launch = (options: ScanOptions) =>
-    startScan.mutate(options, {
+  const start = (scan: ScanStart) =>
+    startScan.mutate(scan, {
       onSuccess: (summary) => navigate({ to: "/scans/$scanId", params: { scanId: summary.id } }),
       onError: (reason) => {
         const error = toApiError(reason);
@@ -22,5 +22,10 @@ export function useLaunchScan() {
       },
     });
 
-  return { launch, isPending: startScan.isPending };
+  return {
+    launch: (options: ScanOptions) => start({ options }),
+    /** Runs a saved configuration as it is stored; the scan is recorded as its last run. */
+    launchConfiguration: (configurationId: string) => start({ configurationId }),
+    isPending: startScan.isPending,
+  };
 }

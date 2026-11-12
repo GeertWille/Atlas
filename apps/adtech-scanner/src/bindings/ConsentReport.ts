@@ -15,8 +15,8 @@ consentManagementConfigured: boolean | null,
  */
 gdprApplies: boolean | null, 
 /**
- * ms since navigation start when the CMP first reported a decided
- * consent state.
+ * ms since the scan's navigation start when the CMP first reported a
+ * decided consent state.
  */
 resolvedAtMs: number | null, auctionCount: number, 
 /**

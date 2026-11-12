@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use adscan_model::{FindingCategory, ScriptCategory, Severity, TrackerEventKind as Ev};
+use adscan_model::{
+    FindingCategory, ScriptCategory, ScriptRecord, Severity, TrackerEventKind as Ev,
+};
 
 use super::{Rule, RuleContext, heuristic, ms};
 use crate::domain::diagnostics::codes;
@@ -53,7 +55,7 @@ impl Rule for DuplicatePrebid {
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         let mut globals = BTreeSet::new();
         let mut versions = BTreeSet::new();
-        for event in &ctx.capture.events {
+        for event in ctx.events {
             if let Ev::PrebidDetected {
                 global_name,
                 version,
@@ -138,7 +140,7 @@ impl Rule for AdLibraryLoadedTwice {
             }
             let urls: Vec<&str> = libraries
                 .iter()
-                .filter(|other| other.hash == script.hash)
+                .filter(|other| other.hash == script.hash && share_a_page(script, other))
                 .map(|other| other.url.as_str())
                 .collect();
             if urls.len() > 1 {
@@ -173,6 +175,15 @@ impl Rule for AdLibraryLoadedTwice {
         }
         vec![finding]
     }
+}
+
+/// A library fetched once per page view under a changing address (a cache
+/// buster) is not loaded twice. Scans from before page views were recorded
+/// have no page lists and count as one page.
+fn share_a_page(script: &ScriptRecord, other: &ScriptRecord) -> bool {
+    script.pages.is_empty()
+        || other.pages.is_empty()
+        || script.pages.iter().any(|page| other.pages.contains(page))
 }
 
 pub struct OutdatedPrebid;

@@ -26,7 +26,7 @@ function check(
   summary: string,
   excerpt: string | null = null,
 ): DiagnosticCheck {
-  return { area, status, code, summary, excerpt, adUnits: [] };
+  return { area, status, code, summary, excerpt, adUnits: [], pages: [] };
 }
 
 function checksFor(bidder: string, adUnits: number, sellersJson: boolean): DiagnosticCheck[] {

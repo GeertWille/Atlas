@@ -254,6 +254,7 @@ fn slots_correlate_with_ad_units_by_path_and_report_request_races() {
                 Ev::SlotRequested {
                     element_id,
                     prebid_targeting_keys,
+                    ..
                 } if element_id == "side" => {
                     event.t = 500.0;
                     prebid_targeting_keys.clear();
@@ -712,6 +713,7 @@ fn ad_request_sent_before_the_auction_ended() {
             if let Ev::SlotRequested {
                 element_id,
                 prebid_targeting_keys,
+                ..
             } = &mut event.kind
                 && element_id == "side"
             {

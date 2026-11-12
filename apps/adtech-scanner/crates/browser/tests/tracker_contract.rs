@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 
 use adscan_model::{
     Capture, DeviceProfile, SchainNode, TrackedAdUnit, TrackedBid, TrackerEventKind as Kind,
+    VisitorBehavior,
 };
 use serde_json::{Value, json};
 
@@ -42,6 +43,9 @@ fn variant(kind: &Kind) -> &'static str {
         Kind::PrebidLog { .. } => "prebidLog",
         Kind::CmpDetected { .. } => "cmpDetected",
         Kind::TcfState { .. } => "tcfState",
+        Kind::SlotsDestroyed { .. } => "slotsDestroyed",
+        Kind::SlotDefinitionRejected { .. } => "slotDefinitionRejected",
+        Kind::RouteChange { .. } => "routeChange",
     }
 }
 
@@ -92,7 +96,7 @@ fn strings(values: &[&str]) -> Vec<String> {
 async fn kitchen_sink() -> Capture {
     let fixtures = support::Fixtures::start().await;
     let mut request = support::request(&fixtures.url("kitchen-sink.html"), DeviceProfile::Desktop);
-    request.auto_scroll = true;
+    request.visitor = VisitorBehavior::Scroll;
     request.observe_seconds = 4;
     support::capture_ok(request).await
 }
@@ -460,6 +464,7 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
     let requested = |id: &str, keys: &[&str]| Kind::SlotRequested {
         element_id: id.into(),
         prebid_targeting_keys: strings(keys),
+        prebid_ad_id: None,
     };
     assert_eq!(
         kinds(&capture, "slotRequested"),

@@ -190,6 +190,7 @@ mod tests {
 
     fn finding(source: FindingSource, category: FindingCategory, severity: Severity) -> Finding {
         Finding {
+            pages: Vec::new(),
             id: format!("{source:?}-{category:?}-{severity:?}"),
             scan_id: "scan".into(),
             severity,

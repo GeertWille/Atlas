@@ -168,6 +168,8 @@ export function applyScanEvent(client: QueryClient, event: ScanEvent) {
       void client.invalidateQueries({ queryKey });
     }
     void refetchFresh(client, queryKeys.stats);
+    // The scan no longer holds the kept browser profile.
+    void client.invalidateQueries({ queryKey: queryKeys.scanProfile });
   }
   // A scan no loaded list has seen yet is new.
   if (!listed || statusChanged) void refetchFresh(client, queryKeys.scanLists);

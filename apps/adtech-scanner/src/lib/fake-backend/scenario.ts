@@ -3,25 +3,24 @@ import type {
   LogKind,
   LogLevel,
   PipelineNode,
+  ProxyUse,
   ScanDetail,
   ScanOptions,
   ScriptRecord,
   Settings,
   StepStatus,
+  VisitorBehavior,
 } from "@/bindings";
 import { aiAvailability } from "@/shared/domain/ai-availability";
 import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
+import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
+import { proxyUseLabel } from "@/shared/domain/proxy";
+import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import { buildDiagnostics } from "./diagnostics";
-import { aiInvestigations, healthScore, heuristicFindings, overviewFor } from "./findings";
-import {
-  buildScripts,
-  captureSite,
-  computeMetrics,
-  JEV_THRESHOLDS,
-  jevParts,
-  jevPublisherSpecific,
-  jevRule,
-} from "./site";
+import { aiInvestigations, type FindingDraft, healthScore, heuristicFindings, overviewFor } from "./findings";
+import { buildScripts, computeMetrics, JEV_THRESHOLDS, jevParts, jevPublisherSpecific, jevRule } from "./site";
+import { type CapturedVisit, captureVisit, type VisitedPage, visitMetrics } from "./visit";
+import { visitFindings } from "./visit-findings";
 
 /** One scripted moment of a simulated scan, `at` ms after it started. */
 export type Beat = { at: number } & (
@@ -31,11 +30,13 @@ export type Beat = { at: number } & (
   | { type: "usage"; node: PipelineNode; model: string; inputTokens: number; outputTokens: number; costUsd: number }
   | { type: "finding"; finding: Finding }
   | { type: "fail"; node: PipelineNode; message: string }
+  /** A manual visit: the capture waits here until the user finishes it. */
+  | { type: "awaitFinish" }
 );
 
 export type ScanResult = Pick<
   ScanDetail,
-  "metrics" | "findings" | "auctions" | "slots" | "scripts" | "overview" | "bidderDiagnostics"
+  "metrics" | "findings" | "auctions" | "slots" | "scripts" | "overview" | "bidderDiagnostics" | "pages" | "environment"
 > & {
   healthScore: number;
   prebidVersion: string | null;
@@ -107,6 +108,26 @@ class Timeline {
     });
   }
 
+  /** A `visitor` audit entry, shaped like the ones the capture step stores for the real browser. */
+  visitor(
+    activity: "pageView" | "action" | "linkChoice" | "blocked" | "environment",
+    message: string,
+    page: number,
+    detail: Record<string, unknown>,
+    after = 120,
+  ) {
+    this.log(message, {
+      after,
+      kind: "visitor",
+      level: activity === "blocked" ? "warn" : "info",
+      data: { activity, page, detail },
+    });
+  }
+
+  awaitFinish() {
+    this.beats.push({ at: this.now, type: "awaitFinish" });
+  }
+
   fail(message: string) {
     this.wait(200);
     this.log(message, { after: 0, level: "error" });
@@ -115,6 +136,31 @@ class Timeline {
 }
 
 const VIEWPORT = { desktop: "1280×900", mobile: "390×844 @3x, touch" } as const;
+
+const pages = (count: number) => `${count} page${count === 1 ? "" : "s"}`;
+
+type Gesture = { action: string; message: string; scrollDepth?: number; target?: string };
+
+const SCROLL_STEPS: Gesture[] = [0.25, 0.5, 0.75, 1].map((scrollDepth) => ({
+  action: "scroll",
+  message: `Scrolled to ${scrollDepth * 100}%`,
+  scrollDepth,
+}));
+
+/** What each behaviour does on a page, one audit entry per gesture. A manual session records none: the person acts. */
+const GESTURES: Record<VisitorBehavior, Gesture[]> = {
+  none: [],
+  scroll: SCROLL_STEPS,
+  browse: [
+    { action: "pointerMove", message: "Moved the pointer over a heading", target: "heading" },
+    { action: "scroll", message: "Scrolled to 30%", scrollDepth: 0.3 },
+    { action: "hover", message: "Rested the pointer on a paragraph", target: "paragraph" },
+    { action: "scroll", message: "Scrolled to 60%", scrollDepth: 0.6 },
+    { action: "scrollBack", message: "Scrolled back to 45%", scrollDepth: 0.45 },
+    { action: "scroll", message: "Scrolled to 85%", scrollDepth: 0.85 },
+  ],
+  manual: [],
+};
 
 /** The questions Jev answers about each part of an undecided script; the first one routes the script. */
 const JEV_TRIAGE_QUESTIONS = [
@@ -164,24 +210,42 @@ const JEV_FAILURE = "rate limited by the API after 3 attempts";
 const AI_TURNED_OFF = "AI analysis is turned off for this scan";
 const NO_ANTHROPIC_KEY = "No Anthropic API key is configured";
 
+/** Estimated extra telemetry the logic analysis reads for each page view after the first. */
+const TOKENS_PER_EXTRA_PAGE = 1_500;
+/** A manual session visits this many pages unless the user finishes it earlier. */
+export const MANUAL_SESSION_PAGES = 3;
+/** Simulated time the person spends on a page of a manual session before moving on. */
+const MANUAL_PAGE_MS = 5_000;
+
 export type ScenarioContext = {
   scanId: string;
+  /** As the backend stores them: visitor, pages, seed, browser window, profile and budget are resolved. */
   options: ScanOptions;
+  /** The proxy the scan runs through, resolved from the options and the settings. */
+  proxy: ProxyUse;
   settings: Settings;
   browserVersion: string;
   /** Jev stops answering part-way through script triage. */
   jevFails?: boolean;
+  /** A manual session that the user finished after this many page views. */
+  manualPages?: number;
 };
 
 export function buildScenario({
   scanId,
   options,
+  proxy,
   settings,
   browserVersion,
   jevFails = false,
+  manualPages = MANUAL_SESSION_PAGES,
 }: ScenarioContext): Scenario {
   const hostname = new URL(options.url).hostname;
   const timeline = new Timeline();
+  const visitor = visitorOf(options);
+  const headless = options.headless ?? settings.headless;
+  const budgetUsd = options.budgetUsd ?? settings.budgetUsd;
+  const pageCount = visitor === "manual" ? manualPages : 1 + (options.extraPages ?? 0);
   const ai = aiAvailability(settings);
   const skipReason = (available: boolean) => (!options.aiEnabled ? AI_TURNED_OFF : available ? null : NO_ANTHROPIC_KEY);
   const triageSkipReason = skipReason(ai.triage !== null);
@@ -193,18 +257,27 @@ export function buildScenario({
   const caveats: string[] = [];
 
   timeline.start("launchBrowser");
-  timeline.log(`Using ${browserVersion}${settings.headless ? " (headless)" : ""}`, { after: 80 });
+  timeline.log(`Using ${browserVersion}${headless ? " (headless)" : ""}`, { after: 80 });
   timeline.log("Started browser with remote debugging on 127.0.0.1:9222", {
     after: 700,
     level: "debug",
     data: {
-      args: ["--headless=new", "--remote-debugging-port=9222", "--disable-background-networking", "--no-first-run"],
+      args: [
+        ...(headless ? ["--headless=new"] : []),
+        "--remote-debugging-port=9222",
+        "--disable-background-networking",
+        "--no-first-run",
+      ],
     },
   });
   timeline.log("CDP session attached; Network, Page and Runtime domains enabled", { after: 260, level: "debug" });
   timeline.end("Browser ready");
 
   timeline.start("capture");
+  timeline.log(
+    `Visit: ${VISITOR_META[visitor].label.toLowerCase()}${visitor === "browse" ? `, up to ${pageCount} pages` : ""}, seed ${options.seed ?? 0}, ${headless ? "headless" : "browser shown"}, ${options.persistentProfile ? "kept scan profile" : "fresh profile"}, ${proxyUseLabel(proxy).toLowerCase()}`,
+    { after: 40 },
+  );
   timeline.log(`Emulating ${options.device} (${VIEWPORT[options.device]})`, { after: 80 });
   timeline.log("Tracker injected with Page.addScriptToEvaluateOnNewDocument", { level: "debug" });
   timeline.log(`Navigating to ${options.url}`, { after: 100 });
@@ -215,69 +288,60 @@ export function buildScenario({
     return { beats: timeline.beats, result: null };
   }
 
-  const site = captureSite(hostname, options.device);
-  const scripts = buildScripts(site, {
-    jev: jevTriage ? { model: JEV_MODEL, answers: jevFailed ? JEV_ANSWERS_BEFORE_FAILURE : Infinity } : null,
-    claudeModel: triageRan && settings.hasApiKey ? settings.filterModel : null,
-    logicAnalysis: analysisRan,
+  const visit = captureVisit({
+    url: options.url,
+    device: options.device,
+    visitor,
+    pageCount,
+    observeSeconds: options.observeSeconds,
+    seed: options.seed ?? 0,
+    headless,
+    persistentProfile: options.persistentProfile ?? false,
+    proxy,
   });
-  const metrics = computeMetrics(site, scripts);
-  const firstAuction = site.auctions[0];
-  const observeMs = options.observeSeconds * 1000;
+  const site = visit.entry;
+  const documentPages = visit.pages.filter((page) => page.view.loadMs !== null).map((page) => page.view.index);
+  const scripts = buildScripts(
+    site,
+    {
+      jev: jevTriage ? { model: JEV_MODEL, answers: jevFailed ? JEV_ANSWERS_BEFORE_FAILURE : Infinity } : null,
+      claudeModel: triageRan && settings.hasApiKey ? settings.filterModel : null,
+      logicAnalysis: analysisRan,
+    },
+    documentPages,
+  );
+  const metrics = visitMetrics(visit, scripts);
 
-  timeline.log(`DOMContentLoaded at ${Math.round(site.pageLoadMs * 0.38)} ms`, { after: 600, level: "debug" });
-  if (options.acceptConsent) {
-    timeline.log("Consent banner detected (OneTrust); clicked “Accept all”", {
-      after: 300,
-      data: { cmp: "OneTrust", tcfVersion: 2.2, selector: "#onetrust-accept-btn-handler" },
-    });
+  for (const page of visit.pages) visitPage(page);
+  if (visitor === "manual") {
+    timeline.awaitFinish();
+    timeline.log(`Capture finished by you after ${pages(visit.pages.length)}`, { after: 0 });
   } else {
-    timeline.log("Consent banner detected (OneTrust); left untouched", { after: 300, level: "warn" });
+    timeline.log(`Observation window closed after ${options.observeSeconds} s`, { after: 200 });
   }
-  timeline.log(`Prebid.js v${site.prebidVersion} detected (window.pbjs); GPT and apstag present`, { after: 200 });
-  if (firstAuction) {
-    timeline.log(
-      `auctionInit ${firstAuction.id}: ${firstAuction.adUnits.length} ad units, timeout ${firstAuction.timeoutMs} ms`,
-      {
-        after: 300,
-        level: "debug",
-        data: { auctionId: firstAuction.id, adUnitCodes: firstAuction.adUnits.map((unit) => unit.code) },
-      },
-    );
-  }
-  timeline.log(`Page load event at ${site.pageLoadMs} ms`, { after: 700 });
-  const observeSlice = observeMs / 4;
-  if (options.autoScroll) {
-    timeline.log("Auto-scroll started: 4 steps to the bottom of the page", { after: observeSlice });
-  }
-  for (const auction of site.auctions.slice(1)) {
-    timeline.log(`auctionInit ${auction.id}: ${auction.adUnits.length} ad units at ${auction.startedAtMs} ms`, {
-      after: observeSlice / 2,
-      level: "debug",
-      data: { auctionId: auction.id, adUnitCodes: auction.adUnits.map((unit) => unit.code) },
-    });
-  }
-  timeline.log(`Observation window closed after ${options.observeSeconds} s`, { after: observeSlice * 2 });
-  const auctionCount = `${site.auctions.length} auction${site.auctions.length === 1 ? "" : "s"}`;
+  const auctionCount = `${visit.auctions.length} auction${visit.auctions.length === 1 ? "" : "s"}`;
   timeline.log(
-    `Captured ${scripts.length} scripts (${(metrics.totalScriptBytes / 1_048_576).toFixed(1)} MB), ${auctionCount}, ${site.slots.length} GPT slots`,
+    `Captured ${scripts.length} scripts (${(metrics.totalScriptBytes / 1_048_576).toFixed(1)} MB), ${auctionCount}, ${visit.slots.length} GPT slots`,
     {
       data: {
         scripts: scripts.length,
-        auctions: site.auctions.length,
-        slots: site.slots.length,
+        auctions: visit.auctions.length,
+        slots: visit.slots.length,
         bidRequests: metrics.bidRequestCount,
+        pages: visit.pages.length,
       },
     },
   );
-  timeline.end(`${scripts.length} scripts, ${auctionCount}, ${site.slots.length} slots`);
+  timeline.end(
+    `${visit.pages.length > 1 ? `${pages(visit.pages.length)}, ` : ""}${scripts.length} scripts, ${auctionCount}, ${visit.slots.length} slots`,
+  );
 
   timeline.start("telemetry");
   timeline.log(
     `Derived ${metrics.bidRequestCount} bid requests from ${metrics.bidderCount} bidders: ${metrics.bidResponseCount} bids, ${metrics.noBidCount} no-bids, ${metrics.bidTimeoutCount} timeouts`,
     { data: metrics },
   );
-  timeline.log(`Slot outcomes: ${site.slots.map((slot) => `${slot.elementId}=${slot.outcome}`).join(", ")}`, {
+  timeline.log(`Slot outcomes: ${visit.slots.map((slot) => `${slot.elementId}=${slot.outcome}`).join(", ")}`, {
     level: "debug",
   });
   timeline.end(
@@ -285,7 +349,7 @@ export function buildScenario({
   );
 
   timeline.start("bidderDiagnostics");
-  const diagnostics = buildDiagnostics(site, options.url, settings.checkSellersJson);
+  const diagnostics = buildDiagnostics({ ...site, auctions: visit.auctions }, options.url, settings.checkSellersJson);
   timeline.log(`Requesting ${diagnostics.adsTxt.url}`, { after: 60 });
   timeline.log(`${diagnostics.adsTxt.url}: ${diagnostics.adsTxt.recordCount} seller records, 0 invalid lines`, {
     after: 260,
@@ -299,8 +363,9 @@ export function buildScenario({
   timeline.end(`${diagnostics.bidders.length} bidders checked, ${flaggedChecks} need attention`);
 
   const findings: Finding[] = [];
-  const addFinding = (draft: Omit<Finding, "id" | "scanId">) => {
-    const finding = { ...draft, id: `${scanId}-f${findings.length + 1}`, scanId };
+  const addFinding = (draft: FindingDraft) => {
+    // Findings about what one page did belong to the entry page unless they say otherwise.
+    const finding = { pages: [0], ...draft, id: `${scanId}-f${findings.length + 1}`, scanId };
     findings.push(finding);
     timeline.wait(140);
     timeline.finding(finding);
@@ -308,7 +373,8 @@ export function buildScenario({
 
   timeline.start("heuristics");
   timeline.log("Evaluating 14 deterministic rules against telemetry", { level: "debug" });
-  for (const draft of heuristicFindings(site, metrics)) addFinding(draft);
+  for (const draft of heuristicFindings(site, computeMetrics(site, scripts))) addFinding(draft);
+  for (const draft of visitFindings(visit)) addFinding({ pages: [], ...draft });
   const heuristicCount = findings.length;
   timeline.end(`${heuristicCount} of 14 rules matched`);
 
@@ -329,8 +395,12 @@ export function buildScenario({
 
   timeline.start("synthesize", analysisRan ? settings.filterModel : null);
   const score = healthScore(findings);
+  const visitNote =
+    visit.pages.length > 1
+      ? ` The visit covered ${pages(visit.pages.length)}; the slot and auction counts in this summary are the entry page's.`
+      : "";
   const overview = [
-    overviewFor(site, findings, analysisRan ? "analysed" : triageRan ? "triaged" : "deterministic"),
+    `${overviewFor(site, findings, analysisRan ? "analysed" : triageRan ? "triaged" : "deterministic")}${visitNote}`,
     ...caveats.map((caveat) => `**Note:** ${caveat}.`),
   ].join("\n\n");
   timeline.log(`Ranked ${findings.length} findings; no duplicates between rule and model findings`, { after: 200 });
@@ -356,16 +426,161 @@ export function buildScenario({
     result: {
       metrics,
       findings,
-      auctions: site.auctions,
-      slots: site.slots,
+      auctions: visit.auctions,
+      slots: visit.slots,
       scripts,
       overview,
       bidderDiagnostics: diagnostics,
+      pages: visit.pages.map((page) => page.view),
+      environment: visit.environment,
       healthScore: score,
       prebidVersion: site.prebidVersion,
       aiUsed: triageRan,
     },
   };
+
+  /** One page view of the visit: what the browser did there and what the page did in return. */
+  function visitPage({ view, site: pageSite, story }: VisitedPage) {
+    const { index } = view;
+    const path = pagePath(view.url);
+    timeline.visitor(
+      "pageView",
+      `Page ${index + 1}: ${path} (${PAGE_REACH_LABEL[view.reachedBy].toLowerCase()})`,
+      index,
+      {
+        index,
+        url: view.url,
+        title: view.title,
+        reachedBy: view.reachedBy,
+        startedAtMs: view.startedAtMs,
+        link: view.link,
+      },
+      index === 0 ? 0 : visitor === "manual" ? MANUAL_PAGE_MS : 900,
+    );
+    if (view.loadMs !== null) {
+      timeline.log(`DOMContentLoaded at ${Math.round(view.loadMs * 0.38)} ms`, { after: 600, level: "debug" });
+    }
+    if (index === 0) announceEnvironment(visit);
+    if (index === 0 || story === "consentAskedAgain") handleConsent(index);
+    if (index === 0) {
+      timeline.log(`Prebid.js v${site.prebidVersion} detected (window.pbjs); GPT and apstag present`, { after: 200 });
+    }
+    const [firstAuction, ...laterAuctions] = pageSite.auctions;
+    if (firstAuction) {
+      timeline.log(
+        `auctionInit ${firstAuction.id}: ${firstAuction.adUnits.length} ad units, timeout ${firstAuction.timeoutMs} ms`,
+        {
+          after: 300,
+          level: "debug",
+          data: { auctionId: firstAuction.id, adUnitCodes: firstAuction.adUnits.map((unit) => unit.code) },
+        },
+      );
+    }
+    if (view.loadMs !== null) timeline.log(`Page load event at ${view.loadMs} ms`, { after: 700 });
+
+    const slice = view.dwellMs / 4;
+    if (visitor === "scroll") {
+      timeline.log("Auto-scroll started: 4 steps to the bottom of the page", { after: slice });
+    }
+    for (const [step, auction] of laterAuctions.entries()) {
+      act(index, step);
+      timeline.log(`auctionInit ${auction.id}: ${auction.adUnits.length} ad units at ${auction.startedAtMs} ms`, {
+        after: slice / 2,
+        level: "debug",
+        data: { auctionId: auction.id, adUnitCodes: auction.adUnits.map((unit) => unit.code) },
+      });
+    }
+    for (let step = laterAuctions.length; step < GESTURES[visitor].length; step += 1) act(index, step);
+    timeline.wait(visitor === "manual" ? 0 : slice);
+
+    const next = visit.pages[index + 1];
+    if (visitor === "browse" && next) chooseLink(index, next);
+  }
+
+  function announceEnvironment({ environment }: CapturedVisit) {
+    const signals = [
+      environment.webdriver ? "navigator.webdriver is true" : null,
+      environment.headless ? "headless" : null,
+    ].filter((signal) => signal !== null);
+    timeline.visitor(
+      "environment",
+      signals.length > 0
+        ? `This visit is identifiable as automated: ${signals.join(", ")}`
+        : "You drive this visit: navigator.webdriver is false. The page can still notice the debugger that records it.",
+      0,
+      {
+        webdriver: environment.webdriver,
+        headless: environment.headless,
+        persistentProfile: environment.persistentProfile,
+        userAgentOverridden: environment.userAgentOverridden,
+        viewportOverridden: environment.viewportOverridden,
+      },
+    );
+  }
+
+  function handleConsent(page: number) {
+    if (!options.acceptConsent) {
+      timeline.log(
+        visitor === "manual"
+          ? "Consent banner detected (OneTrust); left to you"
+          : "Consent banner detected (OneTrust); left untouched",
+        { after: 300, level: visitor === "manual" ? "info" : "warn" },
+      );
+      return;
+    }
+    timeline.log("Consent banner detected (OneTrust); clicked “Accept all”", {
+      after: 300,
+      data: { cmp: "OneTrust", tcfVersion: 2.2, selector: "#onetrust-accept-btn-handler" },
+    });
+    timeline.visitor("action", "Clicked the consent banner", page, { action: "consent" }, 0);
+  }
+
+  /** The visitor's next gesture on a page, spread over its dwell time. */
+  function act(page: number, step: number) {
+    const gesture = GESTURES[visitor][step];
+    if (!gesture) return;
+    const touch = options.device === "mobile";
+    const action = touch && gesture.action === "scroll" ? "swipe" : gesture.action;
+    if (touch && (action === "pointerMove" || action === "hover")) return;
+    const dwellMs = visit.pages[page]?.view.dwellMs ?? 0;
+    timeline.visitor(
+      "action",
+      touch && action === "swipe" ? gesture.message.replace("Scrolled", "Swiped") : gesture.message,
+      page,
+      { action, scrollDepth: gesture.scrollDepth, target: gesture.target },
+      dwellMs / (GESTURES[visitor].length + 4),
+    );
+  }
+
+  function chooseLink(page: number, next: VisitedPage) {
+    const href = next.view.url;
+    const origin = new URL(href).origin;
+    timeline.visitor("linkChoice", `Following link: ${pagePath(href)} (best of 5)`, page, {
+      chosen: {
+        text: next.view.title,
+        href,
+        score: 6,
+        reasons: ["content link", "article-like path", "text of 25-120 characters"],
+      },
+      alternatives: [
+        { text: "Rail strike called off after late talks", href: `${origin}/2026/11/rail-strike-called-off`, score: 5 },
+        { text: "Sport", href: `${origin}/sport`, score: 2 },
+        { text: "Opinion: the case for slower news", href: `${origin}/opinion/slower-news`, score: 2 },
+        { text: "Newsletters", href: `${origin}/newsletters`, score: 1 },
+      ],
+      skipped: { "off-site": 9, "inside-ad": 3, sensitive: 2, file: 1, visited: page },
+    });
+    if (page === 0) {
+      timeline.visitor(
+        "blocked",
+        "Closed a pop-up window (partner-offers.example): not recorded",
+        page,
+        { reason: "popup", host: "partner-offers.example" },
+        200,
+      );
+    }
+    timeline.visitor("action", `Clicked “${next.view.title}”`, page, { action: "click", target: "link" }, 400);
+  }
 
   function classifyWithClaude(toClassify: ScriptRecord[]) {
     timeline.log(`Classify ${toClassify.length} scripts as ad-related or not`, {
@@ -516,7 +731,7 @@ export function buildScenario({
 
     timeline.start("analyzeLogic", settings.analysisModel);
     timeline.log(
-      `Starting agentic analysis with ${settings.analysisModel} (effort ${settings.analysisEffort}, budget $${settings.budgetUsd.toFixed(2)})`,
+      `Starting agentic analysis with ${settings.analysisModel} (effort ${settings.analysisEffort}, budget $${budgetUsd.toFixed(2)})`,
       { after: 100 },
     );
     timeline.log("Find logic bugs in the wrapper that directly cause revenue loss", {
@@ -545,9 +760,9 @@ export function buildScenario({
     const effortScale = { low: 0.7, medium: 1, high: 1.45 }[settings.analysisEffort];
     let reported = 0;
     for (const [turn, investigation] of aiInvestigations(site).entries()) {
-      if (spent >= settings.budgetUsd) {
+      if (spent >= budgetUsd) {
         timeline.log(
-          `Budget cap of $${settings.budgetUsd.toFixed(2)} reached after ${turn} turn${turn === 1 ? "" : "s"}; stopping analysis with partial results`,
+          `Budget cap of $${budgetUsd.toFixed(2)} reached after ${turn} turn${turn === 1 ? "" : "s"}; stopping analysis with partial results`,
           { level: "warn" },
         );
         break;
@@ -573,7 +788,8 @@ export function buildScenario({
       });
       addFinding(investigation.finding);
       reported += 1;
-      const inputTokens = Math.round((34_000 + turn * 14_000) * effortScale);
+      const pageTokens = turn === 0 ? (visit.pages.length - 1) * TOKENS_PER_EXTRA_PAGE : 0;
+      const inputTokens = Math.round((34_000 + turn * 14_000) * effortScale) + pageTokens;
       const outputTokens = Math.round((1_850 + turn * 240) * effortScale);
       spent += timeline.usage(settings.analysisModel, inputTokens, outputTokens);
       timeline.log(`Turn ${turn + 1} complete`, {

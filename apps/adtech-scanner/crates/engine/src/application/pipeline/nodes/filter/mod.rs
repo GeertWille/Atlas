@@ -182,14 +182,15 @@ async fn persist(run: &mut StepRun<'_>) -> Result<u32, NodeError> {
     let scan_id = run.state.summary.id.clone();
     run.deps.scans.save_scripts(&scan_id, &records).await?;
     if let Some(telemetry) = run.state.telemetry.as_mut() {
-        telemetry.metrics.ad_script_count = ad_related;
+        telemetry.total.metrics.ad_script_count = ad_related;
         run.deps
             .scans
             .save_telemetry(
                 &scan_id,
-                &telemetry.metrics,
-                &telemetry.auctions,
-                &telemetry.slots,
+                &telemetry.total.metrics,
+                &telemetry.pages,
+                &telemetry.total.auctions,
+                &telemetry.total.slots,
             )
             .await?;
     }

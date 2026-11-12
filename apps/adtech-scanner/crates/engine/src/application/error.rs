@@ -27,6 +27,8 @@ pub enum AppError {
     Storage(String),
     #[error("The scan was cancelled")]
     Cancelled,
+    #[error("The scan profile is in use by a running scan. Try again when that scan has finished.")]
+    ProfileBusy,
     #[error("{0}")]
     Internal(String),
 }
@@ -43,6 +45,7 @@ impl AppError {
             Self::Llm(_) => ErrorCode::LlmFailed,
             Self::Storage(_) => ErrorCode::Storage,
             Self::Cancelled => ErrorCode::Cancelled,
+            Self::ProfileBusy => ErrorCode::ProfileBusy,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }
@@ -71,6 +74,7 @@ impl From<CaptureError> for AppError {
         match error {
             CaptureError::BrowserNotFound => Self::BrowserNotFound,
             CaptureError::Cancelled => Self::Cancelled,
+            CaptureError::ProfileBusy => Self::ProfileBusy,
             failure @ (CaptureError::Launch(_)
             | CaptureError::Navigation(_)
             | CaptureError::Other(_)) => Self::BrowserFailed(failure.to_string()),

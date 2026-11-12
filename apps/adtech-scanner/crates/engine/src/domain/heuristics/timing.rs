@@ -1,7 +1,7 @@
 use adscan_model::{FindingCategory, Severity, TrackerEventKind as Ev};
 
 use super::{
-    HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule, RuleContext,
+    HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule, RuleContext, RuleScope,
     estimate_impact, heuristic, median, ms, pct,
 };
 use crate::domain::finding::{FindingDraft, metric, timeline};
@@ -18,6 +18,10 @@ pub struct AuctionTimeoutTooShort;
 impl Rule for AuctionTimeoutTooShort {
     fn id(&self) -> &'static str {
         "auction-timeout-too-short"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
@@ -112,6 +116,10 @@ impl Rule for BidderTimeouts {
         "bidder-timeouts"
     }
 
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
+    }
+
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         if ctx.timeouts_are_systemic() {
             return Vec::new();
@@ -163,11 +171,17 @@ impl Rule for LateFirstAuction {
         "late-first-auction"
     }
 
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
+    }
+
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         let Some(started_at) = ctx.telemetry.metrics.time_to_first_auction_ms else {
             return Vec::new();
         };
-        if started_at < LATE_AUCTION_MS || ctx.auction_gate().is_some() {
+        // After a route change nothing is loading: when the page asks for
+        // bids there is its own decision, not a slow start.
+        if started_at < LATE_AUCTION_MS || ctx.auction_gate().is_some() || ctx.is_route_change() {
             return Vec::new();
         }
         let severity = if started_at >= VERY_LATE_AUCTION_MS {
@@ -185,8 +199,7 @@ impl Rule for LateFirstAuction {
             "The first Prebid auction began {} after navigation start{}. Until it completes no slot can carry \
              header bidding demand, so early impressions are lost to short sessions and viewability suffers.",
             ms(started_at),
-            ctx.capture
-                .page_load_ms
+            ctx.page_load_ms()
                 .map_or(String::new(), |load| format!(
                     " (page load event at {})",
                     ms(load)
@@ -212,6 +225,10 @@ pub struct SlowGptLoad;
 impl Rule for SlowGptLoad {
     fn id(&self) -> &'static str {
         "slow-gpt-load"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {

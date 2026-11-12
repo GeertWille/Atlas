@@ -3,7 +3,9 @@ import type { AdSlot } from "./AdSlot";
 import type { Auction } from "./Auction";
 import type { BidderDiagnostics } from "./BidderDiagnostics";
 import type { Finding } from "./Finding";
+import type { PageView } from "./PageView";
 import type { PipelineStep } from "./PipelineStep";
+import type { ScanEnvironment } from "./ScanEnvironment";
 import type { ScanMetrics } from "./ScanMetrics";
 import type { ScanOptions } from "./ScanOptions";
 import type { ScanSummary } from "./ScanSummary";
@@ -21,4 +23,14 @@ overview: string | null,
  * `None` for scans stored before the bidder checks existed, and for
  * scans that ended before they ran.
  */
-bidderDiagnostics: BidderDiagnostics | null, };
+bidderDiagnostics: BidderDiagnostics | null, 
+/**
+ * The page views of the visit, in order. Empty for scans stored
+ * before multi-page visits existed: those have one implicit page.
+ */
+pages: Array<PageView>, 
+/**
+ * `None` for scans stored before it was recorded, and for scans that
+ * ended before the capture did.
+ */
+environment: ScanEnvironment | null, };

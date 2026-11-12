@@ -3,7 +3,8 @@ import type { BidStatus } from "./BidStatus";
 
 export type Bid = { bidder: string, status: BidStatus, cpm: number | null, currency: string | null, size: string | null, 
 /**
- * ms since navigation start when the request went out.
+ * ms since the start of the auction's page view when the request
+ * went out.
  */
 requestedAtMs: number | null, 
 /**

@@ -71,13 +71,19 @@ impl ConsoleLog {
         });
     }
 
-    pub(crate) fn into_lines(self, navigation_start: f64) -> Vec<ConsoleLine> {
+    /// `place` turns an epoch time into the page view showing then and the
+    /// time since that page view started.
+    pub(crate) fn into_lines(self, place: impl Fn(f64) -> (u32, f64)) -> Vec<ConsoleLine> {
         self.entries
             .into_iter()
-            .map(|entry| ConsoleLine {
-                t: entry.epoch_ms - navigation_start,
-                level: entry.level.to_string(),
-                text: entry.text,
+            .map(|entry| {
+                let (page, t) = place(entry.epoch_ms);
+                ConsoleLine {
+                    page,
+                    t,
+                    level: entry.level.to_string(),
+                    text: entry.text,
+                }
             })
             .collect()
     }
@@ -120,13 +126,13 @@ mod tests {
                 {"type": "number", "unserializableValue": "NaN", "description": "NaN"},
             ]
         }));
-        let lines = log.into_lines(1_000.0);
+        let lines = log.into_lines(|at| (2, at - 1_000.0));
         assert_eq!(
             lines[0].text,
             "slow bidder 42 false Object undefined null NaN"
         );
         assert_eq!(lines[0].level, "warning");
-        assert_eq!(lines[0].t, 250.0);
+        assert_eq!((lines[0].page, lines[0].t), (2, 250.0));
     }
 
     #[test]
@@ -141,7 +147,7 @@ mod tests {
             );
         }
         let levels: Vec<String> = log
-            .into_lines(0.0)
+            .into_lines(|at| (0, at))
             .into_iter()
             .map(|line| line.level)
             .collect();
@@ -164,7 +170,7 @@ mod tests {
             "timestamp": 5.0
         }}));
         assert_eq!(
-            log.into_lines(0.0)[0].text,
+            log.into_lines(|at| (0, at))[0].text,
             "Failed to load resource: net::ERR_FAILED (https://a.test/x.js)"
         );
     }
@@ -177,7 +183,7 @@ mod tests {
         for _ in 0..(MAX_LINES + 10) {
             log.record_api_call(&json!({"type": "log", "timestamp": 1.0, "args": [{"type": "string", "value": long}]}));
         }
-        let lines = log.into_lines(0.0);
+        let lines = log.into_lines(|at| (0, at));
         assert_eq!(lines.len(), MAX_LINES);
         assert_eq!(lines[0].text.chars().count(), MAX_LINE_CHARS + 1);
         assert!(lines[0].text.ends_with('…'));

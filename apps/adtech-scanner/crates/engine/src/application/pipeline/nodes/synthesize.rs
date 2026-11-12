@@ -16,7 +16,7 @@ pub async fn synthesize(run: &mut StepRun<'_>) -> NodeResult {
         None => synthesis::template_overview(
             &run.state.summary.hostname,
             run.state.summary.device,
-            &run.state.telemetry()?.metrics,
+            &run.state.telemetry()?.total.metrics,
             &findings,
             score,
         ),

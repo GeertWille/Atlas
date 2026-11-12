@@ -1,13 +1,17 @@
 //! The TCF consent state over time, and what each bidder was sent of it.
+//!
+//! A visit can span several page views, and a choice made on one holds on
+//! the next. So every time here is ms since the scan's navigation start, not
+//! since the start of a page view.
 
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    Auction, ConsentReport, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, TrackerEvent,
+    Auction, Capture, ConsentReport, DiagnosticArea, DiagnosticCheck, DiagnosticStatus,
     TrackerEventKind as Ev,
 };
 
-use super::{capitalized, check, codes};
+use super::{capitalized, check, codes, pages_seen};
 
 /// A wrapper that starts its auction from the CMP's callback runs in the same
 /// moment the tracker's own listener hears of the choice, and either may come
@@ -27,6 +31,7 @@ struct State<'a> {
 }
 
 pub struct ConsentTimeline<'a> {
+    capture: &'a Capture,
     cmp_present: bool,
     states: Vec<State<'a>>,
 }
@@ -34,19 +39,21 @@ pub struct ConsentTimeline<'a> {
 /// The consent signals of one bidder request.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RequestSignals {
-    /// ms since navigation start.
+    pub page: u32,
+    /// ms since the scan's navigation start.
     pub t: f64,
     pub gdpr_applies: Option<bool>,
     pub has_consent_string: Option<bool>,
 }
 
 impl<'a> ConsentTimeline<'a> {
-    pub fn from_events(events: &'a [TrackerEvent]) -> Self {
+    pub fn from_capture(capture: &'a Capture) -> Self {
         let mut timeline = Self {
+            capture,
             cmp_present: false,
             states: Vec::new(),
         };
-        for event in events {
+        for event in &capture.events {
             match &event.kind {
                 Ev::CmpDetected { .. } => timeline.cmp_present = true,
                 Ev::TcfState {
@@ -58,7 +65,7 @@ impl<'a> ConsentTimeline<'a> {
                 } => {
                     timeline.cmp_present = true;
                     timeline.states.push(State {
-                        t: event.t,
+                        t: capture.absolute_ms(event.page, event.t),
                         decided: matches!(
                             event_status.as_deref(),
                             Some("tcloaded" | "useractioncomplete")
@@ -72,6 +79,8 @@ impl<'a> ConsentTimeline<'a> {
                 _ => {}
             }
         }
+        // Events are grouped by page view; states are looked up by time.
+        timeline.states.sort_by(|a, b| a.t.total_cmp(&b.t));
         timeline
     }
 
@@ -101,9 +110,12 @@ impl<'a> ConsentTimeline<'a> {
 
     /// `auctions_with_consent` are the ids of the auctions in which Prebid
     /// passed a consent string: for those the choice was evidently known.
+    /// `started_at` gives an auction's start in ms since the scan's
+    /// navigation start.
     pub fn report(
         &self,
         auctions: &[Auction],
+        started_at: impl Fn(&Auction) -> f64,
         consent_management_configured: Option<bool>,
         auctions_with_consent: &BTreeSet<&str>,
     ) -> ConsentReport {
@@ -112,7 +124,7 @@ impl<'a> ConsentTimeline<'a> {
             auctions
                 .iter()
                 .filter(|auction| {
-                    !self.decided_by(auction.started_at_ms)
+                    !self.decided_by(started_at(auction))
                         && !auctions_with_consent.contains(auction.id.as_str())
                 })
                 .count() as u32
@@ -170,44 +182,48 @@ impl<'a> ConsentTimeline<'a> {
 
         let total = under_gdpr.len();
         let mut checks = Vec::new();
-        let mut problem = |code: &str, summary: String| {
-            checks.push(check(
+        let mut problem = |code: &str, summary: String, offending: &[&&RequestSignals]| {
+            let mut check = check(
                 DiagnosticArea::Consent,
                 DiagnosticStatus::Problem,
                 code,
                 summary,
-            ));
+            );
+            check.pages = pages_seen(self.capture, offending.iter().map(|request| request.page));
+            checks.push(check);
         };
-        let without_string = under_gdpr
+        let without_string: Vec<_> = under_gdpr
             .iter()
             .filter(|request| request.has_consent_string != Some(true))
-            .count();
-        if without_string > 0 {
+            .collect();
+        if !without_string.is_empty() {
             problem(
                 codes::CONSENT_NO_STRING,
                 format!(
                     "{} went out without a consent string although GDPR applies",
-                    capitalized(&share_of_requests(without_string, total))
+                    capitalized(&share_of_requests(without_string.len(), total))
                 ),
+                &without_string,
             );
         }
-        let undecided = under_gdpr
+        let undecided: Vec<_> = under_gdpr
             .iter()
             .filter(|request| {
                 request.has_consent_string != Some(true) && !self.decided_by(request.t)
             })
-            .count();
-        if undecided > 0 {
+            .collect();
+        if !undecided.is_empty() {
             problem(
                 codes::CONSENT_PENDING,
                 format!(
                     "{} went out before the user's consent choice was known",
-                    capitalized(&share_of_requests(undecided, total))
+                    capitalized(&share_of_requests(undecided.len(), total))
                 ),
+                &undecided,
             );
         }
         if let Some((vendor_id, name)) = vendor {
-            let denied = under_gdpr
+            let denied: Vec<_> = under_gdpr
                 .iter()
                 .filter(|request| {
                     self.state_at(request.t).is_some_and(|state| {
@@ -216,14 +232,15 @@ impl<'a> ConsentTimeline<'a> {
                             && !state.vendor_consents.contains(&vendor_id)
                     })
                 })
-                .count();
-            if denied > 0 {
+                .collect();
+            if !denied.is_empty() {
                 problem(
                     codes::CONSENT_VENDOR_DENIED,
                     format!(
                         "The user's consent does not cover {name} (IAB vendor {vendor_id}) on {}",
-                        share_of_requests(denied, total)
+                        share_of_requests(denied.len(), total)
                     ),
+                    &denied,
                 );
             }
         }
@@ -255,12 +272,21 @@ fn share_of_requests(part: usize, whole: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use adscan_model::AuctionAdUnit;
+    use adscan_model::{AuctionAdUnit, CapturedPage, PageReach, TrackerEvent};
 
     use super::*;
 
+    fn visit(events: &[TrackerEvent]) -> Capture {
+        Capture::single_page("https://pub.example/", events.to_vec())
+    }
+
+    fn started(auction: &Auction) -> f64 {
+        auction.started_at_ms
+    }
+
     fn tcf(t: f64, status: &str, gdpr: Option<bool>, vendors: &[u32]) -> TrackerEvent {
         TrackerEvent {
+            page: 0,
             t,
             kind: Ev::TcfState {
                 event_status: Some(status.into()),
@@ -278,6 +304,7 @@ mod tests {
 
     fn cmp(t: f64) -> TrackerEvent {
         TrackerEvent {
+            page: 0,
             t,
             kind: Ev::CmpDetected { api: "tcf".into() },
         }
@@ -285,6 +312,7 @@ mod tests {
 
     fn request(t: f64, gdpr: Option<bool>, string: Option<bool>) -> RequestSignals {
         RequestSignals {
+            page: 0,
             t,
             gdpr_applies: gdpr,
             has_consent_string: string,
@@ -293,6 +321,7 @@ mod tests {
 
     fn auction(started_at_ms: f64) -> Auction {
         Auction {
+            page: 0,
             id: format!("a-{started_at_ms}"),
             started_at_ms,
             ended_at_ms: None,
@@ -318,7 +347,8 @@ mod tests {
             tcf(300.0, "cmpuishown", Some(true), &[]),
             tcf(2_000.0, "useractioncomplete", Some(true), &[32, 52]),
         ];
-        let timeline = ConsentTimeline::from_events(&events);
+        let capture = visit(&events);
+        let timeline = ConsentTimeline::from_capture(&capture);
         let report = timeline.report(
             &[
                 auction(500.0),
@@ -326,6 +356,7 @@ mod tests {
                 auction(1_800.0),
                 auction(2_500.0),
             ],
+            started,
             Some(true),
             &BTreeSet::new(),
         );
@@ -347,11 +378,17 @@ mod tests {
     #[test]
     fn a_choice_that_is_never_made_leaves_every_auction_before_consent() {
         let events = [tcf(300.0, "cmpuishown", Some(true), &[])];
-        let timeline = ConsentTimeline::from_events(&events);
-        let report = timeline.report(&[auction(500.0)], None, &BTreeSet::new());
+        let capture = visit(&events);
+        let timeline = ConsentTimeline::from_capture(&capture);
+        let report = timeline.report(&[auction(500.0)], started, None, &BTreeSet::new());
         assert_eq!(report.auctions_before_consent, 1);
         // Prebid passed a consent string in this auction, so it knew the choice.
-        let with_string = timeline.report(&[auction(500.0)], None, &BTreeSet::from(["a-500"]));
+        let with_string = timeline.report(
+            &[auction(500.0)],
+            started,
+            None,
+            &BTreeSet::from(["a-500"]),
+        );
         assert_eq!(with_string.auctions_before_consent, 0);
         assert_eq!(report.resolved_at_ms, None);
         assert_eq!(report.consented_purposes, Vec::<u32>::new());
@@ -360,16 +397,23 @@ mod tests {
     #[test]
     fn nothing_is_counted_where_gdpr_does_not_apply_or_no_cmp_exists() {
         let outside = [tcf(100.0, "tcloaded", Some(false), &[])];
-        let report = ConsentTimeline::from_events(&outside).report(
+        let outside = visit(&outside);
+        let report = ConsentTimeline::from_capture(&outside).report(
             &[auction(50.0)],
+            started,
             Some(false),
             &BTreeSet::new(),
         );
         assert_eq!(report.auctions_before_consent, 0);
         assert_eq!(report.gdpr_applies, Some(false));
 
-        let report =
-            ConsentTimeline::from_events(&[]).report(&[auction(50.0)], None, &BTreeSet::new());
+        let no_cmp = visit(&[]);
+        let report = ConsentTimeline::from_capture(&no_cmp).report(
+            &[auction(50.0)],
+            started,
+            None,
+            &BTreeSet::new(),
+        );
         assert!(!report.cmp_present);
         assert_eq!(report.auctions_before_consent, 0);
         assert_eq!(report.gdpr_applies, None);
@@ -382,7 +426,8 @@ mod tests {
             tcf(1_000.0, "useractioncomplete", Some(true), &[52]),
             tcf(5_000.0, "useractioncomplete", Some(true), &[32, 52]),
         ];
-        let timeline = ConsentTimeline::from_events(&events);
+        let capture = visit(&events);
+        let timeline = ConsentTimeline::from_capture(&capture);
         use DiagnosticStatus::{NotChecked, Pass, Problem};
         /// Bid requests, the bidder's vendor, expected checks.
         type Case<'a> = (

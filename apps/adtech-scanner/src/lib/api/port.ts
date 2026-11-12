@@ -6,11 +6,15 @@ import type {
   ExportFormat,
   LogEntry,
   LogSearchHit,
+  ProxyProfileDraft,
+  ScanConfiguration,
+  ScanConfigurationDraft,
   ScanDetail,
   ScanEvent,
   ScanList,
   ScanListQuery,
   ScanOptions,
+  ScanProfileInfo,
   ScanSummary,
   Settings,
   SettingsPatch,
@@ -31,7 +35,11 @@ export interface ApiPort {
   detectBrowser(): Promise<BrowserInfo | null>;
   getDemoUrl(): Promise<string>;
   startScan(options: ScanOptions): Promise<ScanSummary>;
+  /** Starts a scan with the saved options of a configuration, and records the scan as its last run. */
+  runScanConfiguration(configurationId: string): Promise<ScanSummary>;
   cancelScan(scanId: string): Promise<void>;
+  /** Ends the recording of a manual visit and keeps what was captured. Does nothing outside the capture step. */
+  finishCapture(scanId: string): Promise<void>;
   listScans(query: ScanListQuery): Promise<ScanList>;
   getScan(scanId: string): Promise<ScanDetail>;
   deleteScan(scanId: string): Promise<void>;
@@ -40,6 +48,19 @@ export interface ApiPort {
   searchLogs(query: string, limit?: number): Promise<LogSearchHit[]>;
   getDashboardStats(): Promise<DashboardStats>;
   exportScan(scanId: string, format: ExportFormat, path?: string): Promise<string>;
+  getScanProfile(): Promise<ScanProfileInfo>;
+  /** Fails with `profileBusy` while a scan is using the profile. */
+  clearScanProfile(): Promise<ScanProfileInfo>;
+  /** Creates a proxy profile, or with `id` changes one. The password is set separately. */
+  saveProxyProfile(profile: ProxyProfileDraft): Promise<Settings>;
+  /** Refused while a saved scan configuration uses the profile. */
+  deleteProxyProfile(id: string): Promise<Settings>;
+  setProxyPassword(id: string, password: string): Promise<Settings>;
+  clearProxyPassword(id: string): Promise<Settings>;
+  listScanConfigurations(): Promise<ScanConfiguration[]>;
+  saveScanConfiguration(configuration: ScanConfigurationDraft): Promise<ScanConfiguration>;
+  /** Scans started from the configuration are kept. */
+  deleteScanConfiguration(id: string): Promise<void>;
   subscribeScanEvents(handler: (event: ScanEvent) => void): Promise<Unsubscribe>;
 
   /** Native save dialog. Resolves to `null` when the user cancels. */

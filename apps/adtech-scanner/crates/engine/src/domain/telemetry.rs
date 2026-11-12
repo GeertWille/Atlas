@@ -1,12 +1,21 @@
-//! Derives auctions, ad slots and metrics from the raw tracker events.
+//! Derives page views, auctions, ad slots and metrics from the raw tracker
+//! events.
+//!
+//! A visit is one or more page views. Every event carries the page view it
+//! belongs to and a time since that page view started. Derivation works on
+//! one timeline in absolute time (ms since the scan's navigation start), so
+//! an auction that outlives a route change stays one auction, and converts
+//! back to page-relative times at the end: a single-page scan reads exactly
+//! as it did before page views existed.
 
 use std::collections::BTreeSet;
 
 use adscan_model::{
-    AdSlot, Auction, AuctionAdUnit, Bid, BidStatus, Capture, ScanMetrics, SlotOutcome,
-    TrackerEventKind as Ev,
+    AdSlot, Auction, AuctionAdUnit, Bid, BidStatus, Capture, CapturedPage, PageMetrics, PageReach,
+    PageView, ScanMetrics, SlotOutcome, SlotRequest, TrackerEvent, TrackerEventKind as Ev,
 };
 
+/// Auctions, slots and metrics of one scope: one page view, or the whole scan.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Telemetry {
     pub auctions: Vec<Auction>,
@@ -14,14 +23,175 @@ pub struct Telemetry {
     pub metrics: ScanMetrics,
 }
 
-pub fn derive(capture: &Capture) -> Telemetry {
-    let auctions = derive_auctions(capture);
-    let slots = derive_slots(capture, &auctions);
-    let metrics = derive_metrics(capture, &auctions, &slots);
-    Telemetry {
-        auctions,
-        slots,
-        metrics,
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanTelemetry {
+    pub pages: Vec<PageView>,
+    /// One entry per page view: what started on it.
+    pub by_page: Vec<Telemetry>,
+    /// Everything, in page order. Counts are sums over the page views; load
+    /// and time-to-first figures are the entry page's.
+    pub total: Telemetry,
+}
+
+impl ScanTelemetry {
+    /// Index of the page view that loaded the document `page` lives in: a
+    /// route change stays in the document of the page view before it.
+    pub fn document_of(&self, page: u32) -> u32 {
+        document_of(&self.pages, page, |view| view.reached_by)
+    }
+
+    /// ms since the scan's navigation start of a time on `page`.
+    pub fn absolute_ms(&self, page: u32, at_ms: f64) -> f64 {
+        self.pages
+            .get(page as usize)
+            .map_or(at_ms, |view| view.started_at_ms + at_ms)
+    }
+}
+
+fn document_of<P>(pages: &[P], page: u32, reached_by: impl Fn(&P) -> PageReach) -> u32 {
+    let mut index = (page as usize).min(pages.len().saturating_sub(1));
+    while index > 0 && reached_by(&pages[index]) == PageReach::RouteChange {
+        index -= 1;
+    }
+    index as u32
+}
+
+/// One event with its time since the scan's navigation start.
+struct Timed<'a> {
+    at_ms: f64,
+    event: &'a TrackerEvent,
+}
+
+pub fn derive(capture: &Capture) -> ScanTelemetry {
+    let mut timeline: Vec<Timed> = capture
+        .events
+        .iter()
+        .map(|event| Timed {
+            at_ms: capture.absolute_ms(event.page, event.t),
+            event,
+        })
+        .collect();
+    timeline.sort_by(|a, b| a.at_ms.total_cmp(&b.at_ms));
+
+    let mut auctions = derive_auctions(&timeline);
+    let mut slots = derive_slots(&timeline, &capture.pages, &auctions);
+    for auction in &mut auctions {
+        rebase_auction(auction, page_start(&capture.pages, auction.page));
+    }
+    for slot in &mut slots {
+        rebase_slot(slot, page_start(&capture.pages, slot.page));
+    }
+    auctions.sort_by_key(|auction| auction.page);
+    slots.sort_by_key(|slot| slot.page);
+
+    let by_page: Vec<Telemetry> = (0u32..)
+        .zip(&capture.pages)
+        .map(|(index, page)| {
+            let auctions: Vec<Auction> = on_page(&auctions, index, |auction| auction.page);
+            let slots: Vec<AdSlot> = on_page(&slots, index, |slot| slot.page);
+            let events = capture.events.iter().filter(|event| event.page == index);
+            let metrics = derive_metrics(capture, events, page.load_ms, &auctions, &slots);
+            Telemetry {
+                auctions,
+                slots,
+                metrics,
+            }
+        })
+        .collect();
+
+    let mut metrics = derive_metrics(
+        capture,
+        capture.events.iter(),
+        capture.page_load_ms,
+        &auctions,
+        &slots,
+    );
+    let entry = by_page.first().map(|page| &page.metrics);
+    metrics.time_to_first_auction_ms = entry.and_then(|entry| entry.time_to_first_auction_ms);
+    metrics.time_to_first_ad_ms = entry.and_then(|entry| entry.time_to_first_ad_ms);
+
+    let pages = (0u32..)
+        .zip(&capture.pages)
+        .zip(&by_page)
+        .map(|((index, page), telemetry)| page_view(index, page, &telemetry.metrics))
+        .collect();
+    ScanTelemetry {
+        pages,
+        by_page,
+        total: Telemetry {
+            auctions,
+            slots,
+            metrics,
+        },
+    }
+}
+
+fn page_start(pages: &[CapturedPage], page: u32) -> f64 {
+    pages
+        .get(page as usize)
+        .map_or(0.0, |page| page.started_at_ms)
+}
+
+fn on_page<T: Clone>(items: &[T], page: u32, page_of: impl Fn(&T) -> u32) -> Vec<T> {
+    items
+        .iter()
+        .filter(|item| page_of(item) == page)
+        .cloned()
+        .collect()
+}
+
+fn page_view(index: u32, page: &CapturedPage, metrics: &ScanMetrics) -> PageView {
+    PageView {
+        index,
+        url: page.url.clone(),
+        title: page.title.clone(),
+        started_at_ms: page.started_at_ms,
+        dwell_ms: (page.ended_at_ms - page.started_at_ms).max(0.0),
+        reached_by: page.reached_by,
+        link: page.link.clone(),
+        load_ms: page.load_ms,
+        max_scroll_depth: page.max_scroll_depth,
+        metrics: PageMetrics {
+            auction_count: metrics.auction_count,
+            bid_request_count: metrics.bid_request_count,
+            bid_response_count: metrics.bid_response_count,
+            slot_count: metrics.slot_count,
+            empty_slot_count: metrics.empty_slot_count,
+            fill_rate: metrics.fill_rate,
+            time_to_first_auction_ms: metrics.time_to_first_auction_ms,
+            time_to_first_ad_ms: metrics.time_to_first_ad_ms,
+        },
+    }
+}
+
+fn rebase_auction(auction: &mut Auction, page_start: f64) {
+    auction.started_at_ms -= page_start;
+    if let Some(ended_at) = &mut auction.ended_at_ms {
+        *ended_at -= page_start;
+    }
+    let requested = auction
+        .ad_units
+        .iter_mut()
+        .flat_map(|unit| &mut unit.bids)
+        .filter_map(|bid| bid.requested_at_ms.as_mut());
+    for requested_at in requested {
+        *requested_at -= page_start;
+    }
+}
+
+fn rebase_slot(slot: &mut AdSlot, page_start: f64) {
+    let times = [
+        &mut slot.defined_at_ms,
+        &mut slot.requested_at_ms,
+        &mut slot.response_at_ms,
+        &mut slot.rendered_at_ms,
+        &mut slot.viewable_at_ms,
+    ];
+    for at in times.into_iter().flatten() {
+        *at -= page_start;
+    }
+    for request in &mut slot.requests {
+        request.at_ms -= page_start;
     }
 }
 
@@ -48,10 +218,11 @@ pub fn prebid_version(capture: &Capture) -> Option<String> {
 
 // -- auctions -----------------------------------------------------------------
 
-fn derive_auctions(capture: &Capture) -> Vec<Auction> {
+/// Times are absolute until [`derive`] rebases them.
+fn derive_auctions(timeline: &[Timed]) -> Vec<Auction> {
     let mut auctions: Vec<Auction> = Vec::new();
-    for event in &capture.events {
-        let t = event.t;
+    for Timed { at_ms, event } in timeline {
+        let t = *at_ms;
         match &event.kind {
             Ev::AuctionInit {
                 auction_id,
@@ -59,6 +230,7 @@ fn derive_auctions(capture: &Capture) -> Vec<Auction> {
                 ad_units,
             } => auctions.push(Auction {
                 id: auction_id.clone(),
+                page: event.page,
                 started_at_ms: t,
                 ended_at_ms: None,
                 duration_ms: None,
@@ -271,10 +443,12 @@ fn mark_rendered(auctions: &mut [Auction], code: &str, bidder: Option<&str>) {
 
 // -- slots --------------------------------------------------------------------
 
-fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
+/// Times are absolute until [`derive`] rebases them.
+fn derive_slots(timeline: &[Timed], pages: &[CapturedPage], auctions: &[Auction]) -> Vec<AdSlot> {
     let mut slots: Vec<AdSlot> = Vec::new();
-    for event in &capture.events {
-        let t = event.t;
+    for Timed { at_ms, event } in timeline {
+        let t = *at_ms;
+        let page = event.page;
         match &event.kind {
             Ev::SlotDefined {
                 element_id,
@@ -282,7 +456,7 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
                 sizes,
                 in_viewport,
             } => {
-                let slot = slot_entry(&mut slots, element_id);
+                let slot = slot_on_page(&mut slots, pages, page, element_id);
                 slot.ad_unit_path = ad_unit_path.clone();
                 slot.sizes = sizes.clone();
                 slot.in_initial_viewport = *in_viewport;
@@ -291,16 +465,23 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
             Ev::SlotRequested {
                 element_id,
                 prebid_targeting_keys,
+                prebid_ad_id,
             } => {
-                let slot = slot_entry(&mut slots, element_id);
+                let slot = slot_on_page(&mut slots, pages, page, element_id);
+                let had_prebid_targeting = !prebid_targeting_keys.is_empty();
                 if slot.requested_at_ms.is_none() {
                     slot.requested_at_ms = Some(t);
-                    slot.had_prebid_targeting = Some(!prebid_targeting_keys.is_empty());
+                    slot.had_prebid_targeting = Some(had_prebid_targeting);
                     slot.outcome = SlotOutcome::Pending;
                 }
+                slot.requests.push(SlotRequest {
+                    at_ms: t,
+                    had_prebid_targeting,
+                    prebid_ad_id: prebid_ad_id.clone().filter(|id| !id.is_empty()),
+                });
             }
             Ev::SlotResponseReceived { element_id } => {
-                slot_entry(&mut slots, element_id)
+                answered_slot(&mut slots, pages, page, element_id)
                     .response_at_ms
                     .get_or_insert(t);
             }
@@ -311,7 +492,7 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
                 advertiser_id,
                 line_item_id,
             } => {
-                let slot = slot_entry(&mut slots, element_id);
+                let slot = answered_slot(&mut slots, pages, page, element_id);
                 if *is_empty {
                     if slot.outcome != SlotOutcome::Filled {
                         slot.outcome = SlotOutcome::Empty;
@@ -325,7 +506,7 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
                 }
             }
             Ev::ImpressionViewable { element_id } => {
-                slot_entry(&mut slots, element_id)
+                answered_slot(&mut slots, pages, page, element_id)
                     .viewable_at_ms
                     .get_or_insert(t);
             }
@@ -333,19 +514,40 @@ fn derive_slots(capture: &Capture, auctions: &[Auction]) -> Vec<AdSlot> {
         }
     }
     for slot in &mut slots {
-        slot.requested_before_auction_end = requested_before_auction_end(slot, auctions);
+        slot.requested_before_auction_end = requested_before_auction_end(slot, auctions, pages);
     }
     slots
 }
 
-fn slot_entry<'a>(slots: &'a mut Vec<AdSlot>, element_id: &str) -> &'a mut AdSlot {
-    let index = match slots.iter().position(|slot| slot.element_id == element_id) {
+fn position(slots: &[AdSlot], page: u32, element_id: &str) -> Option<usize> {
+    slots
+        .iter()
+        .position(|slot| slot.page == page && slot.element_id == element_id)
+}
+
+/// The slot of this container on this page view. The same container on two
+/// page views is two slots: each page view is its own chance to sell it.
+/// After a route change the page did not define the slot again, so what is
+/// known about it is carried over from the page view before.
+fn slot_on_page<'a>(
+    slots: &'a mut Vec<AdSlot>,
+    pages: &[CapturedPage],
+    page: u32,
+    element_id: &str,
+) -> &'a mut AdSlot {
+    let index = match position(slots, page, element_id) {
         Some(index) => index,
         None => {
+            let earlier = earlier_in_document(slots, pages, page, element_id).map(|index| {
+                let known = &slots[index];
+                (known.ad_unit_path.clone(), known.sizes.clone())
+            });
+            let (ad_unit_path, sizes) = earlier.unwrap_or_default();
             slots.push(AdSlot {
+                page,
                 element_id: element_id.to_string(),
-                ad_unit_path: None,
-                sizes: Vec::new(),
+                ad_unit_path,
+                sizes,
                 outcome: SlotOutcome::NeverRequested,
                 rendered_size: None,
                 defined_at_ms: None,
@@ -358,6 +560,7 @@ fn slot_entry<'a>(slots: &'a mut Vec<AdSlot>, element_id: &str) -> &'a mut AdSlo
                 requested_before_auction_end: None,
                 advertiser_id: None,
                 line_item_id: None,
+                requests: Vec::new(),
             });
             slots.len() - 1
         }
@@ -365,13 +568,51 @@ fn slot_entry<'a>(slots: &'a mut Vec<AdSlot>, element_id: &str) -> &'a mut AdSlo
     &mut slots[index]
 }
 
+/// The slot an answer (response, render, viewability) belongs to. An answer
+/// that arrives just after a route change answers the request made on the
+/// page view before it.
+fn answered_slot<'a>(
+    slots: &'a mut Vec<AdSlot>,
+    pages: &[CapturedPage],
+    page: u32,
+    element_id: &str,
+) -> &'a mut AdSlot {
+    if position(slots, page, element_id).is_none()
+        && let Some(index) = earlier_in_document(slots, pages, page, element_id)
+    {
+        return &mut slots[index];
+    }
+    slot_on_page(slots, pages, page, element_id)
+}
+
+/// The same container on the nearest earlier page view of the same document.
+fn earlier_in_document(
+    slots: &[AdSlot],
+    pages: &[CapturedPage],
+    page: u32,
+    element_id: &str,
+) -> Option<usize> {
+    let document = document_of(pages, page, |view| view.reached_by);
+    (document..page)
+        .rev()
+        .find_map(|earlier| position(slots, earlier, element_id))
+}
+
 /// `None` when the slot was never requested or no Prebid auction covers it.
 /// `Some(true)` when the ad request left while its auction was still running,
 /// or before the first auction for it had even started.
-fn requested_before_auction_end(slot: &AdSlot, auctions: &[Auction]) -> Option<bool> {
+/// Only auctions of the slot's own document count: a new document starts
+/// with no bids, whatever was auctioned before the navigation.
+fn requested_before_auction_end(
+    slot: &AdSlot,
+    auctions: &[Auction],
+    pages: &[CapturedPage],
+) -> Option<bool> {
     let requested_at = slot.requested_at_ms?;
+    let document = |page| document_of(pages, page, |view: &CapturedPage| view.reached_by);
     let mut covering = auctions
         .iter()
+        .filter(|auction| document(auction.page) == document(slot.page))
         .filter(|auction| auction_covers(auction, slot))
         .peekable();
     covering.peek()?;
@@ -385,7 +626,16 @@ fn requested_before_auction_end(slot: &AdSlot, auctions: &[Auction]) -> Option<b
 
 // -- metrics ------------------------------------------------------------------
 
-fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> ScanMetrics {
+/// `events` and `page_load_ms` are those of the scope the auctions and slots
+/// come from. Script figures are the scan's in every scope: a script is
+/// loaded once however many page views use it.
+fn derive_metrics<'a>(
+    capture: &Capture,
+    events: impl Iterator<Item = &'a TrackerEvent> + Clone,
+    page_load_ms: Option<f64>,
+    auctions: &[Auction],
+    slots: &[AdSlot],
+) -> ScanMetrics {
     let ad_units = || auctions.iter().flat_map(|auction| &auction.ad_units);
     let bids = || ad_units().flat_map(|unit| &unit.bids);
     let count_bids =
@@ -406,9 +656,8 @@ fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> 
         .count();
 
     let first_event_at = |matches: fn(&Ev) -> bool| {
-        capture
-            .events
-            .iter()
+        events
+            .clone()
             .find(|event| matches(&event.kind))
             .map(|event| event.t)
     };
@@ -422,13 +671,13 @@ fn derive_metrics(capture: &Capture, auctions: &[Auction], slots: &[AdSlot]) -> 
         .flatten()
         .min_by(f64::total_cmp);
 
-    let configured_timeout = capture.events.iter().find_map(|event| match &event.kind {
+    let configured_timeout = events.clone().find_map(|event| match &event.kind {
         Ev::PrebidConfig { bidder_timeout, .. } => *bidder_timeout,
         _ => None,
     });
 
     ScanMetrics {
-        page_load_ms: capture.page_load_ms,
+        page_load_ms,
         auction_count: auctions.len() as u32,
         ad_unit_count: ad_units()
             .map(|unit| &unit.code)

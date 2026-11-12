@@ -80,6 +80,7 @@ fn describe_one(
         vendor: None,
         loaded_at_ms: script.loaded_at_ms,
         first_party,
+        pages: script.pages.clone(),
     };
     let ambiguous_hints = match verdict {
         Verdict::Decided(classification) => {
@@ -221,6 +222,8 @@ mod tests {
 
     fn capture_with(scripts: Vec<CapturedScript>) -> Capture {
         Capture {
+            environment: adscan_model::CaptureEnvironment::default(),
+            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
             final_url: "https://www.news.example.co.uk/article".into(),
             page_title: None,
             device: DeviceProfile::Desktop,
@@ -244,6 +247,7 @@ mod tests {
 
     fn script(url: &str, inline: bool, body: &str) -> CapturedScript {
         CapturedScript {
+            pages: Vec::new(),
             url: url.into(),
             inline,
             body: body.into(),

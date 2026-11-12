@@ -55,7 +55,7 @@ impl Pipeline {
     /// persisted, unless storage itself failed, in which case it still carries
     /// the final status for the caller to write.
     pub async fn run(&self, job: ScanJob) -> ScanSummary {
-        let budget = match Budget::new(job.settings.budget_usd) {
+        let budget = match Budget::new(job.scan.budget_usd) {
             Ok(budget) => budget,
             Err(error) => {
                 return self

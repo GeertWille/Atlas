@@ -3,7 +3,12 @@ import type { AuctionAdUnit } from "./AuctionAdUnit";
 
 export type Auction = { id: string, 
 /**
- * ms since navigation start.
+ * Page view the auction started on.
+ */
+page: number, 
+/**
+ * ms since the start of that page view. An auction that outlives a
+ * route change keeps counting from it.
  */
 startedAtMs: number, endedAtMs: number | null, durationMs: number | null, 
 /**

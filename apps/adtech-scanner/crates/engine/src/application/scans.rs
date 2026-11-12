@@ -5,19 +5,21 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adscan_model::{
-    ApiProvider, BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit, ScanDetail,
-    ScanEvent, ScanList, ScanListQuery, ScanOptions, ScanStatus, ScanSummary, SeverityCounts,
-    StepStatus,
+    ApiProvider, BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit,
+    ScanConfiguration, ScanConfigurationRef, ScanDetail, ScanEvent, ScanList, ScanListQuery,
+    ScanOptions, ScanProfileInfo, ScanStatus, ScanSummary, SeverityCounts, StepStatus,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::AppError;
 use super::export;
-use super::pipeline::state::ScanJob;
+use super::pipeline::state::{FinishSignal, ScanJob};
 use super::pipeline::{Pipeline, PipelineDeps};
+use super::ports::ScanConfigurationRepository;
 use super::settings::SettingsService;
-use crate::domain::scan::ValidatedScan;
+use crate::domain::DomainError;
+use crate::domain::scan::{ValidatedScan, seed_from_id};
 
 /// Each scan drives its own browser; more than two at once starve each other.
 pub const MAX_CONCURRENT_SCANS: usize = 2;
@@ -28,6 +30,7 @@ const INTERRUPTED_MESSAGE: &str = "The app was closed while this scan was runnin
 
 struct ActiveScan {
     cancel: CancellationToken,
+    finish: FinishSignal,
     /// Cancelled once the scan's final status is written.
     finished: CancellationToken,
 }
@@ -37,17 +40,27 @@ type ActiveScans = Arc<Mutex<HashMap<String, ActiveScan>>>;
 pub struct ScanService {
     deps: PipelineDeps,
     settings: Arc<SettingsService>,
+    configurations: Arc<dyn ScanConfigurationRepository>,
     active: ActiveScans,
     capacity: Arc<Semaphore>,
+    /// One browser at a time in the persistent scan profile: Chrome refuses
+    /// to share a profile directory, so a second scan waits its turn.
+    scan_profile: Arc<Semaphore>,
 }
 
 impl ScanService {
-    pub fn new(deps: PipelineDeps, settings: Arc<SettingsService>) -> Self {
+    pub fn new(
+        deps: PipelineDeps,
+        settings: Arc<SettingsService>,
+        configurations: Arc<dyn ScanConfigurationRepository>,
+    ) -> Self {
         Self {
             deps,
             settings,
+            configurations,
             active: ActiveScans::default(),
             capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_SCANS)),
+            scan_profile: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -67,8 +80,44 @@ impl ScanService {
     }
 
     pub async fn start(&self, options: ScanOptions) -> Result<ScanSummary, AppError> {
-        let scan = ValidatedScan::new(options)?;
+        self.launch(options, None).await
+    }
+
+    /// Runs a saved configuration: its stored options, settled against the
+    /// settings as they are now.
+    pub async fn start_configuration(
+        &self,
+        configuration_id: &str,
+    ) -> Result<ScanSummary, AppError> {
+        let configuration = self
+            .configurations
+            .get(configuration_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Scan configuration {configuration_id}")))?;
+        let options = configuration.options.clone();
+        self.launch(options, Some(configuration)).await
+    }
+
+    async fn launch(
+        &self,
+        options: ScanOptions,
+        configuration: Option<ScanConfiguration>,
+    ) -> Result<ScanSummary, AppError> {
         let settings = self.settings.get().await?;
+        let id = self.deps.ids.new_id();
+        let scan = ValidatedScan::new(options, &settings, seed_from_id(&id)).map_err(|error| {
+            match (&error, &configuration) {
+                (DomainError::UnknownProxy, Some(configuration)) => AppError::InvalidInput(format!(
+                    "The proxy of the scan configuration \"{}\" no longer exists. Edit the configuration and pick another proxy.",
+                    configuration.name
+                )),
+                _ => error.into(),
+            }
+        })?;
+        let proxy_password = match &scan.proxy.profile_id {
+            Some(profile_id) => self.settings.proxy_password(profile_id).await,
+            None => None,
+        };
         let ai_enabled = scan.options.ai_enabled;
         let api_key = if ai_enabled {
             self.settings.api_key(ApiProvider::Anthropic).await
@@ -83,7 +132,7 @@ impl ScanService {
         };
         let permit = Arc::clone(&self.capacity).try_acquire_owned().ok();
         let summary = ScanSummary {
-            id: self.deps.ids.new_id(),
+            id,
             url: scan.url.as_str().to_string(),
             hostname: scan.url.hostname().to_string(),
             device: scan.options.device,
@@ -101,17 +150,28 @@ impl ScanService {
             prebid_version: None,
             ai_used: false,
             error: None,
+            configuration: configuration.map(|configuration| ScanConfigurationRef {
+                id: configuration.id,
+                name: configuration.name,
+            }),
         };
         self.deps.scans.create(&summary, &scan.options).await?;
+        if let Some(configuration) = &summary.configuration {
+            self.configurations
+                .record_run(&configuration.id, &summary.id, summary.started_at)
+                .await?;
+        }
 
         // Registered before the first event so a cancel sent in response to
         // that event already finds the scan.
         let cancel = CancellationToken::new();
+        let finish = FinishSignal::default();
         let finished = CancellationToken::new();
         self.lock_active().insert(
             summary.id.clone(),
             ActiveScan {
                 cancel: cancel.clone(),
+                finish: finish.clone(),
                 finished: finished.clone(),
             },
         );
@@ -124,7 +184,10 @@ impl ScanService {
             settings,
             api_key,
             jev_key,
+            proxy_password,
             cancel,
+            finish,
+            scan_profile: Arc::clone(&self.scan_profile),
         };
         tokio::spawn(supervise(
             self.deps.clone(),
@@ -144,6 +207,31 @@ impl ScanService {
         }
         // Cancelling a scan that already ended is a no-op, not an error.
         self.summary(scan_id).await.map(drop)
+    }
+
+    /// Ends a manual visit: the capture stops recording and the scan goes on
+    /// with what it has. Does nothing while the scan is in any other step.
+    pub async fn finish_capture(&self, scan_id: &str) -> Result<(), AppError> {
+        if let Some(active) = self.lock_active().get(scan_id) {
+            active.finish.request();
+            return Ok(());
+        }
+        self.summary(scan_id).await.map(drop)
+    }
+
+    pub async fn scan_profile(&self) -> ScanProfileInfo {
+        self.deps.capture.scan_profile_info().await
+    }
+
+    pub async fn clear_scan_profile(&self) -> Result<ScanProfileInfo, AppError> {
+        // Held while clearing, so no scan can start a browser in the profile
+        // halfway through.
+        let _turn = self
+            .scan_profile
+            .try_acquire()
+            .map_err(|_| AppError::ProfileBusy)?;
+        self.deps.capture.clear_scan_profile().await?;
+        Ok(self.deps.capture.scan_profile_info().await)
     }
 
     pub async fn list(&self, query: ScanListQuery) -> Result<ScanList, AppError> {

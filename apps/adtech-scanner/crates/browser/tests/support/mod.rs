@@ -10,7 +10,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use adscan_browser::{BrowserError, CaptureHooks, capture};
-use adscan_model::{Capture, CaptureRequest, DeviceProfile, TrackerEvent, TrackerEventKind};
+use adscan_model::{
+    Capture, CaptureProxy, CaptureRequest, DeviceProfile, TrackerEvent, TrackerEventKind,
+    VisitorBehavior,
+};
 use axum::Router;
 use axum::extract::Path;
 use axum::http::{StatusCode, header};
@@ -36,9 +39,13 @@ pub fn request(url: &str, device: DeviceProfile) -> CaptureRequest {
         url: url.to_string(),
         device,
         observe_seconds: 3,
-        auto_scroll: false,
+        visitor: VisitorBehavior::None,
+        extra_pages: 0,
+        seed: 1,
         accept_consent: false,
         headless: true,
+        persistent_profile: false,
+        proxy: CaptureProxy::System,
         chrome_path: chrome_path(),
     }
 }

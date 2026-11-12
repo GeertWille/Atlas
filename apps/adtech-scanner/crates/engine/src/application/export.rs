@@ -357,6 +357,7 @@ mod tests {
 
     fn script(classifier_model: Option<&str>, ad_probability: Option<f64>) -> ScriptRecord {
         ScriptRecord {
+            pages: Vec::new(),
             id: "s1".into(),
             url: "https://pub.example/js/lazy.js".into(),
             hostname: "pub.example".into(),

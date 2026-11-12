@@ -10,7 +10,7 @@ use crate::domain::guide::{publisher_ranges, telemetry_literals};
 
 pub async fn beautify_scripts(run: &mut StepRun<'_>) -> NodeResult {
     let selection = analysis_selection(run.state);
-    let placements = telemetry_literals(run.state.telemetry()?);
+    let placements = telemetry_literals(&run.state.telemetry()?.total);
     let mut sources = Vec::with_capacity(selection.len());
     let mut total_lines = 0;
     let mut reflowed = 0;

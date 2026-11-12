@@ -22,7 +22,7 @@ use self::ads_txt::{AdsTxt, AdsTxtOutcome, Record, Relationship};
 use self::consent::{ConsentTimeline, RequestSignals};
 use self::params::{BidConfig, check_params, scalar_text};
 use self::sellers_json::{SellersOutcome, SiteIdentity};
-use super::telemetry::Telemetry;
+use super::telemetry::{ScanTelemetry, Telemetry};
 
 /// Stable identifiers of the check outcomes.
 pub mod codes {
@@ -91,6 +91,15 @@ pub struct SellersLookup {
     pub seller_ids: Vec<String>,
 }
 
+/// The page views something was seen on, for a check: ascending, each once.
+/// Empty for a visit of one page view, where nothing is specific to a page.
+pub(crate) fn pages_seen(capture: &Capture, pages: impl Iterator<Item = u32>) -> Vec<u32> {
+    if capture.pages.len() < 2 {
+        return Vec::new();
+    }
+    pages.collect::<BTreeSet<u32>>().into_iter().collect()
+}
+
 pub(crate) fn check(
     area: DiagnosticArea,
     status: DiagnosticStatus,
@@ -104,6 +113,7 @@ pub(crate) fn check(
         summary: summary.into(),
         excerpt: None,
         ad_units: Vec::new(),
+        pages: Vec::new(),
     }
 }
 
@@ -220,7 +230,8 @@ fn bidder_facts(capture: &Capture) -> Vec<BidderFacts<'_>> {
             } => {
                 let bidder = entry(&mut facts, bidder);
                 bidder.requests.push(RequestSignals {
-                    t: event.t,
+                    page: event.page,
+                    t: capture.absolute_ms(event.page, event.t),
                     gdpr_applies: *gdpr_applies,
                     has_consent_string: *has_consent_string,
                 });
@@ -290,8 +301,12 @@ pub fn sellers_lookups(capture: &Capture, file: &AdsTxt) -> Vec<SellersLookup> {
         .collect()
 }
 
-pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> BidderDiagnostics {
-    let timeline = ConsentTimeline::from_events(&capture.events);
+pub fn diagnose(
+    capture: &Capture,
+    telemetry: &ScanTelemetry,
+    files: &SiteFiles,
+) -> BidderDiagnostics {
+    let timeline = ConsentTimeline::from_capture(capture);
     let prebid_config = capture.events.iter().find_map(|event| match &event.kind {
         Ev::PrebidConfig {
             has_consent_management,
@@ -346,7 +361,7 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
                 DiagnosticStatus::Pass => 2,
                 DiagnosticStatus::NotChecked => 3,
             });
-            let (requests, bids) = bid_counts(telemetry, bidder.name);
+            let (requests, bids) = bid_counts(&telemetry.total, bidder.name);
             BidderDiagnosis {
                 bidder: bidder.name.to_string(),
                 requests,
@@ -360,7 +375,8 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
         ads_txt: ads_txt_report(files),
         sellers_json_checked: files.sellers.is_some(),
         consent: timeline.report(
-            &telemetry.auctions,
+            &telemetry.total.auctions,
+            |auction| telemetry.absolute_ms(auction.page, auction.started_at_ms),
             prebid_config.map(|(configured, _)| configured),
             &auctions_with_consent,
         ),
@@ -545,7 +561,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
             format!("{count} of {total} bid requests")
         }
     };
-    let mut problem = |code: &str, summary: String, quote: Option<&str>| {
+    let mut problem = |code: &str, summary: String, quote: Option<&str>, pages: Vec<u32>| {
         let mut check = check(
             DiagnosticArea::Response,
             DiagnosticStatus::Problem,
@@ -553,7 +569,17 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
             summary,
         );
         check.excerpt = quote.map(excerpt);
+        check.pages = pages;
         checks.push(check);
+    };
+    let pages_where = |matches: &dyn Fn(&ObservedBidResponse) -> bool| {
+        pages_seen(
+            capture,
+            responses
+                .iter()
+                .filter(|response| matches(response))
+                .map(|response| response.page),
+        )
     };
 
     let failed: Vec<_> = responses
@@ -569,6 +595,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(failed.len())
             ),
             first.reason.as_deref(),
+            pages_where(&|response| response.status.is_none()),
         );
     }
     let mut by_error_status: BTreeMap<u16, usize> = BTreeMap::new();
@@ -589,6 +616,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(count)
             ),
             quote,
+            pages_where(&|response| response.status == Some(status)),
         );
     }
     let mut reasons: Vec<(&str, usize)> = Vec::new();
@@ -609,10 +637,14 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 of_responses(*count)
             ),
             Some(reason),
+            pages_where(&|response| {
+                response.status.is_some_and(|status| status < 400)
+                    && response.reason.as_deref() == Some(*reason)
+            }),
         );
     }
 
-    let prebid_errors: Vec<&str> = capture
+    let prebid_errors: Vec<(u32, &str)> = capture
         .events
         .iter()
         .filter_map(|event| match &event.kind {
@@ -620,11 +652,13 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 bidder: name,
                 message,
                 ..
-            } if name == bidder.name => Some(message.as_deref().unwrap_or("no message")),
+            } if name == bidder.name => {
+                Some((event.page, message.as_deref().unwrap_or("no message")))
+            }
             _ => None,
         })
         .collect();
-    if let Some(first) = prebid_errors.first() {
+    if let Some((_, first)) = prebid_errors.first() {
         problem(
             codes::RESPONSE_PREBID_ERROR,
             format!(
@@ -635,6 +669,7 @@ fn response_checks(capture: &Capture, bidder: &BidderFacts) -> Vec<DiagnosticChe
                 }
             ),
             Some(first),
+            pages_seen(capture, prebid_errors.iter().map(|(page, _)| *page)),
         );
     }
 

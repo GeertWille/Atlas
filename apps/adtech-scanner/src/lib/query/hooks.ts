@@ -2,6 +2,8 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 import type {
   ApiProvider,
   ExportFormat,
+  ProxyProfileDraft,
+  ScanConfigurationDraft,
   ScanListQuery,
   ScanOptions,
   ScanSummary,
@@ -133,15 +135,93 @@ export function useLogSearch(query: string) {
   });
 }
 
+/** What to scan: options from the composer, or a saved configuration by id. */
+export type ScanStart = { options: ScanOptions } | { configurationId: string };
+
 export function useStartScan() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (options: ScanOptions) => api.startScan(options),
-    onSuccess: () => {
+    mutationFn: (start: ScanStart) =>
+      "options" in start ? api.startScan(start.options) : api.runScanConfiguration(start.configurationId),
+    onSuccess: (_summary, start) => {
       void client.invalidateQueries({ queryKey: queryKeys.scanLists });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
+      void client.invalidateQueries({ queryKey: queryKeys.scanProfile });
+      // A run moves the configuration's "last run".
+      if ("configurationId" in start) void client.invalidateQueries({ queryKey: queryKeys.configurations });
     },
   });
+}
+
+export function useFinishCapture() {
+  return useMutation({ mutationFn: (scanId: string) => api.finishCapture(scanId) });
+}
+
+export function useScanProfile() {
+  return useQuery({ queryKey: queryKeys.scanProfile, queryFn: api.getScanProfile });
+}
+
+export function useClearScanProfile() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.clearScanProfile,
+    onSuccess: (profile) => client.setQueryData(queryKeys.scanProfile, profile),
+    // A refusal means a scan is using the profile: show that state.
+    onError: () => client.invalidateQueries({ queryKey: queryKeys.scanProfile }),
+  });
+}
+
+/** Proxy profiles are part of the settings; every change answers with the settings as they are now. */
+function useSettingsCommand<T>(command: (input: T) => Promise<Settings>) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: command,
+    onSuccess: (settings) => client.setQueryData(queryKeys.settings, settings),
+  });
+}
+
+export function useSaveProxyProfile() {
+  return useSettingsCommand((profile: ProxyProfileDraft) => api.saveProxyProfile(profile));
+}
+
+export function useDeleteProxyProfile() {
+  return useSettingsCommand((id: string) => api.deleteProxyProfile(id));
+}
+
+export function useSetProxyPassword() {
+  return useSettingsCommand(({ id, password }: { id: string; password: string }) =>
+    api.setProxyPassword(id, password),
+  );
+}
+
+export function useClearProxyPassword() {
+  return useSettingsCommand((id: string) => api.clearProxyPassword(id));
+}
+
+export function useScanConfigurations() {
+  return useQuery({ queryKey: queryKeys.configurations, queryFn: api.listScanConfigurations });
+}
+
+export function useSaveScanConfiguration() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (configuration: ScanConfigurationDraft) => api.saveScanConfiguration(configuration),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.configurations }),
+  });
+}
+
+export function useDeleteScanConfiguration() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.deleteScanConfiguration(id),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.configurations }),
+  });
+}
+
+/** The newest scan started from a configuration, kept current by the scan events like every scan list. */
+export function useLastConfigurationScan(configurationId: string) {
+  const list = useScanList({ configurationId, limit: 1 });
+  return list.data?.items[0];
 }
 
 export function useCancelScan() {
@@ -158,6 +238,7 @@ export function useDeleteScan() {
       void client.invalidateQueries({ queryKey: queryKeys.scanLists });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
       void client.invalidateQueries({ queryKey: queryKeys.logSearches });
+      void client.invalidateQueries({ queryKey: queryKeys.configurations });
     },
   });
 }
@@ -171,6 +252,7 @@ export function useDeleteAllScans() {
       void client.invalidateQueries({ queryKey: queryKeys.scans });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
       void client.invalidateQueries({ queryKey: queryKeys.logSearches });
+      void client.invalidateQueries({ queryKey: queryKeys.configurations });
     },
   });
 }

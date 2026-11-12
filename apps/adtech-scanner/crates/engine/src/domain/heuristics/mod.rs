@@ -8,16 +8,18 @@ mod delivery;
 mod lazy;
 mod setup;
 mod timing;
+mod visit;
 
 use std::collections::BTreeMap;
 
 use adscan_model::{
     AdSlot, Auction, Bid, BidStatus, BidderDiagnostics, Capture, DeviceProfile, FindingCategory,
-    FindingSource, ScriptRecord, Severity, TrackerEventKind as Ev,
+    FindingSource, PageReach, PageView, ScanEnvironment, ScriptRecord, Severity, TrackerEvent,
+    TrackerEventKind as Ev,
 };
 
-use super::finding::{FindingDraft, metric};
-use super::telemetry::{Telemetry, auction_covers};
+use super::finding::{FindingDraft, metric, timeline};
+use super::telemetry::{ScanTelemetry, Telemetry, auction_covers};
 
 /// Share of ad revenue assumed to come from header bidding when a rule
 /// estimates the impact of slots that go to the ad server without bids.
@@ -25,8 +27,21 @@ use super::telemetry::{Telemetry, auction_covers};
 const HEADER_BIDDING_REVENUE_SHARE_PCT: f64 = 30.0;
 const HEADER_BIDDING_SHARE_ASSUMPTION: &str = "assumes header bidding brings in about 30% of ad revenue, a planning figure that was not measured";
 
+/// What one evaluation of a rule looks at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuleScope {
+    /// One page view at a time: its events, auctions and slots. The rule
+    /// runs once per page view and equal findings are merged.
+    Page,
+    /// The whole visit at once.
+    Scan,
+}
+
 pub trait Rule: Send + Sync {
     fn id(&self) -> &'static str;
+    fn scope(&self) -> RuleScope {
+        RuleScope::Scan
+    }
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft>;
 }
 
@@ -59,6 +74,12 @@ pub fn all_rules() -> Vec<Box<dyn Rule>> {
         Box::new(setup::OutdatedPrebid),
         Box::new(setup::ConsentNotWired),
         Box::new(setup::ConsentTimeout),
+        Box::new(visit::LaterPageViewWithoutBids),
+        Box::new(visit::SpaSlotsNotReset),
+        Box::new(visit::RefreshWithStaleBids),
+        Box::new(visit::RefreshWithoutAuction),
+        Box::new(visit::ConsentAskedAgain),
+        Box::new(visit::ScanIdentifiableAsAutomated),
     ]
 }
 
@@ -67,24 +88,153 @@ pub struct RuleHit {
     pub finding: FindingDraft,
 }
 
-pub fn evaluate(ctx: &RuleContext) -> Vec<RuleHit> {
-    all_rules()
-        .iter()
-        .flat_map(|rule| {
-            let id = rule.id();
-            rule.evaluate(ctx)
+/// Everything the rules may look at.
+pub struct RuleInput<'a> {
+    pub capture: &'a Capture,
+    pub telemetry: &'a ScanTelemetry,
+    /// `None` when the bidder checks did not run.
+    pub diagnostics: Option<&'a BidderDiagnostics>,
+    pub scripts: &'a [ScriptRecord],
+    /// `None` when the visit's environment was not recorded.
+    pub environment: Option<&'a ScanEnvironment>,
+}
+
+pub fn evaluate(input: &RuleInput) -> Vec<RuleHit> {
+    let all_events: Vec<&TrackerEvent> = input.capture.events.iter().collect();
+    let events_by_page: Vec<Vec<&TrackerEvent>> = (0u32..)
+        .zip(&input.telemetry.pages)
+        .map(|(index, _)| {
+            all_events
+                .iter()
+                .copied()
+                .filter(|event| event.page == index)
+                .collect()
+        })
+        .collect();
+    let scan_ctx = RuleContext {
+        capture: input.capture,
+        telemetry: &input.telemetry.total,
+        events: &all_events,
+        page: None,
+        scan: input.telemetry,
+        diagnostics: input.diagnostics,
+        scripts: input.scripts,
+        environment: input.environment,
+    };
+    let page_count = input.telemetry.pages.len();
+    let mut hits = Vec::new();
+    for rule in all_rules() {
+        let findings = match rule.scope() {
+            RuleScope::Scan => rule.evaluate(&scan_ctx),
+            RuleScope::Page => {
+                let per_page = (0..page_count)
+                    .map(|index| {
+                        let ctx = RuleContext {
+                            telemetry: &input.telemetry.by_page[index],
+                            events: &events_by_page[index],
+                            page: Some(&input.telemetry.pages[index]),
+                            ..scan_ctx
+                        };
+                        rule.evaluate(&ctx)
+                    })
+                    .collect();
+                merge_page_findings(per_page, &input.telemetry.pages)
+            }
+        };
+        let id = rule.id();
+        hits.extend(
+            findings
                 .into_iter()
-                .map(move |finding| RuleHit { rule: id, finding })
+                .map(|finding| RuleHit { rule: id, finding }),
+        );
+    }
+    hits
+}
+
+/// The same problem on several page views is one finding. Two findings of
+/// one rule are the same problem when they concern the same bidders and come
+/// from different page views; a rule that reports several things about one
+/// page view keeps them apart. The text is that of the page view where it
+/// was most severe, the earliest on a tie.
+fn merge_page_findings(per_page: Vec<Vec<FindingDraft>>, pages: &[PageView]) -> Vec<FindingDraft> {
+    struct Merged {
+        best: FindingDraft,
+        seen: Vec<(u32, String)>,
+    }
+    let mut merged: Vec<Merged> = Vec::new();
+    for (page, drafts) in (0u32..).zip(per_page) {
+        for mut draft in drafts {
+            draft.affected_bidders.sort();
+            let same_problem = merged.iter_mut().find(|entry| {
+                entry.best.affected_bidders == draft.affected_bidders
+                    && !entry.seen.iter().any(|(seen_on, _)| *seen_on == page)
+            });
+            match same_problem {
+                Some(entry) => {
+                    entry.seen.push((page, draft.title.clone()));
+                    let mut slots = std::mem::take(&mut entry.best.affected_slots);
+                    for slot in std::mem::take(&mut draft.affected_slots) {
+                        if !slots.contains(&slot) {
+                            slots.push(slot);
+                        }
+                    }
+                    if draft.severity > entry.best.severity {
+                        entry.best = draft;
+                    }
+                    entry.best.affected_slots = slots;
+                }
+                None => merged.push(Merged {
+                    seen: vec![(page, draft.title.clone())],
+                    best: draft,
+                }),
+            }
+        }
+    }
+    merged
+        .into_iter()
+        .map(|Merged { mut best, seen }| {
+            best.pages = seen.iter().map(|(page, _)| *page).collect();
+            if seen.len() > 1 {
+                let lines: Vec<String> = seen
+                    .iter()
+                    .map(|(page, title)| format!("{}: {title}", page_label(pages, *page)))
+                    .collect();
+                best.evidence
+                    .push(timeline("Per page view", lines.join("\n")));
+            }
+            best
         })
         .collect()
 }
 
+/// "page 2 (/sport/final)": page views are numbered from one for people.
+pub(crate) fn page_label(pages: &[PageView], page: u32) -> String {
+    let path = pages
+        .get(page as usize)
+        .and_then(|view| url::Url::parse(&view.url).ok())
+        .map(|url| url.path().to_string());
+    match path {
+        Some(path) => format!("page {} ({path})", page + 1),
+        None => format!("page {}", page + 1),
+    }
+}
+
+/// What one evaluation of a rule sees.
+#[derive(Clone, Copy)]
 pub struct RuleContext<'a> {
     pub capture: &'a Capture,
+    /// Auctions, slots and metrics of the rule's scope.
     pub telemetry: &'a Telemetry,
+    /// Tracker events of the rule's scope, in time order.
+    pub events: &'a [&'a TrackerEvent],
+    /// The page view being evaluated; `None` in scan scope.
+    pub page: Option<&'a PageView>,
+    /// The whole visit, whatever the scope.
+    pub scan: &'a ScanTelemetry,
     /// `None` when the bidder checks did not run.
     pub diagnostics: Option<&'a BidderDiagnostics>,
     pub scripts: &'a [ScriptRecord],
+    pub environment: Option<&'a ScanEnvironment>,
 }
 
 /// Why bidding did not start on page load.
@@ -165,25 +315,51 @@ impl<'a> RuleContext<'a> {
         metrics.bid_request_count >= 4 && metrics.timeout_rate >= 0.3 && bidders_timing_out >= 2
     }
 
+    /// Load time of the page view in scope; of the entry page in scan scope.
+    pub(crate) fn page_load_ms(&self) -> Option<f64> {
+        match self.page {
+            Some(page) => page.load_ms,
+            None => self.capture.page_load_ms,
+        }
+    }
+
+    /// Scroll depth reached on the page view in scope; the deepest of the
+    /// visit in scan scope.
+    pub(crate) fn max_scroll_depth(&self) -> f64 {
+        match self.page {
+            Some(page) => page.max_scroll_depth,
+            None => self.capture.max_scroll_depth,
+        }
+    }
+
+    /// Whether the page view in scope came from a route change, that is,
+    /// without loading a new document.
+    pub(crate) fn is_route_change(&self) -> bool {
+        self.page
+            .is_some_and(|page| page.reached_by == PageReach::RouteChange)
+    }
+
     pub(crate) fn first_event_at(&self, matches: impl Fn(&Ev) -> bool) -> Option<f64> {
-        self.capture
-            .events
+        self.events
             .iter()
             .find(|event| matches(&event.kind))
             .map(|event| event.t)
     }
 
+    /// A pointer that merely moved counts: wrappers that wait for "a real
+    /// user" start bidding on the first mouse move as well.
     pub(crate) fn first_interaction_at(&self) -> Option<f64> {
         self.first_event_at(|kind| match kind {
-            Ev::PageLifecycle { phase } => phase == "firstScroll" || phase == "firstInteraction",
+            Ev::PageLifecycle { phase } => {
+                phase == "firstScroll" || phase == "firstInteraction" || phase == "firstPointerMove"
+            }
             Ev::Scroll { depth } => *depth > 0.0,
             _ => false,
         })
     }
 
     pub(crate) fn prebid_config(&self) -> Option<PrebidConfig> {
-        self.capture
-            .events
+        self.events
             .iter()
             .find_map(|event| match &event.kind {
                 Ev::PrebidConfig {
@@ -203,7 +379,13 @@ impl<'a> RuleContext<'a> {
     /// auction of the page or covers slots that were in the initial viewport
     /// and had not been auctioned before. An auction for a below-the-fold slot
     /// that scrolls into view is ordinary lazy loading, not a gate.
+    ///
+    /// A page view reached by a route change has no gate of its own: the
+    /// document, and Prebid in it, were loaded pages ago.
     pub(crate) fn auction_gate(&self) -> Option<AuctionGate> {
+        if self.is_route_change() {
+            return None;
+        }
         let prebid_ready_at =
             self.first_event_at(|kind| matches!(kind, Ev::PrebidDetected { .. }))?;
         let interaction_at_ms = self.first_interaction_at();
@@ -281,6 +463,7 @@ pub(crate) fn heuristic(
         evidence: Vec::new(),
         affected_slots: Vec::new(),
         affected_bidders: Vec::new(),
+        pages: Vec::new(),
     }
 }
 

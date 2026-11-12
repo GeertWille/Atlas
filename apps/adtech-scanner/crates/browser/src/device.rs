@@ -1,4 +1,8 @@
-//! Device profiles: what a scan pretends to be. No I/O.
+//! Device profiles: the device a scan emulates. No I/O.
+//!
+//! A desktop scan is the launched browser as it is, headless or not: its own
+//! user agent, its own client hints. Only the window size is set. A mobile
+//! scan emulates a phone, which is said in the scan's environment.
 
 use adscan_model::{DeviceProfile, Viewport};
 use serde_json::{Value, json};
@@ -9,18 +13,18 @@ pub(crate) struct Emulation {
     pub viewport: Viewport,
     /// The user agent pages see.
     pub user_agent: String,
-    /// `None` when the browser's own identity is already the one to present.
+    /// `None` when the browser presents itself as what it is.
     identity: Option<Identity>,
     pub touch: bool,
     /// Human description for progress lines.
     pub label: String,
 }
 
-/// A replacement for the browser's own identity.
+/// The identity of the emulated phone.
 #[derive(Debug, Clone, PartialEq)]
 struct Identity {
-    /// `navigator.platform` override; `None` keeps the host value.
-    platform: Option<&'static str>,
+    /// `navigator.platform` of the phone.
+    platform: &'static str,
     /// `Emulation.setUserAgentOverride.userAgentMetadata` (UA client hints).
     client_hints: Value,
 }
@@ -29,12 +33,11 @@ impl Emulation {
     /// Parameters of `Emulation.setUserAgentOverride`, when one is needed.
     pub(crate) fn user_agent_override(&self) -> Option<Value> {
         let identity = self.identity.as_ref()?;
-        let mut params =
-            json!({ "userAgent": self.user_agent, "userAgentMetadata": identity.client_hints });
-        if let Some(platform) = identity.platform {
-            params["platform"] = json!(platform);
-        }
-        Some(params)
+        Some(json!({
+            "userAgent": self.user_agent,
+            "platform": identity.platform,
+            "userAgentMetadata": identity.client_hints,
+        }))
     }
 
     /// Parameters of `Emulation.setDeviceMetricsOverride`.
@@ -90,41 +93,20 @@ pub(crate) fn emulation_for(
     browser_user_agent: &str,
     browser_product: &str,
 ) -> Emulation {
-    // The user agent string only carries the major version ("141.0.0.0").
-    let full_version = browser_product.rsplit('/').next().unwrap_or_default();
-    let major = full_version.split('.').next().unwrap_or_default();
     match device {
-        DeviceProfile::Desktop => desktop(browser_user_agent, major, full_version),
-        DeviceProfile::Mobile => phone(major, full_version),
-    }
-}
-
-fn desktop(browser_user_agent: &str, major: &str, full_version: &str) -> Emulation {
-    const HEADLESS_TOKEN: &str = "HeadlessChrome/";
-    // Headless builds announce themselves and ad stacks treat that as a bot.
-    // A visible browser already presents what a real visitor's would.
-    let identity = browser_user_agent.contains(HEADLESS_TOKEN).then(|| {
-        let (platform, architecture) = host_platform(browser_user_agent);
-        Identity {
-            platform: None,
-            client_hints: json!({
-                "brands": brands(major, major),
-                "fullVersionList": brands(major, full_version),
-                "platform": platform,
-                "platformVersion": "",
-                "architecture": architecture,
-                "model": "",
-                "mobile": false,
-                "bitness": "64",
-            }),
+        DeviceProfile::Desktop => Emulation {
+            viewport: DESKTOP,
+            user_agent: browser_user_agent.to_string(),
+            identity: None,
+            touch: false,
+            label: "desktop (1440x900)".into(),
+        },
+        DeviceProfile::Mobile => {
+            // The user agent string only carries the major version ("141.0.0.0").
+            let full_version = browser_product.rsplit('/').next().unwrap_or_default();
+            let major = full_version.split('.').next().unwrap_or_default();
+            phone(major, full_version)
         }
-    });
-    Emulation {
-        viewport: DESKTOP,
-        user_agent: browser_user_agent.replace(HEADLESS_TOKEN, "Chrome/"),
-        identity,
-        touch: false,
-        label: "desktop (1440x900)".into(),
     }
 }
 
@@ -138,7 +120,7 @@ fn phone(major: &str, full_version: &str) -> Emulation {
              Chrome/{major}.0.0.0 Mobile Safari/537.36"
         ),
         identity: Some(Identity {
-            platform: Some("Linux armv81"),
+            platform: "Linux armv81",
             client_hints: json!({
                 "brands": brands(major, major),
                 "fullVersionList": brands(major, full_version),
@@ -198,16 +180,6 @@ fn brands(major: &str, version: &str) -> Value {
     Value::from(list.to_vec())
 }
 
-fn host_platform(user_agent: &str) -> (&'static str, &'static str) {
-    if user_agent.contains("Macintosh") {
-        ("macOS", "arm")
-    } else if user_agent.contains("Windows") {
-        ("Windows", "x86")
-    } else {
-        ("Linux", "x86")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,56 +228,30 @@ mod tests {
     }
 
     #[test]
-    fn headless_desktop_is_presented_as_the_same_chrome_without_the_headless_marker() {
-        let emulation = emulation_for(
+    fn a_desktop_scan_presents_the_browser_as_it_is_headless_or_not() {
+        let headless = emulation_for(
             DeviceProfile::Desktop,
             HEADLESS_LINUX,
             "HeadlessChrome/153.0.8010.12",
         );
-        assert!(!emulation.user_agent.contains("Headless"));
-        assert!(emulation.user_agent.contains(" Chrome/153.0.0.0"));
+        assert_eq!(headless.user_agent, HEADLESS_LINUX);
+        assert_eq!(headless.user_agent_override(), None);
         assert_eq!(
-            (emulation.viewport.width, emulation.viewport.height),
+            (headless.viewport.width, headless.viewport.height),
             (1440, 900)
         );
-        assert!(!emulation.viewport.mobile && !emulation.touch);
-        let hints = hints(&emulation);
-        assert_eq!(hints["mobile"], false);
-        assert_eq!(hints["platform"], "Linux");
-        assert_eq!(hints["brands"], brands("153", "153"));
-        assert_eq!(hints["fullVersionList"], brands("153", "153.0.8010.12"));
+        assert!(!headless.viewport.mobile && !headless.touch);
         assert_eq!(
-            emulation.device_metrics().get("screenOrientation"),
+            headless.device_metrics().get("screenOrientation"),
             None,
             "a desktop keeps the host's landscape screen"
         );
-    }
 
-    #[test]
-    fn a_visible_desktop_browser_keeps_its_own_identity() {
         let mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
             (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
-        let emulation = emulation_for(DeviceProfile::Desktop, mac, "Chrome/141.0.7390.55");
-        assert_eq!(emulation.user_agent, mac);
-        assert_eq!(emulation.user_agent_override(), None);
-    }
-
-    #[test]
-    fn headless_desktop_platform_follows_the_host_user_agent() {
-        let platform_of = |host: &str| {
-            let user_agent = format!(
-                "Mozilla/5.0 ({host}) AppleWebKit/537.36 HeadlessChrome/141.0.0.0 Safari/537.36"
-            );
-            hints(&emulation_for(
-                DeviceProfile::Desktop,
-                &user_agent,
-                "HeadlessChrome/141.0.7390.55",
-            ))["platform"]
-                .clone()
-        };
-        assert_eq!(platform_of("Macintosh; Intel Mac OS X 10_15_7"), "macOS");
-        assert_eq!(platform_of("Windows NT 10.0; Win64; x64"), "Windows");
-        assert_eq!(platform_of("X11; Linux x86_64"), "Linux");
+        let visible = emulation_for(DeviceProfile::Desktop, mac, "Chrome/141.0.7390.55");
+        assert_eq!(visible.user_agent, mac);
+        assert_eq!(visible.user_agent_override(), None);
     }
 
     #[test]

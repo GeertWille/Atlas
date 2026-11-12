@@ -425,6 +425,7 @@ impl Toolbox {
             evidence,
             affected_slots: args.affected_slots,
             affected_bidders: args.affected_bidders,
+            pages: Vec::new(),
         };
         let mut content = "Finding recorded.".to_string();
         if !corrections.is_empty() {
@@ -591,6 +592,8 @@ mod tests {
             "}",
         ];
         let capture = Capture {
+            environment: adscan_model::CaptureEnvironment::default(),
+            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
             final_url: "https://pub.example/".into(),
             page_title: None,
             device: DeviceProfile::Desktop,
@@ -1030,6 +1033,7 @@ mod tests {
                 requests: 4,
                 bids: 0,
                 checks: vec![DiagnosticCheck {
+                    pages: Vec::new(),
                     area: DiagnosticArea::AdsTxt,
                     status: DiagnosticStatus::Problem,
                     code: "ads-txt-not-listed".into(),

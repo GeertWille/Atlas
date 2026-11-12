@@ -10,4 +10,26 @@ pub enum DomainError {
     BudgetOutOfRange { max: f64 },
     #[error("Model id must not be empty")]
     EmptyModelId,
+    #[error("A browse visit can follow links to at most {max} further pages")]
+    ExtraPagesOutOfRange { max: u32 },
+    #[error("Give the proxy a name of at most {max} characters")]
+    ProxyNameInvalid { max: usize },
+    #[error("A proxy named \"{0}\" already exists")]
+    ProxyNameTaken(String),
+    #[error(
+        "Enter the proxy's host name or IP address only, without scheme, port, path or credentials"
+    )]
+    ProxyHostInvalid,
+    #[error("The proxy port must be between 1 and 65535")]
+    ProxyPortInvalid,
+    #[error(
+        "Chrome cannot sign in to a SOCKS5 proxy. Remove the user name or use an http or https proxy."
+    )]
+    ProxySocksCredentials,
+    #[error("The chosen proxy no longer exists. Pick another proxy.")]
+    UnknownProxy,
+    #[error("Give the scan configuration a name of at most {max} characters")]
+    ConfigurationNameInvalid { max: usize },
+    #[error("A scan configuration named \"{0}\" already exists")]
+    ConfigurationNameTaken(String),
 }

@@ -225,14 +225,20 @@ impl BidResponseLog {
         }
     }
 
-    /// Answers of the document that ended up being scanned, in time order.
-    pub(crate) fn into_observed(self, navigation_start: f64) -> Vec<ObservedBidResponse> {
+    /// The answers in the order they arrived, without those from before the
+    /// visit started (a document that was replaced). `place` turns an epoch
+    /// time into the page view showing then and the time since it started.
+    pub(crate) fn into_observed(
+        self,
+        place: impl Fn(f64) -> (u32, f64),
+    ) -> Vec<ObservedBidResponse> {
         let mut observed: Vec<ObservedBidResponse> = self
             .observations
             .into_iter()
             .filter_map(|observation| {
-                let t = observation.at_epoch_ms? - navigation_start;
+                let (page, t) = place(observation.at_epoch_ms?);
                 (t >= 0.0).then(|| ObservedBidResponse {
+                    page,
                     t,
                     bidder: observation.request.bidder.to_string(),
                     host: observation.request.host,
@@ -241,7 +247,7 @@ impl BidResponseLog {
                 })
             })
             .collect();
-        observed.sort_by(|a, b| a.t.total_cmp(&b.t));
+        observed.sort_by(|a, b| a.page.cmp(&b.page).then(a.t.total_cmp(&b.t)));
         observed
     }
 }
@@ -460,11 +466,12 @@ mod tests {
         log.record(request(), Some(900.0), Some(200), None);
         log.record(request(), None, Some(200), None);
 
-        let observed = log.into_observed(1_000.0);
+        let observed = log.into_observed(|at| (0, at - 1_000.0));
         assert_eq!(
             observed,
             [
                 ObservedBidResponse {
+                    page: 0,
                     t: 200.0,
                     bidder: "openx".into(),
                     host: "rtb.openx.net".into(),
@@ -472,6 +479,7 @@ mod tests {
                     reason: Some("net::ERR_FAILED".into()),
                 },
                 ObservedBidResponse {
+                    page: 0,
                     t: 500.0,
                     bidder: "openx".into(),
                     host: "rtb.openx.net".into(),
@@ -485,6 +493,6 @@ mod tests {
         for _ in 0..MAX_OBSERVATIONS + 10 {
             full.record(request(), Some(1.0), Some(204), None);
         }
-        assert_eq!(full.into_observed(0.0).len(), MAX_OBSERVATIONS);
+        assert_eq!(full.into_observed(|at| (0, at)).len(), MAX_OBSERVATIONS);
     }
 }

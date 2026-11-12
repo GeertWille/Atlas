@@ -56,9 +56,83 @@ contract! {
         Typesafe,
     }
 
-    /// User preferences. Persisted locally; API keys are never part of this
-    /// struct, they live in the OS keychain and are only reported via
-    /// `has_api_key` and `has_typesafe_key`.
+    /// What the scanner does on the page while it records.
+    #[derive(Copy, Eq, Hash)]
+    pub enum VisitorBehavior {
+        /// Load the page and watch; no input at all.
+        None,
+        /// Scroll through the page.
+        Scroll,
+        /// Move, scroll and follow same-site links like a reader would.
+        Browse,
+        /// A person drives the browser; the scanner only records.
+        Manual,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum ProxyScheme {
+        Http,
+        Https,
+        Socks5,
+    }
+
+    /// A named proxy the user saved, e.g. "Belgium". Its password is never
+    /// part of this type: it lives in the OS keychain, one entry per profile.
+    pub struct ProxyProfile {
+        pub id: String,
+        /// Unique among the profiles, compared without case.
+        pub name: String,
+        pub scheme: ProxyScheme,
+        /// Host name or IP address, without scheme, port or credentials.
+        pub host: String,
+        pub port: u16,
+        /// Not supported with `socks5` (Chrome cannot authenticate there).
+        pub username: Option<String>,
+        /// Read-only: whether a password for it is stored in the keychain.
+        pub has_password: bool,
+    }
+
+    /// What `save_proxy_profile` takes: a new profile, or with `id` the new
+    /// values of an existing one.
+    pub struct ProxyProfileDraft {
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<String>,
+        pub name: String,
+        pub scheme: ProxyScheme,
+        pub host: String,
+        pub port: u16,
+        pub username: Option<String>,
+    }
+
+    /// The one proxy a scan's browser, ads.txt and sellers.json requests go
+    /// through.
+    #[serde(tag = "kind")]
+    pub enum ProxyChoice {
+        /// Connect directly, ignoring the system's proxy.
+        None,
+        /// Whatever the operating system is configured with.
+        System,
+        /// One of `Settings.proxies`.
+        #[serde(rename_all = "camelCase")]
+        Profile {
+            id: String,
+            /// Name and host of the profile when the scan started, filled in
+            /// by the backend, so a stored scan still reads after the
+            /// profile is deleted. Ignored on input.
+            #[ts(optional)]
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            name: Option<String>,
+            #[ts(optional)]
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            host: Option<String>,
+        },
+    }
+
+    /// User preferences. Persisted locally; API keys and the proxy password
+    /// are never part of this struct, they live in the OS keychain and are
+    /// only reported via `has_api_key`, `has_typesafe_key` and each proxy
+    /// profile's `has_password`.
     pub struct Settings {
         /// Script triage model, used when Jev is off and as its fallback.
         pub filter_model: String,
@@ -87,6 +161,18 @@ contract! {
         /// exchanges its ads.txt names. Contacts those third-party hosts, so
         /// it is off unless the user turns it on.
         pub check_sellers_json: bool,
+        /// What a new scan does on the page unless its options say otherwise.
+        pub default_visitor: VisitorBehavior,
+        /// Further pages a browse visit follows links to, 0-5.
+        pub default_extra_pages: u32,
+        /// Keep one browser profile (cookies, consent, cache) between scans
+        /// instead of a throwaway one per scan.
+        pub persistent_profile: bool,
+        /// Saved proxies, by name. Changed through `save_proxy_profile` and
+        /// `delete_proxy_profile`, not through `SettingsPatch`.
+        pub proxies: Vec<ProxyProfile>,
+        /// The proxy a scan uses unless its options say otherwise.
+        pub default_proxy: ProxyChoice,
     }
 
     /// Partial update; omitted fields keep their current value.
@@ -116,6 +202,18 @@ contract! {
         pub jev_enabled: Option<bool>,
         #[ts(optional)]
         pub check_sellers_json: Option<bool>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_visitor: Option<VisitorBehavior>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_extra_pages: Option<u32>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub persistent_profile: Option<bool>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_proxy: Option<ProxyChoice>,
     }
 
     pub struct BrowserInfo {
@@ -130,6 +228,17 @@ contract! {
         pub valid: bool,
         /// Human-readable reason when `valid` is false.
         pub message: Option<String>,
+    }
+
+    /// The browser profile that persistent-profile scans share. Both device
+    /// profiles together.
+    pub struct ScanProfileInfo {
+        pub exists: bool,
+        pub size_bytes: f64,
+        /// Unix epoch ms of the last scan that used it.
+        pub last_used_at: Option<f64>,
+        /// A scan is running in it right now; it cannot be cleared.
+        pub in_use: bool,
     }
 }
 
@@ -169,6 +278,11 @@ impl Default for Settings {
             jev_enabled: false,
             has_typesafe_key: false,
             check_sellers_json: false,
+            default_visitor: VisitorBehavior::Scroll,
+            default_extra_pages: 2,
+            persistent_profile: false,
+            proxies: Vec::new(),
+            default_proxy: ProxyChoice::System,
         }
     }
 }
@@ -184,13 +298,75 @@ contract! {
         pub device: DeviceProfile,
         /// Seconds to observe the page after the load event.
         pub observe_seconds: u32,
-        /// Scroll through the page during observation to trigger lazy ad logic.
+        /// Superseded by `visitor`; kept for stored scans and old callers. The
+        /// backend stores it as `visitor != none`.
         pub auto_scroll: bool,
         /// Try to accept the consent banner (CMP) so bidding is not blocked.
         pub accept_consent: bool,
         /// Run the two LLM phases. When false (or no API key) only the
         /// deterministic checks run.
         pub ai_enabled: bool,
+        /// Absent: derived from `auto_scroll` (true is scroll, false is none).
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub visitor: Option<VisitorBehavior>,
+        /// Further pages to visit by following links, 0-5. Browse only.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub extra_pages: Option<u32>,
+        /// Seed of the scripted visit; the backend fills it in when absent.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub seed: Option<u32>,
+        /// Absent: `Settings.headless` for none and scroll, false for browse.
+        /// Manual is always headed.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub headless: Option<bool>,
+        /// Absent: `Settings.persistent_profile`.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub persistent_profile: Option<bool>,
+        /// Absent: `Settings.default_proxy`.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub proxy: Option<ProxyChoice>,
+        /// Cap on LLM spend for this scan in USD. Absent: `Settings.budget_usd`.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub budget_usd: Option<f64>,
+    }
+
+    /// The saved configuration a scan was started from, as it was named then.
+    pub struct ScanConfigurationRef {
+        pub id: String,
+        pub name: String,
+    }
+
+    /// A saved setup to scan one site with again and again.
+    pub struct ScanConfiguration {
+        pub id: String,
+        /// Unique among the configurations, compared without case.
+        pub name: String,
+        /// The URL and everything else a scan of it starts with. Fields left
+        /// absent follow the settings at the time of each run. Never holds a
+        /// seed: every run gets its own.
+        pub options: ScanOptions,
+        pub created_at: f64,
+        pub updated_at: f64,
+        /// The last scan started from it, if that scan still exists.
+        pub last_scan_id: Option<String>,
+        pub last_run_at: Option<f64>,
+    }
+
+    /// What `save_scan_configuration` takes: a new configuration, or with
+    /// `id` the new name and options of an existing one.
+    pub struct ScanConfigurationDraft {
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub id: Option<String>,
+        pub name: String,
+        pub options: ScanOptions,
     }
 
     #[derive(Copy, Eq, Hash)]
@@ -240,6 +416,9 @@ contract! {
         pub ai_used: bool,
         /// Failure reason when `status` is `Failed`.
         pub error: Option<String>,
+        /// The saved configuration the scan was started from, if any.
+        #[serde(default)]
+        pub configuration: Option<ScanConfigurationRef>,
     }
 
     /// Everything the report screen needs for one scan.
@@ -258,8 +437,19 @@ contract! {
         /// scans that ended before they ran.
         #[serde(default)]
         pub bidder_diagnostics: Option<BidderDiagnostics>,
+        /// The page views of the visit, in order. Empty for scans stored
+        /// before multi-page visits existed: those have one implicit page.
+        #[serde(default)]
+        pub pages: Vec<PageView>,
+        /// `None` for scans stored before it was recorded, and for scans that
+        /// ended before the capture did.
+        #[serde(default)]
+        pub environment: Option<ScanEnvironment>,
     }
 
+    /// Counts are sums over all page views. `page_load_ms`,
+    /// `time_to_first_auction_ms` and `time_to_first_ad_ms` are the entry
+    /// page's.
     #[derive(Default)]
     pub struct ScanMetrics {
         pub page_load_ms: Option<f64>,
@@ -289,6 +479,118 @@ contract! {
         pub has_prebid: bool,
         pub has_gpt: bool,
         pub has_amazon_tam: bool,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The visit: page views and the environment the pages saw
+// ---------------------------------------------------------------------------
+
+contract! {
+    /// How the visit got to a page view.
+    #[derive(Copy, Eq, Hash)]
+    pub enum PageReach {
+        /// The URL the scan was started with.
+        Entry,
+        /// The scanner followed a link.
+        LinkClick,
+        /// The page changed its URL without loading a new document.
+        RouteChange,
+        /// The person browsing navigated (manual visits).
+        UserNavigation,
+        Redirect,
+        Reload,
+    }
+
+    /// The link the scanner chose to follow, and why.
+    pub struct FollowedLink {
+        /// Link text, at most 80 characters.
+        pub text: String,
+        /// Origin and path; query values are removed.
+        pub href: String,
+        /// e.g. "content link in <article>, article-like path; best of 5".
+        pub reason: String,
+    }
+
+    #[derive(Default)]
+    pub struct PageMetrics {
+        pub auction_count: u32,
+        pub bid_request_count: u32,
+        pub bid_response_count: u32,
+        pub slot_count: u32,
+        pub empty_slot_count: u32,
+        /// Slots that rendered a creative / slots that requested one, 0-1.
+        pub fill_rate: f64,
+        /// ms since this page view started.
+        pub time_to_first_auction_ms: Option<f64>,
+        pub time_to_first_ad_ms: Option<f64>,
+    }
+
+    /// One page of the visit. Every `*_at_ms` of an auction, slot or script
+    /// counts from the start of the page view it belongs to.
+    pub struct PageView {
+        /// Position in `ScanDetail.pages`; what the `page` fields refer to.
+        pub index: u32,
+        pub url: String,
+        pub title: Option<String>,
+        /// ms since the scan's navigation start (the entry page starts at 0).
+        pub started_at_ms: f64,
+        pub dwell_ms: f64,
+        pub reached_by: PageReach,
+        pub link: Option<FollowedLink>,
+        /// `None` for route changes: no document was loaded.
+        pub load_ms: Option<f64>,
+        /// 0-1.
+        pub max_scroll_depth: f64,
+        pub metrics: PageMetrics,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum DetectorKind {
+        /// Ad verification that measures invalid traffic.
+        InvalidTrafficMeasurement,
+        /// Bot protection or a challenge in front of the site.
+        BotProtection,
+    }
+
+    /// A vendor on the page that is known to tell automated visits apart.
+    pub struct AutomationDetector {
+        pub vendor: String,
+        pub kind: DetectorKind,
+        /// The requested host that identified it.
+        pub host: String,
+    }
+
+    #[derive(Copy, Eq, Hash)]
+    pub enum ProxyKind {
+        None,
+        System,
+        Profile,
+    }
+
+    /// The proxy a scan ran through. Never carries credentials.
+    pub struct ProxyUse {
+        pub kind: ProxyKind,
+        /// Name and host of the proxy profile, for `profile`.
+        pub name: Option<String>,
+        pub host: Option<String>,
+    }
+
+    /// What the scanned pages could tell about the visit. Reported as it
+    /// was; the scanner never hides that a visit is automated.
+    pub struct ScanEnvironment {
+        pub visitor: VisitorBehavior,
+        pub seed: u32,
+        pub headless: bool,
+        pub persistent_profile: bool,
+        /// `navigator.webdriver` as the page saw it; `None` when it could not
+        /// be read.
+        pub webdriver: Option<bool>,
+        pub user_agent_overridden: bool,
+        pub viewport_overridden: bool,
+        pub emulated_mobile: bool,
+        pub detectors: Vec<AutomationDetector>,
+        pub proxy: ProxyUse,
     }
 }
 
@@ -346,6 +648,10 @@ contract! {
         /// Ad unit codes / slot element ids this finding concerns.
         pub affected_slots: Vec<String>,
         pub affected_bidders: Vec<String>,
+        /// Page views the finding was seen on; empty when it is not specific
+        /// to a page.
+        #[serde(default)]
+        pub pages: Vec<u32>,
     }
 
     pub struct Evidence {
@@ -376,7 +682,11 @@ contract! {
 contract! {
     pub struct Auction {
         pub id: String,
-        /// ms since navigation start.
+        /// Page view the auction started on.
+        #[serde(default)]
+        pub page: u32,
+        /// ms since the start of that page view. An auction that outlives a
+        /// route change keeps counting from it.
         pub started_at_ms: f64,
         pub ended_at_ms: Option<f64>,
         pub duration_ms: Option<f64>,
@@ -415,7 +725,8 @@ contract! {
         pub cpm: Option<f64>,
         pub currency: Option<String>,
         pub size: Option<String>,
-        /// ms since navigation start when the request went out.
+        /// ms since the start of the auction's page view when the request
+        /// went out.
         pub requested_at_ms: Option<f64>,
         /// Round-trip latency.
         pub response_time_ms: Option<f64>,
@@ -434,7 +745,20 @@ contract! {
         Pending,
     }
 
+    /// One ad request of a slot. The first one is also `requested_at_ms`.
+    pub struct SlotRequest {
+        /// ms since the start of the slot's page view.
+        pub at_ms: f64,
+        pub had_prebid_targeting: bool,
+        /// `hb_adid` on the slot when the request went out.
+        pub prebid_ad_id: Option<String>,
+    }
+
     pub struct AdSlot {
+        /// Page view the slot belongs to. The same container on two page
+        /// views is two slots.
+        #[serde(default)]
+        pub page: u32,
         /// DOM element id of the slot container.
         pub element_id: String,
         /// GPT ad unit path, e.g. "/1234/site/top".
@@ -442,7 +766,7 @@ contract! {
         pub sizes: Vec<String>,
         pub outcome: SlotOutcome,
         pub rendered_size: Option<String>,
-        /// All timings are ms since navigation start.
+        /// All timings are ms since the start of the slot's page view.
         pub defined_at_ms: Option<f64>,
         pub requested_at_ms: Option<f64>,
         pub response_at_ms: Option<f64>,
@@ -456,6 +780,9 @@ contract! {
         pub requested_before_auction_end: Option<bool>,
         pub advertiser_id: Option<String>,
         pub line_item_id: Option<String>,
+        /// Every ad request of the slot in order, refreshes included.
+        #[serde(default)]
+        pub requests: Vec<SlotRequest>,
     }
 }
 
@@ -517,8 +844,8 @@ contract! {
         pub consent_management_configured: Option<bool>,
         /// What the CMP last reported. `None` when it reported nothing.
         pub gdpr_applies: Option<bool>,
-        /// ms since navigation start when the CMP first reported a decided
-        /// consent state.
+        /// ms since the scan's navigation start when the CMP first reported a
+        /// decided consent state.
         pub resolved_at_ms: Option<f64>,
         pub auction_count: u32,
         /// Auctions that started before the consent state was decided.
@@ -571,6 +898,10 @@ contract! {
         pub excerpt: Option<String>,
         /// Ad unit codes the outcome concerns; empty when it concerns all.
         pub ad_units: Vec<String>,
+        /// Page views the outcome was seen on; empty when it is not specific
+        /// to a page.
+        #[serde(default)]
+        pub pages: Vec<u32>,
     }
 }
 
@@ -628,9 +959,14 @@ contract! {
         pub analyzed: bool,
         /// Known vendor name when recognized ("Google", "Amazon", "Criteo", ...).
         pub vendor: Option<String>,
-        /// ms since navigation start when the response finished.
+        /// ms since the start of the first page view that loaded it when the
+        /// response finished.
         pub loaded_at_ms: Option<f64>,
         pub first_party: bool,
+        /// Page views that loaded the script, ascending. Empty for scans
+        /// stored before multi-page visits existed.
+        #[serde(default)]
+        pub pages: Vec<u32>,
     }
 }
 
@@ -714,6 +1050,10 @@ contract! {
         Finding,
         /// How one script was classified: probabilities, thresholds, routing.
         Classification,
+        /// What the visitor did or met during the capture: a page view, an
+        /// action, a link choice, something blocked, the environment. `data`
+        /// is `{ activity, page, detail }`.
+        Visitor,
     }
 
     /// One entry of the audit trail. Stored and full-text indexed so developers
@@ -752,6 +1092,10 @@ contract! {
         pub limit: Option<u32>,
         #[ts(optional)]
         pub offset: Option<u32>,
+        /// Only scans started from this saved configuration.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub configuration_id: Option<String>,
     }
 
     pub struct ScanList {
@@ -820,5 +1164,33 @@ contract! {
         Storage,
         Cancelled,
         Internal,
+        /// The scan profile is in use by a running scan.
+        ProfileBusy,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Builders for tests
+// ---------------------------------------------------------------------------
+
+impl ScanOptions {
+    /// A desktop scroll scan of `url` without AI: the values a test changes
+    /// from.
+    pub fn for_url(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            device: DeviceProfile::Desktop,
+            observe_seconds: 10,
+            auto_scroll: true,
+            accept_consent: true,
+            ai_enabled: false,
+            visitor: None,
+            extra_pages: None,
+            seed: None,
+            headless: None,
+            persistent_profile: None,
+            proxy: None,
+            budget_usd: None,
+        }
     }
 }

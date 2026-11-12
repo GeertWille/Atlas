@@ -2,4 +2,8 @@
 import type { DeviceProfile } from "./DeviceProfile";
 import type { ScanStatus } from "./ScanStatus";
 
-export type ScanListQuery = { search?: string, status?: ScanStatus, device?: DeviceProfile, limit?: number, offset?: number, };
+export type ScanListQuery = { search?: string, status?: ScanStatus, device?: DeviceProfile, limit?: number, offset?: number, 
+/**
+ * Only scans started from this saved configuration.
+ */
+configurationId?: string, };

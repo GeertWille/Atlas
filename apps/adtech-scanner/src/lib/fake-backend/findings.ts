@@ -5,10 +5,11 @@ import type { CapturedSite } from "./site";
 export type Investigation = {
   thinking: string;
   tools: { name: string; input: Record<string, unknown>; result: string }[];
-  finding: Finding;
+  finding: FindingDraft;
 };
 
-type Draft = Omit<Finding, "id" | "scanId">;
+/** A finding before the scan gives it an id. `pages` is left out for findings of the entry page. */
+export type FindingDraft = Omit<Finding, "id" | "scanId" | "pages"> & { pages?: number[] };
 
 const WRAPPER_DEVICE_CHECK = `var MOBILE_LAZY_OFFSET = 2400;
 
@@ -114,8 +115,8 @@ function biddersWithStatus(site: CapturedSite, status: string) {
 
 const pct = (ratio: number) => `${Math.round(ratio * 100)}%`;
 
-export function heuristicFindings(site: CapturedSite, metrics: ScanMetrics): Draft[] {
-  const drafts: Draft[] = [];
+export function heuristicFindings(site: CapturedSite, metrics: ScanMetrics): FindingDraft[] {
+  const drafts: FindingDraft[] = [];
   const neverRequested = slotIds(site, (outcome) => outcome === "neverRequested");
   const timeouts = biddersWithStatus(site, "timeout");
   const early = site.slots.filter((slot) => slot.requestedBeforeAuctionEnd);
@@ -304,8 +305,6 @@ function leakDesktop(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "critical",
         category: "logicBug",
         source: "ai",
@@ -361,8 +360,6 @@ function leakDesktop(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "high",
         category: "configuration",
         source: "ai",
@@ -406,8 +403,6 @@ function leakDesktop(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "low",
         category: "pricing",
         source: "ai",
@@ -448,8 +443,6 @@ function leakMobile(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "high",
         category: "lazyLoad",
         source: "ai",
@@ -494,8 +487,6 @@ function leakMobile(site: CapturedSite): Investigation[] {
         { name: "read_script", input: { url: wrapper, startLine: 400, endLine: 408 }, result: STICKY_REFRESH },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "medium",
         category: "logicBug",
         source: "ai",
@@ -533,8 +524,6 @@ function slow(site: CapturedSite): Investigation[] {
         { name: "read_script", input: { url: wrapper, startLine: 509, endLine: 522 }, result: DUPLICATE_PREBID },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "high",
         category: "configuration",
         source: "ai",
@@ -577,8 +566,6 @@ function slow(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "medium",
         category: "timing",
         source: "ai",
@@ -620,8 +607,6 @@ function healthy(site: CapturedSite): Investigation[] {
         },
       ],
       finding: {
-        id: "",
-        scanId: "",
         severity: "low",
         category: "configuration",
         source: "ai",

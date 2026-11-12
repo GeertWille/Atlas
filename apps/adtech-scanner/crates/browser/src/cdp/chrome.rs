@@ -1,11 +1,15 @@
-//! The Chrome process of one capture: launched on a throwaway profile and
-//! guaranteed to be gone, with its profile, when the capture is over. That
-//! holds when the capture ends normally and when this process is killed:
+//! The Chrome process of one capture, guaranteed to be gone when the capture
+//! is over. That holds when the capture ends normally and when this process
+//! is killed:
 //!
 //! - Chrome is driven over `--remote-debugging-pipe` and exits by itself when
 //!   the pipe closes, which the operating system does when this process ends.
-//! - A watchdog kills a browser that did not exit and removes the profile.
-//! - Profiles that still got left behind are removed by the next launch.
+//! - A watchdog kills a browser that did not exit.
+//!
+//! A capture normally runs on a throwaway profile, which goes with the
+//! browser: removed at shutdown, by the watchdog, or by the next launch when
+//! both were prevented. A capture on the scan profile the user keeps leaves
+//! that directory alone on every one of those paths.
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
@@ -23,7 +27,7 @@ use tokio::net::unix::pipe;
 use tokio::process::{Child, ChildStderr, Command};
 use tokio::task::JoinHandle;
 
-use super::profile::{self, Profile};
+use super::profile::{self, PersistentProfile, PersistentProfileError, Profile};
 use super::watchdog::Watchdog;
 
 /// Where Chrome expects the two ends of `--remote-debugging-pipe`.
@@ -39,6 +43,8 @@ static ABANDONED_PROFILES_REMOVED: Once = Once::new();
 pub(crate) enum LaunchError {
     #[error("could not create a temporary browser profile: {0}")]
     Profile(std::io::Error),
+    #[error(transparent)]
+    PersistentProfile(#[from] PersistentProfileError),
     #[error("could not open a connection for the browser: {0}")]
     Pipe(std::io::Error),
     #[error("could not start {path}: {source}")]
@@ -58,6 +64,57 @@ pub(crate) struct LaunchOptions<'a> {
     pub executable: &'a Path,
     pub headless: bool,
     pub window_size: (u32, u32),
+    pub profile: ProfileChoice<'a>,
+    pub proxy: &'a ProxyServer,
+    /// A person browses in this window; the scanner only records. Chrome
+    /// then does not flag the session as automated (`navigator.webdriver`),
+    /// which it does, truthfully, whenever the scanner itself is the visitor.
+    pub driven_by_a_person: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProfileChoice<'a> {
+    /// A fresh profile, deleted with the browser.
+    Throwaway,
+    /// The scan profile at this path, kept.
+    Persistent(&'a Path),
+}
+
+/// How the browser reaches the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ProxyServer {
+    /// Whatever the operating system is configured to use: Chrome's default.
+    System,
+    /// No proxy, whatever the operating system says.
+    Direct,
+    /// `scheme` is `http`, `https` or `socks5`.
+    Custom {
+        scheme: String,
+        host: String,
+        port: u16,
+    },
+}
+
+enum ProfileInUse {
+    Throwaway(Profile),
+    Persistent(PersistentProfile),
+}
+
+impl ProfileInUse {
+    fn path(&self) -> &Path {
+        match self {
+            ProfileInUse::Throwaway(profile) => profile.path(),
+            ProfileInUse::Persistent(profile) => profile.path(),
+        }
+    }
+
+    /// The directory to delete with the browser, if it is one.
+    fn disposable(&self) -> Option<&Path> {
+        match self {
+            ProfileInUse::Throwaway(profile) => Some(profile.path()),
+            ProfileInUse::Persistent(_) => None,
+        }
+    }
 }
 
 /// This process's ends of the browser's DevTools pipe.
@@ -68,7 +125,7 @@ pub(crate) struct DebuggingPipe {
 
 pub(crate) struct Chrome {
     child: Child,
-    profile: Option<Profile>,
+    profile: Option<ProfileInUse>,
     watchdog: Option<Watchdog>,
     debugging_pipe: Option<DebuggingPipe>,
     startup_output: Option<JoinHandle<Vec<String>>>,
@@ -76,14 +133,25 @@ pub(crate) struct Chrome {
 
 impl Chrome {
     /// Starts the process. From here on, dropping the value kills Chrome and
-    /// deletes the profile, whatever state startup is in.
+    /// deletes a throwaway profile, whatever state startup is in.
     pub(crate) fn spawn(options: LaunchOptions<'_>) -> Result<Self, LaunchError> {
         let profiles = std::env::temp_dir();
         ABANDONED_PROFILES_REMOVED.call_once(|| {
             let profiles = profiles.clone();
             tokio::task::spawn_blocking(move || profile::remove_abandoned(&profiles));
         });
-        let profile = Profile::create_in(&profiles).map_err(LaunchError::Profile)?;
+        let profile = match options.profile {
+            ProfileChoice::Throwaway => ProfileInUse::Throwaway(
+                Profile::create_in(&profiles).map_err(LaunchError::Profile)?,
+            ),
+            ProfileChoice::Persistent(path) => {
+                let profile = PersistentProfile::open(path)?;
+                // A browser that outlived a crashed scan would fight this one
+                // over the profile's files.
+                kill_helpers(path);
+                ProfileInUse::Persistent(profile)
+            }
+        };
         let (commands_for_browser, to_browser) = std::io::pipe().map_err(LaunchError::Pipe)?;
         let (from_browser, replies_from_browser) = std::io::pipe().map_err(LaunchError::Pipe)?;
         let debugging_pipe = DebuggingPipe {
@@ -134,7 +202,7 @@ impl Chrome {
         // defence against being killed.
         let watchdog = child
             .id()
-            .and_then(|group| Watchdog::guard(group, profile.path()).ok());
+            .and_then(|group| Watchdog::guard(group, profile.disposable()).ok());
         let startup_output = child
             .stderr
             .take()
@@ -165,8 +233,21 @@ impl Chrome {
         }
     }
 
-    /// Kills the whole process tree and removes the profile; both are gone
-    /// when this returns.
+    /// Waits for a browser that was asked to close (`Browser.close`) to
+    /// finish writing its profile and exit. Returns whether it did in time.
+    pub(crate) async fn exited_within(&mut self, patience: Duration) -> bool {
+        tokio::time::timeout(patience, self.child.wait())
+            .await
+            .is_ok()
+    }
+
+    /// Whether the profile of this launch is kept after it.
+    pub(crate) fn keeps_its_profile(&self) -> bool {
+        matches!(self.profile, Some(ProfileInUse::Persistent(_)))
+    }
+
+    /// Kills the whole process tree and removes a throwaway profile; both
+    /// are gone when this returns.
     pub(crate) async fn shutdown(mut self) {
         let group = self.child.id();
         self.kill_process_tree();
@@ -175,14 +256,16 @@ impl Chrome {
             return;
         };
         let path = profile.path().to_path_buf();
-        drop(profile);
-        // Killed processes need a moment to go and release their files.
+        let disposable = profile.disposable().is_some();
+        // Killed processes need a moment to go and release their files. The
+        // lock on a kept profile is held until they are gone.
         for _ in 0..20 {
             let helpers_left = kill_helpers(&path);
             let group_left = group.is_some_and(group_is_running);
-            let profile_gone = !path.exists() || std::fs::remove_dir_all(&path).is_ok();
-            if profile_gone && !helpers_left && !group_left {
-                return;
+            let profile_done =
+                !disposable || !path.exists() || std::fs::remove_dir_all(&path).is_ok();
+            if profile_done && !helpers_left && !group_left {
+                break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -281,6 +364,9 @@ fn group_is_running(group: u32) -> bool {
     i32::try_from(group).is_ok_and(|group| killpg(Pid::from_raw(group), None).is_ok())
 }
 
+/// The scan profile's HTTP cache may grow to this size on disk.
+const KEPT_PROFILE_CACHE_BYTES: u64 = 100 * 1024 * 1024;
+
 fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> {
     let (width, height) = options.window_size;
     let mut arguments = vec![
@@ -305,11 +391,11 @@ fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> 
             "--disable-extensions",
             "--disable-component-update",
             "--disable-sync",
+            // A window that is hidden or covered must keep its timers running
+            // at full speed: auction timeouts are measured with them.
             "--disable-background-timer-throttling",
             "--disable-backgrounding-occluded-windows",
             "--disable-renderer-backgrounding",
-            // Without this `navigator.webdriver` is true and ad stacks see a bot.
-            "--disable-blink-features=AutomationControlled",
             "--disable-features=Translate,MediaRouter,OptimizationHints,DialMediaRouteProvider,NetworkTimeServiceQuerying",
             "--password-store=basic",
             "--use-mock-keychain",
@@ -317,6 +403,13 @@ fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> 
         ]
         .map(str::to_string),
     );
+    if options.driven_by_a_person {
+        arguments.push("--disable-blink-features=AutomationControlled".to_string());
+    }
+    if matches!(options.profile, ProfileChoice::Persistent(_)) {
+        arguments.push(format!("--disk-cache-size={KEPT_PROFILE_CACHE_BYTES}"));
+    }
+    arguments.extend(proxy_arguments(options.proxy));
     if options.headless {
         arguments.push("--headless=new".to_string());
         // Headless Chrome has no mouse, so a desktop page would see
@@ -337,6 +430,26 @@ fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> 
     }
     arguments.push("about:blank".to_string());
     arguments
+}
+
+/// Never carries credentials: a command line is readable by every process of
+/// the user. A proxy's challenge is answered over the DevTools connection.
+///
+/// Whatever the proxy, Chrome connects to loopback addresses directly unless
+/// told otherwise, so a site served from this machine is always reachable.
+fn proxy_arguments(proxy: &ProxyServer) -> Vec<String> {
+    match proxy {
+        ProxyServer::System => Vec::new(),
+        ProxyServer::Direct => vec!["--no-proxy-server".to_string()],
+        ProxyServer::Custom { scheme, host, port } => {
+            let host = if host.contains(':') && !host.starts_with('[') {
+                format!("[{host}]")
+            } else {
+                host.clone()
+            };
+            vec![format!("--proxy-server={scheme}://{host}:{port}")]
+        }
+    }
 }
 
 fn running_as_root() -> bool {
@@ -360,15 +473,109 @@ async fn drain_stderr(stderr: ChildStderr) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn options(executable: &Path) -> LaunchOptions<'_> {
+        LaunchOptions {
+            executable,
+            headless: true,
+            window_size: (800, 600),
+            profile: ProfileChoice::Throwaway,
+            proxy: &ProxyServer::System,
+            driven_by_a_person: false,
+        }
+    }
+
+    fn arguments(options: &LaunchOptions<'_>) -> Vec<String> {
+        launch_arguments(options, Path::new("/tmp/profile"))
+    }
+
+    #[test]
+    fn only_a_browser_a_person_drives_is_not_flagged_as_automated() {
+        let executable = Path::new("chrome");
+        let scripted = arguments(&options(executable));
+        assert!(
+            !scripted
+                .iter()
+                .any(|flag| flag.contains("AutomationControlled"))
+        );
+        assert!(
+            !scripted
+                .iter()
+                .any(|flag| flag.contains("enable-automation"))
+        );
+        assert!(!scripted.iter().any(|flag| flag.contains("user-agent")));
+
+        let manual = arguments(&LaunchOptions {
+            driven_by_a_person: true,
+            headless: false,
+            ..options(executable)
+        });
+        assert!(manual.contains(&"--disable-blink-features=AutomationControlled".to_string()));
+        assert!(!manual.iter().any(|flag| flag.starts_with("--headless")));
+        assert!(
+            !manual
+                .iter()
+                .any(|flag| flag.starts_with("--blink-settings"))
+        );
+    }
+
+    #[test]
+    fn the_proxy_setting_becomes_flags_without_credentials() {
+        let executable = Path::new("chrome");
+        let proxy_flags = |proxy: &ProxyServer| -> Vec<String> {
+            arguments(&LaunchOptions {
+                proxy,
+                ..options(executable)
+            })
+            .into_iter()
+            .filter(|flag| flag.contains("proxy"))
+            .collect()
+        };
+        let custom = |scheme: &str, host: &str, port| ProxyServer::Custom {
+            scheme: scheme.into(),
+            host: host.into(),
+            port,
+        };
+        assert_eq!(proxy_flags(&ProxyServer::System), Vec::<String>::new());
+        assert_eq!(proxy_flags(&ProxyServer::Direct), ["--no-proxy-server"]);
+        assert_eq!(
+            proxy_flags(&custom("http", "proxy.corp.example", 3128)),
+            ["--proxy-server=http://proxy.corp.example:3128"]
+        );
+        assert_eq!(
+            proxy_flags(&custom("socks5", "10.0.0.7", 1080)),
+            ["--proxy-server=socks5://10.0.0.7:1080"]
+        );
+        assert_eq!(
+            proxy_flags(&custom("https", "2001:db8::1", 443)),
+            ["--proxy-server=https://[2001:db8::1]:443"]
+        );
+        // Nothing may switch off Chrome's direct connections to loopback.
+        assert!(
+            !arguments(&options(executable))
+                .iter()
+                .any(|flag| flag.contains("loopback"))
+        );
+    }
+
+    #[test]
+    fn a_kept_profile_gets_a_bounded_cache() {
+        let executable = Path::new("chrome");
+        let kept = arguments(&LaunchOptions {
+            profile: ProfileChoice::Persistent(Path::new("/data/scan-profile/desktop")),
+            ..options(executable)
+        });
+        assert!(kept.contains(&"--disk-cache-size=104857600".to_string()));
+        assert!(
+            !arguments(&options(executable))
+                .iter()
+                .any(|flag| flag.starts_with("--disk-cache-size"))
+        );
+    }
+
     #[tokio::test]
     async fn a_browser_that_dies_while_starting_is_reported_with_what_it_printed() {
         // A shell rejects Chrome's arguments, complains and exits.
-        let mut chrome = Chrome::spawn(LaunchOptions {
-            executable: Path::new("/bin/sh"),
-            headless: true,
-            window_size: (800, 600),
-        })
-        .unwrap();
+        let mut chrome = Chrome::spawn(options(Path::new("/bin/sh"))).unwrap();
 
         let Err(error) = crate::cdp::connect(&mut chrome).await else {
             panic!("a shell is not a browser");
@@ -388,12 +595,7 @@ mod tests {
         let Some(browser) = crate::detect::detect_browser(None) else {
             return;
         };
-        let mut chrome = Chrome::spawn(LaunchOptions {
-            executable: Path::new(&browser.path),
-            headless: true,
-            window_size: (800, 600),
-        })
-        .unwrap();
+        let mut chrome = Chrome::spawn(options(Path::new(&browser.path))).unwrap();
         crate::cdp::connect(&mut chrome).await.unwrap();
         tokio::time::sleep(Duration::from_millis(500)).await;
         let profile = chrome.profile.as_ref().unwrap().path().to_path_buf();

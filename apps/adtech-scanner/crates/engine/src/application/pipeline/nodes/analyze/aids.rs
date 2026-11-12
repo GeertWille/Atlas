@@ -116,6 +116,8 @@ mod tests {
 
     fn toolbox(scripts: Vec<ScriptSource>) -> Toolbox {
         let capture = Capture {
+            environment: adscan_model::CaptureEnvironment::default(),
+            pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
             final_url: "https://pub.example/".into(),
             page_title: None,
             device: DeviceProfile::Desktop,

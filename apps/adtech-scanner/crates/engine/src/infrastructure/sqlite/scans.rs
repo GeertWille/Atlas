@@ -1,7 +1,7 @@
 use adscan_model::{
-    AdSlot, Auction, BidderDiagnostics, DashboardStats, Finding, PipelineStep, ScanDetail,
-    ScanList, ScanListQuery, ScanMetrics, ScanOptions, ScanStatus, ScanSummary, ScriptRecord,
-    SeverityCounts, StepStatus,
+    AdSlot, Auction, BidderDiagnostics, DashboardStats, Finding, PageView, PipelineStep,
+    ScanConfigurationRef, ScanDetail, ScanEnvironment, ScanList, ScanListQuery, ScanMetrics,
+    ScanOptions, ScanStatus, ScanSummary, ScriptRecord, SeverityCounts, StepStatus,
 };
 use async_trait::async_trait;
 use rusqlite::types::Value as SqlValue;
@@ -16,7 +16,8 @@ const DEFAULT_PAGE_SIZE: u32 = 50;
 const MAX_PAGE_SIZE: u32 = 200;
 
 const SUMMARY_COLUMNS: &str = "id, url, hostname, device, status, started_at, finished_at, duration_ms, cost_usd, \
-     critical_count, high_count, medium_count, low_count, info_count, health_score, prebid_version, ai_used, error";
+     critical_count, high_count, medium_count, low_count, info_count, health_score, prebid_version, ai_used, error, \
+     configuration_id, configuration_name";
 
 #[async_trait]
 impl ScanRepository for SqliteStore {
@@ -25,8 +26,9 @@ impl ScanRepository for SqliteStore {
         let options = options.clone();
         self.call(move |connection| {
             connection.execute(
-                "INSERT INTO scans (id, url, hostname, device, status, started_at, options)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO scans (id, url, hostname, device, status, started_at, options,
+                     configuration_id, configuration_name)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     summary.id,
                     summary.url,
@@ -35,6 +37,8 @@ impl ScanRepository for SqliteStore {
                     enum_text(&summary.status)?,
                     summary.started_at,
                     to_json(&options)?,
+                    summary.configuration.as_ref().map(|from| &from.id),
+                    summary.configuration.as_ref().map(|from| &from.name),
                 ],
             )?;
             write_summary(connection, &summary)
@@ -52,22 +56,41 @@ impl ScanRepository for SqliteStore {
         &self,
         scan_id: &str,
         metrics: &ScanMetrics,
+        pages: &[PageView],
         auctions: &[Auction],
         slots: &[AdSlot],
     ) -> RepoResult<()> {
         let scan_id = scan_id.to_string();
         let metrics = metrics.clone();
+        let pages = to_json(&pages);
         let auctions = auctions.to_vec();
         let slots = slots.to_vec();
         self.call(move |connection| {
             let transaction = connection.transaction()?;
             transaction.execute(
-                "UPDATE scans SET metrics = ?2 WHERE id = ?1",
-                params![scan_id, to_json(&metrics)?],
+                "UPDATE scans SET metrics = ?2, pages = ?3 WHERE id = ?1",
+                params![scan_id, to_json(&metrics)?, pages?],
             )?;
             replace_rows(&transaction, "auctions", &scan_id, &auctions)?;
             replace_rows(&transaction, "slots", &scan_id, &slots)?;
             transaction.commit()
+        })
+        .await
+    }
+
+    async fn save_environment(
+        &self,
+        scan_id: &str,
+        environment: &ScanEnvironment,
+    ) -> RepoResult<()> {
+        let scan_id = scan_id.to_string();
+        let environment = to_json(environment);
+        self.call(move |connection| {
+            connection.execute(
+                "UPDATE scans SET environment = ?2 WHERE id = ?1",
+                params![scan_id, environment?],
+            )?;
+            Ok(())
         })
         .await
     }
@@ -155,12 +178,24 @@ impl ScanRepository for SqliteStore {
             let Some(summary) = read_summary_by_id(connection, &scan_id)? else {
                 return Ok(None);
             };
-            type Columns = (String, Option<String>, Option<String>, Option<String>);
-            let (options, metrics, overview, diagnostics): Columns = connection.query_row(
-                "SELECT options, metrics, overview, diagnostics FROM scans WHERE id = ?1",
-                [&scan_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
+            type Json = Option<String>;
+            type Columns = (String, Json, Option<String>, Json, Json, Json);
+            let (options, metrics, overview, diagnostics, pages, environment): Columns =
+                connection.query_row(
+                    "SELECT options, metrics, overview, diagnostics, pages, environment
+                     FROM scans WHERE id = ?1",
+                    [&scan_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )?;
             Ok(Some(ScanDetail {
                 summary,
                 options: from_json(&options)?,
@@ -176,6 +211,13 @@ impl ScanRepository for SqliteStore {
                 steps: read_rows(connection, "steps", "seq", &scan_id)?,
                 overview,
                 bidder_diagnostics: diagnostics.as_deref().map(from_json).transpose()?,
+                // NULL in scans stored before page views were recorded.
+                pages: pages
+                    .as_deref()
+                    .map(from_json)
+                    .transpose()?
+                    .unwrap_or_default(),
+                environment: environment.as_deref().map(from_json).transpose()?,
             }))
         })
         .await
@@ -202,6 +244,10 @@ impl ScanRepository for SqliteStore {
             if let Some(device) = query.device {
                 values.push(SqlValue::Text(enum_text(&device)?));
                 conditions.push(format!("device = ?{}", values.len()));
+            }
+            if let Some(configuration_id) = query.configuration_id {
+                values.push(SqlValue::Text(configuration_id));
+                conditions.push(format!("configuration_id = ?{}", values.len()));
             }
             let filter = if conditions.is_empty() {
                 String::new()
@@ -380,6 +426,10 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<ScanSummary> {
         prebid_version: row.get(15)?,
         ai_used: row.get(16)?,
         error: row.get(17)?,
+        configuration: match (row.get(18)?, row.get(19)?) {
+            (Some(id), Some(name)) => Some(ScanConfigurationRef { id, name }),
+            _ => None,
+        },
     })
 }
 

@@ -11,11 +11,14 @@ mod recorder;
 mod scenario;
 mod scripts;
 mod tracker_log;
+mod visitor;
 
 use std::path::Path;
 use std::time::Duration;
 
-use adscan_model::{Capture, CaptureRequest, DeviceProfile};
+use adscan_model::{
+    Capture, CaptureEnvironment, CaptureRequest, CapturedPage, DeviceProfile, VisitorBehavior,
+};
 use serde_json::json;
 use tokio::time::Instant;
 use url::Url;
@@ -150,7 +153,7 @@ async fn observe(
     hooks: &CaptureHooks,
 ) -> Result<bool, CaptureError> {
     let window = observation_window(request.observe_seconds);
-    let plan = if request.auto_scroll {
+    let plan = if request.visitor == VisitorBehavior::Scroll {
         scroll_plan(window)
     } else {
         Vec::new()
@@ -240,6 +243,16 @@ async fn collect(
     let emulation = page.emulation().clone();
     let recorder = page.recorder;
     let navigation_start = recorder.navigation_start();
+    let page_load_ms = recorder.tracker.page_load_ms();
+    let max_scroll_depth = recorder.tracker.max_scroll_depth();
+    let events = recorder.tracker.into_events();
+    let entry_page = CapturedPage {
+        title: page_title.clone(),
+        ended_at_ms: events.iter().map(|event| event.t).fold(0.0, f64::max),
+        load_ms: page_load_ms,
+        max_scroll_depth,
+        ..CapturedPage::entry(recorder.document_url.clone())
+    };
     let capture = Capture {
         final_url: recorder.document_url,
         page_title,
@@ -247,13 +260,15 @@ async fn collect(
         viewport: emulation.viewport,
         user_agent: emulation.user_agent,
         navigation_start,
-        page_load_ms: recorder.tracker.page_load_ms(),
-        max_scroll_depth: recorder.tracker.max_scroll_depth(),
+        page_load_ms,
+        max_scroll_depth,
         scripts: recorder.scripts.into_captured(navigation_start),
         console: recorder.console.into_lines(navigation_start),
-        events: recorder.tracker.into_events(),
+        events,
         consent_accepted,
         bid_responses: recorder.bid_responses.into_observed(navigation_start),
+        pages: vec![entry_page],
+        environment: CaptureEnvironment::default(),
     };
     (hooks.on_progress)(format!(
         "Captured {} scripts, {} tracker events and {} console lines",

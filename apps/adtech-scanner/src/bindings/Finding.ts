@@ -28,4 +28,9 @@ estimatedRevenueImpactPct: number | null, evidence: Array<Evidence>,
 /**
  * Ad unit codes / slot element ids this finding concerns.
  */
-affectedSlots: Array<string>, affectedBidders: Array<string>, };
+affectedSlots: Array<string>, affectedBidders: Array<string>, 
+/**
+ * Page views the finding was seen on; empty when it is not specific
+ * to a page.
+ */
+pages: Array<number>, };

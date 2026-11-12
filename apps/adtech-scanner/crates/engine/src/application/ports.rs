@@ -4,9 +4,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adscan_model::{
-    AdSlot, ApiProvider, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureRequest,
-    DashboardStats, Finding, LogEntry, LogSearchHit, PipelineStep, ScanDetail, ScanEvent, ScanList,
-    ScanListQuery, ScanMetrics, ScanOptions, ScanSummary, ScriptRecord, Settings,
+    AdSlot, ApiProvider, Auction, BidderDiagnostics, BrowserInfo, Capture, CaptureActivity,
+    CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit, PageView,
+    PipelineStep, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList,
+    ScanListQuery, ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -28,8 +29,14 @@ pub trait ScanRepository: Send + Sync {
         &self,
         scan_id: &str,
         metrics: &ScanMetrics,
+        pages: &[PageView],
         auctions: &[Auction],
         slots: &[AdSlot],
+    ) -> RepoResult<()>;
+    async fn save_environment(
+        &self,
+        scan_id: &str,
+        environment: &ScanEnvironment,
     ) -> RepoResult<()>;
     async fn save_scripts(&self, scan_id: &str, scripts: &[ScriptRecord]) -> RepoResult<()>;
     async fn save_diagnostics(
@@ -51,6 +58,21 @@ pub trait ScanRepository: Send + Sync {
     async fn dashboard_stats(&self) -> RepoResult<DashboardStats>;
     /// Marks scans left queued or running by a previous process as failed.
     async fn fail_interrupted(&self, message: &str, now_ms: f64) -> RepoResult<u32>;
+}
+
+/// Saved scan configurations. Uniqueness of names is the use case's rule,
+/// not the store's.
+#[async_trait]
+pub trait ScanConfigurationRepository: Send + Sync {
+    /// By name.
+    async fn list(&self) -> RepoResult<Vec<ScanConfiguration>>;
+    async fn get(&self, id: &str) -> RepoResult<Option<ScanConfiguration>>;
+    /// Inserts, or replaces the name, options and `updated_at` of the stored
+    /// configuration with that id. The last-run fields are left alone.
+    async fn save(&self, configuration: &ScanConfiguration) -> RepoResult<()>;
+    /// False when unknown. Scans started from it stay.
+    async fn delete(&self, id: &str) -> RepoResult<bool>;
+    async fn record_run(&self, id: &str, scan_id: &str, at_ms: f64) -> RepoResult<()>;
 }
 
 #[async_trait]
@@ -77,12 +99,17 @@ pub enum SecretError {
     Failed(String),
 }
 
-/// Where the API keys live, one per provider.
+/// Where the secrets live: one API key per provider and one password per
+/// proxy profile.
 #[async_trait]
 pub trait SecretStore: Send + Sync {
     async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, SecretError>;
     async fn store_api_key(&self, provider: ApiProvider, key: &str) -> Result<(), SecretError>;
     async fn clear_api_key(&self, provider: ApiProvider) -> Result<(), SecretError>;
+    async fn proxy_password(&self, proxy_id: &str) -> Result<Option<String>, SecretError>;
+    async fn store_proxy_password(&self, proxy_id: &str, password: &str)
+    -> Result<(), SecretError>;
+    async fn clear_proxy_password(&self, proxy_id: &str) -> Result<(), SecretError>;
 }
 
 #[async_trait]
@@ -122,11 +149,27 @@ pub enum CaptureError {
     Navigation(String),
     #[error("The scan was cancelled")]
     Cancelled,
+    #[error("The scan profile is in use by a running scan")]
+    ProfileBusy,
     #[error("{0}")]
     Other(String),
 }
 
-pub type ProgressFn = Arc<dyn Fn(String) + Send + Sync>;
+pub type ActivityFn = Arc<dyn Fn(CaptureActivity) + Send + Sync>;
+
+/// Everything about one capture that is not part of the request: how to
+/// stop it, where it reports, and the one secret it may need.
+#[derive(Clone)]
+pub struct CaptureSession {
+    /// Stops the capture and discards what it recorded.
+    pub cancel: CancellationToken,
+    /// Ends a manual visit and keeps what it recorded.
+    pub finish: CancellationToken,
+    pub on_activity: ActivityFn,
+    /// Password of the request's proxy, when one is stored. Kept out of the
+    /// request so it cannot be logged or serialised with it.
+    pub proxy_password: Option<String>,
+}
 
 #[async_trait]
 pub trait CaptureSource: Send + Sync {
@@ -136,9 +179,15 @@ pub trait CaptureSource: Send + Sync {
     async fn capture(
         &self,
         request: CaptureRequest,
-        cancel: CancellationToken,
-        on_progress: ProgressFn,
+        session: CaptureSession,
     ) -> Result<Capture, CaptureError>;
+
+    /// The browser profile that persistent-profile scans share.
+    async fn scan_profile_info(&self) -> ScanProfileInfo;
+
+    /// Removes that profile. [`CaptureError::ProfileBusy`] while a browser
+    /// runs in it.
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError>;
 }
 
 /// A request for a public text file of a website (ads.txt, sellers.json).
@@ -153,6 +202,36 @@ pub struct PublicFileRequest {
     /// machine. It is the only origin that may be contacted although it is
     /// not public and not https.
     pub loopback_origin: Option<String>,
+    /// The scan's proxy; the request leaves through it like the scan's
+    /// browser does. The loopback origin is always reached directly.
+    pub proxy: FetchProxy,
+}
+
+/// The proxy of a public file request, with the secret it needs.
+#[derive(Clone, PartialEq, Eq)]
+pub struct FetchProxy {
+    pub route: CaptureProxy,
+    pub password: Option<String>,
+}
+
+impl FetchProxy {
+    pub fn system() -> Self {
+        Self {
+            route: CaptureProxy::System,
+            password: None,
+        }
+    }
+}
+
+/// Never prints the password.
+impl std::fmt::Debug for FetchProxy {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("FetchProxy")
+            .field("route", &self.route)
+            .field("has_password", &self.password.is_some())
+            .finish()
+    }
 }
 
 /// The final answer after redirects.

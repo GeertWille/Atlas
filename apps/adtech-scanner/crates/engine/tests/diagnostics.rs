@@ -420,6 +420,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
     );
     capture.bid_responses = vec![
         ObservedBidResponse {
+            page: 0,
             t: 1_100.0,
             bidder: "appnexus".into(),
             host: "ib.adnxs.com".into(),
@@ -427,6 +428,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
             reason: Some("tag error: Invalid placement".into()),
         },
         ObservedBidResponse {
+            page: 0,
             t: 1_150.0,
             bidder: "appnexus".into(),
             host: "ib.adnxs.com".into(),
@@ -434,6 +436,7 @@ fn causes_are_ranked_from_the_endpoints_own_answer_down_to_inference() {
             reason: None,
         },
         ObservedBidResponse {
+            page: 0,
             t: 1_160.0,
             bidder: "appnexus".into(),
             host: "ib.adnxs.com".into(),
@@ -699,6 +702,7 @@ fn test_ids_and_failing_requests_of_bidders_that_do_bid_are_reported() {
         vec![],
     );
     capture.bid_responses = vec![ObservedBidResponse {
+        page: 0,
         t: 1_100.0,
         bidder: "openx".into(),
         host: "rtb.openx.net".into(),
@@ -1133,6 +1137,7 @@ fn stored_text_is_always_short() {
         vec![],
     );
     capture.bid_responses = vec![ObservedBidResponse {
+        page: 0,
         t: 1_100.0,
         bidder: "rubicon".into(),
         host: "fastlane.rubiconproject.com".into(),

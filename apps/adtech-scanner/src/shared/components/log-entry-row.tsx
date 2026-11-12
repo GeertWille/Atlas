@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   CornerDownRightIcon,
   FlagIcon,
+  FootprintsIcon,
   type LucideIcon,
   ScaleIcon,
   TerminalIcon,
@@ -24,6 +25,7 @@ import {
   summarizeToolInput,
 } from "@/shared/domain/log-entry";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
+import { describeSkipped, type VisitorActivity, visitorActivity } from "@/shared/domain/visitor-log";
 import { LOG_KIND_LABEL, LOG_LEVEL_LABEL, scriptCategoryLabel } from "@/shared/domain/vocabulary";
 import { cn } from "@/shared/lib/cn";
 import { formatClock } from "@/shared/lib/format";
@@ -42,6 +44,7 @@ export const LOG_KIND_ICON: Record<LogKind, LucideIcon> = {
   toolResult: CornerDownRightIcon,
   finding: FlagIcon,
   classification: ScaleIcon,
+  visitor: FootprintsIcon,
 };
 
 const KIND_ICON_TONE: Record<LogKind, string> = {
@@ -53,6 +56,7 @@ const KIND_ICON_TONE: Record<LogKind, string> = {
   toolResult: "text-amber-fg",
   finding: "text-red-fg",
   classification: "text-violet-fg",
+  visitor: "text-green-fg",
 };
 
 const ROW_BODY = "flex h-full min-w-0 flex-1 items-center gap-2 text-left";
@@ -170,10 +174,70 @@ function ClassificationSummary({ details }: { details: ClassificationDetails }) 
   );
 }
 
+type LinkChoice = Extract<VisitorActivity, { activity: "linkChoice" }>;
+
+/** Why the scripted visitor followed the link it did: the pick, the runners-up and what it would not touch. */
+function LinkChoiceSummary({ choice }: { choice: LinkChoice }) {
+  const { chosen, alternatives, skipped } = choice;
+  const candidates = [
+    ...(chosen ? [{ ...chosen, picked: true }] : []),
+    ...alternatives.map((link) => ({ ...link, picked: false })),
+  ];
+  return (
+    <div className="flex flex-col gap-2.5 rounded-md border bg-card px-3 py-2.5 text-xs">
+      {candidates.length > 0 ? (
+        <table className="w-full table-fixed border-separate border-spacing-y-1">
+          <caption className="sr-only">Links considered</caption>
+          <thead className="text-left text-muted-foreground">
+            <tr>
+              <th scope="col" className="w-[38%] font-normal">
+                Link
+              </th>
+              <th scope="col" className="font-normal">
+                Address
+              </th>
+              <th scope="col" className="w-12 text-right font-normal">
+                Score
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {candidates.map((link) => (
+              <tr key={link.href} className={link.picked ? "font-medium" : "text-muted-foreground"}>
+                <td className="truncate pr-3">
+                  {link.picked ? (
+                    <Badge tone="green" className="mr-1.5">
+                      Followed
+                    </Badge>
+                  ) : null}
+                  {link.text || "(no text)"}
+                </td>
+                <td className="selectable truncate pr-3 font-mono font-normal">{link.href}</td>
+                <td className="text-right tabular-nums">{link.score ?? "–"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="text-muted-foreground">No link on this page was safe and worth following.</p>
+      )}
+      <p className="flex flex-col gap-1 text-muted-foreground empty:hidden">
+        {chosen && chosen.reasons.length > 0 ? <span>Chosen for: {chosen.reasons.join(", ")}</span> : null}
+        {skipped.length > 0 ? (
+          <span>
+            Not considered: <span className="tabular-nums">{describeSkipped(skipped)}</span>
+          </span>
+        ) : null}
+      </p>
+    </div>
+  );
+}
+
 function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (findingId: string) => void }) {
   const { text, json } = logPayload(entry);
   const findingId = reportedFindingId(entry);
   const classification = classificationDetails(entry);
+  const visitor = visitorActivity(entry);
   // The headline already shows short one-line messages in full, and a tool call's name is never long.
   const showMessage = entry.kind !== "toolCall" && messageExceedsHeadline(entry);
   return (
@@ -189,6 +253,7 @@ function Details({ entry, onOpenFinding }: { entry: LogEntry; onOpenFinding?: (f
         </p>
       ) : null}
       {classification ? <ClassificationSummary details={classification} /> : null}
+      {visitor?.activity === "linkChoice" ? <LinkChoiceSummary choice={visitor} /> : null}
       {text !== null ? (
         <pre
           // biome-ignore lint/a11y/noNoninteractiveTabindex: scroll container

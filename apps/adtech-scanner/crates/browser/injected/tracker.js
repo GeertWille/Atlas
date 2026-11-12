@@ -4,7 +4,11 @@
 // never change what the page's own calls return, and leave no globals behind.
 // Emits `{ t, type, ...fields }` objects matching `TrackerEventKind` in
 // crates/model/src/capture.rs, batched through a CDP binding.
-(function () {
+//
+// This file is one function expression. The scanner calls it with the site
+// being scanned, `{ domain, port }`, or with `null` while the visit's first
+// page is still to be reached. On any other site it does nothing at all.
+(function (site) {
   'use strict';
 
   var win = window;
@@ -18,6 +22,18 @@
     if (win.top !== win) return;
   } catch (crossOriginParent) {
     return;
+  }
+  if (site && !isOnSite(win.location)) return;
+
+  // `port` is set when the site is one exact origin (an IP address,
+  // localhost); otherwise every host under `domain` belongs to it.
+  function isOnSite(location) {
+    var host = String(location.hostname).toLowerCase();
+    if (site.port === null) {
+      return host === site.domain || host.slice(-site.domain.length - 1) === '.' + site.domain;
+    }
+    var port = Number(location.port) || (location.protocol === 'https:' ? 443 : 80);
+    return host === site.domain && port === site.port;
   }
 
   // Pages replace these; keep the originals.
@@ -658,8 +674,9 @@
         version: str(typeof googletag.getVersion === 'function' ? googletag.getVersion() : null),
       });
     }
-    wrapSlotFactory(googletag, 'defineSlot');
-    wrapSlotFactory(googletag, 'defineOutOfPageSlot');
+    wrapSlotFactory(googletag, 'defineSlot', 2);
+    wrapSlotFactory(googletag, 'defineOutOfPageSlot', 1);
+    wrapDestroySlots(googletag);
     if (listenedLibraries.has(googletag)) return;
     var pubads = googletag.pubads();
     if (!pubads || typeof pubads.addEventListener !== 'function') return;
@@ -676,16 +693,39 @@
     });
   }
 
-  function wrapSlotFactory(googletag, method) {
+  // `elementIdAt` is the position of the container id among the arguments.
+  function wrapSlotFactory(googletag, method, elementIdAt) {
     var original = googletag[method];
     if (typeof original !== 'function' || gptWrappers.has(original)) return;
     var wrapper = disguise(function () {
       var slot = original.apply(this, arguments);
-      guard(noteSlot)(slot);
+      var elementId = arguments[elementIdAt];
+      guard(function () {
+        // GPT refuses a second slot for a container and returns null.
+        if (slot === null && str(elementId)) emit('slotDefinitionRejected', { elementId: str(elementId) });
+        else noteSlot(slot);
+      })();
       return slot;
     }, original);
     gptWrappers.add(wrapper);
     googletag[method] = wrapper;
+  }
+
+  function wrapDestroySlots(googletag) {
+    var original = googletag.destroySlots;
+    if (typeof original !== 'function' || gptWrappers.has(original)) return;
+    var wrapper = disguise(function (slots) {
+      var doomed = [];
+      guard(function () {
+        var listed = isArray(slots) ? slots : googletag.pubads().getSlots();
+        for (var i = 0; isArray(listed) && i < listed.length; i++) pushUnique(doomed, slotElementId(listed[i]));
+      })();
+      var destroyed = original.apply(this, arguments);
+      if (destroyed && doomed.length) emit('slotsDestroyed', { elementIds: doomed });
+      return destroyed;
+    }, original);
+    gptWrappers.add(wrapper);
+    googletag.destroySlots = wrapper;
   }
 
   function slotElementId(slot) {
@@ -736,19 +776,24 @@
   }
 
   // GPT is retiring the slot's targeting getters in favour of
-  // `getConfig('targeting')`; the getter is used for as long as it exists.
-  function slotTargetingKeys(slot) {
+  // `getConfig('targeting')`; the getters are used for as long as they exist.
+  function slotTargeting(slot) {
+    var targeting = {};
     if (typeof slot.getTargetingKeys === 'function') {
       var keys = slot.getTargetingKeys();
-      return isArray(keys) ? keys : [];
+      for (var i = 0; isArray(keys) && i < keys.length; i++) {
+        targeting[keys[i]] = typeof slot.getTargeting === 'function' ? slot.getTargeting(keys[i]) : [];
+      }
+      return targeting;
     }
     var config = typeof slot.getConfig === 'function' ? slot.getConfig('targeting') : null;
-    var targeting = config && config.targeting;
-    if (!targeting || typeof targeting !== 'object') return [];
-    return Object.keys(targeting).filter(function (key) {
-      var value = targeting[key];
-      return isArray(value) ? value.length > 0 : value !== null && value !== undefined;
+    var configured = config && config.targeting;
+    if (!configured || typeof configured !== 'object') return targeting;
+    Object.keys(configured).forEach(function (key) {
+      var value = configured[key];
+      if (isArray(value) ? value.length > 0 : value !== null && value !== undefined) targeting[key] = value;
     });
+    return targeting;
   }
 
   function onSlotEvent(eventType, event) {
@@ -759,10 +804,15 @@
     reportMeasurableSlots(slot);
     var fields = { elementId: elementId };
     if (eventType === 'slotRequested') {
+      var targeting = slotTargeting(slot);
       fields.prebidTargetingKeys = [];
-      slotTargetingKeys(slot).forEach(function (key) {
-        if (typeof key === 'string' && key.indexOf('hb_') === 0) pushUnique(fields.prebidTargetingKeys, str(key));
+      Object.keys(targeting).forEach(function (key) {
+        if (key.indexOf('hb_') === 0) pushUnique(fields.prebidTargetingKeys, str(key));
       });
+      // Which bid the ad server is asked to serve: the same id on two
+      // requests means a bid is being offered twice.
+      var adId = targeting.hb_adid;
+      fields.prebidAdId = str(isArray(adId) ? adId[0] : adId);
     } else if (eventType === 'slotRenderEnded') {
       fields.isEmpty = event.isEmpty !== false;
       fields.size = sizeOf(event.size);
@@ -937,9 +987,50 @@
         passive
       );
     });
+    // Moving the pointer is not an interaction, but ad stacks wait for it too.
+    win.addEventListener(
+      'pointermove',
+      guard(function () {
+        phase('firstPointerMove');
+      }),
+      { capture: true, passive: true, once: true }
+    );
     // Script `load` events do not bubble but can be captured: a library that
     // just finished loading is hooked without waiting for the next poll.
     doc.addEventListener('load', inspectAll, true);
+  }
+
+  // ----------------------------------------------------------- route changes
+
+  var ROUTE_POLL_MS = 100;
+
+  // A single-page app changes the address without loading a document. The
+  // Navigation API reports that as it happens; `history` is never patched.
+  // Browsers without the API are asked for the address ten times a second.
+  function watchRoutes() {
+    var navigation = win.navigation;
+    if (navigation && typeof navigation.addEventListener === 'function') {
+      navigation.addEventListener(
+        'currententrychange',
+        guard(function (event) {
+          reportRoute(str(event && event.navigationType) || 'push');
+        })
+      );
+      return;
+    }
+    var lastSeen = win.location.href;
+    (function pollRoute() {
+      guard(function () {
+        if (win.location.href === lastSeen) return;
+        lastSeen = win.location.href;
+        reportRoute('push');
+      })();
+      setTimer(pollRoute, ROUTE_POLL_MS);
+    })();
+  }
+
+  function reportRoute(navigationType) {
+    emit('routeChange', { url: clip(String(win.location.href)), navigationType: navigationType });
   }
 
   // ------------------------------------------------------------------ wiring
@@ -959,7 +1050,8 @@
 
   guard(wrapConsole)();
   guard(watchLifecycle)();
+  guard(watchRoutes)();
   watchGlobal('googletag', inspectGpt);
   watchGlobal('apstag', inspectAps);
   poll();
-})();
+})

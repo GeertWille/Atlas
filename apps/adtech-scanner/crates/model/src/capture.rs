@@ -7,19 +7,49 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::DeviceProfile;
+use crate::{DeviceProfile, FollowedLink, PageReach, ProxyScheme, VisitorBehavior};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CaptureRequest {
     pub url: String,
     pub device: DeviceProfile,
+    /// Seconds to observe each page view. Does not apply to manual visits.
     pub observe_seconds: u32,
-    pub auto_scroll: bool,
+    pub visitor: VisitorBehavior,
+    /// Further pages to follow links to, 0-5. Zero unless `visitor` is browse.
+    pub extra_pages: u32,
+    /// Seed of the scripted visit: the same seed on the same page plans the
+    /// same actions.
+    pub seed: u32,
     pub accept_consent: bool,
     pub headless: bool,
+    /// Use the scan profile that survives the scan instead of a throwaway one.
+    pub persistent_profile: bool,
+    pub proxy: CaptureProxy,
     /// Explicit browser executable; `None` means auto-detect.
     pub chrome_path: Option<String>,
+}
+
+/// The proxy the browser connects through. The password of a custom proxy is
+/// handed over outside this type, so it can never be serialised with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum CaptureProxy {
+    /// Connect directly, ignoring the system's proxy.
+    None,
+    /// The browser's default: the operating system's proxy settings.
+    System,
+    Custom {
+        scheme: ProxyScheme,
+        host: String,
+        port: u16,
+        username: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -46,13 +76,151 @@ pub struct Capture {
     /// reason. The response bodies themselves are dropped during capture.
     #[serde(default)]
     pub bid_responses: Vec<ObservedBidResponse>,
+    /// The page views of the visit, in order; never empty. Every `t` and
+    /// `*_at_ms` of a record counts from the start of the page view its
+    /// `page` names.
+    pub pages: Vec<CapturedPage>,
+    pub environment: CaptureEnvironment,
+}
+
+impl Capture {
+    /// ms since `navigation_start` of something that happened `t` ms into
+    /// page view `page`.
+    pub fn absolute_ms(&self, page: u32, t: f64) -> f64 {
+        self.pages
+            .get(page as usize)
+            .map_or(t, |view| view.started_at_ms + t)
+    }
+
+    /// A desktop capture of one page view that loaded and recorded nothing:
+    /// the values a test changes from.
+    pub fn single_page(url: impl Into<String>, events: Vec<TrackerEvent>) -> Self {
+        let url = url.into();
+        Self {
+            final_url: url.clone(),
+            page_title: None,
+            device: DeviceProfile::Desktop,
+            viewport: Viewport {
+                width: 1440,
+                height: 900,
+                device_scale_factor: 1.0,
+                mobile: false,
+            },
+            user_agent: String::new(),
+            navigation_start: 0.0,
+            page_load_ms: None,
+            scripts: Vec::new(),
+            events,
+            console: Vec::new(),
+            max_scroll_depth: 0.0,
+            consent_accepted: false,
+            bid_responses: Vec::new(),
+            pages: vec![CapturedPage::entry(url)],
+            environment: CaptureEnvironment::default(),
+        }
+    }
+}
+
+/// One page view of the visit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapturedPage {
+    pub url: String,
+    pub title: Option<String>,
+    /// ms since `Capture.navigation_start`; the entry page starts at 0.
+    pub started_at_ms: f64,
+    pub ended_at_ms: f64,
+    pub reached_by: PageReach,
+    pub link: Option<FollowedLink>,
+    /// ms from the start of the page view to its load event. `None` for
+    /// route changes.
+    pub load_ms: Option<f64>,
+    /// 0-1.
+    pub max_scroll_depth: f64,
+}
+
+impl CapturedPage {
+    /// The page view a visit starts with, before anything is known about it.
+    pub fn entry(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            title: None,
+            started_at_ms: 0.0,
+            ended_at_ms: 0.0,
+            reached_by: PageReach::Entry,
+            link: None,
+            load_ms: None,
+            max_scroll_depth: 0.0,
+        }
+    }
+}
+
+/// What the pages could observe about the browser, read from the browser
+/// itself. Reported as it was.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureEnvironment {
+    pub headless: bool,
+    pub persistent_profile: bool,
+    /// `navigator.webdriver` as the page saw it; `None` when it could not be
+    /// read.
+    pub webdriver: Option<bool>,
+    pub user_agent_overridden: bool,
+    pub viewport_overridden: bool,
+    /// Third-party host names the pages requested: names only, at most 500.
+    pub request_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ActivityKind {
+    /// A progress line of the capture itself.
+    Progress,
+    /// A page view opened.
+    PageView,
+    /// Something the visitor did: a scroll, a pointer move, a click.
+    Action,
+    /// Which link the visitor follows next, and what it passed over.
+    LinkChoice,
+    /// Something the scanner refused to do or to record.
+    Blocked,
+    /// What the page can tell about the browser.
+    Environment,
+}
+
+/// One thing that happened during a capture, reported while it runs. Every
+/// one becomes an audit-trail entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureActivity {
+    pub kind: ActivityKind,
+    /// One readable line.
+    pub message: String,
+    /// The page view it happened on, when it belongs to one.
+    pub page: Option<u32>,
+    /// Structured detail; its shape depends on `kind`.
+    pub data: Option<serde_json::Value>,
+}
+
+impl CaptureActivity {
+    pub fn progress(message: impl Into<String>) -> Self {
+        Self {
+            kind: ActivityKind::Progress,
+            message: message.into(),
+            page: None,
+            data: None,
+        }
+    }
 }
 
 /// One answer of a known bidder endpoint, as seen on the network.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObservedBidResponse {
-    /// ms since navigation start when the response arrived.
+    /// Page view the response arrived on.
+    #[serde(default)]
+    pub page: u32,
+    /// ms since the start of that page view when the response arrived.
     pub t: f64,
     /// Prebid bidder code the endpoint belongs to.
     pub bidder: String,
@@ -81,16 +249,22 @@ pub struct CapturedScript {
     pub inline: bool,
     /// Full source text. In memory only.
     pub body: String,
-    /// ms since navigation start when loading finished.
+    /// ms since the start of the first page view that loaded it when
+    /// loading finished.
     pub loaded_at_ms: Option<f64>,
     /// URL of the script or document that initiated the request, if known.
     pub initiator: Option<String>,
+    /// Page views that loaded the script, ascending.
+    #[serde(default)]
+    pub pages: Vec<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConsoleLine {
-    /// ms since navigation start.
+    #[serde(default)]
+    pub page: u32,
+    /// ms since the start of that page view.
     pub t: f64,
     /// "log" | "info" | "warning" | "error" | "debug"
     pub level: String,
@@ -101,7 +275,11 @@ pub struct ConsoleLine {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TrackerEvent {
-    /// ms since navigation start.
+    /// Page view the event belongs to. The tracker does not send it; the
+    /// capture assigns it.
+    #[serde(default)]
+    pub page: u32,
+    /// ms since the start of that page view.
     pub t: f64,
     #[serde(flatten)]
     pub kind: TrackerEventKind,
@@ -222,6 +400,17 @@ pub enum TrackerEventKind {
         element_id: String,
         /// hb_* targeting keys present on the slot when the request went out.
         prebid_targeting_keys: Vec<String>,
+        /// Value of `hb_adid` on the slot when the request went out.
+        #[serde(default)]
+        prebid_ad_id: Option<String>,
+    },
+    /// `googletag.destroySlots` removed these slots.
+    SlotsDestroyed {
+        element_ids: Vec<String>,
+    },
+    /// `defineSlot` returned null: the container already has a slot.
+    SlotDefinitionRejected {
+        element_id: String,
     },
     SlotResponseReceived {
         element_id: String,
@@ -252,8 +441,15 @@ pub enum TrackerEventKind {
 
     // -- Page lifecycle ---------------------------------------------------------
     PageLifecycle {
-        /// "domContentLoaded" | "load" | "firstScroll" | "firstInteraction"
+        /// "domContentLoaded" | "load" | "firstScroll" | "firstInteraction" |
+        /// "firstPointerMove"
         phase: String,
+    },
+    /// The page changed its URL without loading a new document.
+    RouteChange {
+        url: String,
+        /// "push" | "replace" | "traverse" | "reload"
+        navigation_type: String,
     },
     Scroll {
         /// 0-1 of the scrollable height.

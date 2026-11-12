@@ -19,4 +19,9 @@ excerpt: string | null,
 /**
  * Ad unit codes the outcome concerns; empty when it concerns all.
  */
-adUnits: Array<string>, };
+adUnits: Array<string>, 
+/**
+ * Page views the outcome was seen on; empty when it is not specific
+ * to a page.
+ */
+pages: Array<number>, };

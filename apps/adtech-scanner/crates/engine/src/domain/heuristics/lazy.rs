@@ -2,7 +2,7 @@ use adscan_model::{FindingCategory, ScriptCategory, Severity, SlotOutcome};
 
 use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
-    RuleContext, estimate_impact, heuristic, ms,
+    RuleContext, RuleScope, estimate_impact, heuristic, ms,
 };
 use crate::domain::finding::{FindingDraft, timeline};
 
@@ -18,6 +18,10 @@ pub struct AuctionGatedOnInteraction;
 impl Rule for AuctionGatedOnInteraction {
     fn id(&self) -> &'static str {
         "auction-gated-on-interaction"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
@@ -104,7 +108,7 @@ fn never_started(ctx: &RuleContext, interaction_at_ms: Option<f64>) -> FindingDr
             ctx.capture.viewport.width,
             ctx.capture.viewport.height,
             interaction_at_ms.map_or("never".to_string(), ms),
-            ctx.capture.max_scroll_depth * 100.0
+            ctx.max_scroll_depth() * 100.0
         ),
     ));
     finding.affected_slots = slots_waiting_for_bids(ctx);
@@ -163,7 +167,7 @@ fn started_after_interaction(
             "{device} scan: first interaction {} -> first auction {} (page load {})",
             ms(interaction_at_ms),
             ms(auction_at_ms),
-            ctx.capture.page_load_ms.map_or("unknown".to_string(), ms),
+            ctx.page_load_ms().map_or("unknown".to_string(), ms),
         ),
     ));
     if !in_view.is_empty() {

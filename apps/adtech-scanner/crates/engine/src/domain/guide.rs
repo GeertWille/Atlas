@@ -265,6 +265,7 @@ mod tests {
     fn placement_names_come_from_the_telemetry_and_short_ones_are_ignored() {
         let telemetry = Telemetry {
             auctions: vec![Auction {
+                page: 0,
                 id: "a".into(),
                 started_at_ms: 0.0,
                 ended_at_ms: None,
@@ -282,6 +283,8 @@ mod tests {
                     .collect(),
             }],
             slots: vec![AdSlot {
+                page: 0,
+                requests: Vec::new(),
                 element_id: "div-gpt-ad-leaderboard".into(),
                 ad_unit_path: Some("/123/site/top".into()),
                 sizes: vec![],

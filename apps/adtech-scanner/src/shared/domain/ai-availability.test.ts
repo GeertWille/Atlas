@@ -24,7 +24,11 @@ test.each([
 
 test("scans started outside the composer use AI whenever any of it is available", () => {
   const start = (settings: ReturnType<typeof keys>) =>
-    defaultScanOptions({ ...settings, defaultObserveSeconds: 20 }, "https://example.com/", "desktop").aiEnabled;
+    defaultScanOptions(
+      { ...settings, defaultObserveSeconds: 20, defaultVisitor: "scroll", defaultExtraPages: 2 },
+      "https://example.com/",
+      "desktop",
+    ).aiEnabled;
   expect(start(keys(false, false, false))).toBe(false);
   expect(start(keys(false, true, true))).toBe(true);
   expect(start(keys(true, false, false))).toBe(true);

@@ -4,8 +4,12 @@ import type {
   Bid,
   Finding,
   LogEntry,
+  PageView,
   PipelineStep,
+  ProxyProfile,
+  ScanConfiguration,
   ScanDetail,
+  ScanEnvironment,
   ScanSummary,
   ScriptRecord,
   Settings,
@@ -25,6 +29,11 @@ export const settingsFixture: Settings = {
   jevEnabled: false,
   hasTypesafeKey: false,
   checkSellersJson: false,
+  defaultVisitor: "scroll",
+  defaultExtraPages: 2,
+  persistentProfile: false,
+  proxies: [],
+  defaultProxy: { kind: "system" },
 };
 
 export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
@@ -43,6 +52,7 @@ export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
     prebidVersion: "9.41.0",
     aiUsed: true,
     error: null,
+    configuration: null,
     ...overrides,
   };
 }
@@ -63,6 +73,7 @@ export function makeFinding(overrides: Partial<Finding> = {}): Finding {
     evidence: [],
     affectedSlots: [],
     affectedBidders: [],
+    pages: [],
     ...overrides,
   };
 }
@@ -85,6 +96,7 @@ export function makeAuction(bids: Bid[], overrides: Partial<Auction> = {}): Auct
   const winner = bids.find((bid) => bid.status === "won" || bid.status === "rendered");
   return {
     id: "a1",
+    page: 0,
     startedAtMs: 1000,
     endedAtMs: 2500,
     durationMs: 1500,
@@ -104,6 +116,7 @@ export function makeAuction(bids: Bid[], overrides: Partial<Auction> = {}): Auct
 
 export function makeSlot(overrides: Partial<AdSlot> = {}): AdSlot {
   return {
+    page: 0,
     elementId: "div-gpt-top",
     adUnitPath: "/123/site/top",
     sizes: ["728x90"],
@@ -119,6 +132,7 @@ export function makeSlot(overrides: Partial<AdSlot> = {}): AdSlot {
     requestedBeforeAuctionEnd: false,
     advertiserId: null,
     lineItemId: null,
+    requests: [],
     ...overrides,
   };
 }
@@ -142,6 +156,7 @@ export function makeScript(overrides: Partial<ScriptRecord> = {}): ScriptRecord 
     vendor: null,
     loadedAtMs: 500,
     firstParty: true,
+    pages: [],
     ...overrides,
   };
 }
@@ -222,6 +237,85 @@ export function makeDetail(overrides: Partial<ScanDetail> = {}): ScanDetail {
     steps: [],
     overview: null,
     bidderDiagnostics: null,
+    pages: [],
+    environment: null,
+    ...overrides,
+  };
+}
+
+export function makePage(overrides: Partial<PageView> = {}): PageView {
+  return {
+    index: 0,
+    url: "https://www.example.com/news",
+    title: "News",
+    startedAtMs: 0,
+    dwellMs: 20_000,
+    reachedBy: "entry",
+    link: null,
+    loadMs: 2100,
+    maxScrollDepth: 0.8,
+    metrics: {
+      auctionCount: 1,
+      bidRequestCount: 2,
+      bidResponseCount: 1,
+      slotCount: 1,
+      emptySlotCount: 0,
+      fillRate: 1,
+      timeToFirstAuctionMs: 800,
+      timeToFirstAdMs: 2300,
+    },
+    ...overrides,
+  };
+}
+
+export function makeEnvironment(overrides: Partial<ScanEnvironment> = {}): ScanEnvironment {
+  return {
+    visitor: "scroll",
+    seed: 4711,
+    headless: true,
+    persistentProfile: false,
+    webdriver: true,
+    userAgentOverridden: false,
+    viewportOverridden: true,
+    emulatedMobile: false,
+    detectors: [],
+    proxy: { kind: "system", name: null, host: null },
+    ...overrides,
+  };
+}
+
+export function makeProxy(overrides: Partial<ProxyProfile> = {}): ProxyProfile {
+  return {
+    id: "proxy-be",
+    name: "Belgium",
+    scheme: "http",
+    host: "be.proxy.example",
+    port: 8080,
+    username: null,
+    hasPassword: false,
+    ...overrides,
+  };
+}
+
+export function makeConfiguration(overrides: Partial<ScanConfiguration> = {}): ScanConfiguration {
+  return {
+    id: "config-1",
+    name: "Example from Belgium",
+    options: {
+      url: "https://www.example.com/news",
+      device: "desktop",
+      observeSeconds: 20,
+      autoScroll: true,
+      acceptConsent: true,
+      aiEnabled: true,
+      visitor: "scroll",
+      extraPages: 0,
+      headless: true,
+    },
+    createdAt: 1_700_000_000_000,
+    updatedAt: 1_700_000_000_000,
+    lastScanId: null,
+    lastRunAt: null,
     ...overrides,
   };
 }

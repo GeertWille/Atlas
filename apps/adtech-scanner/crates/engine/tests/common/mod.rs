@@ -30,7 +30,7 @@ use tokio_util::sync::CancellationToken;
 pub const WRAPPER_SOURCE: &str = r#"(function(){var pbjs=window.pbjs=window.pbjs||{};pbjs.que=pbjs.que||[];var googletag=window.googletag=window.googletag||{cmd:[]};var adUnits=[{code:"top",mediaTypes:{banner:{sizes:[[728,90]]}},bids:[{bidder:"rubicon",params:{accountId:1}}]}];function isMobile(){return window.innerWidth>768}function startAuction(){pbjs.que.push(function(){pbjs.addAdUnits(adUnits);pbjs.requestBids({timeout:1500,bidsBackHandler:function(){pbjs.setTargetingForGPTAsync();googletag.pubads().refresh()}})})}googletag.cmd.push(function(){googletag.defineSlot("/123/top",[728,90],"top").addService(googletag.pubads());googletag.pubads().disableInitialLoad();googletag.enableServices()});if(isMobile()){window.addEventListener("scroll",startAuction,{once:true})}else{startAuction()}})();"#;
 
 pub fn ev(t: f64, kind: Ev) -> TrackerEvent {
-    TrackerEvent { t, kind }
+    TrackerEvent { page: 0, t, kind }
 }
 
 pub fn strings(items: &[&str]) -> Vec<String> {
@@ -39,6 +39,7 @@ pub fn strings(items: &[&str]) -> Vec<String> {
 
 pub fn script(url: &str, body: &str) -> CapturedScript {
     CapturedScript {
+        pages: Vec::new(),
         url: url.into(),
         inline: false,
         body: body.into(),
@@ -79,6 +80,7 @@ pub fn slot_requested(t: f64, id: &str, with_prebid_targeting: bool) -> TrackerE
     ev(
         t,
         Ev::SlotRequested {
+            prebid_ad_id: None,
             element_id: id.into(),
             prebid_targeting_keys: if with_prebid_targeting {
                 strings(&["hb_pb", "hb_bidder"])
@@ -284,6 +286,8 @@ pub fn capture_with(
     events.sort_by(|a, b| a.t.total_cmp(&b.t));
     let mobile = device == DeviceProfile::Mobile;
     Capture {
+        environment: adscan_model::CaptureEnvironment::default(),
+        pages: vec![adscan_model::CapturedPage::entry("https://pub.example/")],
         final_url: "https://pub.example/".into(),
         page_title: Some("Publisher".into()),
         device,
@@ -594,6 +598,13 @@ fn build_harness(
 
 pub fn scan_options(ai_enabled: bool) -> ScanOptions {
     ScanOptions {
+        visitor: None,
+        extra_pages: None,
+        seed: None,
+        headless: None,
+        persistent_profile: None,
+        proxy: None,
+        budget_usd: None,
         url: "pub.example".into(),
         device: DeviceProfile::Desktop,
         observe_seconds: 10,
@@ -605,6 +616,7 @@ pub fn scan_options(ai_enabled: bool) -> ScanOptions {
 
 pub fn all_scans() -> adscan_model::ScanListQuery {
     adscan_model::ScanListQuery {
+        configuration_id: None,
         search: None,
         status: None,
         device: None,

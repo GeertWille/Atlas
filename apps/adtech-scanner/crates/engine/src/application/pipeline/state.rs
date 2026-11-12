@@ -1,4 +1,10 @@
-use adscan_model::{BidderDiagnostics, Capture, Finding, ScanSummary, ScriptRecord, Settings};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use adscan_model::{
+    BidderDiagnostics, Capture, Finding, ScanEnvironment, ScanSummary, ScriptRecord, Settings,
+};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::application::AppError;
@@ -8,7 +14,7 @@ use crate::domain::chunks::LineRange;
 use crate::domain::pricing::Budget;
 use crate::domain::scan::ValidatedScan;
 use crate::domain::scripts::DescribedScript;
-use crate::domain::telemetry::Telemetry;
+use crate::domain::telemetry::ScanTelemetry;
 
 /// Immutable input of one pipeline run.
 pub struct ScanJob {
@@ -19,7 +25,39 @@ pub struct ScanJob {
     pub api_key: Option<String>,
     /// TypeSafe key, present only when the scan uses Jev. In memory only.
     pub jev_key: Option<String>,
+    /// Password of the scan's proxy profile. In memory only.
+    pub proxy_password: Option<String>,
     pub cancel: CancellationToken,
+    pub finish: FinishSignal,
+    /// One permit: the turn to run a browser in the persistent scan profile.
+    pub scan_profile: Arc<Semaphore>,
+}
+
+/// The user's "finish capture" for a manual visit. It only counts while the
+/// capture is running: pressed earlier or later it must not end a capture
+/// that has not started, so the capture arms it for its own duration.
+#[derive(Clone, Default)]
+pub struct FinishSignal {
+    token: CancellationToken,
+    armed: Arc<AtomicBool>,
+}
+
+impl FinishSignal {
+    /// Starts listening; the returned token is cancelled by [`Self::request`].
+    pub fn arm(&self) -> CancellationToken {
+        self.armed.store(true, Ordering::SeqCst);
+        self.token.clone()
+    }
+
+    pub fn disarm(&self) {
+        self.armed.store(false, Ordering::SeqCst);
+    }
+
+    pub fn request(&self) {
+        if self.armed.load(Ordering::SeqCst) {
+            self.token.cancel();
+        }
+    }
 }
 
 /// Beautified source of a script selected for logic analysis.
@@ -39,7 +77,9 @@ pub struct ScanState {
     pub summary: ScanSummary,
     pub budget: Budget,
     pub capture: Option<Capture>,
-    pub telemetry: Option<Telemetry>,
+    pub telemetry: Option<ScanTelemetry>,
+    /// What the pages could tell about the visit; set with the telemetry.
+    pub environment: Option<ScanEnvironment>,
     /// `None` when the page has no bidders to check.
     pub diagnostics: Option<BidderDiagnostics>,
     pub scripts: Vec<DescribedScript>,
@@ -62,6 +102,7 @@ impl ScanState {
             budget,
             capture: None,
             telemetry: None,
+            environment: None,
             diagnostics: None,
             scripts: Vec::new(),
             sources: Vec::new(),
@@ -77,7 +118,7 @@ impl ScanState {
         self.capture.as_ref().ok_or_else(|| missing("capture"))
     }
 
-    pub fn telemetry(&self) -> Result<&Telemetry, NodeError> {
+    pub fn telemetry(&self) -> Result<&ScanTelemetry, NodeError> {
         self.telemetry.as_ref().ok_or_else(|| missing("telemetry"))
     }
 

@@ -7,7 +7,7 @@ use adscan_model::{
 
 use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
-    RuleContext, bidders, estimate_impact, heuristic, ms, pct, share,
+    RuleContext, RuleScope, bidders, estimate_impact, heuristic, ms, pct, share,
 };
 use crate::domain::diagnostics::capitalized;
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
@@ -30,6 +30,10 @@ pub struct AdRequestBeforeAuctionEnd;
 impl Rule for AdRequestBeforeAuctionEnd {
     fn id(&self) -> &'static str {
         "ad-request-before-auction-end"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
@@ -122,11 +126,15 @@ impl Rule for SlotsNeverRequested {
         "slots-never-requested"
     }
 
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
+    }
+
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         if ctx.auction_gate().is_some() {
             return Vec::new();
         }
-        let page_fully_scrolled = ctx.capture.max_scroll_depth >= FULL_SCROLL_DEPTH;
+        let page_fully_scrolled = ctx.max_scroll_depth() >= FULL_SCROLL_DEPTH;
         let idle: Vec<&AdSlot> = ctx
             .slots()
             .iter()
@@ -154,7 +162,7 @@ impl Rule for SlotsNeverRequested {
              request was ever made for them. They earned nothing.",
             idle.len(),
             ctx.slots().len(),
-            pct(ctx.capture.max_scroll_depth),
+            pct(ctx.max_scroll_depth()),
         );
         finding.recommendation = "Check that `googletag.display()` / `refresh()` is called for these slots and that \
              the lazy-load trigger (IntersectionObserver or GPT `enableLazyLoad`) actually fires for them."
@@ -190,6 +198,10 @@ pub struct EmptySlots;
 impl Rule for EmptySlots {
     fn id(&self) -> &'static str {
         "empty-slots"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
@@ -267,6 +279,10 @@ impl Rule for AdUnitsWithoutSlot {
         "ad-units-without-slot"
     }
 
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
+    }
+
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
         if ctx.slots().is_empty() {
             return Vec::new();
@@ -329,6 +345,10 @@ pub struct SlotsOutsideHeaderBidding;
 impl Rule for SlotsOutsideHeaderBidding {
     fn id(&self) -> &'static str {
         "slots-outside-header-bidding"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
@@ -407,6 +427,10 @@ pub struct WonBidNotRendered;
 impl Rule for WonBidNotRendered {
     fn id(&self) -> &'static str {
         "won-bid-not-rendered"
+    }
+
+    fn scope(&self) -> RuleScope {
+        RuleScope::Page
     }
 
     fn evaluate(&self, ctx: &RuleContext) -> Vec<FindingDraft> {
