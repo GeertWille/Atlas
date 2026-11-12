@@ -1,4 +1,5 @@
 import type {
+  ArchiveStorage,
   BrowserInfo,
   DashboardStats,
   ProxyProfile,
@@ -20,10 +21,12 @@ import { CONFIGURATION_NAME_MAX, MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/sh
 import { type FakeConfig, readFakeConfig } from "./config";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
+import { bodyChunk, type FakeNetwork, listRows, materializeNetwork, requestDetail, summarise } from "./network";
 import { type ResolvedScan, resolveScanOptions, UNKNOWN_PROXY } from "./resolve";
 import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan } from "./runtime";
 import { buildScenario, type ScenarioContext } from "./scenario";
 import { FAKE_BROWSER_VERSION, SEED_PROXIES, seedConfigurations, seedScans } from "./seed";
+import { fakeScriptSource } from "./sources";
 
 const DEFAULT_SETTINGS: Settings = {
   filterModel: "claude-haiku-5-5",
@@ -70,7 +73,12 @@ type Persisted = {
   deletedSeedIds: string[];
   configurations?: ScanConfiguration[];
   scanProfile?: StoredProfile;
+  /** Seeded scans whose network data "Clear stored scan data" removed. */
+  clearedSeedArchives?: string[];
 };
+
+const ARCHIVE_LIMIT_MIN_BYTES = 100 * 1024 ** 2;
+const ARCHIVE_LIMIT_MAX_BYTES = 1024 ** 4;
 
 type StoredProfile = { sizeBytes: number; lastUsedAt: number | null };
 
@@ -78,6 +86,13 @@ type StoredProfile = { sizeBytes: number; lastUsedAt: number | null };
 type ManualSession = { finish: () => void; limit: ReturnType<typeof setTimeout> };
 
 const clone = <T>(value: T): T => structuredClone(value);
+
+/** "Clear stored scan data": the report stays and says its network data is gone, rows included. */
+function clearNetworkData(scan: StoredScan) {
+  const { network } = scan.detail;
+  if (!network || network.availability === "notRecorded" || network.availability === "disabled") return;
+  scan.detail.network = { ...network, availability: "evicted", requestCount: 0, bodyCount: 0, storedBytes: 0 };
+}
 const latency = (ms = 60) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 class FakeBackend {
@@ -91,6 +106,9 @@ class FakeBackend {
   private deletedSeedIds: string[];
   private configurations: ScanConfiguration[];
   private scanProfile: StoredProfile;
+  private clearedSeedArchives: string[];
+  /** Request lists are derived from the scans on demand and kept while the page lives. */
+  private readonly networks = new Map<string, FakeNetwork>();
 
   constructor(private readonly config: FakeConfig) {
     this.storageKey = `adscan.fake.db.${config.profile}`;
@@ -106,7 +124,11 @@ class FakeBackend {
     this.deletedSeedIds = persisted?.deletedSeedIds ?? [];
     this.configurations = persisted?.configurations ?? (seeded ? seedConfigurations(Date.now()) : []);
     this.scanProfile = persisted?.scanProfile ?? { sizeBytes: 0, lastUsedAt: null };
-    const seeds = seeded ? seedScans(this.settings, Date.now()) : [];
+    this.clearedSeedArchives = persisted?.clearedSeedArchives ?? [];
+    const seeds = seeded ? seedScans(this.settings, Date.now(), config.rows) : [];
+    for (const seed of seeds) {
+      if (this.clearedSeedArchives.includes(seed.detail.summary.id)) clearNetworkData(seed);
+    }
     this.scans = [
       ...(persisted?.scans ?? []),
       ...seeds.filter((scan) => !this.deletedSeedIds.includes(scan.detail.summary.id)),
@@ -132,6 +154,7 @@ class FakeBackend {
       deletedSeedIds: this.deletedSeedIds,
       configurations: this.configurations,
       scanProfile: this.scanProfile,
+      clearedSeedArchives: this.clearedSeedArchives,
     };
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(state));
@@ -148,6 +171,39 @@ class FakeBackend {
     const scan = this.scans.find((candidate) => candidate.detail.summary.id === scanId);
     if (!scan) throw new ApiError("notFound", `Scan ${scanId} does not exist`);
     return scan;
+  }
+
+  /** The scan's request list; `null` when it has none to show. */
+  private network(scan: StoredScan): FakeNetwork | null {
+    const { id } = scan.detail.summary;
+    const { network } = scan.detail;
+    if (!network || network.availability === "notRecorded" || network.availability === "disabled") return null;
+    if (network.requestCount === 0) return null;
+    let built = this.networks.get(id);
+    if (!built) {
+      built = materializeNetwork(scan.detail, this.config.rows);
+      this.networks.set(id, built);
+    }
+    return built;
+  }
+
+  private requireNetwork(scanId: string): { scan: StoredScan; network: FakeNetwork } {
+    const scan = this.find(scanId);
+    const network = this.network(scan);
+    if (!network) throw new ApiError("notFound", `Scan ${scanId} has no network record`);
+    return { scan, network };
+  }
+
+  private archiveStorage(): ArchiveStorage {
+    const archives = this.scans.flatMap((scan) => (scan.detail.network ? [scan] : []));
+    const kept = archives.filter((scan) => scan.detail.network?.availability === "available");
+    return {
+      scans: kept.length,
+      evictedScans: archives.filter((scan) => scan.detail.network?.availability === "evicted").length,
+      storedBytes: kept.reduce((sum, scan) => sum + (scan.detail.network?.storedBytes ?? 0), 0),
+      limitBytes: this.settings.archiveLimitBytes,
+      oldestAt: kept.length > 0 ? Math.min(...kept.map((scan) => scan.detail.summary.startedAt)) : null,
+    };
   }
 
   private browser(): BrowserInfo | null {
@@ -226,7 +282,14 @@ class FakeBackend {
       if (scan.detail.summary.status !== "running") return settle();
       const next = beats[cursor];
       if (!next) {
-        if (result) this.emit(completeScan(scan, result, Date.now()));
+        if (result) {
+          const archive = {
+            keep: this.settings.keepNetworkData,
+            redactHeaders: !this.settings.storeFullHeaders,
+            padTo: this.config.rows,
+          };
+          this.emit(completeScan(scan, result, Date.now(), archive));
+        }
         return settle();
       }
       // The recording waits for the user (or the session limit) from here on.
@@ -312,6 +375,13 @@ class FakeBackend {
       }
       if (defaultProxy?.kind === "profile" && !this.settings.proxies.some((proxy) => proxy.id === defaultProxy.id)) {
         throw new ApiError("invalidInput", UNKNOWN_PROXY);
+      }
+      const { archiveLimitBytes } = patch;
+      if (
+        archiveLimitBytes !== undefined &&
+        (archiveLimitBytes < ARCHIVE_LIMIT_MIN_BYTES || archiveLimitBytes > ARCHIVE_LIMIT_MAX_BYTES)
+      ) {
+        throw new ApiError("invalidInput", "The storage limit must be between 100 MB and 1 TB");
       }
       const { chromePath, ...rest } = patch;
       this.settings = { ...this.settings, ...rest };
@@ -410,6 +480,7 @@ class FakeBackend {
       this.find(scanId);
       this.stopTimers(scanId);
       this.scans = this.scans.filter((scan) => scan.detail.summary.id !== scanId);
+      this.networks.delete(scanId);
       if (scanId.startsWith("seed-")) this.deletedSeedIds.push(scanId);
       this.persist();
     },
@@ -419,6 +490,7 @@ class FakeBackend {
         ...this.scans.map((scan) => scan.detail.summary.id).filter((id) => id.startsWith("seed-")),
       );
       this.scans = [];
+      this.networks.clear();
       this.persist();
     },
     getLogs: async (scanId, stepId) => {
@@ -557,6 +629,46 @@ class FakeBackend {
       this.configuration(id);
       this.configurations = this.configurations.filter((configuration) => configuration.id !== id);
       this.persist();
+    },
+    getNetworkSummary: async (scanId) => {
+      await latency(20);
+      const scan = this.find(scanId);
+      return clone(summarise(scan.detail, this.network(scan)));
+    },
+    listNetworkRequests: async (scanId, query) => {
+      await latency(12);
+      const network = this.network(this.find(scanId));
+      return network ? clone(listRows(network, query)) : { rows: [], nextCursor: null, total: 0 };
+    },
+    getNetworkRequest: async (scanId, requestId) => {
+      await latency(20);
+      const { scan, network } = this.requireNetwork(scanId);
+      return clone(requestDetail(scan.detail, network, requestId));
+    },
+    getNetworkBody: async (scanId, requestId, query) => {
+      await latency(20);
+      const { scan, network } = this.requireNetwork(scanId);
+      return bodyChunk(scan.detail, network, requestId, query);
+    },
+    getScriptSource: async (scanId, scriptId, view, original) => {
+      await latency(30);
+      return fakeScriptSource(this.find(scanId).detail, scriptId, view, original);
+    },
+    getArchiveStorage: async () => {
+      await latency();
+      return this.archiveStorage();
+    },
+    clearArchive: async () => {
+      await latency();
+      for (const scan of this.scans) {
+        if (scan.detail.summary.status === "running" || !scan.detail.network) continue;
+        clearNetworkData(scan);
+        const { id } = scan.detail.summary;
+        if (id.startsWith("seed-") && !this.clearedSeedArchives.includes(id)) this.clearedSeedArchives.push(id);
+      }
+      this.networks.clear();
+      this.persist();
+      return this.archiveStorage();
     },
     subscribeScanEvents: async (handler) => {
       const subscription = Symbol("scan-events");

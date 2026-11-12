@@ -449,7 +449,7 @@ class Planner {
           bytes: 7_759_462,
           storedBytes: 5 * 1024 * 1024,
           mime: "application/json",
-          text: () => largeFeedJson(5 * 1024 * 1024),
+          text: () => largeFeedJson(7_759_462, 5 * 1024 * 1024),
         },
       });
       // The archive writer fell behind while those two were stored: this one was left out.
@@ -1039,11 +1039,16 @@ function gamUrl(slot: AdSlot, request: SlotRequest, page: PageView, rng: Rng): s
 export function planNetwork(detail: ScanDetail, padTo = 0): NetworkPlan {
   const planner = new Planner(detail);
   for (const [index, page] of detail.pages.entries()) planner.page(page, detail.pages[index + 1]);
-  planner.pad(padTo, detail.pages);
-  const drafts = [...planner.drafts].sort((a, b) => a.page - b.page || a.at - b.at);
-  drafts.forEach((draft, seq) => {
+  const byStart = (a: RequestDraft, b: RequestDraft) => a.page - b.page || a.at - b.at || a.seq - b.seq;
+  // The visit's own requests are numbered first, so padding the list never renumbers them.
+  const own = planner.drafts.length;
+  [...planner.drafts].sort(byStart).forEach((draft, seq) => {
     draft.seq = seq;
-    draft.id = `r${seq}`;
   });
-  return { drafts, links: planner.links };
+  planner.pad(padTo, detail.pages);
+  planner.drafts.slice(own).forEach((draft, index) => {
+    draft.seq = own + index;
+  });
+  for (const draft of planner.drafts) draft.id = `r${draft.seq}`;
+  return { drafts: [...planner.drafts].sort(byStart), links: planner.links };
 }

@@ -16,6 +16,7 @@ pub mod proxy;
 pub mod questions;
 pub mod scan;
 pub mod scripts;
+pub mod source;
 pub mod synthesis;
 pub mod telemetry;
 pub mod triage;

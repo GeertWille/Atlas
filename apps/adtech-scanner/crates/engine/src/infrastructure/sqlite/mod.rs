@@ -5,6 +5,7 @@ mod archive;
 mod configurations;
 mod logs;
 mod scans;
+mod secret_presence;
 mod settings;
 
 use std::path::Path;
@@ -231,6 +232,7 @@ const MIGRATIONS: &[&str] = &[
         '$.storeFullHeaders', json('false')
     );
     ",
+    secret_presence::MIGRATION,
 ];
 
 /// Implements the scan, configuration, log and settings repositories on one

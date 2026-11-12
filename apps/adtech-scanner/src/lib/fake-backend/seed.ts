@@ -50,8 +50,10 @@ type SeedSpec = {
   proxy?: ProxyChoice;
   /** The saved configuration the scan was started from. */
   configuration?: { id: string; name: string };
-  /** Stored before visits had pages: no page views, no environment, only the options of that time. */
+  /** Stored before visits had pages: no page views, no environment, no network data, only the options of that time. */
   legacy?: boolean;
+  /** What became of the scan's network data. Kept unless said otherwise. */
+  archive?: "disabled" | "evicted";
   /** Stop the scan this many ms in, as if the user cancelled it. */
   cancelAfterMs?: number;
 };
@@ -68,6 +70,8 @@ const FEATURED: SeedSpec[] = [
     minutesAgo: 190,
     proxy: { kind: "none" },
     configuration: LEDGER_DIRECT,
+    // Scanned while "Keep network data" was off.
+    archive: "disabled",
   },
   {
     id: "seed-sportsdesk-browse",
@@ -84,6 +88,8 @@ const FEATURED: SeedSpec[] = [
     url: "https://www.techpulse.example/reviews/laptops",
     device: "desktop",
     minutesAgo: MINUTES_PER_DAY + 40,
+    // The oldest scan with network data: it was the first to go when the storage limit was reached.
+    archive: "evicted",
   },
   { id: "seed-unreachable", url: "https://unreachable.example/", device: "desktop", minutesAgo: MINUTES_PER_DAY + 95 },
   {
@@ -149,7 +155,7 @@ function asLegacy(scan: StoredScan): StoredScan {
   };
 }
 
-function runSeed(spec: SeedSpec, settings: Settings, now: number): StoredScan {
+function runSeed(spec: SeedSpec, settings: Settings, now: number, padTo: number): StoredScan {
   const startedAt = now - spec.minutesAgo * 60_000;
   const visitor = spec.visitor ?? "scroll";
   const { options, proxy } = resolveScanOptions(
@@ -184,15 +190,21 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number): StoredScan {
     elapsed = beat.at;
     applyBeat(scan, beat, startedAt + beat.at);
   }
-  if (scenario.result) completeScan(scan, scenario.result, startedAt + elapsed + 80);
+  if (scenario.result) {
+    const archive = spec.legacy
+      ? null
+      : { keep: spec.archive !== "disabled", evicted: spec.archive === "evicted", redactHeaders: true, padTo };
+    completeScan(scan, scenario.result, startedAt + elapsed + 80, archive);
+  }
   return spec.legacy ? asLegacy(scan) : scan;
 }
 
 /**
  * Deterministic history: the reference-bug site on both devices and as a three-page visit through a
- * proxy, a healthy site, failures, and an archive stored before visits had pages.
+ * proxy, a healthy site scanned with network recording off, a scan whose network data was evicted,
+ * failures, and an archive stored before visits had pages or network data.
  */
-export function seedScans(settings: Settings, now: number): StoredScan[] {
+export function seedScans(settings: Settings, now: number, padTo = 0): StoredScan[] {
   // History predates whatever the settings say now.
   const seedSettings: Settings = {
     ...settings,
@@ -204,7 +216,7 @@ export function seedScans(settings: Settings, now: number): StoredScan[] {
     proxies: SEED_PROXIES,
     defaultProxy: { kind: "system" },
   };
-  return [...FEATURED, ...archiveSpecs()].map((spec) => runSeed(spec, seedSettings, now));
+  return [...FEATURED, ...archiveSpecs()].map((spec) => runSeed(spec, seedSettings, now, padTo));
 }
 
 function configurationOptions(

@@ -9,6 +9,7 @@ import type {
   ScanSummary,
 } from "@/bindings";
 import { PIPELINE_NODES } from "@/shared/domain/pipeline";
+import { type ArchiveMode, recordNetwork } from "./network";
 import type { Beat, ScanResult } from "./scenario";
 
 export type StoredScan = { detail: ScanDetail; logs: LogEntry[] };
@@ -188,9 +189,16 @@ export function applyBeat(scan: StoredScan, beat: Beat, now: number): ScanEvent[
   }
 }
 
-export function completeScan(scan: StoredScan, result: ScanResult, now: number): ScanEvent[] {
+/** `archive`: how the scan's network data is kept; `null` for a scan stored before there was an archive. */
+export function completeScan(
+  scan: StoredScan,
+  result: ScanResult,
+  now: number,
+  archive: ArchiveMode | null,
+): ScanEvent[] {
   const { healthScore, prebidVersion, aiUsed, ...analysis } = result;
   Object.assign(scan.detail, analysis);
+  if (archive) recordNetwork(scan.detail, archive);
   Object.assign(scan.detail.summary, { healthScore, prebidVersion, aiUsed });
   finishScan(scan, "completed", now);
   return [{ type: "scanUpdated", summary: snapshot(scan.detail.summary) }];

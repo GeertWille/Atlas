@@ -1369,6 +1369,7 @@ async fn jev_can_only_be_on_while_a_typesafe_key_is_stored() {
             .settings
             .api_key(ApiProvider::Typesafe)
             .await
+            .unwrap()
             .as_deref(),
         Some("typesafe-good")
     );
@@ -1377,6 +1378,7 @@ async fn jev_can_only_be_on_while_a_typesafe_key_is_stored() {
             .settings
             .api_key(ApiProvider::Anthropic)
             .await
+            .unwrap()
             .as_deref(),
         Some(ANTHROPIC_KEY)
     );

@@ -158,13 +158,27 @@ function availabilityOf(detail: ScanDetail): SourceAvailability {
   }
 }
 
-/** The generated file is megabytes for the large bundle: only the one being read is kept. */
-let lastBuilt: { key: string; source: BuiltSource } | null = null;
+/** The generated file is megabytes for the large bundle: only the few being read are kept. */
+const CACHED_SOURCES = 4;
+const built = new Map<string, BuiltSource>();
 
 function builtSource(detail: ScanDetail, script: ScriptRecord): BuiltSource {
   const key = `${detail.summary.id}|${script.id}`;
-  if (lastBuilt?.key !== key) lastBuilt = { key, source: build(detail, script) };
-  return lastBuilt.source;
+  const cached = built.get(key);
+  if (cached) return cached;
+  const source = build(detail, script);
+  built.set(key, source);
+  if (built.size > CACHED_SOURCES) built.delete(built.keys().next().value as string);
+  return source;
+}
+
+export function sourceLineCount(detail: ScanDetail, script: ScriptRecord): number {
+  return builtSource(detail, script).formatted.length;
+}
+
+/** The script as it was captured: what its request's response body holds. */
+export function capturedText(detail: ScanDetail, script: ScriptRecord): string {
+  return builtSource(detail, script).original;
 }
 
 /** Where a position in the captured source lies in the formatted text. */

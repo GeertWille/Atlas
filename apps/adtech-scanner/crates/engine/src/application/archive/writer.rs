@@ -22,7 +22,7 @@ use crate::application::ports::{
     ArchiveRepository, ArchiveTotals, BodyIndexRow, PackStore, PackWriter, RequestIndexRow,
 };
 use crate::domain::archive::document::{RequestDocument, StoredBody, state_without_bytes};
-use crate::domain::archive::index::site_of;
+use crate::domain::archive::index::{sha256_hex, site_of};
 use crate::domain::archive::kinds::{
     BodyKind, MAX_BODY_BYTES, MAX_IN_FLIGHT_BODY_BYTES, MAX_SCAN_BODY_BYTES,
     UNKNOWN_BODY_RESERVATION, kept_kind,
@@ -49,8 +49,10 @@ pub struct ArchiveStart {
 
 enum Item {
     Record(Box<NetworkRecord>),
-    /// A script source that is not a response body: inline and runtime code.
+    /// A script source of the capture; inline and runtime code has no
+    /// response to come with.
     Script(String),
+    Finish,
 }
 
 #[derive(Default)]
@@ -149,7 +151,6 @@ impl ArchiveSession {
         let writer = Writer {
             page_site: site_of(&start.page_host),
             start,
-            file,
             pack,
             index: Arc::clone(index),
             sink: Arc::clone(&sink),
@@ -182,12 +183,9 @@ impl ArchiveSession {
     /// Writes what is queued, the manifest and the trailer, and seals the
     /// pack.
     pub async fn finish(self) -> Result<ArchiveTotals, String> {
-        let Self { sink, writer } = self;
-        // The writer ends when the last sender is gone; it holds one itself
-        // only weakly, through the budget it shares with the sink.
-        sink.queue.send(Item::Script(String::new())).ok();
-        drop(sink);
-        writer
+        // Not sent when the writer has already failed; its error is below.
+        let _ = self.sink.queue.send(Item::Finish);
+        self.writer
             .await
             .map_err(|error| format!("the archive writer stopped: {error}"))?
     }
@@ -206,7 +204,6 @@ struct StoredFrame {
 struct Writer {
     start: ArchiveStart,
     page_site: String,
-    file: String,
     pack: Box<dyn PackWriter>,
     index: Arc<dyn ArchiveRepository>,
     sink: Arc<ArchiveSink>,
@@ -232,10 +229,8 @@ impl Writer {
             tokio::select! {
                 item = items.recv() => match item {
                     Some(Item::Record(record)) => self.write_record(*record).await?,
-                    // The empty script is `finish` asking for the end.
-                    Some(Item::Script(body)) if body.is_empty() => break,
                     Some(Item::Script(body)) => self.write_script(body).await?,
-                    None => break,
+                    Some(Item::Finish) | None => break,
                 },
                 _ = flush.tick() => self.flush().await?,
             }
@@ -288,16 +283,19 @@ impl Writer {
     async fn write_script(&mut self, body: String) -> Result<(), String> {
         let bytes = body.into_bytes();
         let length = bytes.len() as u64;
-        let known = self.bodies.contains_key(&sha256_of(&bytes[..bytes.len().min(MAX_BODY_BYTES)]));
-        if !known {
+        {
             let mut budget = self.sink.budget();
             if budget.kept + length > MAX_SCAN_BODY_BYTES {
                 budget.truncated = true;
                 return Ok(());
             }
-            budget.kept += length.min(MAX_BODY_BYTES as u64);
         }
-        self.store_body(bytes, length, BodyKind::Js).await.map(drop)
+        let known_before = self.bodies.len();
+        let stored = self.store_body(bytes, length, BodyKind::Js).await?.stored.stored_bytes;
+        if self.bodies.len() > known_before {
+            self.sink.budget().kept += stored;
+        }
+        Ok(())
     }
 
     /// The frame of this content, written now unless the scan has it already.
@@ -311,14 +309,11 @@ impl Writer {
         let truncated = (bytes.len() as u64) < total_bytes;
         let raw_length = bytes.len() as u64;
         // Hashing and compressing megabytes is not for an async worker.
-        let (sha256, frame) = tokio::task::spawn_blocking(move || {
-            let sha256 = sha256_of(&bytes);
-            (sha256, bytes)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+        let (sha256, bytes) = tokio::task::spawn_blocking(move || (sha256_of(&bytes), bytes))
+            .await
+            .map_err(|error| error.to_string())?;
         if !self.bodies.contains_key(&sha256) {
-            let compressed = tokio::task::spawn_blocking(move || codec::compress(&frame))
+            let compressed = tokio::task::spawn_blocking(move || codec::compress(&bytes))
                 .await
                 .map_err(|error| error.to_string())?
                 .map_err(|error| error.to_string())?;
@@ -329,7 +324,7 @@ impl Writer {
                 .map_err(|error| error.to_string())?;
             self.pack_bytes = location.offset + u64::from(location.length);
             let body_no = self.bodies.len() as u32;
-            let hex = hex(&sha256);
+            let hex = sha256_hex(&sha256);
             self.pending_bodies.push(BodyIndexRow {
                 body_no,
                 sha256,
@@ -432,7 +427,6 @@ impl Writer {
             .await
             .map_err(|error| error.to_string())?;
         let sealed = self.pack.seal().await.map_err(|error| error.to_string())?;
-        debug_assert_eq!(sealed.file, self.file);
         let totals = ArchiveTotals {
             pack_bytes: sealed.bytes,
             truncated,
@@ -447,20 +441,4 @@ impl Writer {
 
 fn sha256_of(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
-}
-
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// The 32 bytes a hex sha-256 stands for.
-pub fn unhex(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 || !text.is_ascii() {
-        return None;
-    }
-    let mut bytes = [0u8; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
-    }
-    Some(bytes)
 }

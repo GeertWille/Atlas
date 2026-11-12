@@ -12,9 +12,9 @@ use super::render::{self, Scope};
 use crate::domain::chunks::LineRange;
 use crate::domain::consent_wait;
 use crate::domain::finding::FindingDraft;
+use crate::domain::source::{MAX_READ_LINES, locate, squash};
 use crate::domain::telemetry::ScanTelemetry;
 
-const MAX_READ_LINES: usize = 250;
 const MAX_LINE_CHARS: usize = 300;
 const MAX_SEARCH_MATCHES: usize = 40;
 const SEARCH_CONTEXT_LINES: usize = 2;
@@ -630,9 +630,9 @@ impl Toolbox {
                 body: body.chars().take(MAX_EVIDENCE_CHARS).collect(),
                 script_url: Some(script.url.clone()),
                 line: Some(line as u32),
-                end_line: None,
+                end_line: Some(end as u32),
                 request_id: None,
-                script_id: None,
+                script_id: Some(script.id.clone()),
             },
         })
     }
@@ -691,29 +691,6 @@ fn shorten(line: &str) -> String {
         ),
         None => line.to_string(),
     }
-}
-
-/// First and last line (1-based) of the occurrence of `needle` that starts
-/// closest to the cited line, comparing without whitespace because the model
-/// may have joined or split lines differently from the beautifier.
-fn locate(lines: &[String], needle: &str, cited: usize) -> Option<(usize, usize)> {
-    let mut text = String::new();
-    let line_ends: Vec<usize> = lines
-        .iter()
-        .map(|line| {
-            text.extend(line.chars().filter(|c| !c.is_whitespace()));
-            text.len()
-        })
-        .collect();
-    let line_at = |offset: usize| line_ends.partition_point(|&end| end <= offset) + 1;
-    text.match_indices(needle)
-        .map(|(start, matched)| (line_at(start), line_at(start + matched.len() - 1)))
-        .min_by_key(|&(first, _)| first.abs_diff(cited))
-}
-
-/// Whitespace-insensitive comparison form.
-fn squash(text: &str) -> String {
-    text.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
 fn cap_output(content: String) -> String {

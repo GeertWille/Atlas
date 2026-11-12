@@ -92,6 +92,22 @@ pub fn site_of(host: &str) -> String {
     psl::domain_str(host).unwrap_or(host).to_string()
 }
 
+pub fn sha256_hex(sha256: &[u8; 32]) -> String {
+    sha256.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The 32 bytes a hex sha-256 stands for.
+pub fn sha256_from_hex(text: &str) -> Option<[u8; 32]> {
+    if text.len() != 64 || !text.is_ascii() {
+        return None;
+    }
+    let mut bytes = [0u8; 32];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&text[index * 2..index * 2 + 2], 16).ok()?;
+    }
+    Some(bytes)
+}
+
 impl RequestIndexRow {
     /// The row of `record`. `page_site` is the registrable domain of the
     /// scanned page; the frame of the record's document is filled in by the

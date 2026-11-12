@@ -1,91 +1,263 @@
-//! Where the API keys and proxy passwords are kept: the OS keychain, or
-//! process memory when the environment supplies them (CI, tests).
+//! Where the API keys and proxy passwords are kept: one item in the OS
+//! keychain, or process memory when the environment supplies them (CI, tests).
 
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
 
 use adscan_model::ApiProvider;
 use async_trait::async_trait;
+use zeroize::{Zeroize, Zeroizing};
 
-use crate::application::ports::{SecretError, SecretStore};
+use super::keychain::Keychain;
+use crate::application::ports::{
+    RepoResult, SecretError, SecretName, SecretPresenceRepository, SecretStore,
+};
 
-const KEYCHAIN_SERVICE: &str = "com.webclew.adtech-scanner";
+/// The one keychain item. The system asks the user for permission per item,
+/// so every secret shares it: one prompt at most, however many there are.
+const VAULT_ACCOUNT: &str = "vault";
 
-/// The Anthropic account name predates the second provider and must not
-/// change, or keys stored by earlier versions would be lost.
-fn keychain_account(provider: ApiProvider) -> &'static str {
-    match provider {
-        ApiProvider::Anthropic => "anthropic-api-key",
-        ApiProvider::Typesafe => "typesafe-api-key",
+const PROXY_PREFIX: &str = "proxy:";
+
+/// The name a secret goes by, in the vault and in the record of what exists.
+pub(crate) fn secret_key(name: &SecretName) -> String {
+    match name {
+        SecretName::ApiKey(ApiProvider::Anthropic) => "anthropic".to_string(),
+        SecretName::ApiKey(ApiProvider::Typesafe) => "typesafe".to_string(),
+        SecretName::ProxyPassword(proxy_id) => format!("{PROXY_PREFIX}{proxy_id}"),
     }
 }
 
-/// One keychain item per proxy profile, so deleting a profile removes
-/// exactly its own password.
-fn proxy_account(proxy_id: &str) -> String {
-    format!("proxy-password:{proxy_id}")
+pub(crate) fn secret_name(key: &str) -> Option<SecretName> {
+    match key {
+        "anthropic" => Some(SecretName::ApiKey(ApiProvider::Anthropic)),
+        "typesafe" => Some(SecretName::ApiKey(ApiProvider::Typesafe)),
+        _ => key
+            .strip_prefix(PROXY_PREFIX)
+            .map(|proxy_id| SecretName::ProxyPassword(proxy_id.to_string())),
+    }
 }
 
-pub struct KeychainSecretStore;
+/// The account of the keychain item that held this secret alone, before the
+/// vault. These names must not change, or secrets stored by earlier versions
+/// would not be found.
+fn legacy_account(name: &SecretName) -> String {
+    match name {
+        SecretName::ApiKey(ApiProvider::Anthropic) => "anthropic-api-key".to_string(),
+        SecretName::ApiKey(ApiProvider::Typesafe) => "typesafe-api-key".to_string(),
+        SecretName::ProxyPassword(proxy_id) => format!("proxy-password:{proxy_id}"),
+    }
+}
 
-impl KeychainSecretStore {
-    fn entry(account: &str) -> Result<keyring::Entry, SecretError> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(keychain_error)
+/// Every secret by its key. Deliberately without `Debug`.
+#[derive(Default)]
+struct Vault(BTreeMap<String, String>);
+
+impl Vault {
+    fn parse(document: &str) -> Result<Self, SecretError> {
+        // The parser's own message could quote the document.
+        serde_json::from_str(document).map(Self).map_err(|_| {
+            SecretError::Failed("the stored secrets are not in the expected format".into())
+        })
     }
 
-    async fn read(account: String) -> Result<Option<String>, SecretError> {
-        Self::blocking(move || match Self::entry(&account)?.get_password() {
-            Ok(secret) => Ok(Some(secret)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(keychain_error(error)),
+    fn document(&self) -> Result<Zeroizing<String>, SecretError> {
+        serde_json::to_string(&self.0)
+            .map(Zeroizing::new)
+            .map_err(|_| SecretError::Failed("the secrets could not be prepared for storing".into()))
+    }
+
+    fn names(&self) -> HashSet<SecretName> {
+        self.0.keys().filter_map(|key| secret_name(key)).collect()
+    }
+}
+
+impl Drop for Vault {
+    fn drop(&mut self) {
+        self.0.values_mut().for_each(Zeroize::zeroize);
+    }
+}
+
+/// Keeps every secret in one keychain item, read at most once per process.
+///
+/// Nothing touches the keychain until a secret is really needed: what exists
+/// is answered from the presence record. The first need reads the item and
+/// keeps it in memory; changes rewrite the item and the record together.
+pub struct VaultSecretStore {
+    keychain: Arc<dyn Keychain>,
+    presence: Arc<dyn SecretPresenceRepository>,
+    /// `None` until the first need. Held across the keychain read, so tasks
+    /// that need a secret at the same moment cause one read and one prompt.
+    vault: tokio::sync::Mutex<Option<Vault>>,
+}
+
+impl VaultSecretStore {
+    pub fn new(keychain: Arc<dyn Keychain>, presence: Arc<dyn SecretPresenceRepository>) -> Self {
+        Self {
+            keychain,
+            presence,
+            vault: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn secret(&self, name: SecretName) -> Result<Option<String>, SecretError> {
+        let mut vault = self.vault.lock().await;
+        if vault.is_none() && !self.recorded().await?.contains(&name) {
+            return Ok(None);
+        }
+        let vault = self.unlocked(&mut vault).await?;
+        Ok(vault.0.get(&secret_key(&name)).cloned())
+    }
+
+    /// Stores `secret` under `name`, or with `None` removes it.
+    async fn change(&self, name: SecretName, secret: Option<&str>) -> Result<(), SecretError> {
+        let mut vault = self.vault.lock().await;
+        if secret.is_none() && vault.is_none() && !self.recorded().await?.contains(&name) {
+            return Ok(());
+        }
+        let vault = self.unlocked(&mut vault).await?;
+        let mut changed = Vault(vault.0.clone());
+        let key = secret_key(&name);
+        match secret {
+            Some(secret) => {
+                changed.0.insert(key, secret.to_string());
+            }
+            None => {
+                if changed.0.remove(&key).is_none() {
+                    return Ok(());
+                }
+            }
+        }
+        // An emptied vault is still written, not deleted: a missing item
+        // would send the next launch back to the items of earlier versions.
+        let document = changed.document()?;
+        self.blocking(move |keychain| keychain.write(VAULT_ACCOUNT, &document))
+            .await?;
+        let names = changed.names();
+        *vault = changed;
+        self.record(&names).await
+    }
+
+    async fn unlocked<'a>(
+        &self,
+        vault: &'a mut Option<Vault>,
+    ) -> Result<&'a mut Vault, SecretError> {
+        let unlocked = match vault.take() {
+            Some(unlocked) => unlocked,
+            None => self.read_vault().await?,
+        };
+        Ok(vault.insert(unlocked))
+    }
+
+    /// The one keychain read of this process. A failure leaves the presence
+    /// record alone: a refused read says nothing about what is stored.
+    async fn read_vault(&self) -> Result<Vault, SecretError> {
+        let recorded = self.recorded().await?;
+        let stored = self
+            .blocking(|keychain| keychain.read(VAULT_ACCOUNT))
+            .await?
+            .map(Zeroizing::new);
+        let vault = match stored {
+            Some(document) => Vault::parse(&document)?,
+            None => self.adopt_legacy_items(&recorded).await?,
+        };
+        let names = vault.names();
+        if names != recorded {
+            self.record(&names).await?;
+        }
+        Ok(vault)
+    }
+
+    /// Earlier versions kept one keychain item per secret. They are moved
+    /// into the vault the first time it is found missing. Which proxy
+    /// passwords to look for comes from the presence record.
+    async fn adopt_legacy_items(
+        &self,
+        recorded: &HashSet<SecretName>,
+    ) -> Result<Vault, SecretError> {
+        let mut candidates = recorded.clone();
+        candidates.insert(SecretName::ApiKey(ApiProvider::Anthropic));
+        candidates.insert(SecretName::ApiKey(ApiProvider::Typesafe));
+        self.blocking(move |keychain| {
+            let mut vault = Vault::default();
+            let mut adopted = Vec::new();
+            for name in &candidates {
+                let account = legacy_account(name);
+                if let Some(secret) = keychain.read(&account)? {
+                    vault.0.insert(secret_key(name), secret);
+                    adopted.push(account);
+                }
+            }
+            if adopted.is_empty() {
+                return Ok(vault);
+            }
+            // The old items go only once the vault holds their secrets.
+            keychain.write(VAULT_ACCOUNT, &vault.document()?)?;
+            for account in adopted {
+                // A leftover is harmless: with a vault in place it is never
+                // read again.
+                let _ = keychain.delete(&account);
+            }
+            Ok(vault)
         })
         .await
     }
 
-    async fn write(account: String, secret: String) -> Result<(), SecretError> {
-        Self::blocking(move || {
-            Self::entry(&account)?
-                .set_password(&secret)
-                .map_err(keychain_error)
-        })
-        .await
+    async fn recorded(&self) -> Result<HashSet<SecretName>, SecretError> {
+        self.presence.load_presence().await.map_err(record_error)
     }
 
-    async fn remove(account: String) -> Result<(), SecretError> {
-        Self::blocking(move || match Self::entry(&account)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(keychain_error(error)),
-        })
-        .await
+    async fn record(&self, names: &HashSet<SecretName>) -> Result<(), SecretError> {
+        self.presence
+            .save_presence(names)
+            .await
+            .map_err(record_error)
     }
 
-    /// Keychain calls can block on the OS (unlock prompts), so they run on a
+    /// Keychain calls block on the OS (permission prompts), so they run on a
     /// blocking thread.
     async fn blocking<T: Send + 'static>(
-        work: impl FnOnce() -> Result<T, SecretError> + Send + 'static,
+        &self,
+        work: impl FnOnce(&dyn Keychain) -> Result<T, SecretError> + Send + 'static,
     ) -> Result<T, SecretError> {
-        tokio::task::spawn_blocking(work)
+        let keychain = Arc::clone(&self.keychain);
+        tokio::task::spawn_blocking(move || work(keychain.as_ref()))
             .await
             .map_err(|error| SecretError::Failed(error.to_string()))?
     }
 }
 
+fn record_error(error: crate::application::ports::RepositoryError) -> SecretError {
+    SecretError::Failed(format!(
+        "the record of stored secrets could not be used: {error}"
+    ))
+}
+
 #[async_trait]
-impl SecretStore for KeychainSecretStore {
+impl SecretStore for VaultSecretStore {
+    async fn stored_among(&self, candidates: Vec<SecretName>) -> RepoResult<HashSet<SecretName>> {
+        let recorded = self.presence.load_presence().await?;
+        Ok(candidates
+            .into_iter()
+            .filter(|name| recorded.contains(name))
+            .collect())
+    }
+
     async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, SecretError> {
-        Self::read(keychain_account(provider).to_string()).await
+        self.secret(SecretName::ApiKey(provider)).await
     }
 
     async fn store_api_key(&self, provider: ApiProvider, key: &str) -> Result<(), SecretError> {
-        Self::write(keychain_account(provider).to_string(), key.to_string()).await
+        self.change(SecretName::ApiKey(provider), Some(key)).await
     }
 
     async fn clear_api_key(&self, provider: ApiProvider) -> Result<(), SecretError> {
-        Self::remove(keychain_account(provider).to_string()).await
+        self.change(SecretName::ApiKey(provider), None).await
     }
 
     async fn proxy_password(&self, proxy_id: &str) -> Result<Option<String>, SecretError> {
-        Self::read(proxy_account(proxy_id)).await
+        self.secret(SecretName::ProxyPassword(proxy_id.to_string()))
+            .await
     }
 
     async fn store_proxy_password(
@@ -93,24 +265,16 @@ impl SecretStore for KeychainSecretStore {
         proxy_id: &str,
         password: &str,
     ) -> Result<(), SecretError> {
-        Self::write(proxy_account(proxy_id), password.to_string()).await
+        self.change(
+            SecretName::ProxyPassword(proxy_id.to_string()),
+            Some(password),
+        )
+        .await
     }
 
     async fn clear_proxy_password(&self, proxy_id: &str) -> Result<(), SecretError> {
-        Self::remove(proxy_account(proxy_id)).await
-    }
-}
-
-fn keychain_error(error: keyring::Error) -> SecretError {
-    match error {
-        keyring::Error::NoStorageAccess(_) | keyring::Error::NoDefaultStore => {
-            SecretError::Unavailable(error.to_string())
-        }
-        // On Linux a missing Secret Service surfaces as a platform failure.
-        keyring::Error::PlatformFailure(_) if cfg!(target_os = "linux") => {
-            SecretError::Unavailable(error.to_string())
-        }
-        other => SecretError::Failed(other.to_string()),
+        self.change(SecretName::ProxyPassword(proxy_id.to_string()), None)
+            .await
     }
 }
 
@@ -164,6 +328,23 @@ impl MemorySecretStore {
 
 #[async_trait]
 impl SecretStore for MemorySecretStore {
+    async fn stored_among(&self, candidates: Vec<SecretName>) -> RepoResult<HashSet<SecretName>> {
+        let mut stored = HashSet::new();
+        for name in candidates {
+            let exists = match &name {
+                SecretName::ApiKey(provider) => self.lock().contains_key(provider),
+                SecretName::ProxyPassword(proxy_id) => {
+                    self.proxy_password_override.is_some()
+                        || self.lock_proxy_passwords().contains_key(proxy_id)
+                }
+            };
+            if exists {
+                stored.insert(name);
+            }
+        }
+        Ok(stored)
+    }
+
     async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, SecretError> {
         Ok(self.lock().get(&provider).cloned())
     }
@@ -228,19 +409,70 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_keychain_accounts_differ_and_the_anthropic_one_is_unchanged() {
-        assert_eq!(
-            keychain_account(ApiProvider::Anthropic),
-            "anthropic-api-key"
-        );
-        assert_eq!(keychain_account(ApiProvider::Typesafe), "typesafe-api-key");
+    fn proxy(id: &str) -> SecretName {
+        SecretName::ProxyPassword(id.to_string())
     }
 
     #[test]
-    fn each_proxy_profile_has_its_own_keychain_account() {
-        assert_eq!(proxy_account("p1"), "proxy-password:p1");
-        assert_ne!(proxy_account("p1"), proxy_account("p2"));
+    fn the_legacy_accounts_differ_and_the_anthropic_one_is_unchanged() {
+        assert_eq!(
+            legacy_account(&SecretName::ApiKey(ApiProvider::Anthropic)),
+            "anthropic-api-key"
+        );
+        assert_eq!(
+            legacy_account(&SecretName::ApiKey(ApiProvider::Typesafe)),
+            "typesafe-api-key"
+        );
+    }
+
+    #[test]
+    fn each_proxy_profile_had_its_own_legacy_account() {
+        assert_eq!(legacy_account(&proxy("p1")), "proxy-password:p1");
+        assert_ne!(legacy_account(&proxy("p1")), legacy_account(&proxy("p2")));
+    }
+
+    #[test]
+    fn every_secret_name_survives_the_round_trip_through_its_key() {
+        for name in [
+            SecretName::ApiKey(ApiProvider::Anthropic),
+            SecretName::ApiKey(ApiProvider::Typesafe),
+            proxy("p1"),
+            proxy("with:colon"),
+        ] {
+            assert_eq!(secret_name(&secret_key(&name)), Some(name));
+        }
+        assert_eq!(secret_name("something-else"), None);
+    }
+
+    #[test]
+    fn a_vault_that_cannot_be_parsed_is_reported_without_quoting_it() {
+        let Err(error) = Vault::parse("{\"anthropic\": sk-ant-leaked") else {
+            panic!("a broken document must not parse");
+        };
+        assert!(!error.to_string().contains("sk-ant-leaked"));
+    }
+
+    #[tokio::test]
+    async fn what_exists_in_memory_is_answered_per_candidate() {
+        let store = MemorySecretStore::with_key("anthropic-key");
+        store.store_proxy_password("p1", "secret-1").await.unwrap();
+        let candidates = vec![
+            SecretName::ApiKey(ApiProvider::Anthropic),
+            SecretName::ApiKey(ApiProvider::Typesafe),
+            proxy("p1"),
+            proxy("p2"),
+        ];
+        assert_eq!(
+            store.stored_among(candidates.clone()).await.unwrap(),
+            HashSet::from([SecretName::ApiKey(ApiProvider::Anthropic), proxy("p1")])
+        );
+
+        let with_override =
+            MemorySecretStore::default().with_proxy_password(Some("from-env".into()));
+        assert_eq!(
+            with_override.stored_among(candidates).await.unwrap(),
+            HashSet::from([proxy("p1"), proxy("p2")])
+        );
     }
 
     #[tokio::test]

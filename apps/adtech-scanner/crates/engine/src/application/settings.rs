@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 use super::AppError;
 use super::llm::LlmError;
 use super::ports::{
-    IdGenerator, JudgeClient, LlmClient, ScanConfigurationRepository, SecretError, SecretStore,
-    SettingsRepository,
+    IdGenerator, JudgeClient, LlmClient, ScanConfigurationRepository, SecretError, SecretName,
+    SecretStore, SettingsRepository,
 };
 use crate::domain::DomainError;
 use crate::domain::pricing::Budget;
@@ -53,19 +53,36 @@ impl SettingsService {
 
     pub async fn get(&self) -> Result<Settings, AppError> {
         let mut settings = self.settings.load().await?.unwrap_or_default();
-        settings.has_api_key = self.api_key(ApiProvider::Anthropic).await.is_some();
-        settings.has_typesafe_key = self.api_key(ApiProvider::Typesafe).await.is_some();
+        let anthropic = SecretName::ApiKey(ApiProvider::Anthropic);
+        let typesafe = SecretName::ApiKey(ApiProvider::Typesafe);
+        let candidates = settings
+            .proxies
+            .iter()
+            .map(|profile| SecretName::ProxyPassword(profile.id.clone()))
+            .chain([anthropic.clone(), typesafe.clone()])
+            .collect();
+        let stored = self.secrets.stored_among(candidates).await?;
+        settings.has_api_key = stored.contains(&anthropic);
+        settings.has_typesafe_key = stored.contains(&typesafe);
         // The key can disappear from the keychain behind the app's back.
         settings.jev_enabled &= settings.has_typesafe_key;
         for profile in &mut settings.proxies {
-            profile.has_password = self.proxy_password(&profile.id).await.is_some();
+            profile.has_password =
+                stored.contains(&SecretName::ProxyPassword(profile.id.clone()));
         }
         Ok(settings)
     }
 
     pub async fn update(&self, patch: SettingsPatch) -> Result<Settings, AppError> {
         let _updating = self.updating.lock().await;
-        if patch.jev_enabled == Some(true) && self.api_key(ApiProvider::Typesafe).await.is_none() {
+        let typesafe = SecretName::ApiKey(ApiProvider::Typesafe);
+        if patch.jev_enabled == Some(true)
+            && !self
+                .secrets
+                .stored_among(vec![typesafe.clone()])
+                .await?
+                .contains(&typesafe)
+        {
             return Err(AppError::InvalidInput(
                 "Add a TypeSafe API key before turning on Jev.".into(),
             ));
@@ -122,10 +139,10 @@ impl SettingsService {
         Ok(())
     }
 
-    /// `None` when no key is stored or the keychain cannot be read; scans then
-    /// run without what that provider would have done.
-    pub async fn api_key(&self, provider: ApiProvider) -> Option<String> {
-        self.secrets.api_key(provider).await.ok().flatten()
+    /// `None` when no key is stored; scans then run without what that
+    /// provider would have done. A keychain that refuses is an error instead.
+    pub async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, AppError> {
+        Ok(self.secrets.api_key(provider).await?)
     }
 
     /// Creates the profile, or with an id replaces the one stored under it.
@@ -229,10 +246,10 @@ impl SettingsService {
         self.get().await
     }
 
-    /// `None` when no password is stored or the keychain cannot be read; the
-    /// proxy then rejects the scan, which says so.
-    pub async fn proxy_password(&self, id: &str) -> Option<String> {
-        self.secrets.proxy_password(id).await.ok().flatten()
+    /// `None` when no password is stored; the proxy then rejects the scan,
+    /// which says so. A keychain that refuses is an error instead.
+    pub async fn proxy_password(&self, id: &str) -> Result<Option<String>, AppError> {
+        Ok(self.secrets.proxy_password(id).await?)
     }
 
     async fn require_proxy(&self, id: &str) -> Result<(), AppError> {
@@ -244,8 +261,8 @@ impl SettingsService {
         }
     }
 
-    /// Whether a key or password exists is asked of the keychain on every
-    /// read, never stored.
+    /// Whether a key or password exists is the secret store's to say, on
+    /// every read; this document never carries it.
     async fn save(&self, mut settings: Settings) -> Result<(), AppError> {
         settings.has_api_key = false;
         settings.has_typesafe_key = false;

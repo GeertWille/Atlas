@@ -1954,6 +1954,7 @@ async fn api_key_is_stored_only_when_the_api_accepts_it() {
             .settings
             .api_key(ApiProvider::Anthropic)
             .await
+            .unwrap()
             .as_deref(),
         Some("sk-ant-good")
     );

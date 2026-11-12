@@ -1,5 +1,6 @@
 //! Everything the application needs from the outside world.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -96,16 +97,33 @@ pub trait SettingsRepository: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum SecretError {
-    #[error("The system keychain is not available: {0}")]
+    /// The user, or the system on their behalf, refused this app the secret.
+    #[error("Keychain access was denied")]
+    Denied,
+    #[error("The keychain is unavailable: {0}")]
     Unavailable(String),
-    #[error("The system keychain refused the operation: {0}")]
+    #[error("The keychain operation failed: {0}")]
     Failed(String),
+}
+
+/// One secret the app keeps.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SecretName {
+    ApiKey(ApiProvider),
+    /// By proxy profile id.
+    ProxyPassword(String),
 }
 
 /// Where the secrets live: one API key per provider and one password per
 /// proxy profile.
+///
+/// Reading a secret can make the system ask the user for permission, so a
+/// failure is never the same as "nothing stored": callers must report it.
 #[async_trait]
 pub trait SecretStore: Send + Sync {
+    /// Which of `candidates` exist. Answered from the app's own record and
+    /// never by reading a secret, so it is safe on every settings fetch.
+    async fn stored_among(&self, candidates: Vec<SecretName>) -> RepoResult<HashSet<SecretName>>;
     async fn api_key(&self, provider: ApiProvider) -> Result<Option<String>, SecretError>;
     async fn store_api_key(&self, provider: ApiProvider, key: &str) -> Result<(), SecretError>;
     async fn clear_api_key(&self, provider: ApiProvider) -> Result<(), SecretError>;
@@ -113,6 +131,14 @@ pub trait SecretStore: Send + Sync {
     async fn store_proxy_password(&self, proxy_id: &str, password: &str)
     -> Result<(), SecretError>;
     async fn clear_proxy_password(&self, proxy_id: &str) -> Result<(), SecretError>;
+}
+
+/// The record of which secrets exist, kept outside the keychain so that
+/// showing it costs the user no permission prompt. Names only, never values.
+#[async_trait]
+pub trait SecretPresenceRepository: Send + Sync {
+    async fn load_presence(&self) -> RepoResult<HashSet<SecretName>>;
+    async fn save_presence(&self, names: &HashSet<SecretName>) -> RepoResult<()>;
 }
 
 #[async_trait]

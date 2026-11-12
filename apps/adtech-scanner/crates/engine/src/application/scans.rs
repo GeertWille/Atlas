@@ -115,18 +115,18 @@ impl ScanService {
             }
         })?;
         let proxy_password = match &scan.proxy.profile_id {
-            Some(profile_id) => self.settings.proxy_password(profile_id).await,
+            Some(profile_id) => self.settings.proxy_password(profile_id).await?,
             None => None,
         };
         let ai_enabled = scan.options.ai_enabled;
         let api_key = if ai_enabled {
-            self.settings.api_key(ApiProvider::Anthropic).await
+            self.settings.api_key(ApiProvider::Anthropic).await?
         } else {
             None
         };
         // Which classifier a scan uses is fixed here, when it starts.
         let jev_key = if ai_enabled && settings.jev_enabled {
-            self.settings.api_key(ApiProvider::Typesafe).await
+            self.settings.api_key(ApiProvider::Typesafe).await?
         } else {
             None
         };

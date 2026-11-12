@@ -88,8 +88,11 @@ export function creativeHtml(slot: AdSlot): string {
   ].join("\n");
 }
 
-/** A JSON document of about `bytes` characters: fixtures of a season, one per line. */
-export function largeFeedJson(bytes: number): string {
+/**
+ * A JSON document of about `bytes` characters: fixtures of a season, one per line. `cutAt` is where a
+ * capture stopped storing it; what is left is then no longer valid JSON, as with a real truncated body.
+ */
+export function largeFeedJson(bytes: number, cutAt?: number): string {
   const rows: string[] = [];
   let length = 16;
   for (let index = 0; length < bytes; index += 1) {
@@ -97,5 +100,6 @@ export function largeFeedJson(bytes: number): string {
     rows.push(row);
     length += row.length + 2;
   }
-  return `{"fixtures":[\n${rows.join(",\n")}\n]}`.slice(0, bytes);
+  const text = `{"fixtures":[\n${rows.join(",\n")}\n]}`;
+  return cutAt === undefined ? text : text.slice(0, cutAt);
 }

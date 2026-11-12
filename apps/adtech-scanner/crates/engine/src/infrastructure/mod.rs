@@ -3,6 +3,7 @@
 pub mod anthropic;
 pub mod beautify;
 pub mod http;
+pub mod keychain;
 pub mod pack_store;
 pub mod public_files;
 pub mod secrets;
