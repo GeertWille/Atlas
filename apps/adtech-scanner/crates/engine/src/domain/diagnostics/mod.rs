@@ -113,6 +113,29 @@ pub(crate) fn excerpt(text: &str) -> String {
     cut
 }
 
+/// An id or name quoted inside a summary: ids come from the page and from
+/// files it publishes, so their length is not ours to trust.
+pub(crate) fn brief(text: &str) -> String {
+    const MAX_QUOTED_ID_CHARS: usize = 40;
+    let text = text.trim();
+    if text.chars().count() > MAX_QUOTED_ID_CHARS {
+        format!(
+            "{}…",
+            text.chars().take(MAX_QUOTED_ID_CHARS).collect::<String>()
+        )
+    } else {
+        text.to_string()
+    }
+}
+
+pub(crate) fn capitalized(text: &str) -> String {
+    let mut characters = text.chars();
+    match characters.next() {
+        Some(first) => first.to_uppercase().chain(characters).collect(),
+        None => String::new(),
+    }
+}
+
 /// One bidder of the page with everything the capture says about it.
 struct BidderFacts<'a> {
     name: &'a str,
@@ -263,6 +286,18 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
     let config_has = |key: &str| {
         prebid_config.is_some_and(|(_, raw)| raw.get(key).is_some_and(|value| !value.is_null()))
     };
+    let auctions_with_consent: BTreeSet<&str> = capture
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            Ev::BidRequested {
+                auction_id,
+                has_consent_string: Some(true),
+                ..
+            } => Some(auction_id.as_str()),
+            _ => None,
+        })
+        .collect();
     let site = site::ads_txt_location(&capture.final_url)
         .map(|location| location.site)
         .unwrap_or_default();
@@ -304,6 +339,7 @@ pub fn diagnose(capture: &Capture, telemetry: &Telemetry, files: &SiteFiles) -> 
         consent: timeline.report(
             &telemetry.auctions,
             prebid_config.map(|(configured, _)| configured),
+            &auctions_with_consent,
         ),
         bidders,
     }
@@ -592,8 +628,9 @@ fn ads_txt_checks(bidder: &BidderFacts, outcome: &AdsTxtOutcome) -> Vec<Diagnost
                     DiagnosticStatus::Problem,
                     codes::ADS_TXT_ACCOUNT_MISMATCH,
                     format!(
-                        "ads.txt lists {} but not account {id}, which the `{account_param}` param uses",
-                        first_listed.domain
+                        "ads.txt lists {} but not account {}, which the `{account_param}` param uses",
+                        brief(&first_listed.domain),
+                        brief(id)
                     ),
                 );
                 check.excerpt = Some(first_listed.text.clone());
@@ -609,13 +646,13 @@ fn ads_txt_checks(bidder: &BidderFacts, outcome: &AdsTxtOutcome) -> Vec<Diagnost
         let summary = match matched {
             Some(record) => format!(
                 "ads.txt authorises account {} at {} ({})",
-                record.account_id,
-                record.domain,
+                brief(&record.account_id),
+                brief(&record.domain),
                 record.relationship.as_str()
             ),
             None => format!(
                 "ads.txt lists {} ({})",
-                record.domain,
+                brief(&record.domain),
                 match listed.len() {
                     1 => "1 entry".to_string(),
                     count => format!("{count} entries"),
@@ -652,8 +689,9 @@ fn schain_checks(bidder: &BidderFacts, file: &AdsTxt) -> Vec<DiagnosticCheck> {
                     DiagnosticStatus::Problem,
                     codes::ADS_TXT_SCHAIN_MISMATCH,
                     format!(
-                        "The supply chain sent to this bidder names seller {} at {asi}, which ads.txt does not list",
-                        excerpt(&node.sid)
+                        "The supply chain sent to this bidder names seller {} at {}, which ads.txt does not list",
+                        brief(&node.sid),
+                        brief(&asi)
                     ),
                 )
             })
@@ -693,8 +731,8 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
                         codes::SELLERS_UNAVAILABLE,
                         format!(
                             "The sellers.json of {} could not be read: {}",
-                            record.domain,
-                            excerpt(reason)
+                            brief(&record.domain),
+                            brief(reason)
                         ),
                     ));
                 }

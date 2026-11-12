@@ -10,12 +10,14 @@ demo" target and the fixture of `tests/demo_site.rs`.
 | Path | What it is |
 |---|---|
 | `/` | The article page (`index.html`), with one inline script (page config and theme) |
-| `/static/ads/prebid.js` | Prebid.js stand-in: public API, event payloads and debug logging of the real library; bidders are simulated in the page |
+| `/static/ads/prebid.js` | Prebid.js stand-in: public API, event payloads, param validation and debug logging of the real library; bidders are simulated in the page, except `openx`, which asks the demo exchange |
 | `/tag/js/gpt.js` | Google Publisher Tag stand-in: `googletag` API and slot events |
 | `/static/ads/apstag.js` | Amazon TAM stand-in, loaded by the wrapper |
 | `/static/ads/hb-wrapper.min.js` | The publisher's wrapper ("adstack"), minified. **This is where the bugs are.** |
 | `/static/js/app.9b3e7f.js`, `/static/js/vendors-ui.4c1d2a.chunk.js`, `/static/js/analytics.js` | Application bundle, UI library chunk and first-party analytics: not ad related |
 | `/collect` | Sink for the analytics beacons (204) |
+| `/ads.txt` | The publisher's ads.txt (`ads.txt`): six authorised ad systems, `text/plain` |
+| `/openrtbb/prebidjs` | The demo exchange behind the `openx` bidder (POST). Always answers `{"id":"meridian-post","nbr":7}`: OpenRTB no-bid reason 7, "blocked publisher or site" |
 
 `static/ads/hb-wrapper.src.js` is the readable source of the wrapper. It is not
 served. After changing it, regenerate the served file:
@@ -37,9 +39,15 @@ every run is identical:
 |---|---|---|---|
 | appnexus | 70-150 ms | 0.35-1.90 | bids on almost everything |
 | rubicon | 105-195 ms | 0.45-2.40 | bids on most requests |
-| ix | 130-215 ms | 0.30-1.60 | passes on about half |
+| ix | 130-215 ms | - | never bids, see (e) |
 | pubmatic | 330-620 ms | 1.80-4.60 | highest CPMs, slower than the misconfigured timeout |
 | criteo | 1500-2100 ms | 0.60-2.20 | slower than any sensible timeout |
+| triplelift | 110-190 ms | 0.40-1.50 | bids on most requests it is allowed to make |
+| openx | one real HTTP round trip to `/openrtbb/prebidjs` | - | the exchange never bids and says why |
+
+Like the real library, the stand-in checks each bid's params the way the
+adapter's `isBidRequestValid` does and drops a bid that fails, with an
+"Invalid bid sent to bidder" warning, before any request is made.
 
 The GPT stand-in has demand only for header-bidding line items: a slot whose ad
 request carries `hb_adid` is filled with that bid's creative (which triggers
@@ -75,6 +83,26 @@ are asked (and bid) for it in every gated auction, and nothing is ever requested
 from the ad server. Separately, `ensureLibrary()` matches script URLs exactly, so
 it loads `/tag/js/gpt.js?v=adstack-4.2.1` although the page already includes
 `/tag/js/gpt.js`: two scripts with identical bodies, plus a console warning.
+
+**(e) Bidder missing from ads.txt.** `ix` is called for `ad-leaderboard`,
+`ad-sidebar-2`, `ad-inarticle-1` and `ad-sticky-footer`, but `/ads.txt` has no
+`indexexchange.com` line. It answers every request with `noBid`.
+
+**(f) Required param missing.** `BIDDER_PARAMS.triplelift` reads
+`slot.inventoryCode`, which only the `ad-inarticle-2` slot defines. On
+`ad-sidebar-1` and `ad-inarticle-1` the bid has no `inventoryCode`; Prebid drops
+both bids with a warning, and `triplelift` is only ever requested for
+`ad-inarticle-2`.
+
+**(g) Exchange blocks the publisher.** The one `openx` bid request, sent in
+the gated auction for `ad-leaderboard`, `ad-sidebar-1` and `ad-inarticle-1`,
+gets HTTP 200 with `"nbr": 7` from `/openrtbb/prebidjs`. The capture's
+`bidResponses` carry status 200 and the reason
+"no-bid reason 7 (blocked publisher or site)"; Prebid reports `noBid` for all
+three ad units. `openx.com` is authorised in ads.txt, so the endpoint's answer
+is the cause.
+
+The page has no consent platform, so no consent event is ever emitted.
 
 What works correctly, for contrast: `ad-inarticle-2` is lazy-loaded with an
 `IntersectionObserver` and auctioned when it comes within 250 px of the viewport;

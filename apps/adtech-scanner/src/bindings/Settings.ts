@@ -43,4 +43,10 @@ jevEnabled: boolean,
 /**
  * Read-only: whether a TypeSafe API key is stored in the keychain.
  */
-hasTypesafeKey: boolean, };
+hasTypesafeKey: boolean, 
+/**
+ * Look up the publisher's seller ids in the sellers.json of the ad
+ * exchanges its ads.txt names. Contacts those third-party hosts, so
+ * it is off unless the user turns it on.
+ */
+checkSellersJson: boolean, };

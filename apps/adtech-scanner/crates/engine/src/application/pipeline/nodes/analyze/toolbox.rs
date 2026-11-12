@@ -989,6 +989,67 @@ mod tests {
     }
 
     #[test]
+    fn bidder_checks_are_a_telemetry_section_once_they_ran() {
+        use adscan_model::{
+            AdsTxtReport, AdsTxtStatus, BidderDiagnosis, ConsentReport, DiagnosticArea,
+            DiagnosticCheck, DiagnosticStatus,
+        };
+        let section = |toolbox: &Toolbox| {
+            toolbox
+                .execute("get_telemetry", &json!({ "section": "bidder_checks" }))
+                .content
+        };
+        assert_eq!(
+            section(&toolbox()),
+            "The bidder checks did not run for this scan."
+        );
+
+        let diagnostics = BidderDiagnostics {
+            ads_txt: AdsTxtReport {
+                url: "https://pub.example/ads.txt".into(),
+                status: AdsTxtStatus::Found,
+                detail: None,
+                record_count: 9,
+                invalid_line_count: 0,
+                invalid_lines: vec![],
+                owner_domain: None,
+                manager_domains: vec![],
+            },
+            sellers_json_checked: false,
+            consent: ConsentReport {
+                cmp_present: true,
+                consent_management_configured: Some(false),
+                gdpr_applies: Some(true),
+                resolved_at_ms: Some(812.0),
+                auction_count: 2,
+                auctions_before_consent: 1,
+                consented_purposes: vec![1],
+            },
+            bidders: vec![BidderDiagnosis {
+                bidder: "seedtag".into(),
+                requests: 4,
+                bids: 0,
+                checks: vec![DiagnosticCheck {
+                    area: DiagnosticArea::AdsTxt,
+                    status: DiagnosticStatus::Problem,
+                    code: "ads-txt-not-listed".into(),
+                    summary: "ads.txt has no entry for seedtag.com".into(),
+                    excerpt: None,
+                    ad_units: vec![],
+                }],
+            }],
+        };
+        assert_eq!(
+            section(&toolbox().with_bidder_checks(Some(&diagnostics))),
+            "ads.txt https://pub.example/ads.txt status=found records=9 invalidLines=0\n\
+             sellers.json lookups: off (user setting)\n\
+             consent: cmp=true prebidConsentManagement=no gdprApplies=yes consentKnownAt=812ms auctionsBeforeConsent=1/2\n\
+             bidder seedtag requests=4 bids=0\n  \
+             AdsTxt/Problem ads-txt-not-listed: ads.txt has no entry for seedtag.com"
+        );
+    }
+
+    #[test]
     fn tool_names_are_matched_case_insensitively_and_finish_carries_the_overview() {
         let outcome = toolbox().execute("Finish", &json!({ "overview": "All good." }));
         assert_eq!(

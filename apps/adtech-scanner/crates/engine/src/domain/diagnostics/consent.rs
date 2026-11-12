@@ -1,11 +1,18 @@
 //! The TCF consent state over time, and what each bidder was sent of it.
 
+use std::collections::BTreeSet;
+
 use adscan_model::{
     Auction, ConsentReport, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, TrackerEvent,
     TrackerEventKind as Ev,
 };
 
-use super::{check, codes};
+use super::{capitalized, check, codes};
+
+/// A wrapper that starts its auction from the CMP's callback runs in the same
+/// moment the tracker's own listener hears of the choice, and either may come
+/// first. An auction this close before the recorded choice was not early.
+const CALLBACK_TOLERANCE_MS: f64 = 250.0;
 
 /// What the CMP reported at one moment.
 #[derive(Debug, Clone, Copy)]
@@ -86,16 +93,28 @@ impl<'a> ConsentTimeline<'a> {
             .map(|state| state.t)
     }
 
+    /// Whether the user's choice was known when something happened at `t`.
+    fn decided_by(&self, t: f64) -> bool {
+        self.decided_at()
+            .is_some_and(|at| at <= t + CALLBACK_TOLERANCE_MS)
+    }
+
+    /// `auctions_with_consent` are the ids of the auctions in which Prebid
+    /// passed a consent string: for those the choice was evidently known.
     pub fn report(
         &self,
         auctions: &[Auction],
         consent_management_configured: Option<bool>,
+        auctions_with_consent: &BTreeSet<&str>,
     ) -> ConsentReport {
         let decided_at = self.decided_at();
         let auctions_before_consent = if self.gdpr_applies() {
             auctions
                 .iter()
-                .filter(|auction| decided_at.is_none_or(|at| auction.started_at_ms < at))
+                .filter(|auction| {
+                    !self.decided_by(auction.started_at_ms)
+                        && !auctions_with_consent.contains(auction.id.as_str())
+                })
                 .count() as u32
         } else {
             0
@@ -168,20 +187,22 @@ impl<'a> ConsentTimeline<'a> {
                 codes::CONSENT_NO_STRING,
                 format!(
                     "{} went out without a consent string although GDPR applies",
-                    share_of_requests(without_string, total)
+                    capitalized(&share_of_requests(without_string, total))
                 ),
             );
         }
         let undecided = under_gdpr
             .iter()
-            .filter(|request| !self.state_at(request.t).is_some_and(|state| state.decided))
+            .filter(|request| {
+                request.has_consent_string != Some(true) && !self.decided_by(request.t)
+            })
             .count();
         if undecided > 0 {
             problem(
                 codes::CONSENT_PENDING,
                 format!(
                     "{} went out before the user's consent choice was known",
-                    share_of_requests(undecided, total)
+                    capitalized(&share_of_requests(undecided, total))
                 ),
             );
         }
@@ -226,8 +247,8 @@ impl<'a> ConsentTimeline<'a> {
 
 fn share_of_requests(part: usize, whole: usize) -> String {
     match (part, whole) {
-        (1, 1) => "Its bid request".into(),
-        (part, whole) if part == whole => format!("All {whole} bid requests"),
+        (1, 1) => "its bid request".into(),
+        (part, whole) if part == whole => format!("all {whole} bid requests"),
         (part, whole) => format!("{part} of {whole} bid requests"),
     }
 }
@@ -299,8 +320,14 @@ mod tests {
         ];
         let timeline = ConsentTimeline::from_events(&events);
         let report = timeline.report(
-            &[auction(500.0), auction(1_999.0), auction(2_500.0)],
+            &[
+                auction(500.0),
+                auction(1_700.0),
+                auction(1_800.0),
+                auction(2_500.0),
+            ],
             Some(true),
+            &BTreeSet::new(),
         );
         assert_eq!(
             report,
@@ -309,7 +336,8 @@ mod tests {
                 consent_management_configured: Some(true),
                 gdpr_applies: Some(true),
                 resolved_at_ms: Some(2_000.0),
-                auction_count: 3,
+                auction_count: 4,
+                // The third starts within the callback tolerance of the choice.
                 auctions_before_consent: 2,
                 consented_purposes: vec![1, 2, 7],
             }
@@ -319,8 +347,12 @@ mod tests {
     #[test]
     fn a_choice_that_is_never_made_leaves_every_auction_before_consent() {
         let events = [tcf(300.0, "cmpuishown", Some(true), &[])];
-        let report = ConsentTimeline::from_events(&events).report(&[auction(500.0)], None);
+        let timeline = ConsentTimeline::from_events(&events);
+        let report = timeline.report(&[auction(500.0)], None, &BTreeSet::new());
         assert_eq!(report.auctions_before_consent, 1);
+        // Prebid passed a consent string in this auction, so it knew the choice.
+        let with_string = timeline.report(&[auction(500.0)], None, &BTreeSet::from(["a-500"]));
+        assert_eq!(with_string.auctions_before_consent, 0);
         assert_eq!(report.resolved_at_ms, None);
         assert_eq!(report.consented_purposes, Vec::<u32>::new());
     }
@@ -328,11 +360,16 @@ mod tests {
     #[test]
     fn nothing_is_counted_where_gdpr_does_not_apply_or_no_cmp_exists() {
         let outside = [tcf(100.0, "tcloaded", Some(false), &[])];
-        let report = ConsentTimeline::from_events(&outside).report(&[auction(50.0)], Some(false));
+        let report = ConsentTimeline::from_events(&outside).report(
+            &[auction(50.0)],
+            Some(false),
+            &BTreeSet::new(),
+        );
         assert_eq!(report.auctions_before_consent, 0);
         assert_eq!(report.gdpr_applies, Some(false));
 
-        let report = ConsentTimeline::from_events(&[]).report(&[auction(50.0)], None);
+        let report =
+            ConsentTimeline::from_events(&[]).report(&[auction(50.0)], None, &BTreeSet::new());
         assert!(!report.cmp_present);
         assert_eq!(report.auctions_before_consent, 0);
         assert_eq!(report.gdpr_applies, None);

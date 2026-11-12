@@ -1,5 +1,6 @@
 //! One page capture, start to finish: launch, emulate, navigate, observe, collect.
 
+mod bid_endpoints;
 mod console;
 mod error;
 mod injected;
@@ -252,6 +253,7 @@ async fn collect(
         console: recorder.console.into_lines(navigation_start),
         events: recorder.tracker.into_events(),
         consent_accepted,
+        bid_responses: recorder.bid_responses.into_observed(navigation_start),
     };
     (hooks.on_progress)(format!(
         "Captured {} scripts, {} tracker events and {} console lines",

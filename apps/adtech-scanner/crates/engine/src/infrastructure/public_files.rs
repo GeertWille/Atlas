@@ -46,8 +46,8 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
     let mut url = Url::parse(&request.url).map_err(|_| refused("it is not a valid address"))?;
     let mut scope = RedirectScope::starting_at(url.host_str().unwrap_or_default());
     loop {
-        let pinned = admit(&url, request.loopback_origin.as_deref()).await?;
-        let mut response = client(&url, &pinned)?
+        let route = admit(&url, request.loopback_origin.as_deref()).await?;
+        let mut response = client(&url, &route)?
             .get(url.clone())
             .header(USER_AGENT, CLIENT_NAME)
             .header(ACCEPT, "text/plain, application/json;q=0.9, */*;q=0.1")
@@ -97,28 +97,37 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
     }
 }
 
-/// Decides whether `url` may be contacted. For a host name it returns the
-/// addresses that were checked, so the connection goes to exactly those and a
-/// second DNS answer cannot point it elsewhere.
-async fn admit(url: &Url, loopback_origin: Option<&str>) -> Result<Vec<SocketAddr>, FetchError> {
+/// How an admitted address is to be reached.
+#[derive(Debug, PartialEq, Eq)]
+enum Route {
+    /// The scanned page's own origin on this machine: directly, never
+    /// through a proxy.
+    ScannedOrigin,
+    /// A public host. For a host name these are the addresses that were
+    /// checked, so the connection goes to exactly those and a second DNS
+    /// answer cannot point it elsewhere. Empty for an IP address, and for a
+    /// name only the system's proxy can resolve.
+    Public(Vec<SocketAddr>),
+}
+
+/// Decides whether `url` may be contacted, and how.
+async fn admit(url: &Url, loopback_origin: Option<&str>) -> Result<Route, FetchError> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err(refused("it carries credentials"));
     }
     let is_scanned_origin =
         loopback_origin.is_some_and(|origin| url.origin().ascii_serialization() == origin);
     if is_scanned_origin && matches!(url.scheme(), "http" | "https") {
-        return Ok(Vec::new());
+        return Ok(Route::ScannedOrigin);
     }
     if url.scheme() != "https" {
         return Err(refused("only https addresses are read"));
     }
     match url.host() {
-        Some(Host::Ipv4(ip)) => require_public(IpAddr::V4(ip)).map(|()| Vec::new()),
-        Some(Host::Ipv6(ip)) => require_public(IpAddr::V6(ip)).map(|()| Vec::new()),
+        Some(Host::Ipv4(ip)) => require_public(IpAddr::V4(ip)).map(|()| Route::Public(Vec::new())),
+        Some(Host::Ipv6(ip)) => require_public(IpAddr::V6(ip)).map(|()| Route::Public(Vec::new())),
         Some(Host::Domain(domain)) => {
             let port = url.port_or_known_default().unwrap_or(443);
-            // Behind a proxy that does the resolving, a name this machine
-            // cannot resolve is left to the proxy.
             let resolved: Vec<SocketAddr> = tokio::net::lookup_host((domain, port))
                 .await
                 .map(Iterator::collect)
@@ -126,19 +135,23 @@ async fn admit(url: &Url, loopback_origin: Option<&str>) -> Result<Vec<SocketAdd
             for address in &resolved {
                 require_public(address.ip())?;
             }
-            Ok(resolved)
+            Ok(Route::Public(resolved))
         }
         None => Err(refused("it has no host")),
     }
 }
 
-fn client(url: &Url, pinned: &[SocketAddr]) -> Result<reqwest::Client, FetchError> {
-    let mut builder = reqwest::Client::builder()
+fn client(url: &Url, route: &Route) -> Result<reqwest::Client, FetchError> {
+    let builder = reqwest::Client::builder()
         .redirect(Policy::none())
         .connect_timeout(CONNECT_TIMEOUT);
-    if let (Some(host), false) = (url.host_str(), pinned.is_empty()) {
-        builder = builder.resolve_to_addrs(host, pinned);
-    }
+    let builder = match (route, url.host_str()) {
+        (Route::ScannedOrigin, _) => builder.no_proxy(),
+        (Route::Public(pinned), Some(host)) if !pinned.is_empty() => {
+            builder.resolve_to_addrs(host, pinned)
+        }
+        (Route::Public(_), _) => builder,
+    };
     builder.build().map_err(network)
 }
 
@@ -240,16 +253,15 @@ mod tests {
         let admitted = |url: &'static str, origin: Option<&'static str>| async move {
             admit(&Url::parse(url).unwrap(), origin)
                 .await
-                .map(|_| ())
                 .map_err(|error| error.to_string())
         };
         assert_eq!(
             admitted("http://127.0.0.1:4455/ads.txt", scanned).await,
-            Ok(())
+            Ok(Route::ScannedOrigin)
         );
         assert_eq!(
             admitted("https://93.184.216.34/ads.txt", None).await,
-            Ok(())
+            Ok(Route::Public(Vec::new()))
         );
 
         let private = Err(

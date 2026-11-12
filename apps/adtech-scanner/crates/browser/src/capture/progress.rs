@@ -73,6 +73,7 @@ mod tests {
             code: code.into(),
             sizes: vec![],
             bidders: bidders.iter().map(|bidder| bidder.to_string()).collect(),
+            bids: vec![],
         }
     }
 

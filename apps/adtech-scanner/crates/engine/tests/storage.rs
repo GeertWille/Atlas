@@ -3,9 +3,11 @@
 use adscan_engine::application::ports::{LogRepository, ScanRepository, SettingsRepository};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_model::{
-    DeviceProfile, Effort, Evidence, EvidenceKind, Finding, FindingCategory, FindingSource,
-    LogEntry, LogKind, LogLevel, PipelineNode, PipelineStep, ScanListQuery, ScanMetrics,
-    ScanOptions, ScanStatus, ScanSummary, Settings, Severity, SeverityCounts, StepStatus,
+    AdsTxtLineProblem, AdsTxtReport, AdsTxtStatus, BidderDiagnosis, BidderDiagnostics,
+    ConsentReport, DeviceProfile, DiagnosticArea, DiagnosticCheck, DiagnosticStatus, Effort,
+    Evidence, EvidenceKind, Finding, FindingCategory, FindingSource, LogEntry, LogKind, LogLevel,
+    PipelineNode, PipelineStep, ScanListQuery, ScanMetrics, ScanOptions, ScanStatus, ScanSummary,
+    Settings, Severity, SeverityCounts, StepStatus,
 };
 use serde_json::json;
 
@@ -255,6 +257,57 @@ async fn scan_round_trips_through_summary_and_detail() {
             (PipelineNode::Capture, StepStatus::Pending)
         ]
     );
+
+    // A scan has no bidder diagnostics until its checks ran; then they are
+    // stored whole.
+    assert_eq!(detail.bidder_diagnostics, None);
+    let diagnostics = BidderDiagnostics {
+        ads_txt: AdsTxtReport {
+            url: "https://pub.example/ads.txt".into(),
+            status: AdsTxtStatus::Found,
+            detail: None,
+            record_count: 12,
+            invalid_line_count: 1,
+            invalid_lines: vec![AdsTxtLineProblem {
+                line: 7,
+                excerpt: "google.com pub-1 DIRECT".into(),
+                problem: "a record needs an ad system domain, an account id and DIRECT or RESELLER"
+                    .into(),
+            }],
+            owner_domain: Some("pub-media.example".into()),
+            manager_domains: vec!["manager.example".into()],
+        },
+        sellers_json_checked: true,
+        consent: ConsentReport {
+            cmp_present: true,
+            consent_management_configured: Some(true),
+            gdpr_applies: Some(true),
+            resolved_at_ms: Some(812.5),
+            auction_count: 2,
+            auctions_before_consent: 1,
+            consented_purposes: vec![1, 2, 7],
+        },
+        bidders: vec![BidderDiagnosis {
+            bidder: "appnexus".into(),
+            requests: 4,
+            bids: 0,
+            checks: vec![DiagnosticCheck {
+                area: DiagnosticArea::AdsTxt,
+                status: DiagnosticStatus::Problem,
+                code: "ads-txt-not-listed".into(),
+                summary: "ads.txt has no entry for appnexus.com".into(),
+                excerpt: Some("xandr.example, 1, DIRECT".into()),
+                ad_units: vec!["top".into()],
+            }],
+        }],
+    };
+    store
+        .save_diagnostics("scan-1", &diagnostics)
+        .await
+        .unwrap();
+    let detail = store.detail("scan-1").await.unwrap().unwrap();
+    assert_eq!(detail.bidder_diagnostics, Some(diagnostics));
+    assert_eq!(detail.overview.as_deref(), Some("All about the scan."));
 }
 
 #[tokio::test]
@@ -762,6 +815,7 @@ async fn settings_persist_across_reopen_and_data_survives_on_disk() {
             analysis_effort: Effort::High,
             budget_usd: 1.25,
             chrome_path: Some("/opt/chrome".into()),
+            check_sellers_json: true,
             ..Settings::default()
         };
         store.save(&settings).await.unwrap();
@@ -783,5 +837,6 @@ async fn settings_persist_across_reopen_and_data_survives_on_disk() {
         (Effort::High, 1.25)
     );
     assert_eq!(settings.chrome_path.as_deref(), Some("/opt/chrome"));
+    assert!(settings.check_sellers_json);
     assert!(reopened.summary("scan-1").await.unwrap().is_some());
 }

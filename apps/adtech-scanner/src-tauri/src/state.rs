@@ -11,6 +11,7 @@ use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::settings::SettingsService;
 use adscan_engine::infrastructure::anthropic::{AnthropicClient, DEFAULT_BASE_URL, RetryPolicy};
 use adscan_engine::infrastructure::beautify::OxcFormatter;
+use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_engine::infrastructure::secrets::{KeychainSecretStore, MemorySecretStore};
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
@@ -96,6 +97,7 @@ impl AppState {
                 llm,
                 judge,
                 capture,
+                files: Arc::new(HttpPublicFileFetcher),
                 formatter: Arc::new(OxcFormatter::default()),
                 events,
                 clock: Arc::new(SystemClock),

@@ -30,14 +30,28 @@ const SELLERS_JSON_TIMEOUT: Duration = Duration::from_secs(20);
 
 pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
     let page_url = run.state.capture()?.final_url.clone();
-    let (ads_txt_url, outcome) = read_ads_txt(run, &page_url).await?;
-    let sellers = if run.job.settings.check_sellers_json {
+    let location = ads_txt_location(&page_url);
+    let (ads_txt_url, outcome) = match &location {
+        Some(location) => read_ads_txt(run, &page_url, location).await?,
+        None => (
+            String::new(),
+            AdsTxtOutcome::Unreadable("the page address has no host".into()),
+        ),
+    };
+    // No exchange knows a page that is served from this machine, such as the
+    // demo site, so none is asked about it.
+    let page_is_local = location.is_some_and(|location| location.loopback_origin.is_some());
+    let sellers = if !run.job.settings.check_sellers_json {
+        None
+    } else if page_is_local {
+        run.info("sellers.json is not looked up for a page served from this machine")
+            .await?;
+        None
+    } else {
         Some(match &outcome {
             AdsTxtOutcome::Found(file) => read_sellers_json(run, file).await?,
             AdsTxtOutcome::Missing | AdsTxtOutcome::Unreadable(_) => BTreeMap::new(),
         })
-    } else {
-        None
     };
     let files = SiteFiles {
         ads_txt_url,
@@ -90,27 +104,22 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
 async fn read_ads_txt(
     run: &mut StepRun<'_>,
     page_url: &str,
+    location: &AdsTxtLocation,
 ) -> Result<(String, AdsTxtOutcome), NodeError> {
-    let Some(location) = ads_txt_location(page_url) else {
-        return Ok((
-            String::new(),
-            AdsTxtOutcome::Unreadable("the page address has no host".into()),
-        ));
-    };
-    let root = fetch_ads_txt(run, &location, location.url.clone()).await?;
+    let root = fetch_ads_txt(run, location, location.url.clone()).await?;
     let subdomain_url = match &root {
         AdsTxtOutcome::Found(file) => subdomain_ads_txt_url(page_url, &file.subdomains),
         _ => None,
     };
     let Some(subdomain_url) = subdomain_url else {
-        return Ok((location.url, root));
+        return Ok((location.url.clone(), root));
     };
     run.info(format!(
         "{} hands this subdomain over to its own ads.txt",
         location.url
     ))
     .await?;
-    let own = fetch_ads_txt(run, &location, subdomain_url.clone()).await?;
+    let own = fetch_ads_txt(run, location, subdomain_url.clone()).await?;
     Ok((subdomain_url, own))
 }
 

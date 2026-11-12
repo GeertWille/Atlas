@@ -192,6 +192,26 @@ const decision = makeLog({
   },
 });
 
+test("a script kept only because it could not be ruled out is marked unsure, not ad-related", async () => {
+  const unsure = makeLog({
+    ...decision,
+    id: "l-unsure",
+    message:
+      "s9 https://www.example.com/js/tags.js: ad orchestration 0.19 -> kept for analysis, ranked last [jev-unsure]",
+    data: {
+      answers: [{ questionId: "ad_orchestration", pYes: 0.19 }],
+      thresholds: { analyse: 0.5, drop: 0.15 },
+      decision: { adRelated: true, category: "unknown", route: "jev-unsure" },
+    },
+  });
+  await renderWithApp(<AuditTrail steps={[triageStep]} logs={[...logs, decision, unsure]} onOpenFinding={() => {}} />);
+
+  const row = screen.getByRole("button", { name: /tags\.js/ });
+  expect(row).toHaveTextContent(/Unsure, kepts9 /);
+  expect(row).not.toHaveTextContent("Ad-related");
+  expect(screen.getByRole("button", { name: /lazy\.js/ })).toHaveTextContent(/Ad-related/);
+});
+
 test("a classification entry shows the probabilities, thresholds, routing decision and excerpt", async () => {
   const user = userEvent.setup();
   await renderWithApp(<AuditTrail steps={[triageStep]} logs={[...logs, decision]} onOpenFinding={() => {}} />);

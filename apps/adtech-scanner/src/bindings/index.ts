@@ -1,15 +1,24 @@
 // Barrel over the ts-rs generated files in this directory. Re-exports only.
 export type { AdSlot } from "./AdSlot";
+export type { AdsTxtLineProblem } from "./AdsTxtLineProblem";
+export type { AdsTxtReport } from "./AdsTxtReport";
+export type { AdsTxtStatus } from "./AdsTxtStatus";
 export type { ApiKeyStatus } from "./ApiKeyStatus";
 export type { ApiProvider } from "./ApiProvider";
 export type { Auction } from "./Auction";
 export type { AuctionAdUnit } from "./AuctionAdUnit";
 export type { Bid } from "./Bid";
+export type { BidderDiagnosis } from "./BidderDiagnosis";
+export type { BidderDiagnostics } from "./BidderDiagnostics";
 export type { BidStatus } from "./BidStatus";
 export type { BrowserInfo } from "./BrowserInfo";
 export type { CommandError } from "./CommandError";
+export type { ConsentReport } from "./ConsentReport";
 export type { DashboardStats } from "./DashboardStats";
 export type { DeviceProfile } from "./DeviceProfile";
+export type { DiagnosticArea } from "./DiagnosticArea";
+export type { DiagnosticCheck } from "./DiagnosticCheck";
+export type { DiagnosticStatus } from "./DiagnosticStatus";
 export type { Effort } from "./Effort";
 export type { ErrorCode } from "./ErrorCode";
 export type { Evidence } from "./Evidence";

@@ -44,8 +44,17 @@
     auctionId: 'auction-1',
     timeout: 1500,
     adUnits: [
-      { code: 'unit-a', mediaTypes: { banner: { sizes: [[300, 250], [336, 280]] } }, bids: [{ bidder: 'foo' }, { bidder: 'bar' }, { bidder: 'foo' }] },
-      { code: 'unit-b', mediaTypes: { banner: { sizes: [728, 90] }, video: { playerSize: [640, 480] } }, bids: [{ bidder: 'bar' }] },
+      {
+        code: 'unit-a',
+        mediaTypes: { banner: { sizes: [[300, 250], [336, 280]] } },
+        bids: [
+          { bidder: 'foo', params: { placementId: 12345, keywords: { section: ['news'] }, onEvent: function () {} } },
+          { bidder: 'bar', params: { siteId: '9' } },
+          { bidder: 'foo' },
+        ],
+      },
+      // Params too large to carry are left out whole; the bidder is still listed.
+      { code: 'unit-b', mediaTypes: { banner: { sizes: [728, 90] }, video: { playerSize: [640, 480] } }, bids: [{ bidder: 'bar', params: { blob: new Array(3000).join('x') } }] },
       { code: 'unit-c', sizes: [[160, 600]], bids: [{ module: 'pubCommonId' }] },
     ],
   });
@@ -53,9 +62,42 @@
     bidderCode: 'foo',
     auctionId: 'auction-1',
     bids: [{ bidder: 'foo', adUnitCode: 'unit-a' }, { bidder: 'foo', adUnitCode: 'unit-a' }],
+    gdprConsent: { consentString: 'CPsecretTcString', gdprApplies: true, apiVersion: 2 },
+    ortb2: {
+      source: {
+        ext: {
+          schain: {
+            ver: '1.0',
+            complete: 1,
+            nodes: [{ asi: 'exchange.example', sid: 'pub-1', hp: 1 }, { asi: '', sid: 'nameless' }, { asi: 'reseller.example', sid: 77, hp: 0 }],
+          },
+        },
+      },
+    },
   });
-  emit('bidRequested', { bidderCode: 'bar', auctionId: 'auction-1', bids: [{ adUnitCode: 'unit-a' }, { adUnitCode: 'unit-b' }] });
+  // An older library: the supply chain sits on the bid, and consent came without a string.
+  emit('bidRequested', {
+    bidderCode: 'bar',
+    auctionId: 'auction-1',
+    bids: [{ adUnitCode: 'unit-a', schain: { nodes: [{ asi: 'legacy.example', sid: 's-2' }] } }, { adUnitCode: 'unit-b' }],
+    gdprConsent: { gdprApplies: true },
+  });
   emit('unrelatedEvent', { ignored: true });
+})();
+</script>
+<script>
+// A consent platform whose banner is still open; the reader answers it later.
+(function () {
+  var listeners = [];
+  window.__tcfapi = function (command, version, callback) {
+    if (command !== 'addEventListener') return;
+    listeners.push(callback);
+    callback({ eventStatus: 'cmpuishown', gdprApplies: true, tcString: '', purpose: { consents: {} }, vendor: { consents: {} } }, true);
+  };
+  window.tellConsentListeners = function (tcData, success) {
+    listeners.forEach(function (listener) { listener(tcData, success); });
+  };
+  window.consentListenerCount = function () { return listeners.length; };
 })();
 </script>
 <script>
@@ -193,6 +235,17 @@ setTimeout(function () {
   hb.emit('auctionInit', { auctionId: 'auction-2', adUnits: 'nonsense' });
   hb.emit('setTargeting', undefined);
 
+  var decided = {
+    eventStatus: 'useractioncomplete',
+    gdprApplies: true,
+    tcString: 'CPsecretTcString',
+    purpose: { consents: { 1: true, 2: false, 7: true, 99: true, banana: true } },
+    vendor: { consents: { 0: true, 32: true, 52: false, 76: true, 1.5: true } },
+  };
+  window.tellConsentListeners(decided, true);
+  window.tellConsentListeners(decided, true);
+  window.tellConsentListeners(null, false);
+
   var injected = document.createElement('script');
   injected.text = 'window.injectedByTagManager = "INJECTED_INLINE_MARKER"; /* ' + new Array(60).join('pad ') + '*/';
   document.head.appendChild(injected);
@@ -212,6 +265,7 @@ setTimeout(function () {
     })(),
     consoleLooksNative: /\[native code\]/.test(String(console.log)),
     pbjsCreated: 'pbjs' in window,
+    consentListeners: window.consentListenerCount(),
   }));
 }, 500);
 </script>

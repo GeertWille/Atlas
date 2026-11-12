@@ -1,0 +1,10 @@
+# ads.txt of The Meridian Post
+OWNERDOMAIN=meridian-media.example
+CONTACT=adops@meridian-media.example
+
+appnexus.com, 11842, DIRECT, f5ab79cb980f11d1
+rubiconproject.com, 26014, DIRECT, 0bfd66d529a55807
+pubmatic.com, 164120, DIRECT, 5d62403b186f2ace
+criteo.com, B-071554, DIRECT, 9fac4a4a87c2a44f
+openx.com, 544096208, DIRECT, 6a698e2ec38604c6
+triplelift.com, 11582, DIRECT, 6c33edb13117fd86

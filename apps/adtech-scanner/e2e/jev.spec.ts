@@ -65,7 +65,9 @@ test("a scan with Jev shows who classified each script and how each decision was
   // Drop, keep-when-unsure and analyse are all told apart at a glance and explained when opened.
   await expect(entries.getByRole("button", { name: /Not ad-related s2 \S+main\.4f2a9c\.js/ })).toBeVisible();
   const unsure = entries.getByRole("button", { name: /kept for analysis, ranked last \[jev-unsure\]/ }).first();
-  await expect(unsure).toContainText("Ad-related");
+  // Kept without being confirmed: it does not carry the badge of a script Jev is sure about.
+  await expect(unsure).toContainText("Unsure, kept");
+  await expect(unsure).not.toContainText("Ad-related");
   const wrapper = entries.getByRole("button", { name: /Ad-related s7 \S+hb-wrapper\.min\.js/ });
   await wrapper.focus();
   await page.keyboard.press("Enter");

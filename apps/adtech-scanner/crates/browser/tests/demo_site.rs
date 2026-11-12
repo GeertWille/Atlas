@@ -206,7 +206,7 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
         ("pbjs", Some("v10.14.0"))
     );
     assert!(
-        modules.contains(&"appnexusBidAdapter".to_string()) && modules.len() == 10,
+        modules.contains(&"appnexusBidAdapter".to_string()) && modules.len() == 12,
         "{modules:?}"
     );
     assert!(
@@ -287,13 +287,14 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
                 auction_id,
                 bidder,
                 ad_unit_codes,
+                ..
             } if *auction_id == main.id => Some((bidder.as_str(), ad_unit_codes)),
             _ => None,
         })
         .collect();
     assert_eq!(
         requested.keys().copied().collect::<Vec<_>>(),
-        ["appnexus", "criteo", "ix", "pubmatic", "rubicon"]
+        ["appnexus", "criteo", "ix", "openx", "pubmatic", "rubicon"]
     );
     assert_eq!(requested["appnexus"], &SCROLL_GATED_UNITS);
 
@@ -518,6 +519,136 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
             .events
             .iter()
             .all(|event| event.t >= 0.0 && event.t < 60_000.0)
+    );
+}
+
+#[tokio::test]
+async fn desktop_scan_shows_the_planted_bidder_setup_bugs() {
+    let capture = scan(DeviceProfile::Desktop, true).await;
+    let requested_units = |name: &str| -> Vec<&str> {
+        capture
+            .events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                Kind::BidRequested {
+                    bidder,
+                    ad_unit_codes,
+                    ..
+                } if bidder == name => Some(ad_unit_codes),
+                _ => None,
+            })
+            .flatten()
+            .map(String::as_str)
+            .collect()
+    };
+    let bids_from = |name: &str| {
+        events_where(
+            &capture,
+            |kind| matches!(kind, Kind::BidResponse { bidder, .. } if bidder == name),
+        )
+        .count()
+    };
+    let passes_from = |name: &str| {
+        events_where(
+            &capture,
+            |kind| matches!(kind, Kind::NoBid { bidder, .. } if bidder == name),
+        )
+        .count()
+    };
+
+    // -- Planted bug (e): ix is called but never bids -----------------------------
+    assert_eq!(
+        requested_units("ix"),
+        [
+            "ad-sticky-footer",
+            "ad-leaderboard",
+            "ad-sidebar-2",
+            "ad-inarticle-1"
+        ]
+    );
+    assert_eq!((bids_from("ix"), passes_from("ix")), (0, 4));
+
+    // -- Planted bug (f): triplelift has its inventory code on one ad unit only ---
+    let mut inventory_codes: BTreeMap<&str, Option<&str>> = BTreeMap::new();
+    for event in &capture.events {
+        let Kind::AuctionInit { ad_units, .. } = &event.kind else {
+            continue;
+        };
+        for unit in ad_units {
+            for bid in unit.bids.iter().filter(|bid| bid.bidder == "triplelift") {
+                inventory_codes.insert(&unit.code, bid.params["inventoryCode"].as_str());
+            }
+        }
+    }
+    assert_eq!(
+        inventory_codes,
+        BTreeMap::from([
+            ("ad-inarticle-1", None),
+            ("ad-inarticle-2", Some("MeridianPost_article2_HDX")),
+            ("ad-sidebar-1", None),
+        ])
+    );
+    assert_eq!(
+        requested_units("triplelift"),
+        ["ad-inarticle-2"],
+        "Prebid drops the bids whose params the adapter rejects"
+    );
+    let dropped = events_where(&capture, |kind| {
+        matches!(kind, Kind::PrebidLog { level, message }
+            if level == "warning" && message.starts_with("Invalid bid sent to bidder triplelift"))
+    });
+    assert_eq!(dropped.count(), 2);
+    // Every other bid carries the params the wrapper configured.
+    let appnexus_placement = capture.events.iter().find_map(|event| match &event.kind {
+        Kind::AuctionInit { ad_units, .. } => ad_units
+            .iter()
+            .flat_map(|unit| &unit.bids)
+            .find(|bid| bid.bidder == "appnexus")
+            .map(|bid| bid.params["placementId"].clone()),
+        _ => None,
+    });
+    assert!(
+        appnexus_placement.is_some_and(|id| id.is_number()),
+        "appnexus bids carry a numeric placementId"
+    );
+
+    // -- Planted bug (g): the OpenX exchange answers with a no-bid reason ----------
+    assert_eq!(
+        requested_units("openx"),
+        ["ad-leaderboard", "ad-sidebar-1", "ad-inarticle-1"]
+    );
+    assert_eq!((bids_from("openx"), passes_from("openx")), (0, 3));
+    assert_eq!(
+        capture.bid_responses.len(),
+        1,
+        "one request for the three ad units: {:#?}",
+        capture.bid_responses
+    );
+    for answer in &capture.bid_responses {
+        assert_eq!(
+            (
+                answer.bidder.as_str(),
+                answer.host.as_str(),
+                answer.status,
+                answer.reason.as_deref()
+            ),
+            (
+                "openx",
+                "127.0.0.1",
+                Some(200),
+                Some("no-bid reason 7 (blocked publisher or site)")
+            )
+        );
+        assert!(answer.t > 0.0 && answer.t < 60_000.0);
+    }
+    // The demo has no consent platform.
+    assert_eq!(
+        events_where(&capture, |kind| matches!(
+            kind,
+            Kind::CmpDetected { .. } | Kind::TcfState { .. }
+        ))
+        .count(),
+        0
     );
 }
 

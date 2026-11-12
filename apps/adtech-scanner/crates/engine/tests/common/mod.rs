@@ -409,6 +409,8 @@ pub fn text_file(status: u16, body: &str) -> Result<PublicFile, FetchError> {
 /// An address without one cannot be connected to.
 pub struct FakePublicFiles {
     answers: Mutex<HashMap<String, Result<PublicFile, FetchError>>>,
+    /// Addresses that never answer; the request ends when the scan is cancelled.
+    stalled: Mutex<Vec<String>>,
     pub requests: Mutex<Vec<PublicFileRequest>>,
 }
 
@@ -416,6 +418,7 @@ impl Default for FakePublicFiles {
     fn default() -> Self {
         let files = Self {
             answers: Mutex::new(HashMap::new()),
+            stalled: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
         };
         files.answer(SITE_ADS_TXT_URL, text_file(200, SITE_ADS_TXT));
@@ -426,6 +429,10 @@ impl Default for FakePublicFiles {
 impl FakePublicFiles {
     pub fn answer(&self, url: &str, answer: Result<PublicFile, FetchError>) {
         self.answers.lock().unwrap().insert(url.to_string(), answer);
+    }
+
+    pub fn stall(&self, url: &str) {
+        self.stalled.lock().unwrap().push(url.to_string());
     }
 
     pub fn requested_urls(&self) -> Vec<String> {
@@ -446,9 +453,13 @@ impl PublicFileFetcher for FakePublicFiles {
     async fn fetch(
         &self,
         request: &PublicFileRequest,
-        _cancel: &CancellationToken,
+        cancel: &CancellationToken,
     ) -> Result<PublicFile, FetchError> {
         self.requests.lock().unwrap().push(request.clone());
+        if self.stalled.lock().unwrap().contains(&request.url) {
+            cancel.cancelled().await;
+            return Err(FetchError::Cancelled);
+        }
         self.answers
             .lock()
             .unwrap()

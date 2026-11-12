@@ -77,6 +77,10 @@ pub fn read_response(status: u16, content_type: Option<&str>, body: &[u8]) -> Ad
         200..=299 => {}
         other => return AdsTxtOutcome::Unreadable(format!("the site answered HTTP {other}")),
     }
+    // Compressed or otherwise binary data would parse as nothing but invalid lines.
+    if body.contains(&0) || body.starts_with(&[0x1f, 0x8b]) {
+        return AdsTxtOutcome::Unreadable("the site answered with data that is not text".into());
+    }
     let text = String::from_utf8_lossy(body);
     let media_type = content_type
         .and_then(|value| value.split(';').next())
@@ -416,6 +420,16 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
                 b"\n <!DOCTYPE html><html><body>Not found"
             ),
             web_page
+        );
+        let not_text =
+            AdsTxtOutcome::Unreadable("the site answered with data that is not text".into());
+        assert_eq!(
+            read_response(200, Some("text/plain"), b"\x1f\x8b\x08\x00compressed"),
+            not_text
+        );
+        assert_eq!(
+            read_response(200, Some("text/plain"), b"appnexus.com, 1, DIRECT\n\x00\x01"),
+            not_text
         );
     }
 }

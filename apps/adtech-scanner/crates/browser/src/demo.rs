@@ -62,10 +62,15 @@ const ASSETS: &[Asset] = &[
         "static/ads/hb-wrapper.min.js"
     ),
     asset!("/tag/js/gpt.js", JAVASCRIPT, "tag/js/gpt.js"),
+    asset!("/ads.txt", "text/plain; charset=utf-8", "ads.txt"),
 ];
 
 /// Where the page's analytics script posts its beacons.
 const BEACON_PATH: &str = "/collect";
+/// The demo exchange the stand-in OpenX adapter asks for bids. It has
+/// blocked the publisher and says so with an OpenRTB no-bid reason.
+const EXCHANGE_PATH: &str = "/openrtbb/prebidjs";
+const EXCHANGE_ANSWER: &str = r#"{"id":"meridian-post","nbr":7}"#;
 
 pub(crate) async fn start() -> std::io::Result<DemoSite> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -83,6 +88,16 @@ pub(crate) async fn start() -> std::io::Result<DemoSite> {
 async fn respond(method: Method, uri: Uri) -> Response {
     if uri.path() == BEACON_PATH {
         return StatusCode::NO_CONTENT.into_response();
+    }
+    if uri.path() == EXCHANGE_PATH && method == Method::POST {
+        return (
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )],
+            EXCHANGE_ANSWER,
+        )
+            .into_response();
     }
     let Some(asset) = ASSETS.iter().find(|asset| asset.path == uri.path()) else {
         return StatusCode::NOT_FOUND.into_response();
@@ -124,6 +139,33 @@ mod tests {
         assert!(
             checked >= 8,
             "expected the page to reference its scripts and styles, found {checked}"
+        );
+    }
+
+    #[test]
+    fn ads_txt_authorises_every_bidder_of_the_wrapper_but_index_exchange() {
+        let ads_txt = ASSETS
+            .iter()
+            .find(|asset| asset.path == "/ads.txt")
+            .unwrap();
+        assert!(ads_txt.content_type.starts_with("text/plain"));
+        let mut ad_systems: Vec<&str> = ads_txt
+            .body
+            .lines()
+            .filter(|line| line.matches(',').count() >= 2)
+            .filter_map(|line| line.split(',').next())
+            .collect();
+        ad_systems.sort_unstable();
+        assert_eq!(
+            ad_systems,
+            [
+                "appnexus.com",
+                "criteo.com",
+                "openx.com",
+                "pubmatic.com",
+                "rubiconproject.com",
+                "triplelift.com",
+            ]
         );
     }
 

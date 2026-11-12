@@ -3,7 +3,9 @@
  * Reproduces the public API and event payload shapes of Prebid.js closely enough
  * for wrappers and monitoring tools to behave as they do against the real
  * library. Bidders are simulated in the page: each has a latency and CPM range,
- * and every outcome is derived from a seeded hash, so runs are repeatable.
+ * and every outcome is derived from a seeded hash, so runs are repeatable. One
+ * bidder asks an endpoint of the demo server instead, the way a real adapter
+ * asks its exchange.
  */
 (function (root) {
   'use strict';
@@ -24,6 +26,8 @@
     'ixBidAdapter',
     'pubmaticBidAdapter',
     'criteoBidAdapter',
+    'tripleliftBidAdapter',
+    'openxBidAdapter',
     'consentManagementTcf',
     'currency',
     'gptPreAuction',
@@ -39,10 +43,31 @@
   var BIDDERS = {
     appnexus: { latency: [70, 150], cpm: [0.35, 1.9], bidRate: 0.95 },
     rubicon: { latency: [105, 195], cpm: [0.45, 2.4], bidRate: 0.9 },
-    ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0.45 },
+    ix: { latency: [130, 215], cpm: [0.3, 1.6], bidRate: 0 },
     pubmatic: { latency: [330, 620], cpm: [1.8, 4.6], bidRate: 1 },
     criteo: { latency: [1500, 2100], cpm: [0.6, 2.2], bidRate: 1 },
+    triplelift: { latency: [110, 190], cpm: [0.4, 1.5], bidRate: 0.8 },
+    openx: { endpoint: '/openrtbb/prebidjs' },
   };
+
+  // What each adapter's isBidRequestValid insists on. As in the real library,
+  // a bid that fails it is dropped with a warning before any request is made.
+  var REQUIRED_PARAMS = {
+    appnexus: ['placementId'],
+    rubicon: ['accountId', 'siteId', 'zoneId'],
+    ix: ['siteId'],
+    pubmatic: ['publisherId'],
+    criteo: ['networkId'],
+    triplelift: ['inventoryCode'],
+    openx: ['delDomain', 'unit'],
+  };
+
+  function isBidRequestValid(bid) {
+    var params = bid.params || {};
+    return (REQUIRED_PARAMS[bid.bidder] || []).every(function (key) {
+      return !!params[key];
+    });
+  }
   var UNKNOWN_BIDDER = { latency: [100, 300], cpm: [0.1, 1], bidRate: 0.5 };
 
   function hash(text) {
@@ -254,6 +279,10 @@
     var byBidder = {};
     auction.adUnits.forEach(function (unit) {
       (unit.bids || []).forEach(function (bid) {
+        if (!isBidRequestValid(bid)) {
+          logWarn('Invalid bid sent to bidder ' + bid.bidder + ': ' + JSON.stringify(bid));
+          return;
+        }
         var request = (byBidder[bid.bidder] = byBidder[bid.bidder] || {
           bidderCode: bid.bidder,
           auctionId: auction.auctionId,
@@ -363,36 +392,71 @@
     auction.bidderRequests.push(bidderRequest);
     logMessage('CALLING BIDDER', bidderRequest);
     emit('bidRequested', bidderRequest);
-    var outcomes = bidderRequest.bids.map(simulate);
     var profile = BIDDERS[bidderRequest.bidderCode] || UNKNOWN_BIDDER;
+    if (profile.endpoint) {
+      askEndpoint(profile.endpoint, bidderRequest).then(function (failure) {
+        if (failure) emit('bidderError', { error: failure, bidderRequest: bidderRequest });
+        // The demo exchange never bids; a failed request leaves its bids unanswered.
+        var outcomes = failure ? [] : bidderRequest.bids.map(function () {
+          return { bids: false };
+        });
+        settle(auction, bidderRequest, outcomes, startedAt);
+      });
+      return;
+    }
+    var outcomes = bidderRequest.bids.map(simulate);
     // One HTTP round trip per bidder: every bid of the request arrives together.
     var latency = Math.round(between(profile.latency, outcomes[0].latencyDraw));
     setTimeout(function () {
-      bidderRequest.done = true;
-      if (auction.auctionStatus === 'completed') {
-        logWarn(
-          'Late response from ' + bidderRequest.bidderCode + ' ignored: it arrived ' + (Date.now() - startedAt) +
-            'ms after the request, auction ' + auction.auctionId + ' timed out at ' + auction.timeout + 'ms'
-        );
+      settle(auction, bidderRequest, outcomes, startedAt);
+    }, latency);
+  }
+
+  // Posts an OpenRTB request and resolves with the failure, or null when the
+  // endpoint answered.
+  function askEndpoint(endpoint, bidderRequest) {
+    var request = {
+      id: bidderRequest.bidderRequestId,
+      imp: bidderRequest.bids.map(function (bid) {
+        return { id: bid.bidId, tagid: bid.params.unit, banner: { format: bid.sizes } };
+      }),
+      site: { page: root.location.href },
+      tmax: bidderRequest.timeout,
+    };
+    return fetch(endpoint, { method: 'POST', body: JSON.stringify(request), credentials: 'omit' })
+      .then(function (response) {
+        return response.ok ? null : { status: response.status, statusText: response.statusText };
+      })
+      .catch(function (error) {
+        return error;
+      });
+  }
+
+  function settle(auction, bidderRequest, outcomes, startedAt) {
+    bidderRequest.done = true;
+    if (auction.auctionStatus === 'completed') {
+      logWarn(
+        'Late response from ' + bidderRequest.bidderCode + ' ignored: it arrived ' + (Date.now() - startedAt) +
+          'ms after the request, auction ' + auction.auctionId + ' timed out at ' + auction.timeout + 'ms'
+      );
+      return;
+    }
+    outcomes.forEach(function (outcome, index) {
+      var bidRequest = bidderRequest.bids[index];
+      if (!outcome.bids) {
+        auction.noBids.push(bidRequest);
+        emit('noBid', bidRequest);
         return;
       }
-      bidderRequest.bids.forEach(function (bidRequest, index) {
-        var outcome = outcomes[index];
-        if (!outcome.bids) {
-          auction.noBids.push(bidRequest);
-          emit('noBid', bidRequest);
-          return;
-        }
-        var bid = buildBid(auction, bidRequest, outcome, startedAt);
-        auction.bidsReceived.push(bid);
-        bidsById[bid.adId] = bid;
-        emit('bidResponse', bid);
-      });
-      var everyBidderDone = auction.bidderRequests.every(function (request) {
-        return request.done;
-      });
-      if (everyBidderDone) completeAuction(auction, false);
-    }, latency);
+      var bid = buildBid(auction, bidRequest, outcome, startedAt);
+      auction.bidsReceived.push(bid);
+      bidsById[bid.adId] = bid;
+      emit('bidResponse', bid);
+    });
+    var everyBidderDone = auction.bidderRequests.every(function (request) {
+      return request.done;
+    });
+    if (everyBidderDone) completeAuction(auction, false);
   }
 
   function completeAuction(auction, timedOut) {

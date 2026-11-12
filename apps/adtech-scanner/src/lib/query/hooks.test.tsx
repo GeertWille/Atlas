@@ -4,22 +4,10 @@ import type { ReactNode } from "react";
 import { afterEach, expect, test, vi } from "vitest";
 import type { Settings, SettingsPatch } from "@/bindings";
 import { api } from "@/lib/api";
+import { settingsFixture } from "@/test/fixtures";
 import { useSettings, useUpdateSettings } from "./hooks";
 
-const STORED: Settings = {
-  filterModel: "claude-haiku-5-5",
-  analysisModel: "claude-sonnet-5-5",
-  analysisEffort: "medium",
-  budgetUsd: 0.5,
-  chromePath: null,
-  headless: true,
-  defaultDevice: "desktop",
-  defaultObserveSeconds: 20,
-  theme: "system",
-  hasApiKey: true,
-  jevEnabled: false,
-  hasTypesafeKey: true,
-};
+const STORED: Settings = { ...settingsFixture, hasTypesafeKey: true };
 
 /** A backend whose saves the test answers by hand, each with the settings as they were when it was applied. */
 function controllableBackend() {

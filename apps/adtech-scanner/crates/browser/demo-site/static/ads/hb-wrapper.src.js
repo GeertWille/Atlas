@@ -24,32 +24,33 @@
         id: 'ad-leaderboard',
         unit: 'top',
         sizes: { desktop: [[970, 250], [728, 90]], mobile: [[320, 100], [320, 50]] },
-        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo'],
+        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo', 'openx'],
       },
       {
         id: 'ad-sidebar-1',
         unit: 'rail-1',
         sizes: { desktop: [[300, 600], [300, 250]], mobile: [[300, 250]] },
-        bidders: ['appnexus', 'rubicon', 'pubmatic', 'criteo'],
+        bidders: ['appnexus', 'rubicon', 'pubmatic', 'criteo', 'openx', 'triplelift'],
       },
       {
         id: 'ad-sidebar-2',
         unit: 'rail-2',
         sizes: { desktop: [[300, 250]], mobile: [[300, 250]] },
-        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic'],
+        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo'],
       },
       {
         id: 'ad-inarticle-1',
         unit: 'article-1',
         sizes: { desktop: [[336, 280], [300, 250]], mobile: [[300, 250]] },
-        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo'],
+        bidders: ['appnexus', 'rubicon', 'ix', 'pubmatic', 'criteo', 'openx', 'triplelift'],
       },
       {
         id: 'ad-inarticle-2',
         unit: 'article-2',
         lazy: true,
         sizes: { desktop: [[336, 280], [300, 250]], mobile: [[300, 250]] },
-        bidders: ['appnexus', 'rubicon', 'pubmatic'],
+        inventoryCode: 'MeridianPost_article2_HDX',
+        bidders: ['appnexus', 'rubicon', 'pubmatic', 'criteo', 'triplelift'],
       },
       {
         id: 'ad-sticky-footer',
@@ -62,11 +63,13 @@
   };
 
   var BIDDER_PARAMS = {
-    appnexus: function (slot) { return { placementId: 13144370 + slot.id.length }; },
-    rubicon: function (slot) { return { accountId: 14062, siteId: 70608, zoneId: 498816 + slot.id.length }; },
-    ix: function (slot) { return { siteId: '9999' + slot.id.length }; },
-    pubmatic: function (slot) { return { publisherId: '156209', adSlot: slot.unit }; },
+    appnexus: function (slot) { return { placementId: 28100400 + slot.id.length }; },
+    rubicon: function (slot) { return { accountId: 26014, siteId: 518204, zoneId: 2950000 + slot.id.length }; },
+    ix: function (slot) { return { siteId: '8842' + slot.id.length }; },
+    pubmatic: function (slot) { return { publisherId: '164120', adSlot: slot.unit }; },
     criteo: function () { return { networkId: 7100 }; },
+    triplelift: function (slot) { return { inventoryCode: slot.inventoryCode }; },
+    openx: function (slot) { return { delDomain: 'meridianpost-d.openx.net', unit: '5412' + slot.id.length }; },
   };
 
   var googletag = (win.googletag = win.googletag || {});

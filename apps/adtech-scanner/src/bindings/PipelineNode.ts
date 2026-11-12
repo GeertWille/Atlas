@@ -3,4 +3,4 @@
 /**
  * Nodes of the scan graph, in execution order.
  */
-export type PipelineNode = "launchBrowser" | "capture" | "telemetry" | "heuristics" | "filterScripts" | "beautify" | "analyzeLogic" | "synthesize";
+export type PipelineNode = "launchBrowser" | "capture" | "telemetry" | "bidderDiagnostics" | "heuristics" | "filterScripts" | "beautify" | "analyzeLogic" | "synthesize";

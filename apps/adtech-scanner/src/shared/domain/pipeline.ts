@@ -5,6 +5,7 @@ export const PIPELINE_NODES: readonly PipelineNode[] = [
   "launchBrowser",
   "capture",
   "telemetry",
+  "bidderDiagnostics",
   "heuristics",
   "filterScripts",
   "beautify",
@@ -20,6 +21,11 @@ export const PIPELINE_NODE_META: Record<PipelineNode, { label: string; descripti
     usesModel: false,
   },
   telemetry: { label: "Derive telemetry", description: "Build auctions, slots and metrics", usesModel: false },
+  bidderDiagnostics: {
+    label: "Check bidders",
+    description: "Verify adapter params, endpoint answers, ads.txt, sellers.json and consent",
+    usesModel: false,
+  },
   heuristics: { label: "Deterministic checks", description: "Run revenue-leak rules", usesModel: false },
   filterScripts: {
     label: "Filter scripts",

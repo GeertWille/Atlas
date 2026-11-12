@@ -8,7 +8,7 @@ use adscan_model::{DiagnosticArea, DiagnosticCheck, DiagnosticStatus};
 use serde_json::Value;
 
 use super::adapters::{AdapterSpec, ParamType};
-use super::{check, codes, excerpt};
+use super::{brief, check, codes, excerpt};
 
 /// One bid of an ad unit as the page configured it.
 #[derive(Debug, Clone, Copy)]
@@ -20,7 +20,6 @@ pub struct BidConfig<'a> {
 
 /// Sharing one placement id is only flagged from this many ad units on.
 const MIN_AD_UNITS_FOR_SHARED_ID: usize = 3;
-const MAX_VALUE_CHARS: usize = 40;
 
 /// `config_has` tells whether the page's Prebid config sets a key.
 pub fn check_params(
@@ -207,7 +206,7 @@ fn describe_value(value: &Value) -> String {
         Value::Null => "null".into(),
         Value::Bool(_) => "a boolean".into(),
         Value::Number(number) => format!("the number {number}"),
-        Value::String(text) => format!("\"{}\"", shorten(text)),
+        Value::String(text) => format!("\"{}\"", brief(text)),
         Value::Array(_) => "an array".into(),
         Value::Object(_) => "an object".into(),
     }
@@ -273,7 +272,7 @@ fn shared_placement_id(adapter: &AdapterSpec, bids: &[BidConfig]) -> Option<Diag
         format!(
             "All {} ad units use the same `{param}` ({}) although their sizes differ",
             ad_units.len(),
-            shorten(shared)
+            brief(shared)
         ),
     );
     check.ad_units = ad_units.into_iter().map(str::to_string).collect();
@@ -297,17 +296,6 @@ pub(super) fn scalar_text(value: Option<&Value>) -> Option<String> {
         Value::String(text) => Some(text.trim().to_string()),
         Value::Number(number) => Some(number.to_string()),
         _ => None,
-    }
-}
-
-fn shorten(text: &str) -> String {
-    if text.chars().count() > MAX_VALUE_CHARS {
-        format!(
-            "{}…",
-            text.chars().take(MAX_VALUE_CHARS).collect::<String>()
-        )
-    } else {
-        text.to_string()
     }
 }
 

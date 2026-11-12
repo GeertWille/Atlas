@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde::de::{DeserializeSeed, Deserializer, IgnoredAny, MapAccess, SeqAccess, Visitor};
 
 use super::ads_txt::{Record, Relationship};
-use super::{check, codes, excerpt};
+use super::{brief, check, codes, excerpt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SellerType {
@@ -181,15 +181,14 @@ pub fn compare(
     site: &SiteIdentity,
 ) -> Vec<DiagnosticCheck> {
     let line = Some(excerpt(&record.text));
+    let account = brief(&record.account_id);
+    let exchange = brief(&record.domain);
     let Some(seller) = seller else {
         let mut check = check(
             DiagnosticArea::SellersJson,
             DiagnosticStatus::Problem,
             codes::SELLERS_ID_MISSING,
-            format!(
-                "Seller id {} from ads.txt is not in the sellers.json of {}",
-                record.account_id, record.domain
-            ),
+            format!("Seller id {account} from ads.txt is not in the sellers.json of {exchange}"),
         );
         check.excerpt = line;
         return vec![check];
@@ -209,8 +208,7 @@ pub fn compare(
         notice(
             codes::SELLERS_CONFIDENTIAL,
             format!(
-                "{} lists seller id {} as confidential, so buyers cannot see who sells this inventory",
-                record.domain, record.account_id
+                "{exchange} lists seller id {account} as confidential, so buyers cannot see who sells this inventory"
             ),
         );
     }
@@ -223,9 +221,7 @@ pub fn compare(
         notice(
             codes::SELLERS_TYPE_MISMATCH,
             format!(
-                "ads.txt lists seller id {} at {} as {}, but its sellers.json lists it as {}",
-                record.account_id,
-                record.domain,
+                "ads.txt lists seller id {account} at {exchange} as {}, but its sellers.json lists it as {}",
                 record.relationship.as_str(),
                 match seller.seller_type {
                     Some(SellerType::Publisher) => "PUBLISHER",
@@ -250,8 +246,9 @@ pub fn compare(
             notice(
                 codes::SELLERS_DOMAIN_MISMATCH,
                 format!(
-                    "{} lists seller id {} as the publisher {domain}, not {}; add OWNERDOMAIN to ads.txt if {domain} owns this site",
-                    record.domain, record.account_id, site.domain
+                    "{exchange} lists seller id {account} as the publisher {seller_domain}, not {}; add OWNERDOMAIN to ads.txt if {seller_domain} owns this site",
+                    site.domain,
+                    seller_domain = brief(domain)
                 ),
             );
         }
@@ -261,10 +258,7 @@ pub fn compare(
             DiagnosticArea::SellersJson,
             DiagnosticStatus::Pass,
             codes::SELLERS_OK,
-            format!(
-                "Seller id {} is listed in the sellers.json of {}",
-                record.account_id, record.domain
-            ),
+            format!("Seller id {account} is listed in the sellers.json of {exchange}"),
         );
         check.excerpt = line;
         checks.push(check);

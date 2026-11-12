@@ -12,6 +12,9 @@ use serde_json::{Value, json};
 
 use crate::cdp::{Cdp, CdpError, CdpEvent};
 
+use super::bid_endpoints::{
+    BidRequest, BidResponseLog, MAX_BODY_BYTES, bid_request, no_bid_reason, short,
+};
 use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, TRACKER_SOURCE};
 use super::progress::Milestones;
@@ -20,12 +23,14 @@ use super::tracker_log::TrackerLog;
 
 pub(crate) type ProgressSink = Arc<dyn Fn(String) + Send + Sync>;
 
-/// A network request that may turn out to be a script.
+/// A network request that may turn out to be a script, or that asks a
+/// bidder for bids.
 struct Request {
     url: String,
     initiator: Option<String>,
     is_script: bool,
-    failed_status: bool,
+    status: Option<u16>,
+    bid: Option<BidRequest>,
 }
 
 /// A script body on its way from the browser.
@@ -42,12 +47,20 @@ enum Fetched {
         creator: String,
         response: Result<Value, CdpError>,
     },
+    /// A bidder's answer, read for its stated no-bid reason and then dropped.
+    BidAnswer {
+        request: BidRequest,
+        status: Option<u16>,
+        answered_at_epoch_ms: Option<f64>,
+        response: Result<Value, CdpError>,
+    },
 }
 
 pub(crate) struct Recorder {
     pub tracker: TrackerLog,
     pub scripts: ScriptLibrary,
     pub console: ConsoleLog,
+    pub bid_responses: BidResponseLog,
     /// URL of the main frame's current document.
     pub document_url: String,
     pub load_fired: bool,
@@ -72,6 +85,7 @@ impl Recorder {
             tracker: TrackerLog::default(),
             scripts: ScriptLibrary::default(),
             console: ConsoleLog::default(),
+            bid_responses: BidResponseLog::default(),
             document_url: String::new(),
             load_fired: false,
             main_frame_id,
@@ -123,10 +137,7 @@ impl Recorder {
             "Network.requestWillBeSent" => self.on_request(params),
             "Network.responseReceived" => self.on_response(params),
             "Network.loadingFinished" => self.on_loading_finished(params, cdp, session_id),
-            "Network.loadingFailed" => {
-                self.requests
-                    .remove(params["requestId"].as_str().unwrap_or_default());
-            }
+            "Network.loadingFailed" => self.on_loading_failed(params),
             "Debugger.scriptParsed" => self.on_script_parsed(params, cdp, session_id),
             "Page.loadEventFired" => self.load_fired = true,
             "Page.frameNavigated" if params["frame"]["parentId"].is_null() => {
@@ -185,7 +196,9 @@ impl Recorder {
                 url: url.to_string(),
                 initiator,
                 is_script: params["type"] == "Script",
-                failed_status: false,
+                status: None,
+                // A CORS preflight goes to the same URL and is not the bid request.
+                bid: bid_request(url).filter(|_| params["type"] != "Preflight"),
             },
         );
     }
@@ -205,8 +218,37 @@ impl Recorder {
         }
         if let Some(request) = self.requests.get_mut(request_id) {
             request.is_script |= params["type"] == "Script";
-            request.failed_status = status.is_some_and(|status| status >= 400);
+            request.status = status;
         }
+    }
+
+    /// A bid request that never got an answer: blocked, refused or aborted.
+    fn on_loading_failed(&mut self, params: &Value) {
+        let Some(request) = self
+            .requests
+            .remove(params["requestId"].as_str().unwrap_or_default())
+        else {
+            return;
+        };
+        if let Some(bid) = request.bid {
+            let failure = match params["blockedReason"].as_str() {
+                Some(blocked_by) => format!("blocked ({blocked_by})"),
+                None => params["errorText"]
+                    .as_str()
+                    .unwrap_or("the request failed")
+                    .to_string(),
+            };
+            let failed_at = self.epoch_ms(&params["timestamp"]);
+            self.bid_responses
+                .record(bid, failed_at, None, Some(short(&failure)));
+        }
+    }
+
+    /// Wall-clock time of a network event's monotonic `timestamp`.
+    fn epoch_ms(&self, timestamp: &Value) -> Option<f64> {
+        self.wall_clock_offset_ms
+            .zip(timestamp.as_f64())
+            .map(|(offset, monotonic)| offset + monotonic * 1000.0)
     }
 
     /// Bodies are requested the moment loading finishes: Chrome evicts them
@@ -218,13 +260,38 @@ impl Recorder {
         let Some(request) = self.requests.remove(request_id) else {
             return;
         };
-        if !request.is_script || request.failed_status || !is_page_script_url(&request.url) {
+        let loaded_at_epoch_ms = self.epoch_ms(&params["timestamp"]);
+        let failed_status = request.status.is_some_and(|status| status >= 400);
+        if let Some(bid) = request.bid {
+            let small_enough = params["encodedDataLength"]
+                .as_f64()
+                .is_some_and(|length| length <= MAX_BODY_BYTES as f64);
+            if !small_enough {
+                self.bid_responses
+                    .record(bid, loaded_at_epoch_ms, request.status, None);
+                return;
+            }
+            let status = request.status;
+            let response = cdp.send(
+                Some(session_id),
+                "Network.getResponseBody",
+                json!({ "requestId": request_id }),
+            );
+            self.fetches.push(
+                response
+                    .map(move |response| Fetched::BidAnswer {
+                        request: bid,
+                        status,
+                        answered_at_epoch_ms: loaded_at_epoch_ms,
+                        response,
+                    })
+                    .boxed(),
+            );
             return;
         }
-        let loaded_at_epoch_ms = self
-            .wall_clock_offset_ms
-            .zip(params["timestamp"].as_f64())
-            .map(|(offset, monotonic)| offset + monotonic * 1000.0);
+        if !request.is_script || failed_status || !is_page_script_url(&request.url) {
+            return;
+        }
         let response = cdp.send(
             Some(session_id),
             "Network.getResponseBody",
@@ -276,6 +343,21 @@ impl Recorder {
 
     fn store(&mut self, fetched: Fetched) {
         let admission = match fetched {
+            Fetched::BidAnswer {
+                request,
+                status,
+                answered_at_epoch_ms,
+                response,
+            } => {
+                let reason = response
+                    .ok()
+                    .as_ref()
+                    .and_then(response_text)
+                    .and_then(|body| no_bid_reason(request.bidder, &body));
+                self.bid_responses
+                    .record(request, answered_at_epoch_ms, status, reason);
+                return;
+            }
             Fetched::External {
                 url,
                 initiator,

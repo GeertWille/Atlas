@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use adscan_engine::application::ports::EventSink;
 use adscan_model::{
-    DeviceProfile, FindingCategory, PipelineNode, ScanDetail, ScanEvent, ScanOptions, ScanStatus,
-    SettingsPatch, StepStatus,
+    AdsTxtStatus, DeviceProfile, DiagnosticStatus, FindingCategory, PipelineNode, ScanDetail,
+    ScanEvent, ScanOptions, ScanStatus, SettingsPatch, StepStatus,
 };
 use adtech_scanner_lib::ChromeCaptureSource;
 use adtech_scanner_lib::state::{AppConfig, AppState};
@@ -176,12 +176,141 @@ async fn demo_site_scan_runs_the_whole_pipeline_with_a_real_browser() {
         "sent before the Prebid auction finished",
         "Auction timeout of 250 ms",
         "have no matching GPT slot",
+        "never returned a bid",
+        "adapter params the adapter rejects",
     ] {
         assert!(
             titles.iter().any(|title| title.contains(expected)),
             "missing `{expected}` in {titles:#?}"
         );
     }
+    // The bidder checks read the demo site's own ads.txt over loopback and
+    // name the cause of each planted bidder bug.
+    assert_eq!(
+        step(PipelineNode::BidderDiagnostics).status,
+        StepStatus::Completed
+    );
+    let diagnostics = detail
+        .bidder_diagnostics
+        .as_ref()
+        .expect("the bidder checks ran");
+    assert_eq!(
+        (
+            diagnostics.ads_txt.url.as_str(),
+            diagnostics.ads_txt.status,
+            diagnostics.ads_txt.record_count,
+            diagnostics.ads_txt.invalid_line_count,
+        ),
+        (
+            format!("{}ads.txt", detail.summary.url).as_str(),
+            AdsTxtStatus::Found,
+            6,
+            0
+        )
+    );
+    assert_eq!(
+        diagnostics.ads_txt.owner_domain.as_deref(),
+        Some("meridian-media.example")
+    );
+    assert!(
+        !diagnostics.sellers_json_checked,
+        "exchanges are not contacted unless the user turns that on"
+    );
+    assert!(!diagnostics.consent.cmp_present);
+    let problems = |bidder: &str| -> Vec<(&str, &str)> {
+        diagnostics
+            .bidders
+            .iter()
+            .filter(|diagnosis| diagnosis.bidder == bidder)
+            .flat_map(|diagnosis| &diagnosis.checks)
+            .filter(|check| check.status == DiagnosticStatus::Problem)
+            .map(|check| (check.code.as_str(), check.summary.as_str()))
+            .collect()
+    };
+    assert_eq!(
+        problems("ix"),
+        [(
+            "ads-txt-not-listed",
+            "ads.txt has no entry for indexexchange.com"
+        )]
+    );
+    assert_eq!(
+        problems("triplelift"),
+        [(
+            "params-missing",
+            "`inventoryCode` missing on 2 of 3 ad units"
+        )]
+    );
+    let openx = problems("openx");
+    assert_eq!(openx.len(), 1, "{openx:?}");
+    assert_eq!(openx[0].0, "response-reason");
+    for healthy in ["appnexus", "rubicon", "pubmatic", "criteo"] {
+        assert_eq!(problems(healthy), [], "{healthy}");
+    }
+    assert_eq!(
+        diagnostics
+            .bidders
+            .iter()
+            .map(|diagnosis| diagnosis.bidder.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "appnexus",
+            "criteo",
+            "ix",
+            "openx",
+            "pubmatic",
+            "rubicon",
+            "triplelift"
+        ]
+    );
+
+    let never_bid = detail
+        .findings
+        .iter()
+        .find(|finding| finding.title.contains("never returned a bid"))
+        .unwrap();
+    assert_eq!(never_bid.affected_bidders, ["ix", "openx"]);
+    assert!(
+        never_bid
+            .description
+            .contains("- `ix`: ads.txt has no entry for indexexchange.com"),
+        "{}",
+        never_bid.description
+    );
+    assert!(
+        never_bid
+            .description
+            .contains("- `openx`: The bidder's endpoint explained why it did not bid"),
+        "{}",
+        never_bid.description
+    );
+    assert!(
+        never_bid
+            .evidence
+            .iter()
+            .any(|evidence| evidence.body == "no-bid reason 7 (blocked publisher or site)"),
+        "{:#?}",
+        never_bid.evidence
+    );
+    assert!(
+        !never_bid.recommendation.contains("compare with their own reporting"),
+        "the generic advice is only the fallback: {}",
+        never_bid.recommendation
+    );
+    let rejected = detail
+        .findings
+        .iter()
+        .find(|finding| finding.title.contains("adapter params the adapter rejects"))
+        .unwrap();
+    assert_eq!(rejected.affected_bidders, ["triplelift"]);
+    assert_eq!(rejected.affected_slots, ["ad-inarticle-1", "ad-sidebar-1"]);
+    assert!(
+        !titles
+            .iter()
+            .any(|title| title.contains("not authorised by the site's ads.txt")),
+        "the missing entry is reported once, as the cause of ix's silence: {titles:#?}"
+    );
+
     assert!(detail.summary.health_score.unwrap() < 100);
     assert!(detail.summary.ai_used);
     assert!(detail.summary.cost_usd > 0.0);

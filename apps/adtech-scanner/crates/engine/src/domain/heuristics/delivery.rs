@@ -9,6 +9,7 @@ use super::{
     AuctionGate, HEADER_BIDDING_REVENUE_SHARE_PCT, HEADER_BIDDING_SHARE_ASSUMPTION, Rule,
     RuleContext, bidders, estimate_impact, heuristic, ms, pct, share,
 };
+use crate::domain::diagnostics::capitalized;
 use crate::domain::finding::{FindingDraft, log_line, metric, timeline};
 use crate::domain::telemetry::{auction_covers, slot_matches_code};
 
@@ -587,9 +588,7 @@ impl Rule for BiddersNeverBid {
         finding.recommendation = advice
             .iter()
             .enumerate()
-            .map(|(index, line)| {
-                format!("{}. {}{}.", index + 1, line[..1].to_uppercase(), &line[1..])
-            })
+            .map(|(index, line)| format!("{}. {}.", index + 1, capitalized(line)))
             .collect::<Vec<_>>()
             .join("\n");
         if !unexplained.is_empty() {

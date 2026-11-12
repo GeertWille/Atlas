@@ -2,13 +2,12 @@
 //! sellers.json and the consent each bidder was sent.
 
 use adscan_model::{
-    AdsTxtStatus, BidderDiagnostics, DiagnosticArea, DiagnosticCheck, DiagnosticStatus,
-    FindingCategory, Severity,
+    AdsTxtStatus, BidderDiagnostics, DiagnosticCheck, DiagnosticStatus, FindingCategory, Severity,
 };
 
 use super::delivery::silent_bidders;
 use super::{Rule, RuleContext, heuristic};
-use crate::domain::diagnostics::codes;
+use crate::domain::diagnostics::{capitalized, codes};
 use crate::domain::finding::{FindingDraft, log_line, metric};
 
 /// A check outcome together with the bidder it belongs to.
@@ -26,6 +25,20 @@ fn hits<'a>(diagnostics: &'a BidderDiagnostics, wanted: &[&str]) -> Vec<Hit<'a>>
                 .map(move |check| (bidder.bidder.as_str(), check))
         })
         .collect()
+}
+
+/// As [`hits`], without the bidders that never bid: the never-bid finding
+/// already names these outcomes as the likely causes, so each bidder's
+/// problem is reported once.
+fn hits_of_bidding_bidders<'a>(
+    ctx: &RuleContext,
+    diagnostics: &'a BidderDiagnostics,
+    wanted: &[&str],
+) -> Vec<Hit<'a>> {
+    let silent = silent_bidders(ctx);
+    let mut found = hits(diagnostics, wanted);
+    found.retain(|(bidder, _)| !silent.iter().any(|(name, _)| name == bidder));
+    found
 }
 
 fn bidders_of(hits: &[Hit]) -> Vec<String> {
@@ -133,15 +146,7 @@ fn advice_for(hits: &[Hit]) -> String {
             advice_lines.push(line);
         }
     }
-    sentence(&advice_lines.join("; "))
-}
-
-fn sentence(text: &str) -> String {
-    let mut characters = text.chars();
-    match characters.next() {
-        Some(first) => format!("{}{}.", first.to_uppercase(), characters.as_str()),
-        None => String::new(),
-    }
+    format!("{}.", capitalized(&advice_lines.join("; ")))
 }
 
 /// Bids Prebid drops before the request because the adapter rejects their
@@ -202,7 +207,7 @@ impl Rule for BidderTestIds {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let test_ids = hits(diagnostics, &[codes::PARAMS_TEST_ID]);
+        let test_ids = hits_of_bidding_bidders(ctx, diagnostics, &[codes::PARAMS_TEST_ID]);
         if test_ids.is_empty() {
             return Vec::new();
         }
@@ -230,8 +235,7 @@ impl Rule for BidderTestIds {
     }
 }
 
-/// Bidders that do bid at times, but whose endpoint also fails. A bidder that
-/// never bids is reported, with these causes, by the never-bid rule.
+/// Bidders that do bid at times, but whose requests also fail.
 pub struct BidderEndpointErrors;
 
 impl Rule for BidderEndpointErrors {
@@ -243,8 +247,8 @@ impl Rule for BidderEndpointErrors {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let silent = silent_bidders(ctx);
-        let mut errors = hits(
+        let errors = hits_of_bidding_bidders(
+            ctx,
             diagnostics,
             &[
                 codes::RESPONSE_HTTP_ERROR,
@@ -252,7 +256,6 @@ impl Rule for BidderEndpointErrors {
                 codes::RESPONSE_PREBID_ERROR,
             ],
         );
-        errors.retain(|(bidder, _)| !silent.iter().any(|(name, _)| name == bidder));
         if errors.is_empty() {
             return Vec::new();
         }
@@ -334,7 +337,8 @@ impl Rule for BiddersNotInAdsTxt {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let unauthorised = hits(
+        let unauthorised = hits_of_bidding_bidders(
+            ctx,
             diagnostics,
             &[
                 codes::ADS_TXT_NOT_LISTED,
@@ -432,23 +436,16 @@ impl Rule for SellersJsonIssues {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let issues: Vec<Hit> = diagnostics
-            .bidders
-            .iter()
-            .flat_map(|bidder| {
-                bidder
-                    .checks
-                    .iter()
-                    .filter(|check| {
-                        check.area == DiagnosticArea::SellersJson
-                            && matches!(
-                                check.status,
-                                DiagnosticStatus::Problem | DiagnosticStatus::Notice
-                            )
-                    })
-                    .map(move |check| (bidder.bidder.as_str(), check))
-            })
-            .collect();
+        let issues = hits_of_bidding_bidders(
+            ctx,
+            diagnostics,
+            &[
+                codes::SELLERS_ID_MISSING,
+                codes::SELLERS_CONFIDENTIAL,
+                codes::SELLERS_TYPE_MISMATCH,
+                codes::SELLERS_DOMAIN_MISMATCH,
+            ],
+        );
         if issues.is_empty() {
             return Vec::new();
         }
@@ -551,7 +548,8 @@ impl Rule for BiddersWithoutConsent {
         let Some(diagnostics) = ctx.diagnostics else {
             return Vec::new();
         };
-        let mut unconsented = hits(
+        let mut unconsented = hits_of_bidding_bidders(
+            ctx,
             diagnostics,
             &[codes::CONSENT_NO_STRING, codes::CONSENT_VENDOR_DENIED],
         );

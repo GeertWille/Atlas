@@ -258,9 +258,12 @@
     'deviceAccess',
     'maxRequestsPerOrigin',
     'enableTIDs',
+    'exchangeId',
   ];
   var MAX_CONFIG_CHARS = 20000;
   var MAX_PREBID_LOGS = 4000;
+  var MAX_PARAMS_CHARS = 2000;
+  var MAX_SCHAIN_NODES = 10;
 
   var prebidInstances = new WeakSet();
   var configReported = new WeakSet();
@@ -363,7 +366,14 @@
       case 'bidRequested':
         emit(
           'bidRequested',
-          { auctionId: str(data.auctionId) || 'unknown', bidder: bidderOf(data), adUnitCodes: adUnitCodesOf(data.bids) },
+          {
+            auctionId: str(data.auctionId) || 'unknown',
+            bidder: bidderOf(data),
+            adUnitCodes: adUnitCodesOf(data.bids),
+            gdprApplies: data.gdprConsent ? flag(data.gdprConsent.gdprApplies) : null,
+            hasConsentString: data.gdprConsent ? !!str(data.gdprConsent.consentString) : null,
+            schain: schainOf(data),
+          },
           at
         );
         break;
@@ -483,12 +493,44 @@
       });
       if (!sizes.length) sizes = sizesOf(unit.sizes);
       var bidders = [];
+      var bids = [];
       for (var b = 0; isArray(unit.bids) && b < unit.bids.length; b++) {
-        pushUnique(bidders, str(unit.bids[b] && unit.bids[b].bidder));
+        var bidder = str(unit.bids[b] && unit.bids[b].bidder);
+        pushUnique(bidders, bidder);
+        var params = bidder && bids.length < MAX_LIST ? paramsOf(unit.bids[b].params) : null;
+        if (params) bids.push({ bidder: bidder, params: params });
       }
-      units.push({ code: str(unit.code) || 'unknown', sizes: sizes, bidders: bidders });
+      units.push({ code: str(unit.code) || 'unknown', sizes: sizes, bidders: bidders, bids: bids });
     }
     return units;
+  }
+
+  // The adapter params as configured. Params too large to copy whole are
+  // left out rather than cut: half an object would read as missing keys.
+  function paramsOf(params) {
+    var copy = plain(params === undefined ? {} : params, 4);
+    if (!copy || typeof copy !== 'object' || isArray(copy)) return null;
+    return stringify(copy).length <= MAX_PARAMS_CHARS ? copy : null;
+  }
+
+  function flag(value) {
+    return typeof value === 'boolean' ? value : null;
+  }
+
+  // Prebid 9 and earlier put the supply chain on each bid, later versions
+  // in the first-party data of the request.
+  function schainOf(bidderRequest) {
+    var firstBid = (isArray(bidderRequest.bids) && bidderRequest.bids[0]) || {};
+    var ortb2 = bidderRequest.ortb2 || firstBid.ortb2 || {};
+    var schain = (ortb2.source && ortb2.source.ext && ortb2.source.ext.schain) || firstBid.schain || {};
+    var nodes = [];
+    for (var i = 0; isArray(schain.nodes) && i < schain.nodes.length && nodes.length < MAX_SCHAIN_NODES; i++) {
+      var node = schain.nodes[i] || {};
+      var asi = str(node.asi);
+      var sid = str(node.sid);
+      if (asi && sid) nodes.push({ asi: asi, sid: sid, hp: node.hp === 1 ? true : node.hp === 0 ? false : null });
+    }
+    return nodes;
   }
 
   function adUnitCodesOf(bids) {
@@ -777,6 +819,55 @@
     return ids;
   }
 
+  // ----------------------------------------------------------------- consent
+
+  var MAX_VENDOR_ID = 5000;
+  var MAX_PURPOSE_ID = 24;
+
+  var cmpReported = false;
+  var tcfListened = new WeakSet();
+  var lastTcfState = null;
+
+  // Listens to the CMP like any vendor on the page does. The TC string itself
+  // is never read into an event: only whether there is one, and what it allows.
+  function inspectConsent() {
+    var tcfapi = win.__tcfapi;
+    if (typeof tcfapi !== 'function' || tcfListened.has(tcfapi)) return;
+    tcfListened.add(tcfapi);
+    if (!cmpReported) {
+      cmpReported = true;
+      emit('cmpDetected', { api: 'tcf' });
+    }
+    tcfapi('addEventListener', 2, guard(onTcData));
+  }
+
+  function onTcData(tcData, success) {
+    if (!success || !tcData || typeof tcData !== 'object') return;
+    var state = {
+      eventStatus: str(tcData.eventStatus),
+      gdprApplies: flag(tcData.gdprApplies),
+      hasTcString: !!str(tcData.tcString),
+      purposeConsents: grantedIds(tcData.purpose && tcData.purpose.consents, MAX_PURPOSE_ID),
+      vendorConsents: grantedIds(tcData.vendor && tcData.vendor.consents, MAX_VENDOR_ID),
+    };
+    // The stub and the CMP that replaces it both answer the same listener.
+    var fingerprint = stringify(state);
+    if (fingerprint === lastTcfState) return;
+    lastTcfState = fingerprint;
+    emit('tcfState', state);
+  }
+
+  function grantedIds(consents, maxId) {
+    var ids = [];
+    if (!consents || typeof consents !== 'object') return ids;
+    var keys = Object.keys(consents);
+    for (var i = 0; i < keys.length && ids.length < maxId; i++) {
+      var id = Number(keys[i]);
+      if (consents[keys[i]] === true && id >= 1 && id <= maxId && Math.floor(id) === id) ids.push(id);
+    }
+    return ids;
+  }
+
   // --------------------------------------------------------- page lifecycle
 
   var SCROLL_THROTTLE_MS = 200;
@@ -849,6 +940,7 @@
     guard(inspectPrebid)();
     guard(inspectGpt)();
     guard(inspectAps)();
+    guard(inspectConsent)();
     reportMeasurableSlots(null);
   });
 

@@ -5,8 +5,10 @@ mod support;
 
 use std::collections::BTreeSet;
 
-use adscan_model::{Capture, DeviceProfile, TrackedAdUnit, TrackerEventKind as Kind};
-use serde_json::Value;
+use adscan_model::{
+    Capture, DeviceProfile, SchainNode, TrackedAdUnit, TrackedBid, TrackerEventKind as Kind,
+};
+use serde_json::{Value, json};
 
 /// Exhaustive on purpose: a new `TrackerEventKind` variant fails to compile
 /// here until this test covers it.
@@ -38,10 +40,12 @@ fn variant(kind: &Kind) -> &'static str {
         Kind::PageLifecycle { .. } => "pageLifecycle",
         Kind::Scroll { .. } => "scroll",
         Kind::PrebidLog { .. } => "prebidLog",
+        Kind::CmpDetected { .. } => "cmpDetected",
+        Kind::TcfState { .. } => "tcfState",
     }
 }
 
-const ALL_VARIANTS: [&str; 26] = [
+const ALL_VARIANTS: [&str; 28] = [
     "adRenderFailed",
     "adRenderSucceeded",
     "amazonDetected",
@@ -54,6 +58,7 @@ const ALL_VARIANTS: [&str; 26] = [
     "bidTimeout",
     "bidWon",
     "bidderError",
+    "cmpDetected",
     "gptDetected",
     "impressionViewable",
     "noBid",
@@ -68,6 +73,7 @@ const ALL_VARIANTS: [&str; 26] = [
     "slotRenderEnded",
     "slotRequested",
     "slotResponseReceived",
+    "tcfState",
 ];
 
 fn kinds<'a>(capture: &'a Capture, name: &str) -> Vec<&'a Kind> {
@@ -129,17 +135,33 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
                 TrackedAdUnit {
                     code: "unit-a".into(),
                     sizes: strings(&["300x250", "336x280"]),
-                    bidders: strings(&["foo", "bar"])
+                    bidders: strings(&["foo", "bar"]),
+                    bids: vec![
+                        TrackedBid {
+                            bidder: "foo".into(),
+                            params: json!({ "placementId": 12345, "keywords": { "section": ["news"] } }),
+                        },
+                        TrackedBid {
+                            bidder: "bar".into(),
+                            params: json!({ "siteId": "9" }),
+                        },
+                        TrackedBid {
+                            bidder: "foo".into(),
+                            params: json!({}),
+                        },
+                    ],
                 },
                 TrackedAdUnit {
                     code: "unit-b".into(),
                     sizes: strings(&["728x90", "640x480"]),
-                    bidders: strings(&["bar"])
+                    bidders: strings(&["bar"]),
+                    bids: vec![],
                 },
                 TrackedAdUnit {
                     code: "unit-c".into(),
                     sizes: strings(&["160x600"]),
-                    bidders: vec![]
+                    bidders: vec![],
+                    bids: vec![],
                 },
             ],
         }
@@ -159,14 +181,67 @@ async fn every_event_the_tracker_emits_fits_the_contract() {
             &Kind::BidRequested {
                 auction_id: "auction-1".into(),
                 bidder: "foo".into(),
-                ad_unit_codes: strings(&["unit-a"])
+                ad_unit_codes: strings(&["unit-a"]),
+                gdpr_applies: Some(true),
+                has_consent_string: Some(true),
+                schain: vec![
+                    SchainNode {
+                        asi: "exchange.example".into(),
+                        sid: "pub-1".into(),
+                        hp: Some(true),
+                    },
+                    SchainNode {
+                        asi: "reseller.example".into(),
+                        sid: "77".into(),
+                        hp: Some(false),
+                    },
+                ],
             },
             &Kind::BidRequested {
                 auction_id: "auction-1".into(),
                 bidder: "bar".into(),
                 ad_unit_codes: strings(&["unit-a", "unit-b"]),
+                gdpr_applies: Some(true),
+                has_consent_string: Some(false),
+                schain: vec![SchainNode {
+                    asi: "legacy.example".into(),
+                    sid: "s-2".into(),
+                    hp: None,
+                }],
             },
         ]
+    );
+
+    // -- Consent: the open banner, then the reader's choice, reported once.
+    // The TC string itself never leaves the page.
+    assert_eq!(
+        kinds(&capture, "cmpDetected"),
+        [&Kind::CmpDetected { api: "tcf".into() }]
+    );
+    assert_eq!(
+        kinds(&capture, "tcfState"),
+        [
+            &Kind::TcfState {
+                event_status: Some("cmpuishown".into()),
+                gdpr_applies: Some(true),
+                has_tc_string: false,
+                purpose_consents: vec![],
+                vendor_consents: vec![],
+            },
+            &Kind::TcfState {
+                event_status: Some("useractioncomplete".into()),
+                gdpr_applies: Some(true),
+                has_tc_string: true,
+                purpose_consents: vec![1, 7],
+                vendor_consents: vec![32, 76],
+            },
+        ]
+    );
+    assert!(
+        !serde_json::to_string(&capture.events)
+            .unwrap()
+            .contains("CPsecretTcString"),
+        "the consent string must not be captured"
     );
     let replayed = capture
         .events
@@ -525,6 +600,10 @@ async fn the_tracker_stays_out_of_the_pages_way() {
     assert_eq!(
         state["pbjsCreated"], false,
         "no globals are created for libraries the page does not use"
+    );
+    assert_eq!(
+        state["consentListeners"], 1,
+        "the consent platform is listened to once"
     );
     assert!(
         !capture.console.iter().any(|line| line.level == "error"),

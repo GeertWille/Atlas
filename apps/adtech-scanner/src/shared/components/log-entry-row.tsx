@@ -57,7 +57,12 @@ const KIND_ICON_TONE: Record<LogKind, string> = {
 
 const ROW_BODY = "flex h-full min-w-0 flex-1 items-center gap-2 text-left";
 
-function AdRelatedBadge({ adRelated }: { adRelated: boolean }) {
+/** The backend's rule for a script the classifier neither confirmed nor ruled out; it is kept, ranked last. */
+const UNSURE_RULE = "jev-unsure";
+
+/** A script kept only because it could not be ruled out must not read like one the classifier confirmed. */
+function VerdictBadge({ adRelated, rule }: { adRelated: boolean; rule: string | null }) {
+  if (rule === UNSURE_RULE) return <Badge tone="amber">Unsure, kept</Badge>;
   return <Badge tone={adRelated ? "violet" : "gray"}>{adRelated ? "Ad-related" : "Not ad-related"}</Badge>;
 }
 
@@ -80,11 +85,11 @@ function Headline({ entry, live }: { entry: LogEntry; live: boolean }) {
     );
   }
   // The verdict leads, like a finding's severity: the message itself is cut off in a narrow window.
-  const adRelated = classificationDetails(entry)?.adRelated ?? null;
-  if (adRelated !== null) {
+  const classification = classificationDetails(entry);
+  if (classification && classification.adRelated !== null) {
     return (
       <span className="flex min-w-0 items-center gap-2">
-        <AdRelatedBadge adRelated={adRelated} />
+        <VerdictBadge adRelated={classification.adRelated} rule={classification.rule} />
         <span className="truncate">{entry.message}</span>
       </span>
     );
