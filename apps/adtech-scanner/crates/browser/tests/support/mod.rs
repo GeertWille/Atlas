@@ -5,9 +5,11 @@
 #[cfg(target_os = "linux")]
 pub mod chrome_processes;
 
+use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use adscan_browser::{BrowserError, CaptureHooks, capture};
 use adscan_model::{
@@ -19,6 +21,8 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
@@ -357,6 +361,7 @@ async fn respond(
         "download" => download(),
         "events" => event_stream(),
         "large.json" => large_json(),
+        "payload" => payload_response(uri.query().unwrap_or_default()).await,
         _ => fixture(path).await,
     }
 }
@@ -402,6 +407,63 @@ fn large_json() -> Response {
         format!(r#"{{"pad":"{filler}"}}"#),
     )
         .into_response()
+}
+
+/// The value of `name` in a query like `size=100&by=worker`.
+fn query_value<'a>(query: &'a str, name: &str) -> Option<&'a str> {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find_map(|(key, value)| (key == name).then_some(value))
+}
+
+/// What `payload?<query>` answers with: `size=<bytes>` of JSON that names
+/// the query, so that no two answers are the same.
+pub fn payload(query: &str) -> Vec<u8> {
+    let size: usize = query_value(query, "size").unwrap().parse().unwrap();
+    let mut body = format!(r#"{{"asked":"{query}","pad":""#).into_bytes();
+    // Letters without a pattern, so that compressing them is real work.
+    let mut state = 0x2545_f491_u32;
+    while body.len() + 2 < size {
+        state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+        body.push(b'a' + ((state >> 16) % 26) as u8);
+    }
+    body.extend_from_slice(br#""}"#);
+    assert_eq!(body.len(), size, "{query} is longer than its size");
+    body
+}
+
+/// [`payload`], as the query wants it sent: `wait=<ms>` that much later, as
+/// from a server that is not on this machine, `encoding=gzip` compressed,
+/// `cache=1` to be kept by the browser, `stall=1` half of it and then
+/// nothing more, on a connection that stays open.
+async fn payload_response(query: &str) -> Response {
+    if let Some(wait) = query_value(query, "wait") {
+        tokio::time::sleep(Duration::from_millis(wait.parse().unwrap())).await;
+    }
+    let mut body = payload(query);
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    if query_value(query, "encoding") == Some("gzip") {
+        let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+        compressed.write_all(&body).unwrap();
+        body = compressed.finish().unwrap();
+        headers.insert(header::CONTENT_ENCODING, "gzip".parse().unwrap());
+    }
+    if query_value(query, "cache") == Some("1") {
+        headers.insert(header::CACHE_CONTROL, "max-age=600".parse().unwrap());
+    }
+    if query_value(query, "stall") == Some("1") {
+        body.truncate(body.len() / 2);
+        let first_half =
+            futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(body) });
+        let never_ends = axum::body::Body::from_stream(futures_util::StreamExt::chain(
+            first_half,
+            futures_util::stream::pending(),
+        ));
+        return (headers, never_ends).into_response();
+    }
+    (headers, body).into_response()
 }
 
 /// A server-sent event stream that sends one event and never ends.

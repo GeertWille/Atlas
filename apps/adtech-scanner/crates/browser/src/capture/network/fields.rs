@@ -159,13 +159,16 @@ pub(crate) fn captured_body(result: Result<Value, CdpError>, max_bytes: usize) -
         );
     }
     match base64::engine::general_purpose::STANDARD.decode(body) {
-        Ok(mut bytes) => {
-            let total_bytes = bytes.len();
-            bytes.truncate(max_bytes);
-            read(bytes, total_bytes)
-        }
+        Ok(bytes) => body_of(bytes, max_bytes),
         Err(_) => CapturedBody::Unavailable("the browser sent a body that is not base64".into()),
     }
+}
+
+/// The bytes of a whole body as they are handed over: at most `max_bytes`.
+pub(crate) fn body_of(mut bytes: Vec<u8>, max_bytes: usize) -> CapturedBody {
+    let total_bytes = bytes.len();
+    bytes.truncate(max_bytes);
+    read(bytes, total_bytes)
 }
 
 fn read(bytes: Vec<u8>, total_bytes: usize) -> CapturedBody {

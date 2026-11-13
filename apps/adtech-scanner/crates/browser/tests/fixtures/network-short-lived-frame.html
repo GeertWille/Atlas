@@ -1,0 +1,10 @@
+<!doctype html>
+<title>Fetches, says so and goes</title>
+<script src="/network-short-lived.js"></script>
+<script>
+  fetchAsAsked(new URLSearchParams(location.search)).then(function () {
+    parent.postMessage('read', '*');
+    // A frame of the page's own site removes itself, in this very task.
+    if (frameElement) frameElement.remove();
+  });
+</script>

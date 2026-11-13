@@ -15,6 +15,12 @@
 //! - Every redirect hop reuses the id. Each hop is a record of its own; the
 //!   `ExtraInfo` events are matched to hops by position, the way Chrome's
 //!   own DevTools do it.
+//! - A frame or worker that goes away takes its session with it, and with
+//!   the session what it loaded: a body asked for at `loadingFinished` is
+//!   then asked for too late, however fast. So a frame or worker is asked,
+//!   when it announces a request, to send the body along as it arrives
+//!   (`Network.streamResourceContent`). That copy stands in for the body
+//!   when the target is gone before it could hand the body over.
 //! - `ExtraInfo` may come before `requestWillBeSent` or after
 //!   `loadingFinished`, and a preflight may end before the request it
 //!   clears the way for is announced. A request that has ended waits a
@@ -26,6 +32,7 @@ use adscan_model::{
     CapturedBody, CapturedPostData, InitiatorFrame, InitiatorKind, NetworkInitiator, NetworkRecord,
     RawHeader, RequestContext, RequestEnd, ResourceKind, ResourceTiming, ServedFrom,
 };
+use base64::Engine;
 use serde_json::Value;
 
 use super::super::bid_endpoints::{BidRequest, bid_request};
@@ -50,6 +57,10 @@ const MAX_POST_BYTES_TO_ASK_FOR: u64 = 8 * 1024 * 1024;
 /// Ids of ended requests that are remembered, so that their late events do
 /// not look like new requests.
 const REMEMBERED_ENDED: usize = 4_096;
+/// Copies of the response bodies that frames and workers are still loading
+/// or have not handed over yet, together. A copy that does not fit is given
+/// up; its body is then only to be had from the target itself.
+const MAX_COPIED_BYTES: usize = 32 * 1024 * 1024;
 
 /// What kind of target a session belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +97,13 @@ pub(crate) enum Output {
     /// [`Assembler::post_data_settled`].
     PostDataWanted {
         seq: u32,
+        session: String,
+        request_id: String,
+    },
+    /// A frame or worker announced a request whose answer may be kept: ask
+    /// `Network.streamResourceContent` and pass what it answers to
+    /// [`Assembler::body_copy_started`].
+    BodyCopyWanted {
         session: String,
         request_id: String,
     },
@@ -135,6 +153,15 @@ enum Body {
     None,
     Asked,
     Settled(CapturedBody),
+}
+
+/// The response body as the browser sends it along while it loads.
+#[derive(Debug, Default)]
+struct BodyCopy {
+    /// The browser agreed to send the body along and handed over what had
+    /// arrived until then.
+    started: bool,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -203,6 +230,7 @@ struct Flight {
     decoded_bytes: u64,
     end: Option<End>,
     body: Body,
+    copy: Option<BodyCopy>,
 }
 
 impl Flight {
@@ -271,6 +299,23 @@ impl Flight {
         match &self.post {
             Post::Sent(data) => data.bytes.len(),
             _ => 0,
+        }
+    }
+
+    fn copied_bytes(&self) -> usize {
+        self.copy.as_ref().map_or(0, |copy| copy.bytes.len())
+    }
+
+    /// Adds a piece of the body, as base64, to the copy. A copy that would
+    /// take more than `room` bytes, or cannot be read, is given up.
+    fn copy_more(&mut self, piece: &str, room: usize) {
+        let Some(copy) = &mut self.copy else {
+            return;
+        };
+        let fits = base64::decoded_len_estimate(piece.len()) <= room;
+        let base64 = base64::engine::general_purpose::STANDARD;
+        if !(fits && base64.decode_vec(piece, &mut copy.bytes).is_ok()) {
+            self.copy = None;
         }
     }
 
@@ -503,6 +548,7 @@ pub(crate) struct Assembler {
     next_seq: u32,
     open_flights: usize,
     held_post_bytes: usize,
+    copied_bytes: usize,
     /// Request id by `seq`, for answers that are awaited.
     bodies_asked: HashMap<u32, String>,
     posts_asked: HashMap<u32, String>,
@@ -538,8 +584,15 @@ impl Assembler {
         };
         if method == "Network.dataReceived" {
             // The busiest event by far, and it settles nothing.
+            let room = MAX_COPIED_BYTES - self.copied_bytes;
             if let Some(flight) = self.current(request_id) {
                 flight.decoded_bytes += params["dataLength"].as_u64().unwrap_or(0);
+                if let Some(piece) = params["data"].as_str() {
+                    let copied_before = flight.copied_bytes();
+                    flight.copy_more(piece, room);
+                    let copied = flight.copied_bytes();
+                    self.copied_bytes = self.copied_bytes - copied_before + copied;
+                }
             }
             return out;
         }
@@ -604,6 +657,46 @@ impl Assembler {
         out
     }
 
+    /// The answer to [`Output::BodyCopyWanted`]: the browser sends the body
+    /// of the request along from here on, and `already_arrived` (base64) is
+    /// what it had of it until then. Pieces that were sent along may have
+    /// been seen before this answer.
+    pub(crate) fn body_copy_started(&mut self, request_id: &str, already_arrived: &str) {
+        let room = MAX_COPIED_BYTES - self.copied_bytes;
+        // A redirected request carries its copy on to the hop that is answered.
+        let Some(flight) = self
+            .chains
+            .get_mut(request_id)
+            .and_then(|chain| chain.hops.back_mut())
+        else {
+            return;
+        };
+        let copied_before = flight.copied_bytes();
+        if let Some(copy) = &mut flight.copy {
+            let since = std::mem::take(&mut copy.bytes);
+            copy.started = true;
+            flight.copy_more(already_arrived, room);
+            if let Some(copy) = &mut flight.copy {
+                copy.bytes.extend_from_slice(&since);
+            }
+        }
+        let copied = flight.copied_bytes();
+        self.copied_bytes = self.copied_bytes - copied_before + copied;
+    }
+
+    /// The body of a finished response whose frame or worker did not hand
+    /// it over, when the browser sent all of it along while it loaded: the
+    /// bytes as they arrived, content encoding undone.
+    pub(crate) fn take_body_copy(&mut self, seq: u32) -> Option<Vec<u8>> {
+        let request_id = self.bodies_asked.get(&seq)?.clone();
+        let flight = self.flight(&request_id, seq)?;
+        let whole_body_expected = flight.decoded_bytes;
+        let copy = flight.copy.take()?;
+        self.copied_bytes -= copy.bytes.len();
+        let is_whole = copy.started && copy.bytes.len() as u64 == whole_body_expected;
+        is_whole.then_some(copy.bytes)
+    }
+
     /// The answer to [`Output::Finished`]: the body as it is handed over.
     pub(crate) fn body_settled(
         &mut self,
@@ -617,6 +710,9 @@ impl Assembler {
         };
         if let Some(flight) = self.flight(&request_id, seq) {
             flight.body = Body::Settled(body);
+            let copied = flight.copied_bytes();
+            flight.copy = None;
+            self.copied_bytes -= copied;
         }
         self.settle(&request_id, now_ms, &mut out);
         out
@@ -773,8 +869,10 @@ impl Assembler {
         }
         let chain = self.chains.entry(request_id.to_string()).or_default();
         let mut redirect_from = None;
+        let mut copy = None;
         match chain.current() {
             Some(previous) => {
+                copy = previous.copy.take();
                 let at = previous.epoch_of(&params["timestamp"], source.now_ms);
                 let encoded = redirect["encodedDataLength"].as_f64().unwrap_or(0.0) as u64;
                 previous.response =
@@ -819,6 +917,17 @@ impl Assembler {
             Reporter::Worker => RequestContext::Worker,
             Reporter::ServiceWorker => RequestContext::ServiceWorker,
         };
+        // A CORS preflight goes to the same URL and is not the bid request.
+        let bid = bid_request(url, source.page_url).filter(|_| !is_preflight);
+        // The tab outlives what it loads; a frame or worker may not.
+        let may_go_with_its_body = source.reporter != Reporter::Tab && redirect_from.is_none();
+        if may_go_with_its_body && (bid.is_some() || may_have_a_kept_body(kind)) {
+            copy = Some(BodyCopy::default());
+            out.push(Output::BodyCopyWanted {
+                session: source.session.to_string(),
+                request_id: request_id.to_string(),
+            });
+        }
         let request_headers = headers(&request["headers"]);
         let known_length = chain
             .request_extras
@@ -871,8 +980,7 @@ impl Assembler {
                 Some(announced) if is_preflight => Preflight::Awaiting(announced.to_string()),
                 _ => Preflight::No,
             },
-            // A CORS preflight goes to the same URL and is not the bid request.
-            bid: bid_request(url, source.page_url).filter(|_| !is_preflight),
+            bid,
             main_document,
             started_epoch_ms,
             started_mono_ms,
@@ -881,6 +989,7 @@ impl Assembler {
             decoded_bytes: 0,
             end: None,
             body: Body::None,
+            copy,
         };
         self.next_seq += 1;
         self.open_flights += 1;
@@ -1040,7 +1149,10 @@ impl Assembler {
             0,
             now_ms,
         );
+        let copied = flight.copied_bytes();
+        flight.copy = None;
         chain.closed = true;
+        self.copied_bytes -= copied;
         self.revisit
             .push_back((now_ms + SETTLE_GRACE_MS, request_id.to_string()));
     }
@@ -1094,6 +1206,7 @@ impl Assembler {
             decoded_bytes: 0,
             end: None,
             body: Body::None,
+            copy: None,
         };
         self.next_seq += 1;
         self.open_flights += 1;
@@ -1160,6 +1273,7 @@ impl Assembler {
         for ended in handed_over {
             self.open_flights -= 1;
             self.held_post_bytes -= ended.flight.held_post_bytes();
+            self.copied_bytes -= ended.flight.copied_bytes();
             if let Preflight::Awaiting(announced) = &ended.flight.preflight
                 && let Some(waiting) = self.preflights_awaiting.get_mut(announced)
             {
@@ -1199,6 +1313,7 @@ impl Assembler {
             for flight in &chain.hops {
                 self.open_flights -= 1;
                 self.held_post_bytes -= flight.held_post_bytes();
+                self.copied_bytes -= flight.copied_bytes();
                 self.bodies_asked.remove(&flight.seq);
                 self.posts_asked.remove(&flight.seq);
             }
@@ -1216,6 +1331,20 @@ impl Assembler {
             self.ended.remove(&oldest);
         }
     }
+}
+
+/// Whether the answer to a request of this kind, as far as its
+/// announcement tells, can be a body that is kept: text, not media.
+fn may_have_a_kept_body(kind: ResourceKind) -> bool {
+    matches!(
+        kind,
+        ResourceKind::Document
+            | ResourceKind::Stylesheet
+            | ResourceKind::Script
+            | ResourceKind::Xhr
+            | ResourceKind::Fetch
+            | ResourceKind::Other
+    )
 }
 
 fn status_of(response: &Value) -> Option<u16> {

@@ -6,6 +6,7 @@ mod support;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 
 use adscan_model::{
     BodyAdmission, BodySkip, CapturedBody, DeviceProfile, InitiatorKind, NetworkRecord, PageReach,
@@ -828,6 +829,287 @@ async fn a_body_the_browser_no_longer_has_is_recorded_as_unavailable() {
     }
 }
 
+/// The targets `network-short-lived.html` starts, one after the other.
+const SHORT_LIVED: [&str; 3] = ["other-site-frame", "same-site-frame", "worker"];
+
+/// Visits the page whose frames and worker each fetch `asks` and are removed
+/// the moment they have their answer, `rounds` times over. `more` is passed
+/// on to the page.
+async fn short_lived_visit(
+    fixtures: &Fixtures,
+    asks: &str,
+    rounds: usize,
+    more: &str,
+    requests: Arc<Requests>,
+) -> Vec<NetworkRecord> {
+    let mut request = support::request(
+        &fixtures.url(&format!(
+            "network-short-lived.html?rounds={rounds}&asks={}{more}",
+            asks.replace('?', "%3F").replace('&', "%26")
+        )),
+        DeviceProfile::Desktop,
+    );
+    request.observe_seconds = 5;
+    let mut reported = Reported::new();
+    reported.hooks.network = Some(requests.clone());
+    let outcome = reported.run(request).await;
+    outcome.result.unwrap_or_else(|error| {
+        panic!("capture failed: {error}\nprogress: {:#?}", outcome.progress)
+    });
+    let records = requests.records();
+    assert_every_request_has_one_record(&records);
+    // The page asks for this once the last of them is gone.
+    the(&records, "/status/200?all-gone");
+    records
+}
+
+/// Where a request of one of [`SHORT_LIVED`] was made.
+#[track_caller]
+fn assert_made_by(record: &NetworkRecord, by: &str) {
+    let (context, has_own_target) = match by {
+        "other-site-frame" => (RequestContext::Iframe, true),
+        "same-site-frame" => (RequestContext::Iframe, false),
+        _ => (RequestContext::Worker, true),
+    };
+    assert_eq!(
+        (record.context, record.target_id.is_some()),
+        (context, has_own_target),
+        "{}",
+        record.url
+    );
+}
+
+/// How long the fixture server takes to answer what short-lived targets
+/// ask, as an ad server on the network would. The scanner asks for a copy
+/// of a body when the request is announced; an answer that is complete
+/// before that question reaches the frame cannot be copied.
+const AS_FROM_THE_NETWORK: &str = "wait=200";
+
+/// The body of a record, which must have been read whole.
+#[track_caller]
+fn whole_body(record: &NetworkRecord) -> &[u8] {
+    let CapturedBody::Read { bytes, total_bytes } = &record.body else {
+        panic!("{}: {:?}", record.url, record.body);
+    };
+    assert_eq!(bytes.len() as u64, *total_bytes, "{}", record.url);
+    bytes
+}
+
+/// Ad frames live for a moment: a creative, a sync, a passback. A frame or
+/// worker that is removed in the task that read its last answer takes its
+/// session with it, and the body can no longer be asked for. It was sent
+/// along while it loaded, so it is recorded all the same.
+#[tokio::test]
+async fn what_a_frame_or_worker_read_as_it_went_away_is_recorded_with_its_body() {
+    const ROUNDS: usize = 3;
+    let fixtures = Fixtures::start().await;
+    let visit = |size: usize| {
+        let fixtures = &fixtures;
+        async move {
+            let asks = format!("/payload?size={size}&{AS_FROM_THE_NETWORK}");
+            let records =
+                short_lived_visit(fixtures, &asks, ROUNDS, "", Requests::keeping_text()).await;
+            for by in SHORT_LIVED {
+                for round in 0..ROUNDS {
+                    let query = format!("size={size}&{AS_FROM_THE_NETWORK}&by={by}&round={round}");
+                    let fetched = the(&records, &format!("/payload?{query}"));
+                    assert_made_by(fetched, by);
+                    assert_eq!(
+                        (fetched.status, &fetched.end, fetched.decoded_bytes),
+                        (Some(200), &RequestEnd::Finished, size as u64),
+                        "{query}"
+                    );
+                    assert!(
+                        whole_body(fetched) == support::payload(&query),
+                        "{query}: not the bytes that were served"
+                    );
+                }
+            }
+        }
+    };
+    tokio::join!(visit(100), visit(50_000), visit(1_000_000));
+}
+
+/// The copy of a body is the body: content encoding undone, the answer at
+/// the end of a redirect, and nothing made up for an answer that came out
+/// of the cache faster than a copy could be asked for.
+#[tokio::test]
+async fn a_body_that_outlived_its_frame_or_worker_is_the_one_that_was_served() {
+    const ROUNDS: usize = 2;
+    let fixtures = Fixtures::start().await;
+    let compressed = async {
+        let asks = format!("/payload?size=50000&{AS_FROM_THE_NETWORK}&encoding=gzip");
+        let records =
+            short_lived_visit(&fixtures, &asks, ROUNDS, "", Requests::keeping_text()).await;
+        for by in SHORT_LIVED {
+            for round in 0..ROUNDS {
+                let query =
+                    format!("size=50000&{AS_FROM_THE_NETWORK}&encoding=gzip&by={by}&round={round}");
+                let fetched = the(&records, &format!("/payload?{query}"));
+                assert_eq!(
+                    header_value(&fetched.response_headers, "content-encoding"),
+                    Some("gzip")
+                );
+                assert!(
+                    fetched.encoded_bytes < 45_000 && fetched.decoded_bytes == 50_000,
+                    "{} over the network, {} decoded",
+                    fetched.encoded_bytes,
+                    fetched.decoded_bytes
+                );
+                assert!(whole_body(fetched) == support::payload(&query), "{query}");
+            }
+        }
+    };
+    let redirected = async {
+        let asks = format!("/redirect?/payload?size=50000&{AS_FROM_THE_NETWORK}");
+        let records =
+            short_lived_visit(&fixtures, &asks, ROUNDS, "", Requests::keeping_text()).await;
+        for by in SHORT_LIVED {
+            for round in 0..ROUNDS {
+                let query = format!("size=50000&{AS_FROM_THE_NETWORK}&by={by}&round={round}");
+                let hop = the(&records, &format!("/redirect?/payload?{query}"));
+                assert_eq!(
+                    (&hop.end, &hop.body),
+                    (&RequestEnd::Redirected, &CapturedBody::Absent)
+                );
+                let fetched = the(&records, &format!("/payload?{query}"));
+                assert_eq!(fetched.redirect_from, Some(hop.seq));
+                assert!(whole_body(fetched) == support::payload(&query), "{query}");
+            }
+        }
+    };
+    let cached = async {
+        let asks = format!("/payload?size=50000&{AS_FROM_THE_NETWORK}&cache=1");
+        let records = short_lived_visit(
+            &fixtures,
+            &asks,
+            ROUNDS,
+            "&times=2",
+            Requests::keeping_text(),
+        )
+        .await;
+        for by in SHORT_LIVED {
+            for round in 0..ROUNDS {
+                let query =
+                    format!("size=50000&{AS_FROM_THE_NETWORK}&cache=1&by={by}&round={round}");
+                let fetches: Vec<&NetworkRecord> = records
+                    .iter()
+                    .filter(|record| asked(record) == format!("/payload?{query}"))
+                    .collect();
+                let [from_network, from_cache] = fetches[..] else {
+                    panic!("{query}: {} requests", fetches.len());
+                };
+                assert_eq!(
+                    (from_network.served_from, from_cache.served_from),
+                    (ServedFrom::Network, ServedFrom::DiskCache)
+                );
+                assert!(
+                    whole_body(from_network) == support::payload(&query),
+                    "{query}"
+                );
+                match &from_cache.body {
+                    CapturedBody::Read { bytes, .. } => {
+                        assert!(*bytes == support::payload(&query), "{query}")
+                    }
+                    CapturedBody::Unavailable(why) => assert!(!why.is_empty()),
+                    other => panic!("{query}: {other:?}"),
+                }
+            }
+        }
+    };
+    tokio::join!(compressed, redirected, cached);
+}
+
+/// The sink decides what is read, also of a body that outlived its frame
+/// or worker: no more than it admits, and nothing while it cannot keep up.
+#[tokio::test]
+async fn a_body_that_outlived_its_frame_or_worker_is_cut_or_skipped_as_the_sink_says() {
+    let fixtures = Fixtures::start().await;
+    let cut_or_skipped = async {
+        let behind_for_workers = Requests::admitting(|offer| {
+            if offer.url.contains("by=worker") {
+                BodyAdmission::Skip(BodySkip::Backlog)
+            } else {
+                BodyAdmission::Read { max_bytes: 64 }
+            }
+        });
+        let asks = format!("/payload?size=50000&{AS_FROM_THE_NETWORK}");
+        let records = short_lived_visit(&fixtures, &asks, 1, "", behind_for_workers).await;
+        for by in SHORT_LIVED {
+            let query = format!("size=50000&{AS_FROM_THE_NETWORK}&by={by}&round=0");
+            let fetched = the(&records, &format!("/payload?{query}"));
+            if by == "worker" {
+                assert_eq!(fetched.body, CapturedBody::Skipped(BodySkip::Backlog));
+                continue;
+            }
+            assert_eq!(
+                fetched.body,
+                CapturedBody::Read {
+                    bytes: support::payload(&query)[..64].to_vec(),
+                    total_bytes: 50_000,
+                },
+                "{query}"
+            );
+        }
+    };
+    let larger_than_is_kept = async {
+        let asks = format!("/payload?size={LARGE_JSON_BYTES}&{AS_FROM_THE_NETWORK}");
+        let records = short_lived_visit(&fixtures, &asks, 1, "", Requests::keeping_text()).await;
+        for by in SHORT_LIVED {
+            let query = format!("size={LARGE_JSON_BYTES}&{AS_FROM_THE_NETWORK}&by={by}&round=0");
+            let fetched = the(&records, &format!("/payload?{query}"));
+            let CapturedBody::Read { bytes, total_bytes } = &fetched.body else {
+                panic!("{query}: {:?}", fetched.body);
+            };
+            assert_eq!(*total_bytes, LARGE_JSON_BYTES as u64, "{query}");
+            assert!(
+                *bytes == support::payload(&query)[..KEPT_BODY_BYTES],
+                "{query}: not the first bytes that were served"
+            );
+        }
+    };
+    tokio::join!(cut_or_skipped, larger_than_is_kept);
+}
+
+/// A frame or worker that goes away while an answer is still arriving has
+/// no body to record: what had arrived until then is not passed off as one.
+#[tokio::test]
+async fn an_answer_cut_short_by_its_frame_or_worker_going_away_has_no_body() {
+    let fixtures = Fixtures::start().await;
+    let records = short_lived_visit(
+        &fixtures,
+        "/payload?size=50000&stall=1",
+        2,
+        "&unread=1",
+        Requests::keeping_text(),
+    )
+    .await;
+    for by in SHORT_LIVED {
+        for round in 0..2 {
+            let fetched = the(
+                &records,
+                &format!("/payload?size=50000&stall=1&by={by}&round={round}"),
+            );
+            assert_eq!(fetched.status, Some(200));
+            // A frame in the page's own process reports the request as
+            // cancelled; a target of its own is gone before it can.
+            assert!(
+                matches!(
+                    fetched.end,
+                    RequestEnd::Pending
+                        | RequestEnd::Failed {
+                            cancelled: true,
+                            ..
+                        }
+                ),
+                "{by}: {:?}",
+                fetched.end
+            );
+            assert_eq!(fetched.body, CapturedBody::Absent, "{by}");
+        }
+    }
+}
+
 /// A route change is reported by the tracker, in a batch that arrives up to
 /// a tenth of a second after it; what the page requests in between is
 /// already on the new page view.
@@ -1046,5 +1328,55 @@ async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scann
         .collect();
     for visit in visits {
         visit.await.unwrap();
+    }
+}
+
+// TEMPORARY-MEASUREMENT
+#[tokio::test]
+#[ignore]
+async fn measure_loss() {
+    const ROUNDS: usize = 20;
+    let fixtures = Fixtures::start().await;
+    for size in [100usize, 50_000, 1_000_000] {
+        let asks = format!(
+            "/payload?size={size}{}",
+            std::env::var("MEASURE_EXTRA").unwrap_or_default()
+        );
+        let mut request = support::request(
+            &fixtures.url(&format!(
+                "network-short-lived.html?rounds={ROUNDS}&asks={}",
+                asks.replace('?', "%3F").replace('&', "%26")
+            )),
+            DeviceProfile::Desktop,
+        );
+        request.observe_seconds = 12;
+        let requests = Requests::keeping_text();
+        let mut reported = Reported::new();
+        reported.hooks.network = Some(requests.clone());
+        reported.run(request).await.result.unwrap();
+        let records = requests.records();
+        for by in SHORT_LIVED {
+            let of: Vec<_> = records
+                .iter()
+                .filter(|r| path(r) == "/payload" && r.url.contains(&format!("by={by}&")))
+                .collect();
+            let read = of
+                .iter()
+                .filter(
+                    |r| matches!(&r.body, CapturedBody::Read { bytes, .. } if bytes.len() == size),
+                )
+                .count();
+            let mut why: BTreeMap<String, usize> = BTreeMap::new();
+            for r in &of {
+                if !matches!(r.body, CapturedBody::Read { .. }) {
+                    *why.entry(format!("{:?} / {:?}", r.body, r.end))
+                        .or_default() += 1;
+                }
+            }
+            println!(
+                "MEASURE size={size} by={by}: {} requests, {read} read, lost: {why:?}",
+                of.len()
+            );
+        }
     }
 }

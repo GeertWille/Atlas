@@ -14,6 +14,8 @@ use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions, ProfileChoice, ProxyServer};
+#[cfg(test)]
+pub(crate) use client::fake;
 pub(crate) use client::{Cdp, CdpError, CdpEvent};
 pub(crate) use profile::{
     PersistentProfileError, clear as clear_persistent_profile,

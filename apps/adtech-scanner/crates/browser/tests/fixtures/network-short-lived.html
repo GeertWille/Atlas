@@ -1,0 +1,47 @@
+<!doctype html>
+<title>Frames and workers that are gone the moment their answer is in</title>
+<h1>Frames and workers that are gone the moment their answer is in</h1>
+<script>
+  // `?rounds=<n>&asks=<path and query>`: a frame of another site, a frame of
+  // this site and a worker each fetch `asks`, one after the other and n times
+  // over. Each is removed as soon as it says that it has its answer.
+  // `&times=<n>` and `&unread=1` are passed on to them.
+  var query = new URLSearchParams(location.search);
+  var otherSite = 'http://localhost:' + location.port;
+  var turns = [];
+  for (var round = 0; round < Number(query.get('rounds')); round++) {
+    ['other-site-frame', 'same-site-frame', 'worker'].forEach(function (by) {
+      turns.push({ by: by, round: round });
+    });
+  }
+
+  function next() {
+    var turn = turns.shift();
+    if (!turn) {
+      fetch('/status/200?all-gone');
+      return;
+    }
+    var task = new URLSearchParams({
+      asks: query.get('asks') + '&by=' + turn.by + '&round=' + turn.round,
+      times: query.get('times') || 1,
+      unread: query.get('unread') || '',
+    });
+    if (turn.by === 'worker') {
+      var worker = new Worker('/network-short-lived-worker.js?' + task);
+      worker.onmessage = function () {
+        worker.terminate();
+        next();
+      };
+      return;
+    }
+    var frame = document.createElement('iframe');
+    var site = turn.by === 'other-site-frame' ? otherSite : '';
+    frame.src = site + '/network-short-lived-frame.html?' + task;
+    window.onmessage = function () {
+      frame.remove();
+      next();
+    };
+    document.body.appendChild(frame);
+  }
+  next();
+</script>

@@ -31,6 +31,14 @@ pub(crate) enum CdpError {
     Timeout(&'static str),
 }
 
+impl CdpError {
+    /// The browser does not have the method at all: it is older than the
+    /// method. Chrome's own words for JSON-RPC's "method not found".
+    pub(crate) fn is_unknown_method(&self) -> bool {
+        matches!(self, Self::Rejected { message, .. } if message.ends_with("' wasn't found"))
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct CdpEvent {
     pub method: String,
@@ -176,32 +184,32 @@ fn route(mut message: Value, awaiting: &mut Awaiting, events: &mpsc::UnboundedSe
     }
 }
 
+/// The browser's side of a connection, played by a test.
 #[cfg(test)]
-mod tests {
-    use tokio::io::{AsyncWriteExt, DuplexStream};
+pub(crate) mod fake {
+    use tokio::io::DuplexStream;
 
     use super::*;
 
-    /// The browser's side of the connection.
-    struct Browser {
-        commands: MessageReader<DuplexStream>,
-        replies: DuplexStream,
+    pub(crate) struct Browser {
+        pub commands: MessageReader<DuplexStream>,
+        pub replies: DuplexStream,
     }
 
     impl Browser {
-        async fn received(&mut self) -> Value {
+        pub(crate) async fn received(&mut self) -> Value {
             let command = self.commands.next().await.unwrap().unwrap();
             serde_json::from_slice(&command).unwrap()
         }
 
-        async fn say(&mut self, message: Value) {
+        pub(crate) async fn say(&mut self, message: Value) {
             write_message(&mut self.replies, &message.to_string())
                 .await
                 .unwrap();
         }
     }
 
-    fn connected() -> (Cdp, mpsc::UnboundedReceiver<CdpEvent>, Browser) {
+    pub(crate) fn connected() -> (Cdp, mpsc::UnboundedReceiver<CdpEvent>, Browser) {
         let (to_browser, commands) = tokio::io::duplex(1024);
         let (replies, from_browser) = tokio::io::duplex(1024);
         let (cdp, events) = Cdp::start(from_browser, to_browser);
@@ -211,6 +219,14 @@ mod tests {
         };
         (cdp, events, browser)
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+
+    use super::fake::connected;
+    use super::*;
 
     #[tokio::test]
     async fn replies_reach_their_commands_in_whatever_order_they_arrive() {
@@ -258,6 +274,27 @@ mod tests {
                 message: "No target".to_string(),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn a_method_the_browser_does_not_have_is_told_from_one_it_refused() {
+        let (cdp, _events, mut browser) = connected();
+        let unknown = cdp.send(Some("frame"), "Network.streamResourceContent", json!({}));
+        let refused = cdp.send(Some("frame"), "Network.streamResourceContent", json!({}));
+        browser.received().await;
+        browser.received().await;
+        browser
+            .say(json!({ "id": 1, "error": { "code": -32601,
+                "message": "'Network.streamResourceContent' wasn't found" } }))
+            .await;
+        browser
+            .say(json!({ "id": 2, "error": { "code": -32602,
+                "message": "Request with the provided ID has already finished loading" } }))
+            .await;
+
+        assert!(unknown.await.unwrap_err().is_unknown_method());
+        assert!(!refused.await.unwrap_err().is_unknown_method());
+        assert!(!CdpError::Closed.is_unknown_method());
     }
 
     #[tokio::test]

@@ -25,7 +25,7 @@ use super::bid_endpoints::{BidRequest, BidResponseLog, MAX_BODY_BYTES, no_bid_re
 use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, is_tracker_script};
 use super::network::assembly::{Assembler, Ended, Finished, Output, Reporter, Source};
-use super::network::fields::captured_body;
+use super::network::fields::{body_of, captured_body};
 use super::pages::{Change, Committed, PageLog};
 use super::progress::Milestones;
 use super::scripts::{
@@ -80,6 +80,12 @@ enum Fetched {
     },
     RequestBody {
         seq: u32,
+        response: Result<Value, CdpError>,
+    },
+    /// The answer of a frame or worker that was asked to send a response
+    /// body along while it loads.
+    BodyCopy {
+        request_id: String,
         response: Result<Value, CdpError>,
     },
     Inline {
@@ -155,6 +161,10 @@ pub(crate) struct Recorder {
     /// Triggered when the target of a session is gone, by session: what was
     /// asked of it will not be answered.
     targets_gone: HashMap<String, CancellationToken>,
+    /// The browser is older than `Network.streamResourceContent` (Chrome
+    /// 122): what a frame or worker loaded is lost when it goes away before
+    /// it handed the body over.
+    cannot_copy_bodies: bool,
     third_party_hosts: BTreeSet<String>,
     milestones: Milestones,
     on_activity: ActivitySink,
@@ -192,6 +202,7 @@ impl Recorder {
             document_requested_at: None,
             fetches: FuturesUnordered::new(),
             targets_gone: HashMap::new(),
+            cannot_copy_bodies: false,
             third_party_hosts: BTreeSet::new(),
             milestones: Milestones::default(),
             on_activity,
@@ -463,6 +474,10 @@ impl Recorder {
                     session,
                     request_id,
                 } => self.ask_for_request_body(seq, &session, &request_id, cdp),
+                Output::BodyCopyWanted {
+                    session,
+                    request_id,
+                } => self.ask_for_body_copy(&session, request_id, cdp),
                 Output::Finished(finished) => self.on_response_finished(finished, cdp),
                 Output::Ended(ended) => self.hand_over_one(*ended),
             }
@@ -562,6 +577,25 @@ impl Recorder {
         self.fetches.push(
             response
                 .map(move |response| Fetched::RequestBody { seq, response })
+                .boxed(),
+        );
+    }
+
+    /// Asks a frame or worker to send the body of a response along while it
+    /// loads, so that the body outlives it. Nothing about the request
+    /// changes for the page.
+    fn ask_for_body_copy(&mut self, session: &str, request_id: String, cdp: &Cdp) {
+        if self.cannot_copy_bodies {
+            return;
+        }
+        let response =
+            self.ask_for_body(cdp, session, "Network.streamResourceContent", &request_id);
+        self.fetches.push(
+            response
+                .map(move |response| Fetched::BodyCopy {
+                    request_id,
+                    response,
+                })
                 .boxed(),
         );
     }
@@ -768,7 +802,16 @@ impl Recorder {
                 response,
             } => {
                 let request_seq = self.sink.is_some().then_some(seq);
-                let text = || response.as_ref().ok().and_then(response_text);
+                // The frame or worker is gone, and its session with it: what
+                // it sent along while loading is the body then.
+                let copied = match &response {
+                    Err(CdpError::Rejected { .. }) => self.requests.take_body_copy(seq),
+                    _ => None,
+                };
+                let text = || match &copied {
+                    Some(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                    None => response.as_ref().ok().and_then(response_text),
+                };
                 if let Some(answer) = bid {
                     let reason =
                         text().and_then(|body| no_bid_reason(answer.request.bidder, &body));
@@ -789,9 +832,10 @@ impl Recorder {
                         request_seq,
                     ))
                 });
-                let body = match for_sink {
-                    Ok(max_bytes) => captured_body(response, max_bytes),
-                    Err(instead) => instead,
+                let body = match (for_sink, copied) {
+                    (Ok(max_bytes), Some(bytes)) => body_of(bytes, max_bytes),
+                    (Ok(max_bytes), None) => captured_body(response, max_bytes),
+                    (Err(instead), _) => instead,
                 };
                 let settled = self.requests.body_settled(seq, body, epoch_ms_now());
                 self.hand_over(settled);
@@ -808,6 +852,22 @@ impl Recorder {
                     .requests
                     .post_data_settled(seq, text.as_deref(), epoch_ms_now());
                 self.hand_over(settled);
+                None
+            }
+            Fetched::BodyCopy {
+                request_id,
+                response,
+            } => {
+                match response {
+                    Ok(started) => self.requests.body_copy_started(
+                        &request_id,
+                        started["bufferedData"].as_str().unwrap_or_default(),
+                    ),
+                    Err(refusal) if refusal.is_unknown_method() => self.cannot_copy_bodies = true,
+                    // The response was complete already, or its target is
+                    // gone: the body is read as far as the target allows.
+                    Err(_) => {}
+                }
                 None
             }
             Fetched::Inline {
@@ -871,4 +931,200 @@ pub(crate) fn epoch_ms_now() -> f64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use adscan_model::NetworkRecord;
+
+    use super::*;
+    use crate::cdp::fake::{Browser, connected};
+
+    /// A sink that reads up to 1024 bytes of every body.
+    #[derive(Default)]
+    struct Kept(Mutex<Vec<NetworkRecord>>);
+
+    impl NetworkSink for Kept {
+        fn admit_body(&self, _: &BodyOffer<'_>) -> BodyAdmission {
+            BodyAdmission::Read { max_bytes: 1024 }
+        }
+
+        fn record(&self, record: NetworkRecord) {
+            self.0.lock().unwrap().push(record);
+        }
+    }
+
+    impl Kept {
+        fn body_of(&self, url: &str) -> CapturedBody {
+            let records = self.0.lock().unwrap();
+            let record = records.iter().find(|record| record.url == url);
+            record
+                .unwrap_or_else(|| panic!("{url} is not recorded"))
+                .body
+                .clone()
+        }
+    }
+
+    fn event(method: &str, params: Value) -> CdpEvent {
+        CdpEvent {
+            method: method.to_string(),
+            params,
+            session_id: None,
+        }
+    }
+
+    /// A recorder whose tab shows a page of the site it scans.
+    fn recorder_on_a_page(sink: Arc<Kept>, cdp: &Cdp) -> Recorder {
+        let mut recorder = Recorder::new(
+            "main".to_string(),
+            PageLog::new(8, false),
+            Arc::new(|_| {}),
+            Some(sink),
+        );
+        let committed = json!({ "frame": { "id": "main", "loaderId": "L.1", "url": "https://www.pub.example/" } });
+        recorder.observe(&event("Page.frameNavigated", committed), cdp, "tab");
+        assert!(recorder.is_recording());
+        recorder
+    }
+
+    /// A frame in a process of its own, below the recorded tab.
+    const FRAME: Reported<'static> = Reported {
+        session: "frame",
+        reporter: Reporter::Iframe,
+        target_id: Some("frame-target"),
+        main_frame_id: None,
+        in_recorded_tab: true,
+    };
+
+    fn announce(recorder: &mut Recorder, cdp: &Cdp, id: &str, url: &str) {
+        let announced = json!({
+            "requestId": id, "frameId": "frame-target", "type": "Fetch",
+            "timestamp": 1_000.0, "wallTime": 1_700_000_000.0,
+            "request": { "url": url, "method": "GET", "headers": {} },
+            "initiator": { "type": "script" },
+        });
+        recorder.observe_network(&FRAME, &event("Network.requestWillBeSent", announced), cdp);
+    }
+
+    /// The answer to `id` arrives in the frame: its headers, `pieces` of its
+    /// body, each sent along or not, and its end.
+    fn answer(recorder: &mut Recorder, cdp: &Cdp, id: &str, pieces: &[(&str, bool)]) {
+        let headers = json!({
+            "requestId": id, "type": "Fetch", "timestamp": 1_000.1, "hasExtraInfo": false,
+            "response": { "status": 200, "mimeType": "application/json", "headers": {} },
+        });
+        recorder.observe_network(&FRAME, &event("Network.responseReceived", headers), cdp);
+        for (piece, sent_along) in pieces {
+            let mut received = json!({ "requestId": id, "timestamp": 1_000.2,
+                "dataLength": piece.len(), "encodedDataLength": piece.len() });
+            if *sent_along {
+                received["data"] = json!(base64_of(piece));
+            }
+            recorder.observe_network(&FRAME, &event("Network.dataReceived", received), cdp);
+        }
+        let end = json!({ "requestId": id, "timestamp": 1_000.3, "encodedDataLength": 60 });
+        recorder.observe_network(&FRAME, &event("Network.loadingFinished", end), cdp);
+    }
+
+    fn base64_of(text: &str) -> String {
+        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, text)
+    }
+
+    /// The next command, which must be `method` for request `id` in the frame.
+    async fn asked(browser: &mut Browser, method: &str, id: &str) -> u64 {
+        let command = browser.received().await;
+        assert_eq!(
+            (
+                &command["method"],
+                &command["sessionId"],
+                &command["params"]["requestId"]
+            ),
+            (&json!(method), &json!("frame"), &json!(id))
+        );
+        command["id"].as_u64().unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_body_sent_along_stands_in_when_its_frame_is_gone_before_it_handed_it_over() {
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = recorder_on_a_page(sink.clone(), &cdp);
+        const URL: &str = "https://ads.example/passback.json";
+
+        announce(&mut recorder, &cdp, "F.1", URL);
+        let copy = asked(&mut browser, "Network.streamResourceContent", "F.1").await;
+        // The answer was on its way when the question arrived.
+        browser
+            .say(json!({ "id": copy, "result": { "bufferedData": base64_of("{\"ad\":") } }))
+            .await;
+        answer(
+            &mut recorder,
+            &cdp,
+            "F.1",
+            &[("{\"ad\":", false), ("\"creative\"}", true)],
+        );
+        asked(&mut browser, "Network.getResponseBody", "F.1").await;
+        // The frame is removed; Chrome answers nothing more for it.
+        recorder.target_gone("frame");
+        while recorder.has_pending_bodies() {
+            recorder.store_next_body().await;
+        }
+
+        assert_eq!(
+            sink.body_of(URL),
+            CapturedBody::Read {
+                bytes: b"{\"ad\":\"creative\"}".to_vec(),
+                total_bytes: 17
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_cannot_send_bodies_along_is_asked_once_and_read_as_before() {
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = recorder_on_a_page(sink.clone(), &cdp);
+        const LOST: &str = "https://ads.example/passback.json";
+        const READ: &str = "https://ads.example/config.json";
+
+        announce(&mut recorder, &cdp, "F.1", LOST);
+        let copy = asked(&mut browser, "Network.streamResourceContent", "F.1").await;
+        browser
+            .say(json!({ "id": copy, "error": { "code": -32601,
+                "message": "'Network.streamResourceContent' wasn't found" } }))
+            .await;
+        recorder.store_next_body().await;
+
+        // The next request is announced without that question: the next
+        // thing asked of the browser is the body of the first.
+        announce(&mut recorder, &cdp, "F.2", READ);
+        answer(&mut recorder, &cdp, "F.1", &[("{\"ad\":1}", false)]);
+        let lost = asked(&mut browser, "Network.getResponseBody", "F.1").await;
+        browser
+            .say(json!({ "id": lost, "error": { "code": -32001,
+                "message": "Session with given id not found." } }))
+            .await;
+        answer(&mut recorder, &cdp, "F.2", &[("{\"slots\":2}", false)]);
+        let read = asked(&mut browser, "Network.getResponseBody", "F.2").await;
+        browser
+            .say(json!({ "id": read, "result": { "body": "{\"slots\":2}", "base64Encoded": false } }))
+            .await;
+        while recorder.has_pending_bodies() {
+            recorder.store_next_body().await;
+        }
+
+        assert_eq!(
+            sink.body_of(LOST),
+            CapturedBody::Unavailable("Session with given id not found.".into())
+        );
+        assert_eq!(
+            sink.body_of(READ),
+            CapturedBody::Read {
+                bytes: b"{\"slots\":2}".to_vec(),
+                total_bytes: 11
+            }
+        );
+    }
 }

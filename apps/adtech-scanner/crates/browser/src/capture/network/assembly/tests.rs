@@ -1706,3 +1706,269 @@ fn a_request_id_that_comes_back_after_its_request_ended_is_not_a_second_request(
     assert_eq!(first.seq, 0);
     assert_eq!(assembler.next_seq, 1, "no number was spent on it");
 }
+
+fn base64_of(bytes: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// A piece of a response body as the browser reports it; `sent_along` when
+/// it was asked to send the body with it.
+fn data(id: &str, piece: &[u8], sent_along: bool) -> Value {
+    let mut received = json!({ "requestId": id, "timestamp": 1_000.2, "dataLength": piece.len(), "encodedDataLength": piece.len() });
+    if sent_along {
+        received["data"] = json!(base64_of(piece));
+    }
+    received
+}
+
+fn copies_wanted(outputs: &[Output]) -> Vec<(&str, &str)> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            Output::BodyCopyWanted {
+                session,
+                request_id,
+            } => Some((session.as_str(), request_id.as_str())),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_frame_or_worker_is_asked_to_send_along_what_may_be_kept_and_the_tab_is_not() {
+    let mut assembler = Assembler::default();
+    let now = epoch(1_000.0);
+    let announce =
+        |assembler: &mut Assembler, source: &Source<'_>, id: &str, kind: &str, url: &str| {
+            let mut announced = request(id, url, 1_000.0);
+            announced["type"] = json!(kind);
+            assembler.observe(source, "Network.requestWillBeSent", &announced)
+        };
+    let frame = child("frame", Reporter::Iframe, now);
+    let worker = child("worker", Reporter::Worker, now);
+
+    let outputs = announce(
+        &mut assembler,
+        &frame,
+        "F.1",
+        "Fetch",
+        "https://ads.example/config.json",
+    );
+    assert_eq!(copies_wanted(&outputs), [("frame", "F.1")]);
+    let outputs = announce(
+        &mut assembler,
+        &worker,
+        "W.1",
+        "Script",
+        "https://ads.example/lib.js",
+    );
+    assert_eq!(copies_wanted(&outputs), [("worker", "W.1")]);
+    for (id, kind) in [
+        ("F.2", "Image"),
+        ("F.3", "Media"),
+        ("F.4", "Font"),
+        ("F.5", "EventSource"),
+    ] {
+        let outputs = announce(
+            &mut assembler,
+            &frame,
+            id,
+            kind,
+            "https://ads.example/creative",
+        );
+        assert_eq!(copies_wanted(&outputs), [], "{kind}");
+    }
+    // A bid request is read whatever the browser takes its answer for.
+    let outputs = announce(
+        &mut assembler,
+        &frame,
+        "F.6",
+        "Image",
+        "https://ib.adnxs.com/ut/v3/prebid",
+    );
+    assert_eq!(copies_wanted(&outputs), [("frame", "F.6")]);
+    // The tab is there as long as the visit: its bodies are read from it.
+    let outputs = announce(
+        &mut assembler,
+        &tab(now),
+        "T.1",
+        "Fetch",
+        "https://ads.example/config.json",
+    );
+    assert_eq!(copies_wanted(&outputs), []);
+}
+
+/// Announces a fetch in a frame and returns its `seq` once it finished with
+/// `pieces` as its body, each reported at `sent_along`.
+fn finished_in_a_frame(assembler: &mut Assembler, id: &str, pieces: &[(&[u8], bool)]) -> u32 {
+    let frame = child("frame", Reporter::Iframe, epoch(1_000.0));
+    assembler.observe(
+        &frame,
+        "Network.requestWillBeSent",
+        &request(id, "https://ads.example/config.json", 1_000.0),
+    );
+    assembler.observe(
+        &frame,
+        "Network.responseReceived",
+        &response(id, 200, 1_000.1),
+    );
+    for (piece, sent_along) in pieces {
+        assembler.observe(
+            &frame,
+            "Network.dataReceived",
+            &data(id, piece, *sent_along),
+        );
+    }
+    let outputs = assembler.observe(
+        &frame,
+        "Network.loadingFinished",
+        &finished(id, 1_000.3, 40),
+    );
+    finished_of(&outputs).expect("the body can be read").seq
+}
+
+#[test]
+fn a_body_that_was_sent_along_is_whole_once_its_start_and_every_piece_are_in() {
+    // The answer to the question arrives after pieces that were sent later.
+    let mut assembler = Assembler::default();
+    let seq = finished_in_a_frame(
+        &mut assembler,
+        "F.1",
+        &[(b"{\"ads\":", false), (b"[1,2,", true), (b"3]}", true)],
+    );
+    assembler.body_copy_started("F.1", &base64_of(b"{\"ads\":"));
+    assert_eq!(
+        assembler.take_body_copy(seq).as_deref(),
+        Some(&b"{\"ads\":[1,2,3]}"[..])
+    );
+    assert_eq!(assembler.take_body_copy(seq), None, "handed over once");
+
+    // The browser never said that it sends the body along: its first piece
+    // is missing, and nothing says so but the length.
+    let mut assembler = Assembler::default();
+    let seq = finished_in_a_frame(
+        &mut assembler,
+        "F.1",
+        &[(b"{\"ads\":", false), (b"[1,2,3]}", true)],
+    );
+    assert_eq!(assembler.take_body_copy(seq), None);
+
+    // It said so, but what it had until then is not all that had arrived.
+    let mut assembler = Assembler::default();
+    let seq = finished_in_a_frame(
+        &mut assembler,
+        "F.1",
+        &[(b"{\"ads\":", false), (b"[1,2,3]}", true)],
+    );
+    assembler.body_copy_started("F.1", &base64_of(b"{\"ad"));
+    assert_eq!(assembler.take_body_copy(seq), None);
+
+    // An empty answer is whole without a single piece.
+    let mut assembler = Assembler::default();
+    let seq = finished_in_a_frame(&mut assembler, "F.1", &[]);
+    assembler.body_copy_started("F.1", "");
+    assert_eq!(assembler.take_body_copy(seq), Some(Vec::new()));
+}
+
+#[test]
+fn a_redirected_request_keeps_its_copy_for_the_answer_at_the_end() {
+    let mut assembler = Assembler::default();
+    let frame = child("frame", Reporter::Iframe, epoch(1_000.0));
+    let outputs = assembler.observe(
+        &frame,
+        "Network.requestWillBeSent",
+        &request("F.1", "https://ads.example/go", 1_000.0),
+    );
+    assert_eq!(copies_wanted(&outputs).len(), 1);
+    let mut second_hop = request("F.1", "https://cdn.example/ad.json", 1_000.1);
+    second_hop["redirectResponse"] = json!({ "status": 302, "headers": {} });
+    second_hop["redirectHasExtraInfo"] = json!(false);
+    let outputs = assembler.observe(&frame, "Network.requestWillBeSent", &second_hop);
+    assert_eq!(copies_wanted(&outputs), [], "asked once per request");
+    assembler.body_copy_started("F.1", "");
+
+    assembler.observe(
+        &frame,
+        "Network.responseReceived",
+        &response("F.1", 200, 1_000.2),
+    );
+    assembler.observe(
+        &frame,
+        "Network.dataReceived",
+        &data("F.1", b"{\"ad\":1}", true),
+    );
+    let outputs = assembler.observe(
+        &frame,
+        "Network.loadingFinished",
+        &finished("F.1", 1_000.3, 40),
+    );
+    let seq = finished_of(&outputs).unwrap().seq;
+    assert_eq!(
+        assembler.take_body_copy(seq).as_deref(),
+        Some(&b"{\"ad\":1}"[..])
+    );
+}
+
+#[test]
+fn copies_are_given_up_beyond_what_is_held_at_once_and_let_go_with_their_request() {
+    let mut assembler = Assembler::default();
+    let frame = child("frame", Reporter::Iframe, epoch(1_000.0));
+    let megabyte = vec![b'x'; 1024 * 1024];
+    let open = |assembler: &mut Assembler, id: &str, megabytes: usize| {
+        assembler.observe(
+            &frame,
+            "Network.requestWillBeSent",
+            &request(id, "https://ads.example/large.json", 1_000.0),
+        );
+        assembler.body_copy_started(id, "");
+        assembler.observe(
+            &frame,
+            "Network.responseReceived",
+            &response(id, 200, 1_000.1),
+        );
+        for _ in 0..megabytes {
+            assembler.observe(&frame, "Network.dataReceived", &data(id, &megabyte, true));
+        }
+    };
+    let finish = |assembler: &mut Assembler, id: &str| {
+        let outputs = assembler.observe(
+            &frame,
+            "Network.loadingFinished",
+            &finished(id, 1_000.3, 40),
+        );
+        finished_of(&outputs).unwrap().seq
+    };
+    let megabytes_held = |assembler: &Assembler| assembler.copied_bytes / megabyte.len();
+
+    open(&mut assembler, "F.1", 20);
+    assert_eq!(megabytes_held(&assembler), 20);
+    // The second does not fit next to the first: it is given up as a whole.
+    open(&mut assembler, "F.2", 20);
+    assert_eq!(megabytes_held(&assembler), 20);
+    let second = finish(&mut assembler, "F.2");
+    assert_eq!(assembler.take_body_copy(second), None);
+    let first = finish(&mut assembler, "F.1");
+    assert_eq!(
+        assembler.take_body_copy(first).map(|body| body.len()),
+        Some(20 * megabyte.len())
+    );
+    assert_eq!(megabytes_held(&assembler), 0);
+
+    // A copy goes when the frame handed the body over itself, when the
+    // request failed, and at the end of the capture.
+    open(&mut assembler, "F.3", 2);
+    let read_from_the_frame = finish(&mut assembler, "F.3");
+    open(&mut assembler, "F.4", 3);
+    open(&mut assembler, "F.5", 4);
+    assert_eq!(megabytes_held(&assembler), 9);
+    assembler.body_settled(read_from_the_frame, CapturedBody::Empty, epoch(1_000.4));
+    assert_eq!(megabytes_held(&assembler), 7);
+    assembler.observe(
+        &frame,
+        "Network.loadingFailed",
+        &failed("F.4", 1_000.4, "net::ERR_ABORTED"),
+    );
+    assert_eq!(megabytes_held(&assembler), 4);
+    assembler.finish();
+    assert_eq!(megabytes_held(&assembler), 0);
+}
