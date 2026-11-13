@@ -609,9 +609,13 @@ What the backend guarantees about it:
   the answers: Chrome keeps commands back while a tab moves to another site's process and runs them
   there before the new document's first script, so waiting would never end. A navigation that
   started before the entry page settled is still a redirect, and the load wait waits for it to
-  commit or fail. With the confinement the pausing ends (`Fetch.disable`), unless the proxy login or
-  the navigation guard needs it. Until then each document of the entry page, iframes included, waits
-  one round trip, which overlaps the first auction. Test:
+  commit or fail. With the confinement the pausing ends, unless the proxy login or the navigation
+  guard needs it. It ends with `Fetch.enable` and no patterns, not `Fetch.disable`: Chromium 153
+  never loads a document whose request it was about to pause when the disable arrived, and holds
+  back every later command on the tab (about 1 visit in 90 of the test below, each then waiting out
+  two 60 s command timeouts). With no pattern, such a request is still announced and continued.
+  Until then each document of the entry page, iframes included, waits one round trip, which
+  overlaps the first auction. Test:
   `a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scanned` in `tests/network.rs`,
   whose other site reports whether the tracker touched it.
 - **What the navigation guard does not cover.** The guard checks navigations, nothing else. A link
