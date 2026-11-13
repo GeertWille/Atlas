@@ -13,6 +13,9 @@ use adscan_model::{
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
+use crate::capture::{
+    BLANK_PAGE_FACTS, CLOCK_QUESTION, CLOCK_SAMPLES, ClockSample, distance, machine_epoch_ms,
+};
 use crate::cdp::{Api, ApiFailure, Cdp, Exit, Project, RemoteBrowser, SessionOrder, StartFailure};
 
 pub const BROWSERBASE_API_URL: &str = "https://api.browserbase.com";
@@ -21,8 +24,6 @@ pub const BROWSERBASE_API_URL: &str = "https://api.browserbase.com";
 const PROBE_TAG: &str = "probe";
 /// The shortest time limit the service takes: a probe is over in seconds.
 const PROBE_TIMEOUT_SECONDS: u64 = 60;
-/// How many commands are timed for the probe's round trip.
-const PROBE_ROUND_TRIPS: usize = 9;
 /// How often, and how far apart, the probe looks for the browser's page.
 const FIRST_PAGE_LOOKS: u32 = 50;
 const FIRST_PAGE_LOOK_PAUSE: Duration = Duration::from_millis(100);
@@ -87,6 +88,21 @@ pub struct BrowserbaseSessionUsage {
     /// Traffic through a Browserbase proxy. The count lags: it can read 0
     /// for half a minute after the end.
     pub proxy_bytes: Option<f64>,
+}
+
+/// What Browserbase says of a session that is on this installation's
+/// record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserbaseSessionStanding {
+    /// Running, and started by this installation of this app.
+    Running,
+    /// No longer running.
+    Ended,
+    /// The service knows no session of that id for this key.
+    Unknown,
+    /// Its metadata does not name this app and this installation: it is
+    /// not this installation's to end, whatever the record says.
+    NotThisInstallations,
 }
 
 /// What a capture needs to run its browser at Browserbase.
@@ -154,13 +170,12 @@ impl Browserbase {
     }
 
     /// How many browsers run in the project right now, whoever started
-    /// them.
+    /// them. Nothing of them but their number is read.
     pub async fn running_session_count(
         &self,
         credentials: &BrowserbaseCredentials,
     ) -> Result<u32, BrowserbaseError> {
-        let running = self.api.running_sessions(credentials, None).await?;
-        Ok(running.len() as u32)
+        Ok(self.api.running_session_count(credentials).await?)
     }
 
     /// The ids of the running sessions this installation of this app
@@ -172,15 +187,34 @@ impl Browserbase {
         credentials: &BrowserbaseCredentials,
         install_id: &str,
     ) -> Result<Vec<String>, BrowserbaseError> {
-        let listed = self
-            .api
-            .running_sessions(credentials, Some(install_id))
-            .await?;
+        let listed = self.api.running_sessions(credentials, install_id).await?;
         Ok(listed
             .into_iter()
             .filter(|session| session.running && session.is_of(install_id))
             .map(|session| session.id)
             .collect())
+    }
+
+    /// What became of one session, asked for by its id: whether it still
+    /// runs, and whether it is this installation's. The answer to trust
+    /// before a session from an earlier run is ended; a list that leaves a
+    /// session out proves nothing about it.
+    pub async fn session_standing(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+        install_id: &str,
+    ) -> Result<BrowserbaseSessionStanding, BrowserbaseError> {
+        let Some(session) = self.api.find_session(credentials, session_id).await? else {
+            return Ok(BrowserbaseSessionStanding::Unknown);
+        };
+        Ok(if !session.is_of(install_id) {
+            BrowserbaseSessionStanding::NotThisInstallations
+        } else if session.running {
+            BrowserbaseSessionStanding::Running
+        } else {
+            BrowserbaseSessionStanding::Ended
+        })
     }
 
     /// What a session used, as the service counts it now.
@@ -245,7 +279,7 @@ impl Browserbase {
         };
         let never_cancelled = CancellationToken::new();
         let browser =
-            RemoteBrowser::start(&self.api, credentials, &order, &never_cancelled, |_, _| {})
+            RemoteBrowser::start(&self.api, credentials, &order, &never_cancelled, |_| {})
                 .await
                 .map_err(|failure| match failure {
                     StartFailure::Refused(failure) => BrowserbaseError::from(failure),
@@ -294,9 +328,6 @@ impl Browserbase {
     }
 }
 
-const BLANK_PAGE_FACTS: &str = "[navigator.webdriver, navigator.userAgent, \
-     Intl.DateTimeFormat().resolvedOptions().timeZone, navigator.language]";
-
 /// What the page a browser starts with reports.
 struct BlankPage {
     browser_version: Option<String>,
@@ -304,12 +335,13 @@ struct BlankPage {
     webdriver: Option<bool>,
     timezone: Option<String>,
     language: Option<String>,
-    /// The median of a few commands.
+    /// The shortest of a few, as a capture measures it.
     round_trip_ms: Option<f64>,
 }
 
 /// Reads what the page the browser starts with reports, without creating
-/// or navigating anything.
+/// or navigating anything: the same facts, and the same measure of the
+/// distance, as a capture takes on arrival.
 async fn read_blank_page(cdp: &Cdp) -> Result<BlankPage, ApiFailure> {
     let unread = |error: crate::cdp::CdpError| {
         ApiFailure::Failed(format!(
@@ -349,7 +381,7 @@ async fn read_blank_page(cdp: &Cdp) -> Result<BlankPage, ApiFailure> {
         .await
         .map_err(unread)?;
     let session = attached["sessionId"].as_str().unwrap_or_default();
-    let evaluate = |expression: &str| {
+    let evaluate = |expression: &'static str| {
         cdp.send(
             Some(session),
             "Runtime.evaluate",
@@ -358,20 +390,19 @@ async fn read_blank_page(cdp: &Cdp) -> Result<BlankPage, ApiFailure> {
     };
     let seen = evaluate(BLANK_PAGE_FACTS).await.map_err(unread)?;
     let seen = &seen["result"]["value"];
-    let mut round_trips_ms = Vec::with_capacity(PROBE_ROUND_TRIPS);
-    for _ in 0..PROBE_ROUND_TRIPS {
-        let asked = tokio::time::Instant::now();
-        evaluate("1").await.map_err(unread)?;
-        round_trips_ms.push(asked.elapsed().as_secs_f64() * 1_000.0);
+    let mut samples = Vec::with_capacity(CLOCK_SAMPLES);
+    for _ in 0..CLOCK_SAMPLES {
+        let asked_ms = machine_epoch_ms();
+        let answer = evaluate(CLOCK_QUESTION).await.map_err(unread)?;
+        samples.extend(ClockSample::answered_now(asked_ms, &answer));
     }
-    round_trips_ms.sort_by(f64::total_cmp);
     let text = |value: &Value| value.as_str().map(str::to_string);
     Ok(BlankPage {
         browser_version: text(&version["product"]),
-        user_agent: text(&seen[1]),
-        webdriver: seen[0].as_bool(),
-        timezone: text(&seen[2]),
-        language: text(&seen[3]),
-        round_trip_ms: round_trips_ms.get(PROBE_ROUND_TRIPS / 2).copied(),
+        user_agent: text(&seen["userAgent"]),
+        webdriver: seen["webdriver"].as_bool(),
+        timezone: text(&seen["timezone"]),
+        language: text(&seen["language"]),
+        round_trip_ms: distance(&samples).map(|distance| distance.round_trip_ms),
     })
 }

@@ -60,7 +60,7 @@ export function ScanDefaultsFields({ settings, save }: { settings: Settings; sav
       </Field>
       <Field
         label="Visitor"
-        description={`${VISITOR_META[settings.defaultVisitor].description} Scripted visits are automated and say so to the page.`}
+        description={`${VISITOR_META[settings.defaultVisitor].description} Scripted visits are automated. Chrome does not tell the page, but a hidden (headless) browser is recognisable.`}
       >
         <Select
           value={settings.defaultVisitor}

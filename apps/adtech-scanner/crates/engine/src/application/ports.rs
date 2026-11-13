@@ -287,6 +287,18 @@ pub struct RemoteSessionUsage {
     pub proxy_bytes: Option<f64>,
 }
 
+/// What Browserbase says of a session this installation has on record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteSessionStanding {
+    /// Running, and started by this installation.
+    Running,
+    Ended,
+    /// Browserbase knows no such session for this key.
+    Unknown,
+    /// Its metadata does not name this installation: not ours to end.
+    NotThisInstallations,
+}
+
 /// Browserbase's own API, apart from the browser a capture drives: the
 /// account, the sessions this installation left behind, the contexts that
 /// hold a kept profile, and the live view.
@@ -307,14 +319,16 @@ pub trait BrowserbaseApi: Send + Sync {
         &self,
         credentials: &BrowserbaseCredentials,
     ) -> Result<u32, BrowserbaseError>;
-    /// Ids of the running sessions that carry this installation's id in
-    /// their metadata. Never a session of anyone else: the project may be
-    /// shared.
-    async fn running_sessions_of(
+    /// What became of one session that is on this installation's record,
+    /// asked for by its id: whether it still runs, and whether its
+    /// metadata names this installation. Never anything about a session of
+    /// anyone else: the project may be shared.
+    async fn session_standing(
         &self,
         credentials: &BrowserbaseCredentials,
+        session_id: &str,
         install_id: &str,
-    ) -> Result<Vec<String>, BrowserbaseError>;
+    ) -> Result<RemoteSessionStanding, BrowserbaseError>;
     async fn session_usage(
         &self,
         credentials: &BrowserbaseCredentials,

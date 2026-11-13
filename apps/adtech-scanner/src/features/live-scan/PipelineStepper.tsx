@@ -1,6 +1,6 @@
 import type { BrowserbaseRegion, PipelineStep } from "@/bindings";
 import { StepStatusIcon } from "@/shared/components/status";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { regionName } from "@/shared/domain/browserbase";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { cn } from "@/shared/lib/cn";
 import { formatCompact, formatDuration, formatUsd } from "@/shared/lib/format";
@@ -26,7 +26,7 @@ function StepNode({
   // The one step that differs: no Chrome is started on this computer.
   const description =
     browserbase && step.node === "launchBrowser"
-      ? `Start a Browserbase browser in ${regionPlace(browserbase)}`
+      ? `Start a Browserbase browser in ${regionName(browserbase)}`
       : meta.description;
   const elapsed = stepElapsedMs(step, now);
   const running = step.status === "running";

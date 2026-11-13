@@ -14,8 +14,9 @@ use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
     BrowserbaseApi, BrowserbaseError, CaptureError, CaptureSession, CaptureSource, EventSink,
-    FetchError, FileVersion, ProjectUsage, PublicFile, PublicFileFetcher, PublicFileRequest,
-    RemoteSessionUsage, SecretStore, SourceFormatter,
+    FetchError, FileVersion, LogRepository, ProjectUsage, PublicFile, PublicFileFetcher,
+    PublicFileRequest, RemoteSessionStanding, RemoteSessionUsage, RepoResult, RepositoryError,
+    SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::sellers_json::SellersJsonSource;
@@ -32,9 +33,9 @@ use adscan_engine::infrastructure::typesafe::TypesafeClient;
 use adscan_model::{
     BodyAdmission, BodyOffer, BrowserInfo, BrowserbaseCredentials, BrowserbaseProbe,
     BrowserbaseProject, BrowserbaseRegion, Capture, CaptureActivity, CaptureRequest, CapturedBody,
-    CapturedPage, CapturedScript, DeviceProfile, NetworkRecord, PageReach, RemoteSessionEvent,
-    ScanDetail, ScanEvent, ScanOptions, ScanProfileInfo, ScanStatus, TrackedAdUnit, TrackerEvent,
-    TrackerEventKind as Ev, Viewport, VisitorBehavior,
+    CapturedPage, CapturedScript, DeviceProfile, LogEntry, LogSearchHit, NetworkRecord, PageReach,
+    RemoteSessionEvent, ScanDetail, ScanEvent, ScanOptions, ScanProfileInfo, ScanStatus,
+    TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, Viewport, VisitorBehavior,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -416,6 +417,8 @@ pub struct FakeCaptureSource {
     pub proxy_passwords: Mutex<Vec<Option<String>>>,
     /// Reported, in order, after the first progress line of every capture.
     pub activities: Mutex<Vec<CaptureActivity>>,
+    /// Reported when the visit is over, before its browser is.
+    pub last_activities: Mutex<Vec<CaptureActivity>>,
     /// Whether a browser holds the browser profile, as the browser crate's own
     /// lock would say.
     pub profile_in_use: Mutex<bool>,
@@ -444,6 +447,7 @@ impl FakeCaptureSource {
             requests: Mutex::new(Vec::new()),
             proxy_passwords: Mutex::new(Vec::new()),
             activities: Mutex::new(Vec::new()),
+            last_activities: Mutex::new(Vec::new()),
             profile_in_use: Mutex::new(false),
             profile_clears: Mutex::new(0),
             network: Mutex::new(Vec::new()),
@@ -532,6 +536,9 @@ impl CaptureSource for FakeCaptureSource {
             },
             CaptureBehavior::NoBrowser => Err(CaptureError::BrowserNotFound),
         };
+        for activity in self.last_activities.lock().unwrap().iter().cloned() {
+            (session.on_activity)(activity);
+        }
         let released = *self.remote_release.lock().unwrap();
         if let (Some(access), Some((session_seconds, proxy_bytes))) =
             (&session.browserbase, released)
@@ -589,6 +596,10 @@ pub struct FakeBrowserbase {
     pub projects: Mutex<Result<Vec<BrowserbaseProject>, BrowserbaseError>>,
     /// The running sessions that carry this installation's id.
     pub running: Mutex<Vec<String>>,
+    /// Running sessions whose metadata names someone else.
+    pub running_for_others: Mutex<Vec<String>>,
+    /// Sessions Browserbase cannot be asked about right now.
+    pub unreadable: Mutex<Vec<String>>,
     /// What `session_usage` says a session's proxy traffic is.
     pub proxy_bytes: Mutex<Option<f64>>,
     /// When set, every call but `projects` fails with it.
@@ -601,6 +612,8 @@ impl Default for FakeBrowserbase {
         Self {
             projects: Mutex::new(Ok(vec![browserbase_project("project-1", "Local")])),
             running: Mutex::new(Vec::new()),
+            running_for_others: Mutex::new(Vec::new()),
+            unreadable: Mutex::new(Vec::new()),
             proxy_bytes: Mutex::new(Some(0.0)),
             failure: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
@@ -671,13 +684,34 @@ impl BrowserbaseApi for FakeBrowserbase {
         Ok(self.running.lock().unwrap().len() as u32 + 1)
     }
 
-    async fn running_sessions_of(
+    async fn session_standing(
         &self,
         _credentials: &BrowserbaseCredentials,
+        session_id: &str,
         install_id: &str,
-    ) -> Result<Vec<String>, BrowserbaseError> {
-        self.call(format!("runningSessionsOf:{install_id}"))?;
-        Ok(self.running.lock().unwrap().clone())
+    ) -> Result<RemoteSessionStanding, BrowserbaseError> {
+        self.call(format!("sessionStanding:{session_id}:{install_id}"))?;
+        let listed = |sessions: &Mutex<Vec<String>>| {
+            sessions
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|listed| listed == session_id)
+        };
+        if listed(&self.unreadable) {
+            return Err(BrowserbaseError::Failed(
+                "Browserbase is not available right now (HTTP 503).".into(),
+            ));
+        }
+        Ok(if listed(&self.running) {
+            RemoteSessionStanding::Running
+        } else if listed(&self.running_for_others) {
+            RemoteSessionStanding::NotThisInstallations
+        } else if session_id.starts_with("unknown") {
+            RemoteSessionStanding::Unknown
+        } else {
+            RemoteSessionStanding::Ended
+        })
     }
 
     async fn session_usage(
@@ -850,8 +884,37 @@ impl EventSink for RecordingSink {
     }
 }
 
+/// The audit trail's storage, which can be made to refuse what is added to
+/// it: a disk that is full, a database that is locked.
+pub struct Logs {
+    store: SqliteStore,
+    pub refuse_appends: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl LogRepository for Logs {
+    async fn append(&self, entry: &LogEntry) -> RepoResult<()> {
+        if self
+            .refuse_appends
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(RepositoryError("database or disk is full".into()));
+        }
+        self.store.append(entry).await
+    }
+
+    async fn list(&self, scan_id: &str, step_id: Option<&str>) -> RepoResult<Vec<LogEntry>> {
+        self.store.list(scan_id, step_id).await
+    }
+
+    async fn search(&self, query: &str, limit: u32) -> RepoResult<Vec<LogSearchHit>> {
+        self.store.search(query, limit).await
+    }
+}
+
 pub struct Harness {
     pub scans: ScanService,
+    pub logs: Arc<Logs>,
     pub settings: Arc<SettingsService>,
     pub configurations: ConfigurationService,
     pub secrets: Arc<dyn SecretStore>,
@@ -1037,9 +1100,13 @@ fn assemble_in(
         settings.clone(),
         Arc::new(SystemClock),
     ));
+    let logs = Arc::new(Logs {
+        store: store.clone(),
+        refuse_appends: false.into(),
+    });
     let deps = PipelineDeps {
         scans: Arc::new(store.clone()),
-        logs: Arc::new(store.clone()),
+        logs: logs.clone(),
         llm,
         judge,
         capture: capture.clone(),
@@ -1061,6 +1128,7 @@ fn assemble_in(
             Arc::new(store.clone()),
             browserbase.profile_turn(),
         ),
+        logs,
         settings,
         configurations,
         secrets,

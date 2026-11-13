@@ -1,7 +1,11 @@
 import { useId } from "react";
 import type { Settings } from "@/bindings";
 import type { AiAvailability } from "@/shared/domain/ai-availability";
-import { BROWSERBASE_RATES, type BrowserbaseEstimate } from "@/shared/domain/browserbase";
+import {
+  BROWSERBASE_LIST_PRICE,
+  BROWSERBASE_PLAN_CAVEAT,
+  type BrowserbaseEstimate,
+} from "@/shared/domain/browserbase";
 import { cn } from "@/shared/lib/cn";
 import { formatUsd } from "@/shared/lib/format";
 import { Input } from "@/shared/ui/input";
@@ -19,20 +23,15 @@ function budgetHelp(ai: AiAvailability, aiEnabled: boolean): string {
 
 /**
  * What the browser itself costs, apart from the models: Browserbase bills its time and proxy traffic, and no
- * cap of this app applies to that. Two lines in either case, so the section keeps its height.
+ * cap of this app applies to that. The last line of the options, and only there for a Browserbase scan, so
+ * that nothing above it moves when it comes and goes.
  */
-function BrowserCost({ usage }: { usage: BrowserbaseEstimate | null }) {
+function BrowserCost({ usage }: { usage: BrowserbaseEstimate }) {
   return (
-    <p role="note" aria-label="Browser cost" className="min-h-8 text-xs text-pretty text-muted-foreground">
-      {usage === null ? (
-        "The browser runs on this Mac and costs nothing."
-      ) : (
-        <>
-          Browserbase bills apart from the LLM budget: {describeBrowserbaseUsage(usage)}, an estimated{" "}
-          <span className="font-medium text-foreground tabular-nums">{formatUsd(usage.usd)}</span> at its{" "}
-          {BROWSERBASE_RATES.plan} plan's overage prices ({BROWSERBASE_RATES.asOf}).
-        </>
-      )}
+    <p role="note" aria-label="Browser cost" className="text-xs text-pretty text-muted-foreground">
+      Browserbase bills apart from the LLM budget: {describeBrowserbaseUsage(usage)}. An estimated{" "}
+      <span className="font-medium text-foreground tabular-nums">{formatUsd(usage.usd)}</span> at{" "}
+      {BROWSERBASE_LIST_PRICE}; {BROWSERBASE_PLAN_CAVEAT}.
     </p>
   );
 }
@@ -56,8 +55,8 @@ export function AnalysisOptions({
   /** This scan's own cap, when the form sets a valid one. */
   budgetUsd: number | undefined;
   budgetError: string | undefined;
-  /** What the scan is likely to use at Browserbase: `null` on this Mac, `undefined` while Browserbase is not set up. */
-  usage: BrowserbaseEstimate | null | undefined;
+  /** What the scan is likely to use at Browserbase; `null` on this Mac. */
+  usage: BrowserbaseEstimate | null;
   update: (patch: Partial<ScanForm>) => void;
 }) {
   const ids = { ai: useId(), budget: useId(), budgetHelp: useId() };
@@ -115,7 +114,7 @@ export function AnalysisOptions({
         </div>
       </div>
       <AiSummary settings={settings} ai={ai} form={{ ...form, aiEnabled }} budgetUsd={budgetUsd} />
-      {usage === undefined ? null : <BrowserCost usage={usage} />}
+      {usage ? <BrowserCost usage={usage} /> : null}
     </OptionsSection>
   );
 }

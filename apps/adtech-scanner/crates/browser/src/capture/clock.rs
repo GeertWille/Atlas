@@ -8,6 +8,14 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::Value;
+
+/// How many times the browser is asked for its time when the connection
+/// is made. The sample with the shortest round trip is the one used.
+pub(crate) const CLOCK_SAMPLES: usize = 8;
+/// What a page of the browser is asked to evaluate for a sample.
+pub(crate) const CLOCK_QUESTION: &str = "Date.now()";
+
 /// Milliseconds since the epoch on this machine's clock.
 pub(crate) fn machine_epoch_ms() -> f64 {
     SystemTime::now()
@@ -48,6 +56,17 @@ pub(crate) struct ClockSample {
 }
 
 impl ClockSample {
+    /// The sample of a question asked at `asked_ms` on this machine's
+    /// clock, whose answer (to `Runtime.evaluate` of [`CLOCK_QUESTION`])
+    /// has just arrived. `None` when the answer holds no time.
+    pub(crate) fn answered_now(asked_ms: f64, answer: &Value) -> Option<Self> {
+        Some(Self {
+            asked_ms,
+            answered_ms: machine_epoch_ms(),
+            browser_ms: answer["result"]["value"].as_f64()?,
+        })
+    }
+
     fn round_trip_ms(&self) -> f64 {
         self.answered_ms - self.asked_ms
     }

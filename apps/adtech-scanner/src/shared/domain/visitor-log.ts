@@ -25,8 +25,17 @@ export type VisitorActivity =
     }
   | { activity: "blocked"; page: number | null; reason: string | null; host: string | null }
   | { activity: "environment"; page: number | null; webdriver: boolean | null; headless: boolean | null }
-  /** What the capture says about its Browserbase browser. `region` comes with `sessionCreated`. */
-  | { activity: "browser"; page: null; event: RemoteBrowserEvent; region: BrowserbaseRegion | null };
+  /**
+   * What the capture says about its Browserbase browser. `region` comes with `sessionCreated`, and `count`
+   * with the two lines that count something: Browserbase's own scripts in the pages, and bodies left unread.
+   */
+  | {
+      activity: "browser";
+      page: null;
+      event: RemoteBrowserEvent;
+      region: BrowserbaseRegion | null;
+      count: number | null;
+    };
 
 const REMOTE_BROWSER_EVENTS = [
   "sessionCreated",
@@ -35,8 +44,10 @@ const REMOTE_BROWSER_EVENTS = [
   "timezone",
   "liveView",
   "bodiesTooLarge",
+  "serviceScripts",
   "connectionLost",
   "released",
+  "releaseUnconfirmed",
 ] as const;
 
 type RemoteBrowserEvent = (typeof REMOTE_BROWSER_EVENTS)[number];
@@ -126,7 +137,7 @@ export function visitorActivity(entry: LogEntry): VisitorActivity | null {
       const event = REMOTE_BROWSER_EVENTS.find((known) => known === detail.event);
       if (!event) return null;
       const region = BROWSERBASE_REGIONS.find((known) => known === detail.region) ?? null;
-      return { activity: "browser", page: null, event, region };
+      return { activity: "browser", page: null, event, region, count: number(detail.count) };
     }
     default:
       return null;

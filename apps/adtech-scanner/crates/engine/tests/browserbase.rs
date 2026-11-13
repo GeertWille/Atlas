@@ -471,6 +471,88 @@ async fn the_browserbase_settings_are_patched_validated_and_follow_the_proxy_pro
         &renamed.browserbase.default_proxy,
         ProxyChoice::Profile { name: Some(name), .. } if name == "Brussels"
     ));
+    // Moved to an address only this machine can reach, the profile is
+    // still the user's to save, for scans on this machine. It stops being
+    // what a Browserbase browser leaves through.
+    harness
+        .settings
+        .update(SettingsPatch {
+            default_proxy: Some(ProxyChoice::Profile {
+                id: id.clone(),
+                name: None,
+                host: None,
+            }),
+            ..SettingsPatch::default()
+        })
+        .await
+        .unwrap();
+    let moved = harness
+        .settings
+        .save_proxy_profile(ProxyProfileDraft {
+            id: Some(id.clone()),
+            name: "Brussels".into(),
+            host: "192.168.1.20".into(),
+            ..belgium()
+        })
+        .await
+        .unwrap();
+    assert_eq!(moved.proxies[0].host, "192.168.1.20");
+    assert_eq!(moved.browserbase.default_proxy, ProxyChoice::None);
+    assert_eq!(
+        moved.default_proxy,
+        ProxyChoice::Profile {
+            id: id.clone(),
+            name: Some("Brussels".into()),
+            host: Some("192.168.1.20".into()),
+        },
+        "the default for this machine's browser follows the profile"
+    );
+    // It cannot be made the Browserbase default again while it is there.
+    assert_eq!(
+        harness
+            .settings
+            .update(patch(BrowserbaseSettingsPatch {
+                default_proxy: Some(ProxyChoice::Profile {
+                    id: id.clone(),
+                    name: None,
+                    host: None,
+                }),
+                ..BrowserbaseSettingsPatch::default()
+            }))
+            .await
+            .map(|_| ()),
+        Err(AppError::InvalidInput(
+            "Browserbase cannot reach the proxy \"Brussels\": its address is on this Mac or your network. Use a proxy that is reachable from the internet.".into()
+        ))
+    );
+
+    // Back on a public address it can be, and deleting it then leaves the
+    // cloud region as the exit.
+    harness
+        .settings
+        .save_proxy_profile(ProxyProfileDraft {
+            id: Some(id.clone()),
+            name: "Brussels".into(),
+            ..belgium()
+        })
+        .await
+        .unwrap();
+    let named_again = harness
+        .settings
+        .update(patch(BrowserbaseSettingsPatch {
+            default_proxy: Some(ProxyChoice::Profile {
+                id: id.clone(),
+                name: None,
+                host: None,
+            }),
+            ..BrowserbaseSettingsPatch::default()
+        }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &named_again.browserbase.default_proxy,
+        ProxyChoice::Profile { name: Some(name), .. } if name == "Brussels"
+    ));
     let deleted = harness.settings.delete_proxy_profile(&id).await.unwrap();
     assert_eq!(deleted.browserbase.default_proxy, ProxyChoice::None);
 }
@@ -1297,6 +1379,108 @@ async fn a_live_view_that_cannot_be_opened_does_not_stop_the_visit_and_a_local_s
     wait_for_end(&harness, &local.id).await;
 }
 
+/// The browser of a running scan belongs to the credentials the scan
+/// started with. Removing them from the settings in the middle of a manual
+/// visit does not take the live view away from it.
+#[tokio::test]
+async fn the_live_view_of_a_running_visit_opens_with_the_credentials_the_scan_started_with() {
+    let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
+        cloud_capture(),
+    )));
+    connect(&harness).await;
+    let live_view = format!("openLiveView:{REMOTE_SESSION_ID}");
+    let started = harness.scans.start(manual_in_frankfurt()).await.unwrap();
+    wait_for_capture(&harness, 1).await;
+    wait_for_call(&harness, &live_view, 1).await;
+
+    let settings = harness.browserbase.clear_credentials().await.unwrap();
+    assert!(!settings.browserbase.connected);
+    assert_eq!(
+        harness.secrets.browserbase_credentials().await.unwrap(),
+        None
+    );
+
+    assert_eq!(harness.scans.open_live_view(&started.id).await, Ok(()));
+    wait_for_call(&harness, &live_view, 2).await;
+
+    harness.scans.finish_capture(&started.id).await.unwrap();
+    assert_eq!(
+        wait_for_end(&harness, &started.id).await.summary.status,
+        ScanStatus::Completed
+    );
+    // With the browser gone there is nothing to show, credentials or not.
+    assert_eq!(
+        harness.scans.open_live_view(&started.id).await,
+        Err(AppError::InvalidInput(
+            "This scan has no Browserbase browser to show right now.".into()
+        ))
+    );
+}
+
+/// What the capture reports last is that its browser has ended. A capture
+/// whose reports can no longer be stored is stopped and still heard out:
+/// the scan fails, and the record of its browser is closed with what the
+/// browser used, instead of staying open until the next start.
+#[tokio::test]
+async fn a_capture_whose_reports_cannot_be_stored_is_still_heard_out_to_the_end_of_its_browser() {
+    let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
+        cloud_capture(),
+    )));
+    connect(&harness).await;
+    *harness.capture.last_activities.lock().unwrap() = vec![CaptureActivity {
+        kind: ActivityKind::RemoteBrowser,
+        message: "Browserbase ran 5 scripts of its own in the page".into(),
+        page: None,
+        data: Some(json!({ "event": "serviceScripts", "count": 5 })),
+    }];
+    let started = harness.scans.start(manual_in_frankfurt()).await.unwrap();
+    wait_for_capture(&harness, 1).await;
+    wait_for_call(&harness, &format!("openLiveView:{REMOTE_SESSION_ID}"), 1).await;
+    // Everything the capture said so far is stored, the opened live view
+    // included.
+    for _ in 0..400 {
+        let logs = harness.scans.logs(&started.id, None).await.unwrap();
+        if logs
+            .iter()
+            .any(|entry| entry.message.starts_with("Opened Browserbase's live view"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(harness.store.open_sessions().await.unwrap().len(), 1);
+
+    harness
+        .logs
+        .refuse_appends
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    harness.scans.finish_capture(&started.id).await.unwrap();
+    let detail = wait_for_end(&harness, &started.id).await;
+
+    assert_eq!(detail.summary.status, ScanStatus::Failed);
+    assert!(
+        detail
+            .summary
+            .error
+            .as_ref()
+            .is_some_and(|error| error.contains("database or disk is full")),
+        "{:?}",
+        detail.summary.error
+    );
+    assert!(
+        harness.store.open_sessions().await.unwrap().is_empty(),
+        "the end of the browser was not put on record"
+    );
+    assert_eq!(
+        detail.summary.remote,
+        Some(RemoteUsage {
+            region: BrowserbaseRegion::EuCentral1,
+            session_seconds: Some(41.0),
+            proxy_bytes: Some(0.0),
+        })
+    );
+}
+
 #[tokio::test]
 async fn cancelling_a_manual_browserbase_visit_discards_it_and_still_books_the_browser_time() {
     let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
@@ -1510,6 +1694,89 @@ async fn removing_the_credentials_takes_the_kept_profile_along() {
     assert!(!harness.browserbase.profile().await.unwrap().exists);
 }
 
+/// A scan waits for its turn in the kept profile with the credentials it
+/// started with. When those are removed, or exchanged for another
+/// project's, while it waits, a context made with them could never be
+/// deleted by the app again, and a context on record by then is another
+/// project's. The scan runs, in a browser that keeps nothing, and says so.
+#[tokio::test]
+async fn a_scan_that_waited_while_the_credentials_went_runs_without_the_kept_profile() {
+    let harness = offline(CaptureBehavior::RecordUntilFinished(Box::new(
+        cloud_capture(),
+    )));
+    connect(&harness).await;
+    keep_profiles_at_browserbase(&harness).await;
+    let contexts_made = |harness: &Harness| {
+        harness
+            .browserbase_api
+            .calls()
+            .iter()
+            .filter(|call| *call == "createContext")
+            .count()
+    };
+    let waiting = "Waiting for another scan to release the browser profile";
+    let wait_for_log = |scan_id: String| {
+        let harness = &harness;
+        async move {
+            for _ in 0..400 {
+                let logs = harness.scans.logs(&scan_id, None).await.unwrap();
+                if logs.iter().any(|entry| entry.message == waiting) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            panic!("the scan never reached the profile queue");
+        }
+    };
+
+    let first = harness.scans.start(manual_in_frankfurt()).await.unwrap();
+    wait_for_capture(&harness, 1).await;
+    assert_eq!(context_of(&harness, 0).as_deref(), Some("context-1"));
+    let second = harness.scans.start(manual_in_frankfurt()).await.unwrap();
+    wait_for_log(second.id.clone()).await;
+
+    // Disconnected while the second scan waits for its turn.
+    harness.browserbase.clear_credentials().await.unwrap();
+    assert!(!harness.browserbase.profile().await.unwrap().exists);
+    harness.scans.finish_capture(&first.id).await.unwrap();
+    wait_for_capture(&harness, 2).await;
+
+    assert_eq!(context_of(&harness, 1), None);
+    assert!(
+        !harness.capture.requests.lock().unwrap()[1].persistent_profile,
+        "a browser without a context keeps no profile"
+    );
+    assert_eq!(
+        contexts_made(&harness),
+        1,
+        "{:?}",
+        harness.browserbase_api.calls()
+    );
+    assert!(
+        !harness.browserbase.profile().await.unwrap().exists,
+        "no profile is on record while Browserbase is disconnected"
+    );
+    harness.scans.finish_capture(&second.id).await.unwrap();
+    let detail = wait_for_end(&harness, &second.id).await;
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert!(!detail.environment.unwrap().persistent_profile);
+    let logs = harness.scans.logs(&second.id, None).await.unwrap();
+    assert!(
+        logs.iter().any(|entry| entry.message
+            == "Browserbase was disconnected, or connected to another project, after this scan was started: it runs without the browser profile kept there"),
+        "{:#?}",
+        logs.iter().map(|entry| &entry.message).collect::<Vec<_>>()
+    );
+
+    // Connected again, a new scan makes a profile as on first use.
+    connect(&harness).await;
+    let third = harness.scans.start(manual_in_frankfurt()).await.unwrap();
+    wait_for_capture(&harness, 3).await;
+    assert_eq!(context_of(&harness, 2).as_deref(), Some("context-2"));
+    harness.scans.finish_capture(&third.id).await.unwrap();
+    wait_for_end(&harness, &third.id).await;
+}
+
 #[tokio::test]
 async fn a_profile_cannot_be_cleared_without_credentials_or_when_browserbase_refuses() {
     let harness = returning_a_cloud_capture();
@@ -1563,10 +1830,12 @@ async fn a_session_whose_end_was_never_confirmed_is_released_at_the_next_start()
             .await,
         Ok(1)
     );
+    // Asked about by its own id, with this installation's id to check it
+    // against, and released on that answer.
     assert_eq!(
         harness.browserbase_api.calls(),
         [
-            format!("runningSessionsOf:{install_id}"),
+            format!("sessionStanding:{REMOTE_SESSION_ID}:{install_id}"),
             format!("release:{REMOTE_SESSION_ID}"),
         ]
     );
@@ -1600,10 +1869,25 @@ async fn the_sweep_only_releases_sessions_that_are_on_record_and_reported_as_thi
         .session_created("ours-ended", now)
         .await
         .unwrap();
+    // On record here, but at Browserbase it carries someone else's tags:
+    // the record is no licence to end it.
+    harness
+        .store
+        .session_created("tagged-as-someone-elses", now)
+        .await
+        .unwrap();
+    // On record, and unknown to Browserbase under this key.
+    harness
+        .store
+        .session_created("unknown-to-this-key", now)
+        .await
+        .unwrap();
     // Browserbase reports one of ours and one this record never saw start:
     // that one is not this app's to end, whatever its metadata says.
     *harness.browserbase_api.running.lock().unwrap() =
         vec!["ours-running".to_string(), "not-on-record".to_string()];
+    *harness.browserbase_api.running_for_others.lock().unwrap() =
+        vec!["tagged-as-someone-elses".to_string()];
 
     assert_eq!(
         harness
@@ -1613,18 +1897,101 @@ async fn the_sweep_only_releases_sessions_that_are_on_record_and_reported_as_thi
         Ok(1)
     );
 
-    let releases: Vec<String> = harness
-        .browserbase_api
-        .calls()
-        .into_iter()
+    let calls = harness.browserbase_api.calls();
+    let releases: Vec<&String> = calls
+        .iter()
         .filter(|call| call.starts_with("release:"))
         .collect();
     assert_eq!(releases, ["release:ours-running"]);
+    // Only what is on record was asked about, each by its own id.
+    let install_id = harness.store.install_id().await.unwrap();
+    let mut asked_about: Vec<&String> = calls
+        .iter()
+        .filter(|call| call.starts_with("sessionStanding:"))
+        .collect();
+    asked_about.sort();
+    assert_eq!(
+        asked_about,
+        [
+            &format!("sessionStanding:ours-ended:{install_id}"),
+            &format!("sessionStanding:ours-running:{install_id}"),
+            &format!("sessionStanding:tagged-as-someone-elses:{install_id}"),
+            &format!("sessionStanding:unknown-to-this-key:{install_id}"),
+        ]
+    );
     assert_eq!(
         *harness.browserbase_api.running.lock().unwrap(),
         ["not-on-record"]
     );
     assert!(harness.store.open_sessions().await.unwrap().is_empty());
+}
+
+/// A session leaves the record when Browserbase has said what became of
+/// it, not before: one it could not be asked about stays for the next
+/// start, and does not keep the others from being seen to.
+#[tokio::test]
+async fn a_session_the_sweep_could_not_ask_about_stays_on_record_while_the_others_are_settled() {
+    let harness = returning_a_cloud_capture();
+    connect(&harness).await;
+    let now = adscan_engine::application::ports::Clock::now_ms(
+        &adscan_engine::infrastructure::system::SystemClock,
+    );
+    for (session, at) in [
+        ("unreadable", now - 3.0),
+        ("running", now - 2.0),
+        ("ended", now - 1.0),
+    ] {
+        harness.store.session_created(session, at).await.unwrap();
+    }
+    *harness.browserbase_api.running.lock().unwrap() =
+        vec!["unreadable".to_string(), "running".to_string()];
+    *harness.browserbase_api.unreadable.lock().unwrap() = vec!["unreadable".to_string()];
+    let open = |harness: &Harness| {
+        let store = harness.store.clone();
+        async move {
+            store
+                .open_sessions()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|session| session.session_id)
+                .collect::<Vec<_>>()
+        }
+    };
+
+    assert_eq!(
+        harness
+            .browserbase
+            .release_abandoned_sessions(f64::INFINITY)
+            .await,
+        Err(AppError::BrowserbaseFailed(
+            "Browserbase is not available right now (HTTP 503).".into()
+        ))
+    );
+    assert_eq!(open(&harness).await, ["unreadable"]);
+    assert!(
+        harness
+            .browserbase_api
+            .calls()
+            .contains(&"release:running".to_string())
+    );
+
+    // The next start asks again, and this time gets an answer.
+    harness.browserbase_api.unreadable.lock().unwrap().clear();
+    assert_eq!(
+        harness
+            .browserbase
+            .release_abandoned_sessions(f64::INFINITY)
+            .await,
+        Ok(1)
+    );
+    assert!(open(&harness).await.is_empty());
+    assert!(
+        harness
+            .browserbase_api
+            .calls()
+            .contains(&"release:unreadable".to_string())
+    );
 }
 
 #[tokio::test]

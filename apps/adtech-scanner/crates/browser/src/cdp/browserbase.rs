@@ -9,9 +9,11 @@ mod api;
 mod failure;
 mod order;
 mod session;
+#[cfg(test)]
+mod stand_in;
 mod time;
 
 pub(crate) use api::{Api, Project, SessionState};
 pub(crate) use failure::ApiFailure;
 pub(crate) use order::{Exit, SessionOrder};
-pub(crate) use session::{RemoteBrowser, StartFailure};
+pub(crate) use session::{RemoteBrowser, StartFailure, StartNote};

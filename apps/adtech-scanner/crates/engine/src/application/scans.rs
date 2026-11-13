@@ -5,14 +5,16 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use adscan_model::{
-    ApiProvider, BrowserInfo, DashboardStats, ExportFormat, LogEntry, LogSearchHit,
-    ScanConfiguration, ScanConfigurationRef, ScanDetail, ScanEvent, ScanList, ScanListQuery,
-    ScanOptions, ScanProfileInfo, ScanStatus, ScanSummary, SeverityCounts, StepStatus,
+    ApiProvider, BrowserInfo, BrowserbaseCredentials, DashboardStats, ExportFormat, LogEntry,
+    LogSearchHit, ScanConfiguration, ScanConfigurationRef, ScanDetail, ScanEvent, ScanList,
+    ScanListQuery, ScanOptions, ScanProfileInfo, ScanStatus, ScanSummary, SeverityCounts,
+    StepStatus,
 };
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 use super::AppError;
+use super::browserbase::RemoteProfile;
 use super::export;
 use super::pipeline::state::{FinishSignal, RemoteSession, ScanJob};
 use super::pipeline::{Pipeline, PipelineDeps, proxy_count};
@@ -35,6 +37,10 @@ struct ActiveScan {
     /// Cancelled once the scan's final status is written.
     finished: CancellationToken,
     remote_session: RemoteSession,
+    /// The Browserbase credentials the scan started with, which its
+    /// browser belongs to whatever the settings hold by now. In memory
+    /// only.
+    browserbase: Option<BrowserbaseCredentials>,
 }
 
 type ActiveScans = Arc<Mutex<HashMap<String, ActiveScan>>>;
@@ -56,7 +62,7 @@ pub struct ScanService {
     scan_profile: Arc<Semaphore>,
     /// The same for the profile kept at Browserbase; shared with whoever
     /// clears that profile.
-    browserbase_profile: Arc<Semaphore>,
+    browserbase_profile: RemoteProfile,
 }
 
 impl ScanService {
@@ -64,7 +70,7 @@ impl ScanService {
         deps: PipelineDeps,
         settings: Arc<SettingsService>,
         configurations: Arc<dyn ScanConfigurationRepository>,
-        browserbase_profile: Arc<Semaphore>,
+        browserbase_profile: RemoteProfile,
     ) -> Self {
         Self {
             deps,
@@ -132,6 +138,9 @@ impl ScanService {
             Some(profile_id) => self.settings.proxy_password(profile_id).await?,
             None => None,
         };
+        // Noted before the credentials are read: a profile given up after
+        // this belongs to other credentials than the scan's.
+        let browserbase_generation = self.browserbase_profile.generation();
         let browserbase = match scan.browser {
             ResolvedBrowser::Browserbase { .. } => Some(
                 self.settings
@@ -201,6 +210,7 @@ impl ScanService {
                 finish: finish.clone(),
                 finished: finished.clone(),
                 remote_session: remote_session.clone(),
+                browserbase: browserbase.clone(),
             },
         );
         drop(registering);
@@ -218,7 +228,8 @@ impl ScanService {
             finish,
             scan_profile: Arc::clone(&self.scan_profile),
             browserbase,
-            browserbase_profile: Arc::clone(&self.browserbase_profile),
+            browserbase_profile: self.browserbase_profile.clone(),
+            browserbase_generation,
             remote_session,
         };
         tokio::spawn(supervise(
@@ -255,21 +266,18 @@ impl ScanService {
     /// Browserbase's live view. Opened from here, so that its address, a
     /// credential, never reaches the frontend.
     pub async fn open_live_view(&self, scan_id: &str) -> Result<(), AppError> {
-        let session_id = self
+        // The scan's own credentials: its browser runs under them, also
+        // when the settings were given others, or none, since it started.
+        let showable = self
             .lock_active()
             .get(scan_id)
-            .and_then(|active| active.remote_session.id());
-        let Some(session_id) = session_id else {
+            .and_then(|active| Some((active.remote_session.id()?, active.browserbase.clone()?)));
+        let Some((session_id, credentials)) = showable else {
             self.summary(scan_id).await?;
             return Err(AppError::InvalidInput(
                 "This scan has no Browserbase browser to show right now.".into(),
             ));
         };
-        let credentials = self
-            .settings
-            .browserbase_credentials()
-            .await?
-            .ok_or(DomainError::BrowserbaseNotSetUp)?;
         Ok(self
             .deps
             .browserbase

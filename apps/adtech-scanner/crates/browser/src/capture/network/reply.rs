@@ -15,7 +15,26 @@
 //!   12 per emoji, 2 per `"`). So text can take six times its size.
 //!
 //! Which of the two a body will be is the browser's choice when it
-//! answers. Images, media and fonts are never text; anything else may be.
+//! answers. What the page asked for does not settle it alone: Chrome
+//! answers from the resource it still holds, where an image is always
+//! base64 (measured on Chromium 1243: so were images answered as
+//! `image/svg+xml`, `application/json` and `application/octet-stream`),
+//! or from its own copy of the bytes, where the MIME type and charset of
+//! the response decide and SVG or `text/plain` would come as text (that
+//! second path is from reading Chrome's source, not from a measurement).
+//! So only a response that was both asked for as an image, media or a
+//! font and answered with a MIME type of that kind counts as never text;
+//! anything else may be text.
+//!
+//! The size of what a response carries is counted as it arrives
+//! (`Network.dataReceived`), decoded. A response that finished without
+//! any of it counted has only its length on the wire, which says little:
+//! a compressed body can decode to a thousand times that. Measured on
+//! Chromium 1243, a response of any size reports what it received, from
+//! the network, the disk cache and the memory cache alike; only one
+//! without a body reports nothing. So a response of unknown decoded size
+//! is asked for only when its length on the wire is small enough that even
+//! the best compression could not have made it too large.
 
 use adscan_model::ResourceKind;
 
@@ -29,6 +48,21 @@ const MAX_REMOTE_REPLY_BYTES: u64 = 48 * MIB;
 const MAX_REMOTE_BASE64_BODY_BYTES: u64 = 32 * MIB;
 /// Bytes one byte, or one UTF-16 unit, of text can take in an answer.
 const WORST_BYTES_PER_TEXT_UNIT: u64 = 6;
+/// How many times its length on the wire a body can be once decoded:
+/// deflate, and gzip with it, tops out at 1032 to 1. Brotli and zstd can
+/// do better on bodies made for it; those are caught by the count of what
+/// arrived, which this only stands in for when nothing was counted.
+const MOST_A_BODY_GROWS_DECODED: u64 = 1_032;
+
+/// How large the body of a finished response is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodySize {
+    /// As counted while it arrived.
+    Decoded(u64),
+    /// Nothing was counted while it arrived; this is the length of the
+    /// whole response on the wire, headers included.
+    OnTheWire(u64),
+}
 
 /// The largest answer the connection to the browser carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,29 +74,46 @@ pub(crate) enum ReplyLimit {
 }
 
 impl ReplyLimit {
-    /// The largest body, decoded, whose answer is sure to fit.
-    fn largest_body(self, kind: ResourceKind) -> Option<u64> {
+    /// The largest body that may be text, decoded, whose answer is sure
+    /// to fit.
+    fn largest_text_body(self) -> Option<u64> {
         match self {
             Self::Unlimited => None,
-            Self::Remote if is_never_text(kind) => Some(MAX_REMOTE_BASE64_BODY_BYTES),
             Self::Remote => Some(MAX_REMOTE_REPLY_BYTES / WORST_BYTES_PER_TEXT_UNIT),
         }
     }
 
-    /// Whether the body of a response of `decoded_bytes` may be asked for
-    /// with `Network.getResponseBody`.
-    pub(crate) fn admits_body(self, kind: ResourceKind, decoded_bytes: u64) -> bool {
-        self.largest_body(kind)
-            .is_none_or(|largest| decoded_bytes <= largest)
+    /// The largest body, decoded, whose answer is sure to fit.
+    fn largest_body(self, kind: ResourceKind, mime_type: Option<&str>) -> Option<u64> {
+        match self {
+            Self::Unlimited => None,
+            Self::Remote if is_never_text(kind, mime_type) => Some(MAX_REMOTE_BASE64_BODY_BYTES),
+            Self::Remote => self.largest_text_body(),
+        }
+    }
+
+    /// Whether the body of a response may be asked for with
+    /// `Network.getResponseBody`. `mime_type` is the response's own.
+    pub(crate) fn admits_body(
+        self,
+        kind: ResourceKind,
+        mime_type: Option<&str>,
+        size: BodySize,
+    ) -> bool {
+        let Some(largest) = self.largest_body(kind, mime_type) else {
+            return true;
+        };
+        match size {
+            BodySize::Decoded(bytes) => bytes <= largest,
+            BodySize::OnTheWire(bytes) => bytes <= largest / MOST_A_BODY_GROWS_DECODED,
+        }
     }
 
     /// Whether a script source of `utf16_units` may be asked for with
     /// `Debugger.getScriptSource`.
     pub(crate) fn admits_script_source(self, utf16_units: u64) -> bool {
-        match self {
-            Self::Unlimited => true,
-            Self::Remote => utf16_units <= MAX_REMOTE_REPLY_BYTES / WORST_BYTES_PER_TEXT_UNIT,
-        }
+        self.largest_text_body()
+            .is_none_or(|largest| utf16_units <= largest)
     }
 
     /// From how many received bytes on a response that may be text is
@@ -72,27 +123,49 @@ impl ReplyLimit {
     /// question is on its way in time. The pieces come as base64, each far
     /// below the limit.
     pub(crate) fn copies_bodies_from(self) -> Option<u64> {
-        self.largest_body(ResourceKind::Other)
-            .map(|largest| largest / 2)
+        self.largest_text_body().map(|largest| largest / 2)
     }
 }
 
-fn is_never_text(kind: ResourceKind) -> bool {
-    matches!(
+/// Whether the browser answers for the body of such a response in base64
+/// whatever is in it: it was asked for as an image, media or a font, and
+/// its MIME type is one the browser never reads as text. A response
+/// without a MIME type may be text.
+fn is_never_text(kind: ResourceKind, mime_type: Option<&str>) -> bool {
+    let asked_for_as_binary = matches!(
         kind,
         ResourceKind::Image | ResourceKind::Media | ResourceKind::Font
-    )
+    );
+    asked_for_as_binary && mime_type.is_some_and(is_a_binary_mime_type)
+}
+
+fn is_a_binary_mime_type(mime_type: &str) -> bool {
+    let essence = mime_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let Some((top_level, subtype)) = essence.split_once('/') else {
+        return false;
+    };
+    // SVG is XML, and anything `+xml` or `+json` is read as text.
+    let textual_subtype = subtype.ends_with("+xml") || subtype.ends_with("+json");
+    matches!(top_level, "image" | "video" | "audio" | "font") && !textual_subtype
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use BodySize::{Decoded, OnTheWire};
+
     #[test]
     fn a_local_browser_is_asked_for_a_body_of_any_size() {
         let pipe = ReplyLimit::Unlimited;
-        assert!(pipe.admits_body(ResourceKind::Script, 500 * MIB));
-        assert!(pipe.admits_body(ResourceKind::Image, u64::MAX));
+        assert!(pipe.admits_body(ResourceKind::Script, None, Decoded(500 * MIB)));
+        assert!(pipe.admits_body(ResourceKind::Image, Some("image/png"), Decoded(u64::MAX)));
+        assert!(pipe.admits_body(ResourceKind::Script, None, OnTheWire(u64::MAX)));
         assert!(pipe.admits_script_source(u64::MAX));
         assert_eq!(pipe.copies_bodies_from(), None);
     }
@@ -108,10 +181,15 @@ mod tests {
             ResourceKind::Fetch,
             ResourceKind::Other,
         ] {
-            assert!(remote.admits_body(kind, 0), "{kind:?}");
-            assert!(remote.admits_body(kind, 8 * MIB), "{kind:?}");
-            assert!(!remote.admits_body(kind, 8 * MIB + 1), "{kind:?}");
-            assert!(!remote.admits_body(kind, 39 * MIB), "{kind:?}");
+            // Whatever the response calls itself: a fetch of an image may
+            // be answered as text.
+            for mime_type in [None, Some("text/javascript"), Some("image/png")] {
+                let admits = |bytes| remote.admits_body(kind, mime_type, Decoded(bytes));
+                assert!(admits(0), "{kind:?} {mime_type:?}");
+                assert!(admits(8 * MIB), "{kind:?} {mime_type:?}");
+                assert!(!admits(8 * MIB + 1), "{kind:?} {mime_type:?}");
+                assert!(!admits(39 * MIB), "{kind:?} {mime_type:?}");
+            }
         }
         assert!(remote.admits_script_source(8 * MIB));
         assert!(!remote.admits_script_source(8 * MIB + 1));
@@ -120,10 +198,66 @@ mod tests {
     #[test]
     fn what_is_never_text_is_asked_for_up_to_the_32_mib_that_fit_as_base64() {
         let remote = ReplyLimit::Remote;
-        for kind in [ResourceKind::Image, ResourceKind::Media, ResourceKind::Font] {
-            assert!(remote.admits_body(kind, 32 * MIB), "{kind:?}");
-            assert!(!remote.admits_body(kind, 32 * MIB + 1), "{kind:?}");
+        for (kind, mime_type) in [
+            (ResourceKind::Image, "image/png"),
+            (ResourceKind::Image, "IMAGE/WebP"),
+            (ResourceKind::Image, "image/jpeg; q=1"),
+            (ResourceKind::Media, "video/mp4"),
+            (ResourceKind::Media, "audio/mpeg"),
+            (ResourceKind::Font, "font/woff2"),
+        ] {
+            let admits = |bytes| remote.admits_body(kind, Some(mime_type), Decoded(bytes));
+            assert!(admits(32 * MIB), "{kind:?} {mime_type}");
+            assert!(!admits(32 * MIB + 1), "{kind:?} {mime_type}");
         }
+    }
+
+    /// An `<img>` decides what a request is called, not what answers it:
+    /// a page can have 30 MiB of text served to an image element.
+    #[test]
+    fn an_image_media_or_font_request_answered_with_what_may_be_text_gets_the_text_limit() {
+        let remote = ReplyLimit::Remote;
+        for kind in [ResourceKind::Image, ResourceKind::Media, ResourceKind::Font] {
+            for mime_type in [
+                None,
+                Some(""),
+                Some("image/svg+xml"),
+                Some("image/svg+xml; charset=utf-8"),
+                Some("text/plain"),
+                Some("text/html"),
+                Some("application/json"),
+                Some("application/octet-stream"),
+                Some("application/font-woff"),
+                Some("video"),
+            ] {
+                let admits = |bytes| remote.admits_body(kind, mime_type, Decoded(bytes));
+                assert!(admits(8 * MIB), "{kind:?} {mime_type:?}");
+                assert!(!admits(8 * MIB + 1), "{kind:?} {mime_type:?}");
+                assert!(!admits(32 * MIB), "{kind:?} {mime_type:?}");
+            }
+        }
+    }
+
+    /// 5 MiB of gzip can be 100 MiB of text. Without a count of what
+    /// arrived, only a response too short on the wire to decode to more
+    /// than the limit is asked for.
+    #[test]
+    fn a_body_of_unknown_decoded_size_is_asked_for_only_when_it_is_small_on_the_wire() {
+        let remote = ReplyLimit::Remote;
+        let text = |bytes| remote.admits_body(ResourceKind::Script, None, OnTheWire(bytes));
+        // No body at all: a 204, a redirect, a cache hit without content.
+        assert!(text(0));
+        assert!(text(600));
+        assert!(text(8 * MIB / 1_032));
+        assert!(!text(8 * MIB / 1_032 + 1));
+        assert!(!text(5 * MIB));
+        // The same number is fine when it is what was counted.
+        assert!(remote.admits_body(ResourceKind::Script, None, Decoded(5 * MIB)));
+
+        let image =
+            |bytes| remote.admits_body(ResourceKind::Image, Some("image/png"), OnTheWire(bytes));
+        assert!(image(32 * MIB / 1_032));
+        assert!(!image(32 * MIB / 1_032 + 1));
     }
 
     /// The numbers the limits rest on: nothing admitted can make an answer

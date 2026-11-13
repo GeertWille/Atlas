@@ -3,6 +3,7 @@
 //! of the app may have left behind.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use adscan_model::{
     BrowserbaseCredentials, BrowserbaseCredentialsStatus, BrowserbaseProbe, BrowserbaseProfileInfo,
@@ -11,7 +12,9 @@ use adscan_model::{
 use tokio::sync::Semaphore;
 
 use super::AppError;
-use super::ports::{BrowserbaseApi, BrowserbaseError, BrowserbaseLedger, Clock};
+use super::ports::{
+    BrowserbaseApi, BrowserbaseError, BrowserbaseLedger, Clock, RemoteSessionStanding,
+};
 use super::settings::SettingsService;
 use crate::domain::DomainError;
 
@@ -20,14 +23,50 @@ use crate::domain::DomainError;
 /// became of the app.
 const LONGEST_SESSION_MS: f64 = (6.0 * 60.0 + 5.0) * 60.0 * 1_000.0;
 
+/// The profile kept at Browserbase, as the scans that run in it and
+/// whoever clears it share it.
+#[derive(Clone)]
+pub struct RemoteProfile {
+    /// One browser at a time: two sessions on one context would overwrite
+    /// each other's cookies.
+    turn: Arc<Semaphore>,
+    /// How often the profile was given up because the credentials it
+    /// belongs to were removed or replaced.
+    given_up: Arc<AtomicU64>,
+}
+
+impl RemoteProfile {
+    fn new() -> Self {
+        Self {
+            turn: Arc::new(Semaphore::new(1)),
+            given_up: Arc::default(),
+        }
+    }
+
+    /// The turn to run a browser in the profile.
+    pub fn turn(&self) -> &Arc<Semaphore> {
+        &self.turn
+    }
+
+    /// Changes whenever the profile is given up with its credentials. A
+    /// scan notes it when it reads its credentials: a different number
+    /// later means the profile on record is no longer the one those
+    /// credentials can use.
+    pub fn generation(&self) -> u64 {
+        self.given_up.load(Ordering::SeqCst)
+    }
+
+    fn give_up(&self) {
+        self.given_up.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 pub struct BrowserbaseService {
     api: Arc<dyn BrowserbaseApi>,
     ledger: Arc<dyn BrowserbaseLedger>,
     settings: Arc<SettingsService>,
     clock: Arc<dyn Clock>,
-    /// One browser at a time in the profile kept at Browserbase: two
-    /// sessions on one context would overwrite each other's cookies.
-    profile: Arc<Semaphore>,
+    profile: RemoteProfile,
 }
 
 impl BrowserbaseService {
@@ -42,13 +81,14 @@ impl BrowserbaseService {
             ledger,
             settings,
             clock,
-            profile: Arc::new(Semaphore::new(1)),
+            profile: RemoteProfile::new(),
         }
     }
 
-    /// The turn to run a browser in the profile kept at Browserbase.
-    pub fn profile_turn(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.profile)
+    /// The profile kept at Browserbase, for the scans that take turns in
+    /// it.
+    pub fn profile_turn(&self) -> RemoteProfile {
+        self.profile.clone()
     }
 
     /// Stores the key and its project only when Browserbase accepts them.
@@ -169,7 +209,7 @@ impl BrowserbaseService {
                 .iter()
                 .filter_map(|context| context.last_used_at)
                 .reduce(f64::max),
-            in_use: self.profile.available_permits() == 0,
+            in_use: self.profile.turn.available_permits() == 0,
         })
     }
 
@@ -179,6 +219,7 @@ impl BrowserbaseService {
         // that is being deleted.
         let turn = self
             .profile
+            .turn
             .try_acquire()
             .map_err(|_| AppError::ProfileBusy)?;
         if !self.ledger.contexts().await?.is_empty() {
@@ -194,10 +235,13 @@ impl BrowserbaseService {
     /// ms). Returns how many it released.
     ///
     /// Without such sessions on record nothing happens, and the keychain is
-    /// not read. Only sessions that are both on this installation's record
-    /// and reported by Browserbase with this installation's id are touched:
-    /// the project may be shared with other applications. A session of a
-    /// scan that started since is left alone.
+    /// not read. Each session on record is asked for by its id, and only
+    /// one that Browserbase reports as running with this installation's id
+    /// in its metadata is released: the project may be shared with other
+    /// applications. A session leaves the record once Browserbase has said
+    /// what became of it; one that could not be asked about, or not be
+    /// released, stays for the next start. A session of a scan that started
+    /// since is left alone.
     pub async fn release_abandoned_sessions(&self, app_started_at: f64) -> Result<u32, AppError> {
         self.ledger.forget_released_sessions().await?;
         let now = self.clock.now_ms();
@@ -227,23 +271,55 @@ impl BrowserbaseService {
             return Ok(0);
         };
         let install_id = self.ledger.install_id().await?;
-        let running = self
-            .api
-            .running_sessions_of(&credentials, &install_id)
-            .await?;
         let mut released = 0;
+        let mut first_failure = None;
         for session in &open {
-            if running.contains(&session.session_id) {
-                self.api
-                    .release_session(&credentials, &session.session_id)
-                    .await?;
-                released += 1;
+            let settled = self
+                .settle_abandoned(&credentials, &session.session_id, &install_id)
+                .await;
+            match settled {
+                Ok(was_running) => {
+                    released += u32::from(was_running);
+                    self.ledger
+                        .session_released(&session.session_id, self.clock.now_ms())
+                        .await?;
+                }
+                // Kept on record, and the others are still seen to.
+                Err(failure) => {
+                    first_failure.get_or_insert(failure);
+                }
             }
-            self.ledger
-                .session_released(&session.session_id, self.clock.now_ms())
-                .await?;
         }
-        Ok(released)
+        match first_failure {
+            Some(failure) => Err(failure.into()),
+            None => Ok(released),
+        }
+    }
+
+    /// Finds out what became of a session an earlier run left on record,
+    /// and ends it when it still runs and is this installation's. Returns
+    /// whether it had to be ended.
+    async fn settle_abandoned(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+        install_id: &str,
+    ) -> Result<bool, BrowserbaseError> {
+        let standing = self
+            .api
+            .session_standing(credentials, session_id, install_id)
+            .await?;
+        match standing {
+            RemoteSessionStanding::Running => {
+                self.api.release_session(credentials, session_id).await?;
+                Ok(true)
+            }
+            // Over, out of this key's reach, or not this installation's
+            // to touch: nothing is left to do for it.
+            RemoteSessionStanding::Ended
+            | RemoteSessionStanding::Unknown
+            | RemoteSessionStanding::NotThisInstallations => Ok(false),
+        }
     }
 
     async fn credentials(&self) -> Result<BrowserbaseCredentials, AppError> {
@@ -257,8 +333,14 @@ impl BrowserbaseService {
     /// cannot be deleted now (a scan uses it, Browserbase is unreachable) is
     /// forgotten all the same, because the key that could delete it later is
     /// about to be gone.
+    ///
+    /// A scan that was queued with these credentials learns of it by the
+    /// profile's generation, and runs without a kept profile: the context
+    /// it would make could never be deleted, and the one on record by then
+    /// may belong to another project.
     async fn drop_profile(&self, credentials: &BrowserbaseCredentials) -> Result<(), AppError> {
-        if let Ok(_turn) = self.profile.try_acquire() {
+        self.profile.give_up();
+        if let Ok(_turn) = self.profile.turn.try_acquire() {
             let _ = self.delete_contexts(credentials).await;
         }
         Ok(self.ledger.forget_contexts().await?)

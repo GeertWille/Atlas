@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::application::AppError;
 use crate::application::archive::analysis::RecordAnalysis;
+use crate::application::browserbase::RemoteProfile;
 use crate::application::llm::LlmError;
 use crate::application::ports::{CaptureError, RepositoryError};
 use crate::domain::chunks::LineRange;
@@ -36,9 +37,11 @@ pub struct ScanJob {
     /// Browserbase key and project, for a scan whose browser runs there. In
     /// memory only.
     pub browserbase: Option<BrowserbaseCredentials>,
-    /// One permit: the turn to run a browser in the profile kept at
-    /// Browserbase.
-    pub browserbase_profile: Arc<Semaphore>,
+    /// The profile kept at Browserbase, with the turn to run a browser in
+    /// it.
+    pub browserbase_profile: RemoteProfile,
+    /// That profile's generation when the scan's credentials were read.
+    pub browserbase_generation: u64,
     pub remote_session: RemoteSession,
 }
 

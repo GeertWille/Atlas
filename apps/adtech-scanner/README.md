@@ -85,6 +85,8 @@ On macOS under `~/Library/Application Support/com.webclew.adtech-scanner/` (or `
 
 Outbound traffic: the scanned site, its ads.txt, the ad exchanges that ads.txt names (their sellers.json, at most 12 per scan, unless switched off in Settings), `api.anthropic.com` with AI analysis on, and `api.typesafe.ai` with Jev on.
 With Browserbase set up: `api.browserbase.com`, and for a scan that runs there `connect.<region>.browserbase.com`.
+The app follows no redirect from either, connects to a browser only at `browserbase.com` (unless `ADSCAN_BROWSERBASE_CONNECT_URL` names another address), and opens a live view only there.
+A scan of an address that only this Mac or its network can reach is not sent to Browserbase; a public name that resolves to a private address is not recognised as one.
 
 With Browserbase the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party.
 Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets; CAPTCHAs on scanned pages are solved automatically, the browser does not tell the page it is automated, and Browserbase runs scripts of its own in every page it loads (the scanner keeps those out of its results).

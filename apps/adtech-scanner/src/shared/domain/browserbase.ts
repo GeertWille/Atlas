@@ -19,9 +19,9 @@ export const BROWSERBASE_REGION_META: Record<BrowserbaseRegion, { place: string;
     "ap-southeast-1": { place: "Singapore", country: "Singapore", timezone: "Asia/Singapore" },
   };
 
-/** "Frankfurt", as the region is named in running text. */
-export function regionPlace(region: BrowserbaseRegion): string {
-  return BROWSERBASE_REGION_META[region].place;
+/** "Frankfurt (eu-central-1)": the region wherever the app names it, so that it reads the same as in the backend's lines. */
+export function regionName(region: BrowserbaseRegion): string {
+  return `${BROWSERBASE_REGION_META[region].place} (${region})`;
 }
 
 /** "Frankfurt, Germany (eu-central-1)", for a menu. */
@@ -34,7 +34,7 @@ export const BROWSERBASE_UNREACHABLE = "This address is on this Mac or your netw
 
 /** The words the settings screen must show before Browserbase credentials can be saved. */
 export const BROWSERBASE_DISCLOSURE =
-  "With Browserbase, the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party. Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets. CAPTCHAs on scanned pages are solved automatically, and the browser does not tell the page it is automated. Results are also stored on this Mac. Browserbase bills browser time per minute, and proxy traffic per megabyte.";
+  "With Browserbase, the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party. Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets. CAPTCHAs on scanned pages are solved automatically, and the browser does not tell the page it is automated. To do this, Browserbase runs its own scripts inside every page you scan; the scanner leaves them out of its results, but they can change how a page behaves. Results are also stored on this Mac. Browserbase bills browser time per minute, and proxy traffic per megabyte.";
 
 /**
  * Whether a cloud browser can reach the address. The backend's rule: nothing on this computer or a private
@@ -110,25 +110,30 @@ export function locationFromRecord(name: string): Pick<BrowserbaseLocation, "cou
   return { country, state, city };
 }
 
-type LocationFields = { country: string; state: string; city: string };
+/** A location as it is typed, field by field. */
+export type LocationDraft = { country: string; state: string; city: string };
 
-export type LocationResult =
-  | { ok: true; location: BrowserbaseLocation }
-  | { ok: false; error: string; field: keyof LocationFields };
+/** What is wrong with a typed location, and the field it is wrong in. */
+export type LocationError = { field: keyof LocationDraft; message: string };
 
-/** The location as typed, in the form the backend stores, or the backend's own words for what is wrong with it. */
-export function parseLocation(fields: LocationFields): LocationResult {
+export type LocationResult = { ok: true; location: BrowserbaseLocation } | { ok: false; error: LocationError };
+
+/**
+ * The location as typed, in the form the backend stores, or what is wrong with it and in which field. The
+ * backend checks the same three rules; its sentences are longer because they have no field beside them.
+ */
+export function parseLocation(fields: LocationDraft): LocationResult {
   const country = fields.country.trim().toUpperCase();
   const state = fields.state.trim().toUpperCase();
   const city = fields.city.trim().replace(/\s+/g, " ");
   if (!/^[A-Z]{2}$/.test(country)) {
-    return { ok: false, field: "country", error: "Enter the country as a two-letter code, for example BE." };
+    return { ok: false, error: { field: "country", message: "Enter the country as a two-letter code, for example BE." } };
   }
   if (state !== "" && !/^[A-Z]{2}$/.test(state)) {
-    return { ok: false, field: "state", error: "Enter the state as a two-letter code, for example NY." };
+    return { ok: false, error: { field: "state", message: "Enter the state as a two-letter code, for example NY." } };
   }
   if (city !== "" && (!/^[\p{L}][\p{L} .'-]*$/u.test(city) || city.length > 60)) {
-    return { ok: false, field: "city", error: "Enter the city in letters, at most 60 characters." };
+    return { ok: false, error: { field: "city", message: "Enter the city in letters, at most 60 characters." } };
   }
   return {
     ok: true,
@@ -142,22 +147,34 @@ export function parseLocation(fields: LocationFields): LocationResult {
 }
 
 /**
- * Browserbase's published overage prices of the Developer plan, read from its plans page on 2026-11-12.
- * The API names neither the plan nor what is left of its allowance, so every dollar figure made from
- * these is an estimate. Change both the numbers and the date when the plans page changes.
+ * Browserbase's list price, read from its plans page on 2026-11-12. The API names neither the account's plan
+ * nor what is left of the usage that plan includes, so every dollar figure made from these is an estimate that
+ * counts none of it. Change both the numbers and the date when the plans page changes.
  */
 export const BROWSERBASE_RATES = {
-  plan: "Developer",
   asOf: "2026-11-12",
   browserUsdPerHour: 0.12,
   proxyUsdPerGb: 12,
 } as const;
 
+/** How every dollar figure for Browserbase is qualified: the price it is made from, and what it leaves out. */
+export const BROWSERBASE_LIST_PRICE = `Browserbase's list price of $${BROWSERBASE_RATES.browserUsdPerHour.toFixed(2)} per browser hour and $${BROWSERBASE_RATES.proxyUsdPerGb} per GB (${BROWSERBASE_RATES.asOf})`;
+export const BROWSERBASE_PLAN_CAVEAT = "your plan's included usage is not counted";
+
+/**
+ * What `navigator.webdriver` read, and what that means. `told` fits the sentence to its place: one blank page
+ * of a check ("the page is"), or the pages of a finished visit ("the pages were").
+ */
+export function webdriverReading(value: boolean, told: "the page is" | "the pages were"): string {
+  return `${value}: ${told} ${value ? "" : "not "}told the visit is automated`;
+}
+
 /** Seconds a session spends starting and connecting before the first page, and loading each page view. */
 const SESSION_START_SECONDS = 10;
 const PAGE_LOAD_SECONDS = 8;
-/** Traffic of one page view of an ad-heavy page through a proxy; 18.5 MB crossed on the one page measured. */
-const PROXY_MB_PER_PAGE = 18;
+/** Traffic of one page view of an ad-heavy page through a proxy, as it crossed on the one page measured. */
+export const PROXY_BYTES_PER_PAGE = 18_486_000;
+const PROXY_MB_PER_PAGE = Math.round(PROXY_BYTES_PER_PAGE / 1_000_000);
 
 export type BrowserbaseEstimate = {
   /** Billed browser minutes: every started minute counts, one at least. */
@@ -202,7 +219,7 @@ function proxyUsd(proxyBytes: number): number {
   return (Math.ceil(proxyBytes / 1_000_000) / 1000) * BROWSERBASE_RATES.proxyUsdPerGb;
 }
 
-/** Dollars for a session at the published overage prices: started minutes plus started megabytes. */
+/** Dollars for a session at the list price: started minutes plus started megabytes. */
 export function browserbaseUsd(sessionSeconds: number, proxyBytes: number): number {
   const minutes = Math.max(1, Math.ceil(sessionSeconds / 60));
   return (minutes / 60) * BROWSERBASE_RATES.browserUsdPerHour + proxyUsd(proxyBytes);

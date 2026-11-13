@@ -42,7 +42,7 @@ export function visitorOf(options: Pick<ScanOptions, "visitor" | "autoScroll">):
   return options.visitor ?? (options.autoScroll ? "scroll" : "none");
 }
 
-/** A scripted visit is automated and tells the page so; a manual one is driven by a person. */
+/** A scripted visit is automated; a manual one is driven by a person. */
 export function isScripted(visitor: VisitorBehavior): boolean {
   return visitor !== "manual";
 }
@@ -79,10 +79,14 @@ export function demoScanOptions(settings: Parameters<typeof defaultScanOptions>[
   return { ...defaultScanOptions(settings, demoUrl, "desktop"), browser: { kind: "local" } };
 }
 
-/** The same scan again: a scripted visit gets a new seed, so it moves and picks links afresh. */
+/**
+ * The same scan again: a scripted visit gets a new seed, so it moves and picks links afresh. A scan stored
+ * before the browser could run anywhere else ran on this computer, and says nothing about it: it is sent
+ * back there, not to wherever the settings would put a new scan today.
+ */
 export function rescanOptions(options: ScanOptions): ScanOptions {
   const { seed: _seed, ...rest } = options;
-  return rest;
+  return { ...rest, browser: options.browser ?? { kind: "local" } };
 }
 
 /**
@@ -92,5 +96,7 @@ export function rescanOptions(options: ScanOptions): ScanOptions {
 export function repeatVisitOptions(detail: Pick<ScanDetail, "options">): ScanOptions | null {
   const { options } = detail;
   const visitor = visitorOf(options);
-  return options.seed !== undefined && (visitor === "scroll" || visitor === "browse") ? options : null;
+  if (options.seed === undefined || !(visitor === "scroll" || visitor === "browse")) return null;
+  // Like a re-scan: a scan that does not say where its browser ran, ran on this computer.
+  return { ...options, browser: options.browser ?? { kind: "local" } };
 }

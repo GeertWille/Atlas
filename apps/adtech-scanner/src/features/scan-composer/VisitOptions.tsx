@@ -18,19 +18,32 @@ import type { ScanForm } from "./scan-form";
 
 const MANUAL_LIMIT_MINUTES = MANUAL_SESSION_LIMIT_MS / 60_000;
 
-/** What the page can tell about the visit. Scripted visits never pretend to be a person. */
-function AutomationNote({ visitor, remote }: { visitor: VisitorBehavior; remote: boolean }) {
+/**
+ * What the page can tell about a scripted visit. No browser says it is automated: on this Mac only a hidden
+ * (headless) one is recognisable. The three notes are of one length, so that none takes more lines.
+ */
+function AutomationNote({
+  visitor,
+  remote,
+  showBrowser,
+}: {
+  visitor: VisitorBehavior;
+  remote: boolean;
+  showBrowser: boolean;
+}) {
   if (!isScripted(visitor)) {
     return <OptionHelp>You drive the browser. The page can still notice the debugger that records it.</OptionHelp>;
   }
-  // No longer than the note for this Mac, so that it takes no more lines.
-  return (
-    <OptionHelp>
-      {remote
-        ? "This visit is automated, but Browserbase's browser does not tell the page (navigator.webdriver is false). The report records it."
-        : "This visit is automated and says so to the page (navigator.webdriver is true). Ad partners can treat it differently from a person's visit."}
-    </OptionHelp>
-  );
+  let note =
+    "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), but a hidden (headless) browser is recognisable.";
+  if (remote) {
+    note =
+      "This visit is automated, but Browserbase's browser does not tell the page (navigator.webdriver is false). The report records it.";
+  } else if (showBrowser) {
+    note =
+      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), and with its window shown it is not headless either.";
+  }
+  return <OptionHelp>{note}</OptionHelp>;
 }
 
 function ObserveTime({ form, update }: { form: ScanForm; update: (patch: Partial<ScanForm>) => void }) {
@@ -184,7 +197,7 @@ export function VisitOptions({
               ? "You use the site in Browserbase's live view while it records. Nothing is clicked for you."
               : VISITOR_META[form.visitor].description}
           </p>
-          <AutomationNote visitor={form.visitor} remote={remote} />
+          <AutomationNote visitor={form.visitor} remote={remote} showBrowser={form.showBrowser} />
         </div>
       </div>
       <div className="grid auto-rows-[minmax(5.5rem,auto)] grid-cols-2 gap-x-8 gap-y-2 xl:auto-rows-[minmax(4.5rem,auto)]">

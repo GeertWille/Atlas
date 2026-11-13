@@ -12,7 +12,7 @@ import type { ScanSummary } from "@/bindings";
 import { HealthRing } from "@/shared/components/health-ring";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, ScanStatusBadge, SeverityCountPills } from "@/shared/components/status";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { regionName } from "@/shared/domain/browserbase";
 import { cn } from "@/shared/lib/cn";
 import { EMPTY, formatDateTime, formatDuration, formatRelativeTime, formatUsd } from "@/shared/lib/format";
 import { Badge } from "@/shared/ui/badge";
@@ -138,7 +138,7 @@ export function HistoryTable({
                   {scan.remote ? (
                     <span
                       className="inline-flex shrink-0 items-center gap-1 text-xs text-subtle-foreground"
-                      title={`Ran in a Browserbase browser in ${regionPlace(scan.remote.region)}`}
+                      title={`Ran in a Browserbase browser in ${regionName(scan.remote.region)}`}
                     >
                       <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
                       <span className="max-xl:sr-only">Browserbase</span>

@@ -630,6 +630,182 @@ async fn a_release_that_fails_is_tried_again() {
     ));
 }
 
+/// The release answered that the session has ended, and the reading right
+/// after it still says "running": the status at the service is a moment
+/// behind. The capture reports the end all the same, with what the session
+/// used, so the engine closes its record and books the browser time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_release_is_confirmed_although_the_session_reads_as_running_for_a_moment_longer() {
+    let Some(remote) = Remote::start().await else {
+        return;
+    };
+    let fixtures = Fixtures::start().await;
+    remote.cloud.status_lags(1);
+    let mut request = remote.request(&fixtures.url("emulation.html"));
+    request.observe_seconds = 1;
+
+    let outcome = remote.reported().run(request).await;
+
+    captured(&outcome);
+    let session = remote.only_session();
+    assert_eq!(session.release_requests, 1);
+    let events = remote_events(&outcome);
+    assert_eq!(names(&events).last(), Some(&"released"), "{events:?}");
+    assert!(
+        !names(&events).contains(&"releaseUnconfirmed"),
+        "{events:?}"
+    );
+    match remote.events().last() {
+        Some(RemoteSessionEvent::Released {
+            session_id,
+            session_seconds,
+            ..
+        }) => {
+            assert_eq!(*session_id, session.id);
+            assert!(
+                session_seconds.is_some(),
+                "the release said how long it ran"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    // The other way round: no release gets through at all, and the status
+    // of the browser, which ended when it was closed, lags as well. The
+    // capture reads the session a few times before it gives up on it.
+    remote.cloud.status_lags(2);
+    remote.cloud.fail_releases(3);
+    let mut request = remote.request(&fixtures.url("emulation.html"));
+    request.observe_seconds = 1;
+    let unreleased = remote.reported().run(request).await;
+    captured(&unreleased);
+    assert_eq!(names(&remote_events(&unreleased)).last(), Some(&"released"));
+    assert_eq!(remote.cloud.sessions()[1].release_requests, 3);
+}
+
+/// The service started a browser and its answer did not say which: no id
+/// reached the scanner, so nothing on its record could ever end it. It is
+/// found by the tags it was started with (this app, this installation,
+/// this scan) and ended. The browsers of another installation and of
+/// another scan of this one are not touched, whatever they share with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_browser_started_behind_an_answer_that_names_no_session_is_found_and_ended() {
+    let Some(remote) = Remote::start().await else {
+        return;
+    };
+    let start = |metadata: Value| {
+        let body = json!({
+            "projectId": PROJECT_ID,
+            "region": "us-west-2",
+            "timeout": 60,
+            "userMetadata": metadata,
+        });
+        let url = format!("{}/v1/sessions", remote.cloud.base_url);
+        async move {
+            let created: Value = reqwest::Client::new()
+                .post(url)
+                .header("X-BB-API-Key", API_KEY)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            created["id"].as_str().unwrap().to_string()
+        }
+    };
+    let another_install = start(json!({
+        "app": "adscan", "install": "ffffffffffffffffffffffffffffffff", "scan": SCAN,
+    }))
+    .await;
+    let another_scan = start(json!({
+        "app": "adscan", "install": INSTALL, "scan": "11111111-2222-4333-8444-555555555555",
+    }))
+    .await;
+    remote.cloud.lose_create_answers(1);
+
+    let outcome = remote
+        .reported()
+        .run(remote.request("http://pub.adscan-fixture.example/"))
+        .await;
+
+    match &outcome.result {
+        Err(BrowserError::Remote(message)) => assert_eq!(
+            message,
+            "Browserbase answered in a way the scanner does not understand."
+        ),
+        other => panic!("{other:?}"),
+    }
+    let sessions = remote.cloud.sessions();
+    assert_eq!(sessions.len(), 3, "{sessions:#?}");
+    let stray = &sessions[2];
+    assert_eq!(stray.body["userMetadata"]["scan"], SCAN);
+    assert_eq!(stray.body["userMetadata"]["install"], INSTALL);
+    assert!(!stray.running, "the stray browser still runs: {stray:#?}");
+    assert_eq!(stray.release_requests, 1);
+    assert_eq!(stray.connections, 0, "nothing ever connected to it");
+    for untouched in [&another_install, &another_scan] {
+        let session = remote.cloud.session(untouched);
+        assert!(session.running, "{session:#?}");
+        assert_eq!(session.release_requests, 0, "{session:#?}");
+    }
+    let events = remote_events(&outcome);
+    assert_eq!(names(&events), ["strayReleased"]);
+    assert_eq!(events[0].1, json!({ "event": "strayReleased", "count": 1 }));
+    assert!(
+        remote.events().is_empty(),
+        "no session the engine could put on record: {:?}",
+        remote.events()
+    );
+    remote.assert_nothing_leaked(&outcome);
+}
+
+/// The wait at the limit is a minute on the clock, whatever the service
+/// takes to say "full": refusals that take four seconds each to arrive
+/// leave room for seven waits, not twelve, and the capture gives up when
+/// the minute is over, not after two.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_wait_at_the_limit_is_a_minute_on_the_clock_however_slowly_the_service_refuses() {
+    let Some(remote) = Remote::start().await else {
+        return;
+    };
+    remote.cloud.stay_full();
+    remote.cloud.refuse_slowly(Duration::from_secs(4));
+    let started = Instant::now();
+
+    let outcome = remote
+        .reported()
+        .run(remote.request("http://pub.adscan-fixture.example/"))
+        .await;
+
+    let waited = started.elapsed();
+    assert!(
+        matches!(outcome.result, Err(BrowserError::RemoteLimit(_))),
+        "{:?}",
+        outcome.result
+    );
+    // The last request starts within the minute and is heard out.
+    assert!(
+        waited >= Duration::from_secs(60) && waited < Duration::from_secs(70),
+        "{waited:?}"
+    );
+    let events = remote_events(&outcome);
+    assert!(events.iter().all(|(name, _)| name == "rateLimited"));
+    assert!(
+        (6..=8).contains(&events.len()),
+        "{} waits: {:?}",
+        events.len(),
+        events
+    );
+    let pauses: u64 = events
+        .iter()
+        .map(|(_, detail)| detail["waitSeconds"].as_u64().unwrap())
+        .sum();
+    assert!(pauses <= 60, "{pauses} s of pauses");
+    assert!(remote.cloud.sessions().is_empty());
+}
+
 /// The project is at its limit, which another application shares: the
 /// capture waits five seconds at a time, says so, and goes on when a
 /// browser is free.
@@ -1510,6 +1686,35 @@ async fn the_account_calls_read_the_project_and_touch_only_this_installations_se
         "every call carries the key header"
     );
 
+    // Asked for by its id, a session says whether it runs and whose it is.
+    use adscan_browser::BrowserbaseSessionStanding as Standing;
+    assert_eq!(
+        client.session_standing(&own, &ours, INSTALL).await,
+        Ok(Standing::Running)
+    );
+    for not_ours in [&another_install, &another_application] {
+        assert_eq!(
+            client.session_standing(&own, not_ours, INSTALL).await,
+            Ok(Standing::NotThisInstallations)
+        );
+    }
+    assert_eq!(
+        client
+            .session_standing(&own, &ours, "ffffffffffffffffffffffffffffffff")
+            .await,
+        Ok(Standing::NotThisInstallations)
+    );
+    assert_eq!(
+        client
+            .session_standing(&own, "5e55ffff-0000-4000-8000-00000000ffff", INSTALL)
+            .await,
+        Ok(Standing::Unknown)
+    );
+    assert!(matches!(
+        client.session_standing(&own, "../projects", INSTALL).await,
+        Err(BrowserbaseError::Failed(_))
+    ));
+
     // Releasing is idempotent, and only what was named is released.
     let running = client.session_usage(&own, &ours).await.unwrap();
     assert!(!running.ended && running.session_seconds.is_none());
@@ -1517,6 +1722,10 @@ async fn the_account_calls_read_the_project_and_touch_only_this_installations_se
     client.release_session(&own, &ours).await.unwrap();
     let ended = client.session_usage(&own, &ours).await.unwrap();
     assert!(ended.ended && ended.session_seconds.is_some());
+    assert_eq!(
+        client.session_standing(&own, &ours, INSTALL).await,
+        Ok(Standing::Ended)
+    );
     assert!(remote.cloud.session(&another_install).running);
     assert!(remote.cloud.session(&another_application).running);
     assert_eq!(client.running_session_count(&own).await.unwrap(), 2);

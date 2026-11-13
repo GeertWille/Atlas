@@ -22,6 +22,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 pub(crate) use backend::{Backend, ConnectFailure};
 pub(crate) use browserbase::{
     Api, ApiFailure, Exit, Project, RemoteBrowser, SessionOrder, SessionState, StartFailure,
+    StartNote,
 };
 pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions, ProfileChoice, ProxyServer};
 #[cfg(test)]

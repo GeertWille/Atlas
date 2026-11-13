@@ -7,7 +7,7 @@ use std::sync::Arc;
 use adscan_browser::{BrowserError, Browserbase, BrowserbaseHooks, CaptureHooks};
 use adscan_engine::application::ports::{
     BrowserbaseApi, BrowserbaseError, CaptureError, CaptureSession, CaptureSource, EventSink,
-    ProjectUsage, RemoteSessionUsage,
+    ProjectUsage, RemoteSessionStanding, RemoteSessionUsage,
 };
 use adscan_model::{
     BrowserInfo, BrowserbaseCredentials, BrowserbaseProbe, BrowserbaseProject, BrowserbaseRegion,
@@ -177,15 +177,24 @@ impl BrowserbaseApi for BrowserbaseAdapter {
             .map_err(browserbase_error)
     }
 
-    async fn running_sessions_of(
+    async fn session_standing(
         &self,
         credentials: &BrowserbaseCredentials,
+        session_id: &str,
         install_id: &str,
-    ) -> Result<Vec<String>, BrowserbaseError> {
-        self.client
-            .running_sessions_of(credentials, install_id)
+    ) -> Result<RemoteSessionStanding, BrowserbaseError> {
+        use adscan_browser::BrowserbaseSessionStanding as Standing;
+        let standing = self
+            .client
+            .session_standing(credentials, session_id, install_id)
             .await
-            .map_err(browserbase_error)
+            .map_err(browserbase_error)?;
+        Ok(match standing {
+            Standing::Running => RemoteSessionStanding::Running,
+            Standing::Ended => RemoteSessionStanding::Ended,
+            Standing::Unknown => RemoteSessionStanding::Unknown,
+            Standing::NotThisInstallations => RemoteSessionStanding::NotThisInstallations,
+        })
     }
 
     async fn session_usage(

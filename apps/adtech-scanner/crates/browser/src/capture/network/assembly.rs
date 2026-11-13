@@ -143,6 +143,10 @@ pub(crate) struct Finished {
     pub status: Option<u16>,
     /// Decoded bytes received, else the encoded length.
     pub expected_bytes: u64,
+    /// Bytes were counted while the response arrived: `expected_bytes` is
+    /// the size of the body, not a length on the wire that says little
+    /// about it.
+    pub decoded_size_known: bool,
     pub encoded_bytes: u64,
     pub bid: Option<BidRequest>,
     /// URL of the script or document that made the request.
@@ -1161,6 +1165,7 @@ impl Assembler {
             } else {
                 encoded_bytes
             },
+            decoded_size_known: flight.decoded_bytes > 0,
             encoded_bytes,
             bid: flight.bid.clone(),
             initiator_url: flight.made_by.clone(),

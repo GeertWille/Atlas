@@ -26,7 +26,7 @@ use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, is_tracker_script};
 use super::network::assembly::{Assembler, Ended, Finished, Limits, Output, Reporter, Source};
 use super::network::fields::{body_of, captured_body};
-use super::network::reply::ReplyLimit;
+use super::network::reply::{BodySize, ReplyLimit};
 use super::noise::is_service_script;
 use super::pages::{Change, Committed, PageLog};
 use super::progress::Milestones;
@@ -766,11 +766,16 @@ impl Recorder {
         };
         let seq = finished.seq;
         let total_bytes = finished.expected_bytes;
-        if !self
-            .link
-            .reply_limit
-            .admits_body(finished.kind, total_bytes)
-        {
+        let size = if finished.decoded_size_known {
+            BodySize::Decoded(total_bytes)
+        } else {
+            BodySize::OnTheWire(finished.encoded_bytes)
+        };
+        let admitted =
+            self.link
+                .reply_limit
+                .admits_body(finished.kind, finished.mime_type.as_deref(), size);
+        if !admitted {
             // The answer to the question that set the copy going arrived
             // before the response finished: it is taken first.
             self.store_what_has_arrived();
@@ -1297,16 +1302,36 @@ mod tests {
     /// The tab asks for `url` and its answer's headers arrive, from
     /// `server` (`ip`, `port`).
     fn tab_loads(recorder: &mut Recorder, cdp: &Cdp, id: &str, url: &str, server: (&str, u16)) {
+        tab_loads_as(
+            recorder,
+            cdp,
+            id,
+            url,
+            ("Script", "text/javascript"),
+            server,
+        );
+    }
+
+    /// The same for a request of the type `asked_as.0` that is answered
+    /// with the MIME type `asked_as.1`.
+    fn tab_loads_as(
+        recorder: &mut Recorder,
+        cdp: &Cdp,
+        id: &str,
+        url: &str,
+        asked_as: (&str, &str),
+        server: (&str, u16),
+    ) {
         let announced = json!({
-            "requestId": id, "frameId": "main", "type": "Script",
+            "requestId": id, "frameId": "main", "type": asked_as.0,
             "timestamp": 1_000.0, "wallTime": 1_700_000_000.0,
             "request": { "url": url, "method": "GET", "headers": {} },
             "initiator": { "type": "parser" },
         });
         recorder.observe_network(&TAB, &event("Network.requestWillBeSent", announced), cdp);
         let headers = json!({
-            "requestId": id, "type": "Script", "timestamp": 1_000.1, "hasExtraInfo": false,
-            "response": { "status": 200, "mimeType": "text/javascript", "headers": {},
+            "requestId": id, "type": asked_as.0, "timestamp": 1_000.1, "hasExtraInfo": false,
+            "response": { "status": 200, "mimeType": asked_as.1, "headers": {},
                 "remoteIPAddress": server.0, "remotePort": server.1 },
         });
         recorder.observe_network(&TAB, &event("Network.responseReceived", headers), cdp);
@@ -1322,7 +1347,13 @@ mod tests {
     }
 
     fn tab_finishes(recorder: &mut Recorder, cdp: &Cdp, id: &str) {
-        let end = json!({ "requestId": id, "timestamp": 1_000.3, "encodedDataLength": 60 });
+        tab_finishes_after(recorder, cdp, id, 60);
+    }
+
+    /// The response ends after `on_the_wire` bytes, headers included.
+    fn tab_finishes_after(recorder: &mut Recorder, cdp: &Cdp, id: &str, on_the_wire: usize) {
+        let end =
+            json!({ "requestId": id, "timestamp": 1_000.3, "encodedDataLength": on_the_wire });
         recorder.observe_network(&TAB, &event("Network.loadingFinished", end), cdp);
     }
 
@@ -1475,6 +1506,119 @@ mod tests {
 
     /// A script source is text, and every character of it can take six
     /// bytes in an answer.
+    /// What a response was asked for as does not say how its body comes
+    /// back: 10 MiB of SVG, or of text, served to an `<img>` may come as
+    /// text, at six times its size. Only an image that also calls itself
+    /// one is asked for up to the size that fits as base64.
+    #[tokio::test]
+    async fn an_image_that_is_answered_as_text_is_held_to_the_limit_for_text() {
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = remote_recorder(sink.clone(), &cdp, false);
+        let ten_mib = "a".repeat(10 * MIB);
+        let server = ("203.0.113.9", 443);
+        let loads = [
+            ("T.1", "https://cdn.example/drawing.svg", "image/svg+xml"),
+            ("T.2", "https://cdn.example/pixel.gif", "text/plain"),
+            ("T.3", "https://cdn.example/photo.png", "image/png"),
+        ];
+
+        for (id, url, mime_type) in loads {
+            tab_loads_as(&mut recorder, &cdp, id, url, ("Image", mime_type), server);
+            tab_receives(&mut recorder, &cdp, id, &ten_mib, false);
+            tab_finishes(&mut recorder, &cdp, id);
+        }
+
+        // Only the one that cannot be text was asked for.
+        let read = browser.received().await;
+        assert_eq!(
+            (&read["method"], &read["params"]["requestId"]),
+            (&json!("Network.getResponseBody"), &json!("T.3"))
+        );
+        browser
+            .say(json!({ "id": read["id"], "result": { "body": "iVBORw0KGgo=", "base64Encoded": true } }))
+            .await;
+        while recorder.has_pending_bodies() {
+            recorder.store_next_body().await;
+        }
+        for url in [loads[0].1, loads[1].1] {
+            assert_eq!(
+                sink.body_of(url),
+                CapturedBody::TooLargeForRemote {
+                    total_bytes: 10 * MIB as u64
+                },
+                "{url}"
+            );
+        }
+        assert!(matches!(
+            sink.body_of(loads[2].1),
+            CapturedBody::Read { .. }
+        ));
+        assert_eq!(
+            recorder.too_large_bodies(),
+            TooLarge {
+                count: 2,
+                largest_bytes: 10 * MIB as u64
+            }
+        );
+        assert_nothing_else_was_asked(&cdp, &mut browser).await;
+    }
+
+    /// A response can end without one byte of its body having been
+    /// counted. All that is known of it then is its length on the wire,
+    /// and 5 MiB of gzip can be 100 MiB of text: it is not asked for over
+    /// a connection that such an answer would end. A local browser is
+    /// asked as before.
+    #[tokio::test]
+    async fn a_body_that_was_never_counted_is_asked_of_a_remote_browser_only_when_small_on_the_wire()
+     {
+        let server = ("203.0.113.9", 443);
+        const COMPRESSED: &str = "https://cdn.example/compressed.js";
+        const EMPTY: &str = "https://cdn.example/empty.js";
+
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = remote_recorder(sink.clone(), &cdp, false);
+        tab_loads(&mut recorder, &cdp, "T.1", COMPRESSED, server);
+        tab_finishes_after(&mut recorder, &cdp, "T.1", 5 * MIB);
+        tab_loads(&mut recorder, &cdp, "T.2", EMPTY, server);
+        tab_finishes_after(&mut recorder, &cdp, "T.2", 600);
+
+        let read = browser.received().await;
+        assert_eq!(
+            (&read["method"], &read["params"]["requestId"]),
+            (&json!("Network.getResponseBody"), &json!("T.2"))
+        );
+        browser
+            .say(json!({ "id": read["id"], "result": { "body": "", "base64Encoded": false } }))
+            .await;
+        while recorder.has_pending_bodies() {
+            recorder.store_next_body().await;
+        }
+        assert_eq!(
+            sink.body_of(COMPRESSED),
+            CapturedBody::TooLargeForRemote {
+                total_bytes: 5 * MIB as u64
+            }
+        );
+        assert!(!matches!(
+            sink.body_of(EMPTY),
+            CapturedBody::TooLargeForRemote { .. }
+        ));
+        assert_nothing_else_was_asked(&cdp, &mut browser).await;
+
+        // The debugging pipe of a local browser carries an answer of any size.
+        let (cdp, _events, mut browser) = connected();
+        let mut recorder = recorder_on_a_page(Arc::new(Kept::default()), &cdp);
+        tab_loads(&mut recorder, &cdp, "T.1", COMPRESSED, server);
+        tab_finishes_after(&mut recorder, &cdp, "T.1", 5 * MIB);
+        let read = browser.received().await;
+        assert_eq!(
+            (&read["method"], &read["params"]["requestId"]),
+            (&json!("Network.getResponseBody"), &json!("T.1"))
+        );
+    }
+
     #[tokio::test]
     async fn an_inline_script_too_large_for_one_answer_is_not_asked_of_a_remote_browser() {
         let (cdp, _events, mut browser) = connected();

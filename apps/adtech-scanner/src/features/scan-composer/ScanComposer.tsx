@@ -298,7 +298,7 @@ export function ScanComposer({
             aiEnabled={effective.aiEnabled}
             budgetUsd={budgetUsd}
             budgetError={errors.budget}
-            usage={settings.browserbase.connected ? usage : undefined}
+            usage={usage}
             update={update}
           />
         </CollapsibleContent>

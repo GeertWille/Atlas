@@ -201,6 +201,7 @@ fn a_request_is_assembled_from_its_events_and_handed_over_with_its_body() {
             mime_type: Some("application/json".into()),
             status: Some(200),
             expected_bytes: 1_234,
+            decoded_size_known: true,
             encoded_bytes: 900,
             bid: None,
             initiator_url: Some("https://www.pub.example/app.js".into()),
@@ -2061,6 +2062,47 @@ fn a_copy_that_began_while_the_response_loaded_is_the_whole_body() {
         assembler.take_body_copy(finished.seq),
         Some(format!("{first}bcd").into_bytes())
     );
+}
+
+/// A response that ends without any of its body having been counted says
+/// so: the length it is handed over with is the one on the wire, which is
+/// no measure of the body.
+#[test]
+fn a_response_that_ended_uncounted_is_handed_over_as_of_unknown_decoded_size() {
+    let mut assembler = Assembler::within(REMOTE);
+    let now = epoch(1_300.0);
+    let url = "https://cdn.example/packed.js";
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("9.1", url, 1_300.0),
+    );
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("9.1", 1_300.3, 5_000_000),
+    );
+    let uncounted = finished_of(&outputs).unwrap();
+    assert!(!uncounted.decoded_size_known);
+    assert_eq!(
+        (uncounted.expected_bytes, uncounted.encoded_bytes),
+        (5_000_000, 5_000_000)
+    );
+
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("9.2", url, 1_300.0),
+    );
+    assembler.observe(&tab(now), "Network.dataReceived", &received("9.2", 700));
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("9.2", 1_300.3, 400),
+    );
+    let counted = finished_of(&outputs).unwrap();
+    assert!(counted.decoded_size_known);
+    assert_eq!((counted.expected_bytes, counted.encoded_bytes), (700, 400));
 }
 
 /// A request body whose size is not known could be any size: over a

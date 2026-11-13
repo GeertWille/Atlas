@@ -41,10 +41,13 @@ use url::Url;
 
 use crate::cdp::{
     ApiFailure, Backend, Cdp, CdpError, CdpEvent, Chrome, LaunchOptions, ProfileChoice,
-    ProxyServer, RemoteBrowser, SessionState,
+    ProxyServer, RemoteBrowser, SessionState, StartNote,
 };
 use crate::device::{emulation_for, window_size};
 use crate::{BrowserError, BrowserbaseHooks, CaptureHooks, detect};
+
+pub(crate) use clock::{CLOCK_QUESTION, CLOCK_SAMPLES, ClockSample, distance, machine_epoch_ms};
+pub(crate) use remote::BLANK_PAGE_FACTS;
 
 use environment::Observed;
 use error::CaptureError;
@@ -130,7 +133,7 @@ pub(crate) async fn run(
         Err(error) => (None, Err(error)),
     };
     let outcome = match (outcome, backend.remote()) {
-        (Err(CaptureError::Protocol(CdpError::Closed)), Some(browser)) => {
+        (Err(error), Some(browser)) if is_a_lost_connection(&error) => {
             (hooks.on_activity)(remote::connection_lost());
             Err(connection_lost(browser))
         }
@@ -144,6 +147,17 @@ pub(crate) async fn run(
         report_remote_end(&hooks, session_id, ended);
     }
     Ok(outcome?)
+}
+
+/// Whether a capture in a remote browser ended because the connection to
+/// that browser is gone. A connection can die without closing: commands
+/// then go unanswered, and the first of them gives up before the silence
+/// on the socket is long enough to be taken for its end.
+fn is_a_lost_connection(error: &CaptureError) -> bool {
+    matches!(
+        error,
+        CaptureError::Protocol(CdpError::Closed | CdpError::Timeout(_))
+    )
 }
 
 /// Why a capture ends when the connection to its Browserbase browser is
@@ -256,7 +270,12 @@ async fn launch_remote<'a>(
         &browserbase.credentials,
         &order,
         &hooks.cancel,
-        |attempt, wait| (hooks.on_activity)(remote::rate_limited(attempt, wait)),
+        |note| {
+            (hooks.on_activity)(match note {
+                StartNote::Waiting { attempt, pause } => remote::rate_limited(attempt, pause),
+                StartNote::StraysReleased(count) => remote::strays_released(count),
+            })
+        },
     )
     .await
     .map_err(CaptureError::from)?;
@@ -642,6 +661,31 @@ mod tests {
 
         fn record(&self, record: NetworkRecord) {
             self.0.lock().unwrap().push(record);
+        }
+    }
+
+    /// A connection that died without closing shows as commands that are
+    /// never answered. For a remote browser that is a lost connection, like
+    /// a closed one; a browser that refuses a command is not.
+    #[test]
+    fn an_unanswered_command_counts_as_a_lost_connection_like_a_closed_one() {
+        assert!(is_a_lost_connection(&CaptureError::Protocol(
+            CdpError::Closed
+        )));
+        assert!(is_a_lost_connection(&CaptureError::Protocol(
+            CdpError::Timeout("Runtime.evaluate")
+        )));
+        for other in [
+            CaptureError::Protocol(CdpError::Rejected {
+                method: "Page.navigate",
+                message: "Cannot navigate to invalid URL".into(),
+            }),
+            CaptureError::Cancelled,
+            CaptureError::PageCrashed,
+            CaptureError::TabClosed,
+            CaptureError::NoPage,
+        ] {
+            assert!(!is_a_lost_connection(&other), "{other}");
         }
     }
 

@@ -10,10 +10,10 @@ import {
 } from "lucide-react";
 import type { BrowserbaseRegion, PageReach } from "@/bindings";
 import { Panel } from "@/shared/components/panel";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { regionName } from "@/shared/domain/browserbase";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { cn } from "@/shared/lib/cn";
-import { formatTimer, type VisitState } from "./visit";
+import { formatTimer, type RemoteBrowser, type VisitState } from "./visit";
 
 const REACH_ICON: Record<PageReach, LucideIcon> = {
   entry: LogInIcon,
@@ -23,6 +23,12 @@ const REACH_ICON: Record<PageReach, LucideIcon> = {
   redirect: CornerDownRightIcon,
   reload: RefreshCwIcon,
 };
+
+/** What the time beside the browser counts: it runs, it ran, or nobody knows whether it still does. */
+function browserClock(remote: RemoteBrowser): string {
+  if (remote.endedAt === null) return "running";
+  return remote.endUnconfirmed ? "end not confirmed after" : "ran";
+}
 
 /**
  * Where the visit is and what the visitor just did, while the capture step runs. A Browserbase scan shows
@@ -56,15 +62,14 @@ export function VisitPanel({
           <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
           {remote ? (
             <>
-              <span className="truncate text-foreground">Browserbase {regionPlace(remote.region ?? browserbase)}</span>
+              <span className="truncate text-foreground">Browserbase, {regionName(remote.region ?? browserbase)}</span>
               <span className="tabular-nums">
-                · {remote.endedAt === null ? "running" : "ran"}{" "}
-                {formatTimer((remote.endedAt ?? now) - remote.startedAt)}
+                · {browserClock(remote)} {formatTimer((remote.endedAt ?? now) - remote.startedAt)}
               </span>
             </>
           ) : (
             <span className={remoteNotice ? undefined : "shimmer"}>
-              Starting a Browserbase browser ({regionPlace(browserbase)})…
+              Starting a Browserbase browser in {regionName(browserbase)}…
             </span>
           )}
         </p>

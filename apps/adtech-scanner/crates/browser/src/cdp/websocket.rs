@@ -134,8 +134,9 @@ fn is_accepted(headers: &HeaderMap, key: &str) -> bool {
     upgrades_to_websocket && accepted_key
 }
 
-/// What went wrong, in the HTTP client's words without the address.
-fn unreachable(error: reqwest::Error) -> ConnectError {
+/// What went wrong with a request, in the HTTP client's words: the
+/// innermost cause, without the address.
+pub(crate) fn innermost_cause(error: reqwest::Error) -> String {
     let error = error.without_url();
     let mut reason = error.to_string();
     let mut source = std::error::Error::source(&error);
@@ -143,7 +144,11 @@ fn unreachable(error: reqwest::Error) -> ConnectError {
         reason = cause.to_string();
         source = cause.source();
     }
-    ConnectError::Unreachable(reason)
+    reason
+}
+
+fn unreachable(error: reqwest::Error) -> ConnectError {
+    ConnectError::Unreachable(innermost_cause(error))
 }
 
 /// Messages from the browser, in the order they arrived.
@@ -270,12 +275,15 @@ async fn write<S>(
                 Message::Ping(Default::default())
             }
         };
+        // A peer that is gone without a word stops taking what is written
+        // to it. A write that does not get through within the time the
+        // connection may be silent is the same silence.
         let sent = tokio::select! {
             biased;
             _ = closed.cancelled() => return,
-            sent = to_browser.send(frame) => sent,
+            sent = tokio::time::timeout(keepalive.silence_limit, to_browser.send(frame)) => sent,
         };
-        if sent.is_err() {
+        if !matches!(sent, Ok(Ok(()))) {
             return;
         }
     }
@@ -434,6 +442,32 @@ mod tests {
             "{silent_for:?}"
         );
         // The writer notices on its own time; then nothing can be sent.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(sink.send("{}").await.is_err());
+    }
+
+    /// The check for silence sits between two writes. A write that hangs,
+    /// because the peer is gone and its buffer is full, must not keep the
+    /// check from ever being made.
+    #[tokio::test]
+    async fn a_write_that_does_not_get_through_ends_the_connection_like_silence_does() {
+        let keepalive = Keepalive {
+            // No ping in the time of this test: only the write is waited on.
+            ping_every: Duration::from_secs(3_600),
+            silence_limit: Duration::from_millis(200),
+        };
+        // Nobody reads the far end, which takes 64 KiB and then no more.
+        let (mut source, mut sink, _browser_that_never_reads) = paired(keepalive).await;
+        let started = Instant::now();
+
+        sink.send(&"x".repeat(1024 * 1024)).await.unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), source.next()).await;
+
+        assert_eq!(
+            ended.expect("the hung write was given up on").unwrap(),
+            None
+        );
+        assert!(started.elapsed() >= Duration::from_millis(200));
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(sink.send("{}").await.is_err());
     }

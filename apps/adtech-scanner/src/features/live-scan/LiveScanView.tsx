@@ -5,7 +5,7 @@ import { useCancelScan } from "@/lib/query/hooks";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, LiveDot, SEVERITY_ICON, SeverityCountPills } from "@/shared/components/status";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { regionName } from "@/shared/domain/browserbase";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { visitorOf } from "@/shared/domain/scan-options";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
@@ -140,7 +140,7 @@ export function LiveScanView({
   const startingRemote =
     browserbase !== null && (current?.node === "launchBrowser" || (capturing && visit.remote === null));
   let stepLabel = current ? PIPELINE_NODE_META[current.node].label : "";
-  if (startingRemote) stepLabel = `Starting a Browserbase browser (${regionPlace(browserbase)})…`;
+  if (startingRemote) stepLabel = `Starting a Browserbase browser in ${regionName(browserbase)}…`;
   const cancelButton = <CancelScanButton scanId={summary.id} />;
 
   return (

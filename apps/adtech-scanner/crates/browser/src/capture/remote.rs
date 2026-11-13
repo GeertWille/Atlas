@@ -14,7 +14,9 @@ use serde_json::{Value, json};
 
 use crate::cdp::{Exit, SessionOrder, SessionState};
 
-use super::clock::{ClockSample, Distance, distance, machine_epoch_ms};
+use super::clock::{
+    CLOCK_QUESTION, CLOCK_SAMPLES, ClockSample, Distance, distance, machine_epoch_ms,
+};
 use super::error::CaptureError;
 use super::manual::SESSION_LIMIT;
 use super::page::Page;
@@ -29,10 +31,6 @@ const PAGE_OPEN_ALLOWANCE_SECONDS: u64 = 45;
 const BROWSE_VISIT_SECONDS: u64 = 8 * 60;
 /// Collecting what was recorded, and room for a slow machine.
 const END_MARGIN_SECONDS: u64 = 120;
-
-/// How many times the browser is asked for its time when the connection
-/// is made. The sample with the shortest round trip is the one used.
-const CLOCK_SAMPLES: usize = 8;
 
 /// The time limit a session is given, in seconds: generously more than
 /// the visit can take, because the session is released when the visit
@@ -113,8 +111,9 @@ pub(crate) fn timezone_to_apply(capture: &BrowserbaseCapture) -> Option<&'static
 }
 
 /// What a blank page of the browser reports, read in the page's own world
-/// and in the scanner's isolated one. Recorded, never acted on.
-const PROBE: &str = "(() => ({ \
+/// and in the scanner's isolated one. Recorded, never acted on. The probe
+/// of the settings reads the same.
+pub(crate) const BLANK_PAGE_FACTS: &str = "(() => ({ \
     webdriver: navigator.webdriver, \
     userAgent: navigator.userAgent, \
     brands: ((navigator.userAgentData || {}).brands || []).map((b) => b.brand + ' ' + b.version), \
@@ -217,29 +216,6 @@ impl Arrival {
 }
 
 impl Page {
-    /// Asks the browser for its time a few times over.
-    async fn sample_clock(&mut self) -> Result<Vec<ClockSample>, CaptureError> {
-        let mut samples = Vec::with_capacity(CLOCK_SAMPLES);
-        for _ in 0..CLOCK_SAMPLES {
-            let asked_ms = machine_epoch_ms();
-            let answer = self
-                .call(
-                    "Runtime.evaluate",
-                    json!({ "expression": "Date.now()", "returnByValue": true }),
-                )
-                .await?;
-            let answered_ms = machine_epoch_ms();
-            if let Some(browser_ms) = answer["result"]["value"].as_f64() {
-                samples.push(ClockSample {
-                    asked_ms,
-                    answered_ms,
-                    browser_ms,
-                });
-            }
-        }
-        Ok(samples)
-    }
-
     /// Everything that happens between connecting to a remote browser and
     /// the first navigation, on the blank page the browser starts with:
     /// measures how far away the browser is and sets the capture's clock
@@ -251,7 +227,18 @@ impl Page {
         capture: &BrowserbaseCapture,
         version: &Value,
     ) -> Result<Arrival, CaptureError> {
-        let measured = distance(&self.sample_clock().await?);
+        let mut samples = Vec::with_capacity(CLOCK_SAMPLES);
+        for _ in 0..CLOCK_SAMPLES {
+            let asked_ms = machine_epoch_ms();
+            let answer = self
+                .call(
+                    "Runtime.evaluate",
+                    json!({ "expression": CLOCK_QUESTION, "returnByValue": true }),
+                )
+                .await?;
+            samples.extend(ClockSample::answered_now(asked_ms, &answer));
+        }
+        let measured = distance(&samples);
         if let Some(measured) = measured {
             let round_trip = Duration::from_secs_f64(measured.round_trip_ms.max(0.0) / 1_000.0);
             self.cdp.allow_for_distance(round_trip);
@@ -262,11 +249,11 @@ impl Page {
         let in_main_world = self
             .call(
                 "Runtime.evaluate",
-                json!({ "expression": PROBE, "returnByValue": true }),
+                json!({ "expression": BLANK_PAGE_FACTS, "returnByValue": true }),
             )
             .await?;
         let main = &in_main_world["result"]["value"];
-        let isolated = self.evaluate(PROBE).await?.unwrap_or_default();
+        let isolated = self.evaluate(BLANK_PAGE_FACTS).await?.unwrap_or_default();
         let command_line = self
             .cdp
             .send(None, "Browser.getBrowserCommandLine", json!({}));
@@ -329,11 +316,27 @@ pub(crate) fn session_created(session_id: &str, order: &SessionOrder) -> Capture
 }
 
 pub(crate) fn rate_limited(attempt: u32, wait: Duration) -> CaptureActivity {
-    let seconds = wait.as_secs();
+    // The last wait is cut to the time that is left, to a part of a second.
+    let seconds = wait.as_secs_f64().round() as u64;
     activity(
         format!("Browserbase is at its limit of browsers; trying again in {seconds} s"),
         json!({ "event": "rateLimited", "waitSeconds": seconds, "attempt": attempt }),
     )
+}
+
+/// The answer to a request for a browser was lost, and what the service
+/// had started for this scan all the same was ended.
+pub(crate) fn strays_released(count: u32) -> CaptureActivity {
+    let message = match count {
+        1 => "Browserbase's answer to the request for a browser was lost; the browser it had \
+              started for this scan was ended"
+            .to_string(),
+        count => format!(
+            "Browserbase's answer to the request for a browser was lost; the {count} browsers \
+             it had started for this scan were ended"
+        ),
+    };
+    activity(message, json!({ "event": "strayReleased", "count": count }))
 }
 
 pub(crate) fn connected(facts: &BrowserbaseSessionFacts) -> CaptureActivity {
@@ -814,6 +817,33 @@ mod tests {
     }
 
     #[test]
+    fn a_browser_ended_behind_a_lost_answer_and_a_cut_last_wait_are_put_in_words() {
+        let one = strays_released(1);
+        assert_eq!(
+            one.message,
+            "Browserbase's answer to the request for a browser was lost; the browser it had \
+             started for this scan was ended"
+        );
+        assert_eq!(one.kind, ActivityKind::RemoteBrowser);
+        assert_eq!(
+            one.data,
+            Some(json!({ "event": "strayReleased", "count": 1 }))
+        );
+        assert!(strays_released(2).message.contains("the 2 browsers"));
+
+        // The last wait at the limit ends with the minute, not after it.
+        let cut = rate_limited(12, Duration::from_millis(4_930));
+        assert_eq!(
+            cut.message,
+            "Browserbase is at its limit of browsers; trying again in 5 s"
+        );
+        assert_eq!(
+            cut.data,
+            Some(json!({ "event": "rateLimited", "waitSeconds": 5, "attempt": 12 }))
+        );
+    }
+
+    #[test]
     fn the_release_line_states_how_long_the_browser_ran() {
         let ended = SessionState {
             id: "session-1".into(),
@@ -823,6 +853,7 @@ mod tests {
             proxy_bytes: Some(131_844.0),
             app: None,
             install: None,
+            scan: None,
         };
         let line = released(&ended);
         assert_eq!(line.message, "Browserbase ended the browser after 41 s");

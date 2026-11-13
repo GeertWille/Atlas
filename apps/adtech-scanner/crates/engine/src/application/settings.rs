@@ -274,11 +274,17 @@ impl SettingsService {
         // The defaults keep a snapshot of the profile's name and host.
         settings.default_proxy =
             ResolvedProxy::resolve(&settings.default_proxy, &settings.proxies)?.choice;
-        settings.browserbase.default_proxy = ResolvedProxy::resolve_for_browserbase(
+        settings.browserbase.default_proxy = match ResolvedProxy::resolve_for_browserbase(
             &settings.browserbase.default_proxy,
             &settings.proxies,
-        )?
-        .choice;
+        ) {
+            Ok(resolved) => resolved.choice,
+            // The profile was moved to an address only this machine can
+            // reach. It is the user's to edit for scans on this machine;
+            // it can no longer be what a Browserbase browser leaves through.
+            Err(DomainError::ProxyNotReachableFromCloud(_)) => ProxyChoice::None,
+            Err(error) => return Err(error.into()),
+        };
         self.save(settings).await?;
         self.get().await
     }

@@ -18,6 +18,10 @@ use crate::cdp::websocket::{self, ConnectError, Keepalive, WebSocketSink, WebSoc
 
 const API_KEY_HEADER: &str = "X-BB-API-Key";
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
+/// The request for a browser is given longer: it is answered in under a
+/// second when all is well (measured: 0.2 to 0.7 s), and an answer that is
+/// given up on may leave a browser running that nobody knows the id of.
+const CREATE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// A session takes its client within this time (measured: 0.3 to 1.7 s).
 const SOCKET_PATIENCE: Duration = Duration::from_secs(30);
@@ -41,9 +45,43 @@ pub(crate) struct SessionState {
     pub started_at_ms: Option<f64>,
     pub ended_at_ms: Option<f64>,
     pub proxy_bytes: Option<f64>,
-    /// `userMetadata.app` and `userMetadata.install`.
+    /// `userMetadata.app`, `userMetadata.install` and `userMetadata.scan`.
     pub app: Option<String>,
     pub install: Option<String>,
+    pub scan: Option<String>,
+}
+
+/// Why no session came of a request for one.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CreateFailure {
+    pub failure: ApiFailure,
+    /// The service may have started a browser all the same: the request
+    /// reached it, and no answer that names a session or refuses one came
+    /// back.
+    pub session_may_exist: bool,
+}
+
+/// A call that was not answered.
+struct Unanswered {
+    failure: ApiFailure,
+    /// Whether the service may have acted on the request.
+    request_may_have_arrived: bool,
+}
+
+impl Unanswered {
+    /// The request was never made.
+    fn unsent(failure: ApiFailure) -> Self {
+        Self {
+            failure,
+            request_may_have_arrived: false,
+        }
+    }
+}
+
+impl From<Unanswered> for ApiFailure {
+    fn from(unanswered: Unanswered) -> Self {
+        unanswered.failure
+    }
 }
 
 impl SessionState {
@@ -58,6 +96,7 @@ impl SessionState {
             proxy_bytes: session["proxyBytes"].as_f64(),
             app: text(&session["userMetadata"]["app"]),
             install: text(&session["userMetadata"]["install"]),
+            scan: text(&session["userMetadata"]["scan"]),
         })
     }
 
@@ -70,6 +109,12 @@ impl SessionState {
     /// Whether this app, in this installation, started the session.
     pub(crate) fn is_of(&self, install_id: &str) -> bool {
         self.app.as_deref() == Some(APP_TAG) && self.install.as_deref() == Some(install_id)
+    }
+
+    /// Whether this app, in this installation, started the session for
+    /// that scan.
+    pub(crate) fn is_of_scan(&self, install_id: &str, scan_id: &str) -> bool {
+        self.is_of(install_id) && self.scan.as_deref() == Some(scan_id)
     }
 }
 
@@ -123,6 +168,7 @@ pub(crate) struct Api {
     base: Url,
     /// Used in place of the address every session comes with. For tests.
     browser_override: Option<Url>,
+    create_timeout: Duration,
 }
 
 impl Api {
@@ -152,9 +198,13 @@ impl Api {
             })
             .transpose()?;
         // HTTP/1.1 only: the WebSocket to a browser starts as an upgrade
-        // of such a request.
+        // of such a request. No redirect is followed: the API key travels
+        // in a header of its own, which would go along to wherever a
+        // redirect points, and a redirected upgrade would connect to a
+        // host that was never checked.
         let http = reqwest::Client::builder()
             .http1_only()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|_| misconfigured("no HTTP client could be made"))?;
@@ -162,10 +212,18 @@ impl Api {
             http,
             base,
             browser_override,
+            create_timeout: CREATE_TIMEOUT,
         })
     }
 
-    /// Calls the API and returns the status and body of whatever it answers.
+    #[cfg(test)]
+    pub(crate) fn giving_a_new_browser(mut self, patience: Duration) -> Self {
+        self.create_timeout = patience;
+        self
+    }
+
+    /// Calls the API and returns the status and body of whatever it
+    /// answers within `patience`.
     async fn send(
         &self,
         api_key: &str,
@@ -173,13 +231,15 @@ impl Api {
         path: &[&str],
         query: &[(&str, &str)],
         body: Option<Value>,
-    ) -> Result<(StatusCode, String), ApiFailure> {
+        patience: Duration,
+    ) -> Result<(StatusCode, String), Unanswered> {
+        let not_understood = || Unanswered::unsent(ApiFailure::Failed(UNEXPECTED_ANSWER.into()));
         if !path.iter().all(|segment| is_an_id(segment)) {
-            return Err(ApiFailure::Failed(UNEXPECTED_ANSWER.into()));
+            return Err(not_understood());
         }
         let mut url = self.base.clone();
         url.path_segments_mut()
-            .map_err(|()| ApiFailure::Failed(UNEXPECTED_ANSWER.into()))?
+            .map_err(|()| not_understood())?
             .pop_if_empty()
             .push("v1")
             .extend(path);
@@ -187,19 +247,26 @@ impl Api {
             url.query_pairs_mut().extend_pairs(query);
         }
         let mut key = HeaderValue::from_str(api_key)
-            .map_err(|_| ApiFailure::Auth(KEY_NOT_ACCEPTED.into()))?;
+            .map_err(|_| Unanswered::unsent(ApiFailure::Auth(KEY_NOT_ACCEPTED.into())))?;
         key.set_sensitive(true);
         let mut request = self
             .http
             .request(method, url)
-            .timeout(CALL_TIMEOUT)
+            .timeout(patience)
             .header(API_KEY_HEADER, key);
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await.map_err(no_answer)?;
+        let response = request.send().await.map_err(|error| Unanswered {
+            // A connection that was never made carried no request.
+            request_may_have_arrived: !error.is_connect(),
+            failure: no_answer(error),
+        })?;
         let status = response.status();
-        let text = response.text().await.map_err(no_answer)?;
+        let text = response.text().await.map_err(|error| Unanswered {
+            request_may_have_arrived: true,
+            failure: no_answer(error),
+        })?;
         Ok((status, text))
     }
 
@@ -213,7 +280,9 @@ impl Api {
         body: Option<Value>,
         region: Option<&str>,
     ) -> Result<Value, ApiFailure> {
-        let (status, text) = self.send(api_key, method, path, query, body).await?;
+        let (status, text) = self
+            .send(api_key, method, path, query, body, CALL_TIMEOUT)
+            .await?;
         if !status.is_success() {
             return Err(failure::from_response(status.as_u16(), &text, region));
         }
@@ -221,25 +290,48 @@ impl Api {
     }
 
     /// `POST /v1/sessions`: starts a browser. The session is running when
-    /// this returns.
+    /// this returns. A failure says whether a browser may have been
+    /// started all the same.
     pub(crate) async fn create_session(
         &self,
         credentials: &BrowserbaseCredentials,
         order: &SessionOrder,
-    ) -> Result<(SessionState, BrowserAddress), ApiFailure> {
-        let created = self
-            .json(
+    ) -> Result<(SessionState, BrowserAddress), CreateFailure> {
+        let (status, text) = self
+            .send(
                 &credentials.api_key,
                 Method::POST,
                 &["sessions"],
                 &[],
                 Some(order.body(&credentials.project_id)),
-                Some(order.region.as_str()),
+                self.create_timeout,
             )
-            .await?;
-        let state =
-            SessionState::of(&created).ok_or(ApiFailure::Failed(UNEXPECTED_ANSWER.into()))?;
-        Ok((state, self.browser_address(&created)))
+            .await
+            .map_err(|unanswered| CreateFailure {
+                session_may_exist: unanswered.request_may_have_arrived,
+                failure: unanswered.failure,
+            })?;
+        if !status.is_success() {
+            return Err(CreateFailure {
+                failure: failure::from_response(
+                    status.as_u16(),
+                    &text,
+                    Some(order.region.as_str()),
+                ),
+                // A refusal is the service's own word that there is no
+                // session. A failure of the service, or of a gateway in
+                // front of it, is not.
+                session_may_exist: !status.is_client_error(),
+            });
+        }
+        let created: Value = serde_json::from_str(&text).unwrap_or_default();
+        match SessionState::of(&created) {
+            Some(state) => Ok((state, self.browser_address(&created))),
+            None => Err(CreateFailure {
+                failure: ApiFailure::Failed(UNEXPECTED_ANSWER.into()),
+                session_may_exist: true,
+            }),
+        }
     }
 
     /// The address to connect to for a session the service just described.
@@ -311,6 +403,38 @@ impl Api {
         SessionState::of(&session).ok_or(ApiFailure::Failed(UNEXPECTED_ANSWER.into()))
     }
 
+    /// `GET /v1/sessions/{id}`, for a session that may not exist: `None`
+    /// when the service knows no session of that id for this key.
+    pub(crate) async fn find_session(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<Option<SessionState>, ApiFailure> {
+        let path = ["sessions", session_id];
+        let (status, text) = self
+            .send(
+                &credentials.api_key,
+                Method::GET,
+                &path,
+                &[],
+                None,
+                CALL_TIMEOUT,
+            )
+            .await?;
+        if status == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(failure::from_response(status.as_u16(), &text, None));
+        }
+        serde_json::from_str::<Value>(&text)
+            .ok()
+            .as_ref()
+            .and_then(SessionState::of)
+            .map(Some)
+            .ok_or(ApiFailure::Failed(UNEXPECTED_ANSWER.into()))
+    }
+
     /// `POST /v1/sessions/{id}` with `REQUEST_RELEASE`: ends the browser.
     /// A session that has ended already answers the same way.
     pub(crate) async fn release(
@@ -333,28 +457,23 @@ impl Api {
     }
 
     /// `GET /v1/sessions?status=RUNNING`, narrowed to the sessions whose
-    /// metadata names `install_id` when one is given. The service does the
-    /// narrowing; whoever acts on the answer checks each session again.
+    /// metadata names `install_id`. The service does the narrowing;
+    /// whoever acts on the answer checks each session again.
     pub(crate) async fn running_sessions(
         &self,
         credentials: &BrowserbaseCredentials,
-        install_id: Option<&str>,
+        install_id: &str,
     ) -> Result<Vec<SessionState>, ApiFailure> {
-        let narrowed;
-        let mut query = vec![("status", "RUNNING")];
-        if let Some(install_id) = install_id {
-            if !is_an_id(install_id) {
-                return Ok(Vec::new());
-            }
-            narrowed = format!("user_metadata['install']:'{install_id}'");
-            query.push(("q", &narrowed));
+        if !is_an_id(install_id) {
+            return Ok(Vec::new());
         }
+        let narrowed = format!("user_metadata['install']:'{install_id}'");
         let listed = self
             .json(
                 &credentials.api_key,
                 Method::GET,
                 &["sessions"],
-                &query,
+                &[("status", "RUNNING"), ("q", &narrowed)],
                 None,
                 None,
             )
@@ -363,6 +482,31 @@ impl Api {
             .as_array()
             .ok_or(ApiFailure::Failed(UNEXPECTED_ANSWER.into()))?;
         Ok(sessions.iter().filter_map(SessionState::of).collect())
+    }
+
+    /// `GET /v1/sessions?status=RUNNING`: how many browsers run in the
+    /// project, whoever started them. The sessions of other applications
+    /// are counted and nothing else: not one field of them is read.
+    pub(crate) async fn running_session_count(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<u32, ApiFailure> {
+        let (status, text) = self
+            .send(
+                &credentials.api_key,
+                Method::GET,
+                &["sessions"],
+                &[("status", "RUNNING")],
+                None,
+                CALL_TIMEOUT,
+            )
+            .await?;
+        if !status.is_success() {
+            return Err(failure::from_response(status.as_u16(), &text, None));
+        }
+        serde_json::from_str::<Vec<serde::de::IgnoredAny>>(&text)
+            .map(|running| running.len() as u32)
+            .map_err(|_| ApiFailure::Failed(UNEXPECTED_ANSWER.into()))
     }
 
     /// `GET /v1/sessions/{id}/debug`: the address of the live view that
@@ -374,7 +518,14 @@ impl Api {
     ) -> Result<String, ApiFailure> {
         let path = ["sessions", session_id, "debug"];
         let (status, text) = self
-            .send(&credentials.api_key, Method::GET, &path, &[], None)
+            .send(
+                &credentials.api_key,
+                Method::GET,
+                &path,
+                &[],
+                None,
+                CALL_TIMEOUT,
+            )
             .await?;
         match status {
             StatusCode::OK => {}
@@ -384,12 +535,24 @@ impl Api {
         let views: Value = serde_json::from_str(&text).unwrap_or_default();
         views["debuggerFullscreenUrl"]
             .as_str()
-            .filter(|address| {
-                address.starts_with("https://")
-                    || (address.starts_with("http://") && is_loopback(&self.base))
-            })
+            .filter(|address| self.is_a_live_view(address))
             .map(str::to_string)
             .ok_or(ApiFailure::Failed(UNEXPECTED_ANSWER.into()))
+    }
+
+    /// Whether `address` is one the user's browser is sent to: a page of
+    /// the service's own over TLS, or one on this machine when the API is
+    /// on this machine too (a stand-in for tests). The same rule as for
+    /// the address of a browser.
+    fn is_a_live_view(&self, address: &str) -> bool {
+        let Ok(url) = Url::parse(address) else {
+            return false;
+        };
+        match url.scheme() {
+            "https" if is_at_the_service(&url) => true,
+            "http" | "https" => is_loopback(&url) && is_loopback(&self.base),
+            _ => false,
+        }
     }
 
     /// `POST /v1/contexts`: a new, empty browser profile. Returns its id.
@@ -423,7 +586,14 @@ impl Api {
     ) -> Result<(), ApiFailure> {
         let path = ["contexts", context_id];
         let (status, text) = self
-            .send(&credentials.api_key, Method::DELETE, &path, &[], None)
+            .send(
+                &credentials.api_key,
+                Method::DELETE,
+                &path,
+                &[],
+                None,
+                CALL_TIMEOUT,
+            )
             .await?;
         if status.is_success() || status == StatusCode::NOT_FOUND {
             Ok(())
@@ -481,20 +651,14 @@ fn no_answer(error: reqwest::Error) -> ApiFailure {
     let reason = if error.is_timeout() {
         "it did not answer in time".to_string()
     } else {
-        let error = error.without_url();
-        let mut reason = error.to_string();
-        let mut source = std::error::Error::source(&error);
-        while let Some(cause) = source {
-            reason = cause.to_string();
-            source = cause.source();
-        }
-        reason
+        websocket::innermost_cause(error)
     };
     failure::unreachable(&reason)
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::stand_in::{Answer, StandIn};
     use super::*;
 
     fn failed(message: &str) -> ApiFailure {
@@ -668,6 +832,236 @@ mod tests {
         assert!(!of(json!({ "install": "abc" })).is_of("abc"));
         assert!(!of(json!({ "scanId": "1", "auditId": "2", "organizationId": "3" })).is_of("abc"));
         assert!(!of(json!({ "app": "adscan" })).is_of("abc"));
+    }
+
+    #[test]
+    fn a_session_says_which_scan_of_which_installation_it_was_started_for() {
+        let of = |metadata: Value| {
+            SessionState::of(&json!({ "id": "x", "status": "RUNNING", "userMetadata": metadata }))
+                .unwrap()
+        };
+        let ours = of(json!({ "app": "adscan", "install": "abc", "scan": "scan-1" }));
+        assert!(ours.is_of_scan("abc", "scan-1"));
+        assert!(!ours.is_of_scan("abc", "scan-2"));
+        assert!(!ours.is_of_scan("abd", "scan-1"));
+        assert!(
+            !of(json!({ "app": "other", "install": "abc", "scan": "scan-1" }))
+                .is_of_scan("abc", "scan-1")
+        );
+        assert!(!of(json!({ "app": "adscan", "install": "abc" })).is_of_scan("abc", "scan-1"));
+        assert!(!of(json!({ "scanId": "scan-1" })).is_of_scan("abc", "scan-1"));
+        // A probe is tagged as one.
+        assert!(
+            of(json!({ "app": "adscan", "install": "abc", "scan": "probe" }))
+                .is_of_scan("abc", "probe")
+        );
+    }
+
+    fn credentials() -> BrowserbaseCredentials {
+        BrowserbaseCredentials {
+            api_key: "bb_live_K3y-that-must-not-travel".into(),
+            project_id: "3f8a1c52-6e0b-4b7d-9a43-5d2c8e9f1a07".into(),
+        }
+    }
+
+    fn order() -> SessionOrder {
+        SessionOrder {
+            region: adscan_model::BrowserbaseRegion::EuCentral1,
+            timeout_seconds: 240,
+            settings: adscan_model::BrowserbaseSessionSettings::STANDARD,
+            exit: super::super::order::Exit::Region,
+            context_id: None,
+            install_id: "0123456789abcdef0123456789abcdef".into(),
+            scan_id: "7c9e6679-7425-40de-944b-e07fc1f90ae7".into(),
+        }
+    }
+
+    /// The API key travels in a header of its own, which an HTTP client
+    /// does not take off when a redirect leads to another host. So no
+    /// redirect is followed, neither by a call nor by the upgrade to the
+    /// socket of a browser, whose target was checked before.
+    #[tokio::test]
+    async fn a_redirect_is_never_followed() {
+        let elsewhere = StandIn::start(|_, _| Answer::Json(200, json!([]))).await;
+        let target = format!("{}/v1/projects", elsewhere.url);
+        let service = StandIn::start(move |_, _| Answer::Redirect(target.clone())).await;
+        let api = Api::new(&service.url, None).unwrap();
+
+        let called = api.projects(&credentials().api_key).await;
+        let created = api.create_session(&credentials(), &order()).await;
+        let browser = api.browser_address(&json!({
+            "connectUrl": format!("ws://127.0.0.1:{}/connect/1?signingKey=s3cret", service.port),
+        }));
+        let connected = api.connect(&browser).await.err();
+
+        assert_eq!(called, Err(failed(UNEXPECTED_ANSWER)));
+        assert_eq!(
+            created.err().map(|refused| refused.failure),
+            Some(failed(UNEXPECTED_ANSWER))
+        );
+        assert_eq!(
+            connected,
+            Some(failed(
+                "The scanner could not connect to the Browserbase browser: the browser refused \
+                 the connection (HTTP 302)"
+            ))
+        );
+        assert_eq!(service.asked().len(), 3);
+        assert!(
+            elsewhere.asked().is_empty(),
+            "a redirect was followed: {:?}",
+            elsewhere.asked()
+        );
+    }
+
+    #[test]
+    fn a_live_view_is_only_opened_at_the_service_itself() {
+        let real = Api::new("https://api.browserbase.com", None).unwrap();
+        for accepted in [
+            "https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/1",
+            "https://browserbase.com/live",
+        ] {
+            assert!(real.is_a_live_view(accepted), "{accepted}");
+        }
+        for refused in [
+            "https://attacker.example/devtools-fullscreen/inspector.html?wss=connect.browserbase.com",
+            "https://www.browserbase.com.attacker.example/",
+            "https://notbrowserbase.com/",
+            "http://www.browserbase.com/devtools-fullscreen/inspector.html",
+            "http://127.0.0.1:9222/",
+            "https://127.0.0.1:9222/",
+            "file:///Applications/Calculator.app",
+            "javascript:alert(1)",
+            "www.browserbase.com/devtools-fullscreen/inspector.html",
+            "",
+        ] {
+            assert!(!real.is_a_live_view(refused), "{refused}");
+        }
+
+        // A stand-in on this machine may show a page on this machine.
+        let stand_in = Api::new("http://127.0.0.1:4010", None).unwrap();
+        assert!(stand_in.is_a_live_view("http://127.0.0.1:4010/live/1"));
+        assert!(stand_in.is_a_live_view("http://localhost:9222/"));
+        assert!(stand_in.is_a_live_view("https://www.browserbase.com/devtools-fullscreen/x"));
+        assert!(!stand_in.is_a_live_view("http://attacker.example/"));
+        assert!(!stand_in.is_a_live_view("https://attacker.example/"));
+        assert!(!stand_in.is_a_live_view("http://192.168.1.20/"));
+    }
+
+    #[tokio::test]
+    async fn a_live_view_somewhere_else_is_not_handed_out() {
+        let session = "5e551001-0000-4000-8000-000000000001";
+        let service = StandIn::start(|_, before| {
+            let address = match before {
+                0 => "https://attacker.example/devtools-fullscreen/inspector.html?token=t0ken",
+                _ => "http://127.0.0.1:9/live?token=t0ken",
+            };
+            Answer::Json(200, json!({ "debuggerFullscreenUrl": address }))
+        })
+        .await;
+        let api = Api::new(&service.url, None).unwrap();
+
+        let elsewhere = api.live_view(&credentials(), session).await;
+        let here = api.live_view(&credentials(), session).await;
+
+        assert_eq!(elsewhere, Err(failed(UNEXPECTED_ANSWER)));
+        assert_eq!(here.as_deref(), Ok("http://127.0.0.1:9/live?token=t0ken"));
+    }
+
+    /// Whether a browser may run after a request for one failed decides
+    /// whether it is looked for.
+    #[tokio::test]
+    async fn a_failed_request_for_a_browser_says_whether_one_may_have_been_started() {
+        let refusal = |status: u16| json!({ "statusCode": status, "message": "No" });
+        for (status, answer, may_exist) in [
+            (400, refusal(400), false),
+            (401, refusal(401), false),
+            (429, refusal(429), false),
+            (500, refusal(500), true),
+            (503, json!("upstream connect error"), true),
+            (200, json!({ "status": "RUNNING" }), true),
+            (201, json!([]), true),
+        ] {
+            let service = StandIn::start(move |_, _| Answer::Json(status, answer.clone())).await;
+            let api = Api::new(&service.url, None).unwrap();
+
+            let refused = api.create_session(&credentials(), &order()).await.err();
+
+            assert_eq!(
+                refused.map(|refused| refused.session_may_exist),
+                Some(may_exist),
+                "{status}"
+            );
+        }
+
+        let slow = StandIn::start(|_, _| {
+            Answer::Late(Duration::from_millis(500), 201, json!({ "id": "x" }))
+        })
+        .await;
+        let impatient = Api::new(&slow.url, None)
+            .unwrap()
+            .giving_a_new_browser(Duration::from_millis(100));
+        let given_up = impatient
+            .create_session(&credentials(), &order())
+            .await
+            .err()
+            .unwrap();
+        assert!(given_up.session_may_exist);
+        assert_eq!(
+            given_up.failure,
+            failed("Browserbase could not be reached: it did not answer in time")
+        );
+    }
+
+    /// How many browsers run is a number: the sessions of whoever else
+    /// uses the project are counted, and nothing of them is read.
+    #[tokio::test]
+    async fn the_running_browsers_are_counted_without_being_read() {
+        let service = StandIn::start(|asked, _| {
+            assert_eq!(asked.query, "status=RUNNING");
+            Answer::Json(
+                200,
+                json!([
+                    { "id": "a", "status": "RUNNING", "userMetadata": { "organizationId": "3" } },
+                    { "unexpected": true },
+                    17,
+                ]),
+            )
+        })
+        .await;
+        let api = Api::new(&service.url, None).unwrap();
+
+        assert_eq!(api.running_session_count(&credentials()).await, Ok(3));
+
+        let odd = StandIn::start(|_, _| Answer::Json(200, json!({ "sessions": [] }))).await;
+        let api = Api::new(&odd.url, None).unwrap();
+        assert_eq!(
+            api.running_session_count(&credentials()).await,
+            Err(failed(UNEXPECTED_ANSWER))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_the_service_does_not_know_is_told_apart_from_a_failure() {
+        let service = StandIn::start(|asked, _| match asked.path.as_str() {
+            "/v1/sessions/known" => {
+                Answer::Json(200, json!({ "id": "known", "status": "RUNNING" }))
+            }
+            "/v1/sessions/unknown" => {
+                Answer::Json(404, json!({ "statusCode": 404, "message": "Not Found" }))
+            }
+            _ => Answer::Json(503, json!({})),
+        })
+        .await;
+        let api = Api::new(&service.url, None).unwrap();
+
+        let known = api.find_session(&credentials(), "known").await.unwrap();
+        assert!(known.is_some_and(|session| session.running));
+        assert_eq!(api.find_session(&credentials(), "unknown").await, Ok(None));
+        assert_eq!(
+            api.find_session(&credentials(), "broken").await,
+            Err(failed("Browserbase is not available right now (HTTP 503)."))
+        );
     }
 
     #[test]

@@ -70,7 +70,7 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     // Held until the browser is gone, so the next scan finds the profile free.
     let _profile_turn = if scan.persistent_profile {
         let profile = Arc::clone(match remote {
-            Some(_) => &run.job.browserbase_profile,
+            Some(_) => run.job.browserbase_profile.turn(),
             None => &run.job.scan_profile,
         });
         if profile.available_permits() == 0 {
@@ -92,7 +92,7 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
                 let _ = session_tx.send(event);
             });
             let context_id = if scan.persistent_profile {
-                Some(kept_profile_context(run, credentials).await?)
+                kept_profile_context(run, credentials).await?
             } else {
                 None
             };
@@ -109,7 +109,12 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
         }
         None => (None, None),
     };
-    let request = scan.capture_request(&run.job.settings, session_ids);
+    let mut request = scan.capture_request(&run.job.settings, session_ids);
+    if let CaptureBrowser::Browserbase(cloud) = &request.browser {
+        // A scan whose kept profile is gone runs in a browser that keeps
+        // nothing.
+        request.persistent_profile = cloud.context_id.is_some();
+    }
     let start = start_line(&request, scan.proxy.usage().name);
     run.info(start).await?;
 
@@ -118,8 +123,11 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
         let _ = activity_tx.send(activity);
     });
     let recording = start_recording(run).await?;
+    // A token of its own: a capture whose events cannot be stored is
+    // stopped, without the scan counting as cancelled by its user.
+    let stop_capture = run.job.cancel.child_token();
     let session = CaptureSession {
-        cancel: run.job.cancel.clone(),
+        cancel: stop_capture.clone(),
         finish,
         on_activity,
         proxy_password: run.job.proxy_password.clone(),
@@ -129,22 +137,44 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     let source = Arc::clone(&run.deps.capture);
     let capture = source.capture(request, session);
     tokio::pin!(capture);
+    // What the capture reports is stored as it happens. When storing
+    // fails, the capture is not abandoned where it stands: it is stopped
+    // and heard out, because what it says last is that its Browserbase
+    // browser has ended, and the record of that browser must hear it.
+    let mut unstored: Option<NodeError> = None;
     let result = loop {
-        tokio::select! {
+        let stored = tokio::select! {
             result = &mut capture => break result,
-            Some(activity) = activity_rx.recv() => record(run, activity).await?,
-            Some(event) = session_rx.recv() => remote_session_event(run, event).await?,
+            Some(activity) = activity_rx.recv() => match unstored {
+                None => record(run, activity).await,
+                Some(_) => Ok(()),
+            },
+            Some(event) = session_rx.recv() => remote_session_event(run, event).await,
+        };
+        if let Err(error) = stored
+            && unstored.is_none()
+        {
+            unstored = Some(error);
+            stop_capture.cancel();
         }
     };
     run.job.finish.disarm();
     while let Ok(activity) = activity_rx.try_recv() {
-        record(run, activity).await?;
+        if unstored.is_none() {
+            unstored = record(run, activity).await.err();
+        }
     }
     while let Ok(event) = session_rx.try_recv() {
-        remote_session_event(run, event).await?;
+        let stored = remote_session_event(run, event).await;
+        unstored = unstored.or(stored.err());
     }
     // Whatever became of the browser, nothing is left to show of it.
     run.job.remote_session.ended();
+    if let Some(error) = unstored {
+        recording.abort();
+        let _ = run.deps.archive.remove(&run.state.summary.id).await;
+        return Err(error);
+    }
     let capture = match result {
         Ok(capture) => capture,
         Err(error) => {
@@ -173,12 +203,25 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
 
 /// The Browserbase context that holds the kept profile of the scan's device,
 /// made on first use. The caller holds the profile's turn.
+///
+/// `None` when the profile was given up since the scan read its
+/// credentials, because those were removed or replaced while it waited: a
+/// context made with them now could never be deleted by the app again, and
+/// one on record by now belongs to other credentials. The scan then runs
+/// without a kept profile, and says so.
 async fn kept_profile_context(
-    run: &StepRun<'_>,
+    run: &mut StepRun<'_>,
     credentials: &BrowserbaseCredentials,
-) -> Result<String, NodeError> {
+) -> Result<Option<String>, NodeError> {
+    const GIVEN_UP: &str = "Browserbase was disconnected, or connected to another project, after this scan was started: it runs without the browser profile kept there";
+    let profile = run.job.browserbase_profile.clone();
+    let started_with = run.job.browserbase_generation;
+    if profile.generation() != started_with {
+        run.info(GIVEN_UP).await?;
+        return Ok(None);
+    }
     let device = run.job.scan.options.device;
-    let ledger = &run.deps.remote_sessions;
+    let ledger = Arc::clone(&run.deps.remote_sessions);
     let now = run.deps.clock.now_ms();
     let known = ledger
         .contexts()
@@ -195,11 +238,24 @@ async fn kept_profile_context(
                 .await
                 .map_err(AppError::from)?;
             ledger.save_context(device, &context_id, now).await?;
+            if profile.generation() != started_with {
+                // Given up while the context was being made. This scan
+                // holds the profile's turn, so the record holds no context
+                // but the one it just made.
+                let _ = run
+                    .deps
+                    .browserbase
+                    .delete_context(credentials, &context_id)
+                    .await;
+                ledger.forget_contexts().await?;
+                run.info(GIVEN_UP).await?;
+                return Ok(None);
+            }
             context_id
         }
     };
     ledger.context_used(device, now).await?;
-    Ok(context_id)
+    Ok(Some(context_id))
 }
 
 /// What the capture says about its Browserbase session: kept on record so

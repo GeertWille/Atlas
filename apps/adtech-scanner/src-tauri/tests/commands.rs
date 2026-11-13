@@ -1715,6 +1715,133 @@ fn browserbase_api() -> wiremock::MockServer {
     })
 }
 
+/// A browser that an earlier run left on record is ended at the next
+/// start, through the real client: it is asked about by its own id, ended
+/// only when Browserbase reports it as running under this installation's
+/// tags, and the project's sessions are never listed for it.
+#[test]
+fn a_start_releases_the_browser_an_earlier_run_left_running_and_no_one_elses() {
+    use adscan_engine::application::ports::BrowserbaseLedger;
+    use adscan_engine::infrastructure::sqlite::SqliteStore;
+    use wiremock::matchers::{header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    struct Silent;
+    impl adscan_engine::application::ports::EventSink for Silent {
+        fn emit(&self, _event: ScanEvent) {}
+    }
+    const LEFT_RUNNING: &str = "5e551001-0000-4000-8000-000000000001";
+    const SOMEONE_ELSES: &str = "5e551002-0000-4000-8000-000000000002";
+    const ENDED_SINCE: &str = "5e551003-0000-4000-8000-000000000003";
+
+    // What the earlier run left behind: three sessions on record as open.
+    let data_dir = tempfile::tempdir().unwrap();
+    let install_id = tauri::async_runtime::block_on(async {
+        let store = SqliteStore::open(data_dir.path()).unwrap();
+        let a_minute_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            * 1_000.0
+            - 60_000.0;
+        for session in [LEFT_RUNNING, SOMEONE_ELSES, ENDED_SINCE] {
+            store.session_created(session, a_minute_ago).await.unwrap();
+        }
+        store.install_id().await.unwrap()
+    });
+    let api = tauri::async_runtime::block_on(async {
+        let server = MockServer::start().await;
+        let session = |id: &str, status: &str, install: &str| {
+            json!({
+                "id": id, "status": status, "projectId": BROWSERBASE_PROJECT,
+                "startedAt": "2026-11-13T08:26:07.000Z",
+                "userMetadata": { "app": "adscan", "install": install, "scan": "a-scan" }
+            })
+        };
+        let other_install = "ffffffffffffffffffffffffffffffff";
+        for (id, status, install) in [
+            (LEFT_RUNNING, "RUNNING", install_id.as_str()),
+            (SOMEONE_ELSES, "RUNNING", other_install),
+            (ENDED_SINCE, "COMPLETED", install_id.as_str()),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(format!("/v1/sessions/{id}")))
+                .and(header("X-BB-API-Key", BROWSERBASE_KEY))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(session(id, status, install)),
+                )
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(header("X-BB-API-Key", BROWSERBASE_KEY))
+            .respond_with(ResponseTemplate::new(200).set_body_json(session(
+                LEFT_RUNNING,
+                "COMPLETED",
+                &install_id,
+            )))
+            .mount(&server)
+            .await;
+        server
+    });
+
+    let endpoint = BrowserbaseEndpoint {
+        api_url: api.uri(),
+        connect_url: None,
+    };
+    let app = tauri::async_runtime::block_on(AppState::build(
+        AppConfig {
+            data_dir: data_dir.path().to_path_buf(),
+            anthropic_base_url: NOWHERE.into(),
+            typesafe_base_url: NOWHERE.into(),
+            api_key_override: Some("sk-ant-test".into()),
+            typesafe_api_key_override: None,
+            proxy_password_override: None,
+            browserbase: endpoint.clone(),
+            browserbase_api_key_override: Some(BROWSERBASE_KEY.into()),
+            browserbase_project_id_override: Some(BROWSERBASE_PROJECT.into()),
+        },
+        Arc::new(NoBrowser),
+        Arc::new(BrowserbaseAdapter::new(
+            Browserbase::new(endpoint).unwrap(),
+            Arc::new(|_| Ok(())),
+        )),
+        Arc::new(Silent),
+    ))
+    .unwrap();
+
+    // The sweep runs beside the start. It is over when the record is empty.
+    let open_sessions = || {
+        tauri::async_runtime::block_on(async {
+            SqliteStore::open(data_dir.path())
+                .unwrap()
+                .open_sessions()
+                .await
+                .unwrap()
+        })
+    };
+    for _ in 0..200 {
+        if open_sessions().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(open_sessions().is_empty(), "{:?}", open_sessions());
+
+    let mut asked = requests_to(&api);
+    asked.sort();
+    assert_eq!(
+        asked,
+        [
+            format!("GET /v1/sessions/{LEFT_RUNNING}"),
+            format!("GET /v1/sessions/{SOMEONE_ELSES}"),
+            format!("GET /v1/sessions/{ENDED_SINCE}"),
+            format!("POST /v1/sessions/{LEFT_RUNNING}"),
+        ]
+    );
+    drop(app);
+}
+
 fn requests_to(server: &wiremock::MockServer) -> Vec<String> {
     tauri::async_runtime::block_on(server.received_requests())
         .unwrap_or_default()

@@ -7,7 +7,13 @@ import type {
   Settings,
   VisitorBehavior,
 } from "@/bindings";
-import { browserKindOf, cityName, parseLocation, reachableFromCloud } from "@/shared/domain/browserbase";
+import {
+  browserKindOf,
+  cityName,
+  type LocationError,
+  parseLocation,
+  reachableFromCloud,
+} from "@/shared/domain/browserbase";
 import { type ProxyChoiceKey, proxyChoiceFromKey, proxyChoiceKey } from "@/shared/domain/proxy";
 import { BUDGET_USD, defaultHeadless, VISIT_PAGES, visitorOf } from "@/shared/domain/scan-options";
 import { normalizeScanUrl } from "./scan-url";
@@ -106,17 +112,18 @@ export function withVisitor(form: ScanForm, visitor: VisitorBehavior, settings: 
 }
 
 /**
- * Moving the browser takes the proxy along where it can go: this Mac's own proxy means nothing to a cloud
- * browser, and a Browserbase location nothing to a browser on this Mac. Those fall back to the settings.
+ * Moving the browser changes nothing else in the form. A proxy choice that cannot go along (this Mac's own
+ * proxy to a cloud browser, a Browserbase location to this Mac) is kept for the way back; `proxyFieldFor`
+ * says what holds meanwhile.
  */
 export function withBrowser(form: ScanForm, browser: BrowserKind): ScanForm {
-  return { ...form, browser, proxy: proxyFieldFor(form, browser === "browserbase") };
+  return { ...form, browser };
 }
 
 /**
  * The proxy choice as it holds where the browser runs. One that cannot go along (this Mac's own proxy to a
- * cloud browser, a Browserbase location to this Mac) is left to the settings, also while the form still
- * remembers it for when the address changes back.
+ * cloud browser, a Browserbase location to this Mac) is left to the settings, while the form still remembers
+ * it for when the browser or the address changes back.
  */
 export function proxyFieldFor(form: Pick<ScanForm, "proxy">, remote: boolean): ProxyField {
   return form.proxy === (remote ? "system" : "browserbaseLocation") ? "settings" : form.proxy;
@@ -127,7 +134,7 @@ export function runsOnBrowserbase(form: Pick<ScanForm, "browser">, url: string):
   return form.browser === "browserbase" && reachableFromCloud(url);
 }
 
-export type ScanFormErrors = { url?: string; budget?: string; location?: string };
+export type ScanFormErrors = { url?: string; budget?: string; location?: LocationError };
 
 export type ScanFormResult = { ok: true; options: ScanOptions } | { ok: false; errors: ScanFormErrors };
 
@@ -147,7 +154,7 @@ export function validateScanForm(form: ScanForm): ScanFormResult {
   const remote = url.ok && runsOnBrowserbase(form, url.url);
   const proxyField = proxyFieldFor(form, remote);
   let proxy: ProxyChoice | undefined;
-  let locationError: string | undefined;
+  let locationError: LocationError | undefined;
   if (proxyField === "browserbaseLocation") {
     const location = parseLocation({
       country: form.locationCountry,

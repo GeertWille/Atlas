@@ -22,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 
 pub use browserbase::{
     BROWSERBASE_API_URL, Browserbase, BrowserbaseEndpoint, BrowserbaseError, BrowserbaseHooks,
-    BrowserbaseProjectUsage, BrowserbaseSessionUsage,
+    BrowserbaseProjectUsage, BrowserbaseSessionStanding, BrowserbaseSessionUsage,
 };
 
 #[derive(Debug, thiserror::Error)]

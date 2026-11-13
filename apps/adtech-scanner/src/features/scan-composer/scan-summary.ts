@@ -1,6 +1,6 @@
 import type { ProxyChoice, Settings } from "@/bindings";
 import type { AiAvailability } from "@/shared/domain/ai-availability";
-import { parseLocation, regionPlace } from "@/shared/domain/browserbase";
+import { parseLocation, regionName } from "@/shared/domain/browserbase";
 import { proxyChoiceFromKey, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { VISITOR_META } from "@/shared/domain/scan-options";
 import { formatUsd, pluralize } from "@/shared/lib/format";
@@ -48,7 +48,7 @@ function aiPart(form: ScanForm, settings: SummarySettings, ai: AiAvailability, b
 /**
  * What pressing Scan will do, as short parts for one line: "Browse like a visitor", "3 pages",
  * "browser shown", "Belgium proxy", "AI on, about $0.37". On Browserbase the place of the browser stands where
- * its window would: "Browserbase Frankfurt", "Belgium (Browserbase proxy)".
+ * its window would: "Browserbase, Frankfurt (eu-central-1)", "Belgium (Browserbase proxy)".
  */
 export function scanSummary({
   form,
@@ -80,7 +80,7 @@ export function scanSummary({
   const shown = form.visitor === "manual" || form.showBrowser;
   let browser: SummaryPart = { text: shown ? "browser shown" : "browser hidden" };
   if (browserMissing) browser = { text: "Browserbase not set up", warning: true };
-  else if (remote) browser = { text: `Browserbase ${regionPlace(region)}` };
+  else if (remote) browser = { text: `Browserbase, ${regionName(region)}` };
   return [
     { text: VISITOR_META[form.visitor].label },
     ...(form.visitor === "browse" ? [{ text: pluralize(form.pages, "page") }] : []),

@@ -273,7 +273,27 @@ A scan
 - [ ] Pull the network cable during a Browserbase scan: it fails with "The connection to the
       Browserbase browser was lost …" after at most 90 s and the session ends by itself
 - [ ] Force-quit the app during a Browserbase scan, reopen it: the session is ended (by the closed
-      socket, or by the app's start-up sweep); sessions of the other application are untouched
+      socket, or by the app's start-up sweep); sessions of the other application are untouched.
+      The sweep asks about each session by its id and never lists the project's sessions
+- [ ] After any scan, the Capture step ends with "Browserbase ended the browser after … s" and not
+      with "Browserbase did not confirm that the browser has ended". If the second ever shows while
+      the dashboard says `COMPLETED`, the status lags by more than the five seconds the app waits:
+      write down by how much
+- [ ] **Never run against the real service:** the search for a browser whose id never arrived. One
+      way to see it: block `api.browserbase.com` (Little Snitch, or pull the cable) in the second
+      after "Asking Browserbase for a browser" and restore it within a minute. The scan fails;
+      the dashboard should show no session of this app left running, and the Capture step a line
+      "Browserbase's answer to the request for a browser was lost; the browser it had started for
+      this scan was ended". The list filter it relies on can also be checked by hand:
+      `curl -H "X-BB-API-Key: …" "https://api.browserbase.com/v1/sessions?status=RUNNING&q=user_metadata['install']:'<install id>'"`
+      during a scan must return that scan's session and nothing of the other application
+      (the install id is in the session's metadata in the dashboard)
+- [ ] Quit the app in the first second of a Browserbase scan (while it asks for a browser), reopen
+      it: does the dashboard show a session of this app that keeps running? Known gap: nothing ends
+      it before its time limit (about five minutes for a scripted scan)
+- [ ] Remove the Browserbase key during a manual visit: "Open live view" still works for that visit
+- [ ] Edit the proxy that is the Browserbase default to a `192.168.…` address: it saves, and the
+      Browserbase default shows "no proxy"
 
 "I'll browse myself"
 
@@ -298,6 +318,7 @@ Worth writing down
 | Browser seconds and proxy MB of one scan of a heavy news page through a location | |
 | Round trip from your network to each region (the probe shows it) | |
 | Whether a response body over 32 MB is ever reported as too large for the connection | |
+| Whether a body under 8 MB is ever reported as too large (it should not be: only a response with no counted bytes and more than about 8 kB on the wire is refused unread) | |
 | Whether an idle manual session survives more than 5 minutes without input | |
 
 ## 13. Signing and release (ticket #2)

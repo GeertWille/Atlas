@@ -1,27 +1,31 @@
 import { CloudIcon, LaptopIcon } from "lucide-react";
 import { type ReactNode, useId } from "react";
 import type { BrowserbaseRegion, BrowserKind, Settings } from "@/bindings";
+import { BrowserbaseLocationFields } from "@/shared/components/browserbase-location-fields";
 import {
   BROWSERBASE_REGIONS,
   BROWSERBASE_UNREACHABLE,
   type BrowserbaseEstimate,
+  type LocationError,
+  regionName,
   regionOptionLabel,
-  regionPlace,
 } from "@/shared/domain/browserbase";
 import { type ProxyChoiceKey, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { cn } from "@/shared/lib/cn";
 import { formatUsd } from "@/shared/lib/format";
-import { Input } from "@/shared/ui/input";
 import { Label } from "@/shared/ui/label";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
-import { FixedValue, OptionHelp, OptionsSection } from "./option-layout";
+import { OptionHelp, OptionsSection } from "./option-layout";
 import { SettingsLink } from "./SettingsLink";
 import { type ProfileField, type ProxyField, proxyFieldFor, type ScanForm } from "./scan-form";
 
 type Update = (patch: Partial<ScanForm>) => void;
 
-/** Two lines of help under every control, so the section keeps its height wherever the browser runs. */
+/**
+ * Two lines of help under every control, so the section keeps its height wherever the browser runs. The cell
+ * beside "Where the browser runs" is the region's: on this Mac there is no region and it stays empty.
+ */
 const HELP = "min-h-8";
 
 function BrowserRunsOn({
@@ -89,28 +93,7 @@ function BrowserRunsOn({
   );
 }
 
-function RegionChoice({
-  form,
-  settings,
-  remote,
-  update,
-}: {
-  form: ScanForm;
-  settings: Settings;
-  remote: boolean;
-  update: Update;
-}) {
-  if (!remote) {
-    return (
-      <div className="flex min-w-0 flex-col gap-1.5">
-        <span className="text-[13px] leading-none font-medium">Region</span>
-        <div className="flex h-8 items-center">
-          <FixedValue>This Mac</FixedValue>
-        </div>
-        <OptionHelp className={HELP}>Only a Browserbase browser has a region to choose.</OptionHelp>
-      </div>
-    );
-  }
+function RegionChoice({ form, settings, update }: { form: ScanForm; settings: Settings; update: Update }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <Label>Region</Label>
@@ -123,7 +106,7 @@ function RegionChoice({
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            <SelectItem value="settings">Settings default ({regionPlace(settings.browserbase.region)})</SelectItem>
+            <SelectItem value="settings">Settings default: {regionName(settings.browserbase.region)}</SelectItem>
             {BROWSERBASE_REGIONS.map((region) => (
               <SelectItem key={region} value={region}>
                 {regionOptionLabel(region)}
@@ -135,45 +118,6 @@ function RegionChoice({
       <OptionHelp className={HELP}>
         A region near you is faster. Without a proxy, it is also where the visit comes from.
       </OptionHelp>
-    </div>
-  );
-}
-
-function LocationFields({ form, invalid, update }: { form: ScanForm; invalid: boolean; update: Update }) {
-  return (
-    <div className="flex gap-1.5">
-      <Input
-        aria-label="Country code"
-        aria-invalid={invalid ? true : undefined}
-        placeholder="BE"
-        maxLength={2}
-        autoCapitalize="characters"
-        autoComplete="off"
-        spellCheck={false}
-        value={form.locationCountry}
-        onChange={(event) => update({ locationCountry: event.target.value })}
-        className="w-14 shrink-0 uppercase placeholder:normal-case"
-      />
-      <Input
-        aria-label="State code, optional"
-        placeholder="State"
-        maxLength={2}
-        autoCapitalize="characters"
-        autoComplete="off"
-        spellCheck={false}
-        value={form.locationState}
-        onChange={(event) => update({ locationState: event.target.value })}
-        className="w-16 shrink-0 uppercase placeholder:normal-case"
-      />
-      <Input
-        aria-label="City, optional"
-        placeholder="City"
-        maxLength={60}
-        autoComplete="off"
-        spellCheck={false}
-        value={form.locationCity}
-        onChange={(event) => update({ locationCity: event.target.value })}
-      />
     </div>
   );
 }
@@ -191,16 +135,20 @@ function ProxyChoice({
   settings: Settings;
   remote: boolean;
   proxyMissing: boolean;
-  locationError: string | undefined;
+  locationError: LocationError | undefined;
   usage: BrowserbaseEstimate | null;
   update: Update;
 }) {
   const errorId = useId();
-  const region = regionPlace(form.region === "settings" ? settings.browserbase.region : form.region);
+  const region = regionName(form.region === "settings" ? settings.browserbase.region : form.region);
   const settingsDefault = remote ? settings.browserbase.defaultProxy : settings.defaultProxy;
   const proxy = proxyFieldFor(form, remote);
   const location = proxy === "browserbaseLocation";
-  const error = proxyMissing ? "This proxy was deleted. Choose another one." : location ? locationError : undefined;
+  const error = proxyMissing
+    ? "This proxy was deleted. Choose another one."
+    : location
+      ? locationError?.message
+      : undefined;
   const name = remote ? "Location" : "Proxy";
 
   let help: ReactNode = (
@@ -209,7 +157,7 @@ function ProxyChoice({
     </>
   );
   if (location) {
-    help = `A residential connection; the country is best effort.${usage ? ` About ${usage.proxyMb} MB${usage.proxyPerPage ? " per page" : ""} go through it, an estimated ${formatUsd(usage.proxyUsd)}.` : ""}`;
+    help = `A residential connection; the country is best effort.${usage ? ` About ${usage.proxyMb} MB${usage.proxyPerPage ? " per page" : ""} go through it, an estimated ${formatUsd(usage.proxyUsd)} at list price.` : ""}`;
   } else if (remote && proxy.startsWith("profile:")) {
     help = "Browserbase connects through your proxy. Its address and password are sent to Browserbase for that.";
   } else if (remote && (proxy === "none" || (proxy === "settings" && settingsDefault.kind === "none"))) {
@@ -225,7 +173,7 @@ function ProxyChoice({
         <SelectTrigger
           aria-label={name}
           aria-invalid={proxyMissing ? true : undefined}
-          aria-describedby={error ? errorId : undefined}
+          aria-describedby={proxyMissing ? errorId : undefined}
           className={cn("w-full", proxyMissing && "border-destructive")}
         >
           <SelectValue />
@@ -251,7 +199,22 @@ function ProxyChoice({
           </SelectGroup>
         </SelectContent>
       </Select>
-      {location ? <LocationFields form={form} invalid={locationError !== undefined} update={update} /> : null}
+      {location ? (
+        <div className="flex gap-1.5">
+          <BrowserbaseLocationFields
+            value={{ country: form.locationCountry, state: form.locationState, city: form.locationCity }}
+            onChange={({ country, state, city }) =>
+              update({
+                ...(country === undefined ? {} : { locationCountry: country }),
+                ...(state === undefined ? {} : { locationState: state }),
+                ...(city === undefined ? {} : { locationCity: city }),
+              })
+            }
+            error={locationError}
+            errorId={errorId}
+          />
+        </div>
+      ) : null}
       {error ? (
         <OptionHelp id={errorId} role="alert" className={cn(HELP, "text-red-fg")}>
           {error}
@@ -284,7 +247,9 @@ function BrowserProfileChoice({
   const settingsProfile = (remote ? settings.browserbase.persistentProfile : settings.persistentProfile)
     ? "kept"
     : "fresh";
-  const kept = allowed && (form.profile === "settings" ? settingsProfile : form.profile) === "kept";
+  // A choice to keep the profile that cannot hold there reads as what happens instead; the form remembers it.
+  const profile: ProfileField = !allowed && form.profile === "kept" ? "fresh" : form.profile;
+  const kept = (profile === "settings" ? settingsProfile : profile) === "kept";
   let help = kept
     ? "Cookies and consent carry over from earlier scans, like a returning visitor's."
     : "Starts without cookies, like a first-time visitor.";
@@ -293,7 +258,7 @@ function BrowserProfileChoice({
   return (
     <div className="flex min-w-0 flex-col gap-1.5">
       <Label>Browser profile</Label>
-      <Select value={form.profile} onValueChange={(profile) => update({ profile: profile as ProfileField })}>
+      <Select value={profile} onValueChange={(chosen) => update({ profile: chosen as ProfileField })}>
         <SelectTrigger aria-label="Browser profile" className="w-full">
           <SelectValue />
         </SelectTrigger>
@@ -301,14 +266,14 @@ function BrowserProfileChoice({
           <SelectGroup>
             <SelectItem value="settings">Settings default ({PROFILE_LABEL[settingsProfile].toLowerCase()})</SelectItem>
             <SelectItem value="fresh">{PROFILE_LABEL.fresh}</SelectItem>
-            <SelectItem value="kept" disabled={!allowed && form.profile !== "kept"}>
+            <SelectItem value="kept" disabled={!allowed}>
               {PROFILE_LABEL.kept}
             </SelectItem>
           </SelectGroup>
         </SelectContent>
       </Select>
       <OptionHelp className={HELP}>
-        {help} {form.profile === "settings" ? <SettingsLink>Change the default</SettingsLink> : null}
+        {help} {profile === "settings" ? <SettingsLink>Change the default</SettingsLink> : null}
       </OptionHelp>
     </div>
   );
@@ -340,7 +305,7 @@ export function OriginOptions({
   browserMissing: boolean;
   /** The form names a saved proxy that has been deleted. */
   proxyMissing: boolean;
-  locationError: string | undefined;
+  locationError: LocationError | undefined;
   /** What the scan is likely to use at Browserbase; `null` on this Mac. */
   usage: BrowserbaseEstimate | null;
   update: Update;
@@ -356,7 +321,7 @@ export function OriginOptions({
           browserMissing={browserMissing}
           onBrowserChange={onBrowserChange}
         />
-        <RegionChoice form={form} settings={settings} remote={remote} update={update} />
+        {remote ? <RegionChoice form={form} settings={settings} update={update} /> : <div aria-hidden="true" />}
         <ProxyChoice
           form={form}
           settings={settings}

@@ -84,6 +84,8 @@ struct Session {
     commands: Arc<Mutex<Vec<Command>>>,
     release_requests: u32,
     reads_after_end: u32,
+    /// How many readings of the ended session still said it was running.
+    lagging_reads: u32,
     cut: CancellationToken,
     connections: u32,
 }
@@ -130,6 +132,13 @@ struct Service {
     proxy_bytes_lag_reads: AtomicU32,
     proxy_bytes: AtomicU64,
     failing_releases: AtomicU32,
+    /// How many requests for a session are still to be answered without
+    /// naming the session they started.
+    lost_create_answers: AtomicU32,
+    /// How many readings of a session that has ended still say "running".
+    status_lag_reads: AtomicU32,
+    /// How long a refusal at the limit takes to arrive, in ms.
+    refusal_delay_ms: AtomicU64,
     next_id: AtomicU32,
 }
 
@@ -156,6 +165,9 @@ impl Cloud {
             proxy_bytes_lag_reads: AtomicU32::new(0),
             proxy_bytes: AtomicU64::new(0),
             failing_releases: AtomicU32::new(0),
+            lost_create_answers: AtomicU32::new(0),
+            status_lag_reads: AtomicU32::new(0),
+            refusal_delay_ms: AtomicU64::new(0),
             next_id: AtomicU32::new(1),
         });
         let shutdown = CancellationToken::new();
@@ -242,6 +254,29 @@ impl Cloud {
         self.service
             .failing_releases
             .store(count, Ordering::Relaxed);
+    }
+
+    /// The next `count` requests for a session start one, and are answered
+    /// with a 201 that does not name it: the answer a gateway mangled.
+    pub fn lose_create_answers(&self, count: u32) {
+        self.service
+            .lost_create_answers
+            .store(count, Ordering::Relaxed);
+    }
+
+    /// The status of a session lags: its first `reads` readings after it
+    /// ended still say "RUNNING". The answer to its release does not lag.
+    pub fn status_lags(&self, reads: u32) {
+        self.service
+            .status_lag_reads
+            .store(reads, Ordering::Relaxed);
+    }
+
+    /// A refusal at the limit takes this long to arrive.
+    pub fn refuse_slowly(&self, delay: Duration) {
+        self.service
+            .refusal_delay_ms
+            .store(delay.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Cuts the connection between the capture and the browser of a
@@ -987,7 +1022,12 @@ impl Service {
     }
 
     async fn create_session(&self, body: Value) -> Response {
-        if let Some(refused) = self.refuses(&body).or_else(|| self.is_full()) {
+        if let Some(refused) = self.refuses(&body) {
+            return refused;
+        }
+        if let Some(refused) = self.is_full() {
+            let delay = self.refusal_delay_ms.load(Ordering::Relaxed);
+            tokio::time::sleep(Duration::from_millis(delay)).await;
             return refused;
         }
         let number = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -1016,12 +1056,31 @@ impl Service {
             commands: Arc::default(),
             release_requests: 0,
             reads_after_end: 0,
+            lagging_reads: 0,
             cut: CancellationToken::new(),
             connections: 0,
         };
         let created = self.session_json(&mut session);
         self.sessions.lock().unwrap().push(session);
+        let lost = self.lost_create_answers.load(Ordering::Relaxed);
+        if lost > 0 {
+            self.lost_create_answers.store(lost - 1, Ordering::Relaxed);
+            return reply(StatusCode::CREATED, &json!({}));
+        }
         reply(StatusCode::CREATED, &created)
+    }
+
+    /// `GET /v1/sessions/{id}`: the session, or, while its status lags, the
+    /// session as it was before it ended.
+    fn read_session(&self, session: &mut Session) -> Response {
+        let lag = self.status_lag_reads.load(Ordering::Relaxed);
+        let mut shown = self.session_json(session);
+        if session.status == Status::Completed && session.lagging_reads < lag {
+            session.lagging_reads += 1;
+            shown["status"] = json!("RUNNING");
+            shown.as_object_mut().unwrap().remove("endedAt");
+        }
+        reply(StatusCode::OK, &shown)
     }
 
     fn with_session(&self, id: &str, then: impl FnOnce(&mut Session) -> Response) -> Response {
@@ -1218,9 +1277,9 @@ async fn answer(
     match (method.as_str(), parts.as_slice()) {
         ("POST", ["v1", "sessions"]) => service.create_session(body).await,
         ("GET", ["v1", "sessions"]) => service.list_sessions(query),
-        ("GET", ["v1", "sessions", id]) => service.with_session(id, |session| {
-            reply(StatusCode::OK, &service.session_json(session))
-        }),
+        ("GET", ["v1", "sessions", id]) => {
+            service.with_session(id, |session| service.read_session(session))
+        }
         ("POST", ["v1", "sessions", id]) => service.update_session(id, &body).await,
         ("GET", ["v1", "sessions", id, "debug"]) => service.live_view(id),
         (_, ["v1", "contexts"]) => service.contexts(&method, None, &body),

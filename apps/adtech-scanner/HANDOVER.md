@@ -71,11 +71,11 @@ Rules that came from you and must keep holding:
 | Part | Path | State |
 |---|---|---|
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
-| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 307 unit tests; the integration tests drive real Chromium, the Browserbase ones through a mock of its API whose sessions are local Chromium browsers behind a WebSocket. One test against the real service is ignored unless asked for. |
+| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied (the Browserbase review of 2026-11-13 included). 332 unit tests; the integration tests drive real Chromium, the Browserbase ones through a mock of its API whose sessions are local Chromium browsers behind a WebSocket. One test against the real service is ignored unless asked for. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (42 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1264 tests, 6 ignored (2026-11-13, with Browserbase). |
-| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 788 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-13). |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), a Browserbase scan against a mock (key saved in Settings, scan started in the composer, environment record and usage checked, probe, key removed), and every command's contract: 47 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
+| Tauri shell (42 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass (26); 4 real-browser pipeline tests on Linux (`cargo test -p adtech-scanner --test real_browser -- --ignored`). `cargo test --workspace`: 1297 tests, 6 ignored (2026-11-13, after the fixes of the Browserbase review). |
+| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 788 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-13, counted before the Browserbase review; the frontend's fixes for that review are made and counted separately, and these two numbers are updated with them). |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), a Browserbase scan against a mock (key saved in Settings, scan started in the composer, environment record and usage checked, probe, key removed), and every command's contract: 47 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Last run on 2026-11-13 with the backend after the Browserbase review and the frontend as built before it (`dist/` of 15:56 UTC): the frontend was being changed for the same review and did not type-check at that moment, so `pnpm test:tauri` as written stopped in `pnpm build`. Run it again once the frontend builds. Not run on macOS. |
 
 ## Run it on a Mac
 
@@ -193,9 +193,14 @@ without destroying the old ones.
   is reported, and whether a SOCKS5 proxy is accepted), the spelling Browserbase expects for a city of
   a location (upper case with underscores is from its documentation as remembered), the live view
   opened by the opener plugin on macOS and driven by hand, a kept profile across real scans, the
-  start-up sweep against the real session list, whether the 50 MiB message limit and the 300 s idle
+  start-up sweep against the real service, whether the 50 MiB message limit and the 300 s idle
   close belong to Browserbase or to the sandbox's proxy (both guards are built), and the cost of a scan
-  through a residential location.
+  through a residential location. From the review fixes of 2026-11-13, built against stand-ins only:
+  the search for a browser behind a lost answer (the list filter `q=user_metadata['install']:'…'` was
+  measured with the key `app`, not with `install`; if it answers nothing, such a browser is not
+  found and runs to its time limit), how far the status of a session really lags behind its release,
+  whether Browserbase ever answers a request for a browser with a redirect or a 5xx after starting
+  one, and whether Chrome ever answers an image as text (see "Limits of the connection").
 - Proxies of any kind: no scan was run through a real proxy. The browser side (flag mapping, answering
   the proxy's password challenge) and the fetcher side were tested against local stand-ins only, and
   SOCKS5 not at all beyond building the client.
@@ -859,8 +864,13 @@ This machine's system proxy means nothing to a cloud browser: asked for, it is s
 and the Capture step says so. A Browserbase location with a local browser is refused.
 
 **What a Browserbase scan cannot do.** Load an address only this machine or its network can reach:
-loopback, private and link-local addresses, names without a dot and names under `.local`,
-`.localhost`, `.internal`, `.home.arpa` (`domain/reach.rs`). The built-in demo site is one. Chosen
+loopback, private and link-local addresses, all of `0.0.0.0/8`, carrier-grade NAT, multicast, names
+without a dot and names under `.local`, `.localhost`, `.internal`, `.home.arpa` (`domain/reach.rs`).
+An IPv6 address that only wraps an IPv4 one is judged by the address inside it: IPv4-mapped
+(`::ffff:10.0.0.5`), IPv4-compatible (`::127.0.0.1`), NAT64 (`64:ff9b::10.0.0.5`) and 6to4
+(`2002:0a00:0005::`). Not caught: a public-looking name that resolves to a private address (split
+DNS, `127.0.0.1.nip.io`). Names are not resolved; such a scan sends the address, path and query
+included, to Browserbase and fails there. The built-in demo site is one. Chosen
 explicitly, such a scan is refused before it exists ("This address is on this Mac or your network; a
 cloud browser cannot reach it. Scan it with this Mac's Chrome."); left to the default, it runs
 locally. The headless setting is ignored: the browser there always runs headless (stored as
@@ -882,15 +892,33 @@ bytes, for failed and cancelled scans too: the browser ran and is billed. The LL
 not touched by any of this. Proxy bytes are read when the browser ends and once more 30 s later
 (`application/pipeline/proxy_count.rs`), after the scan has finished and only for a scan through a
 proxy, because Browserbase counts them late; the second reading arrives as an ordinary scan update.
-What the service did during the capture (session started, a wait at its limit, the connection, the
-timezone, its own scripts, bodies too large for the connection, the release) is in the audit trail of
+What the service did during the capture (session started, a wait at its limit, a browser ended
+behind a lost answer, the connection, the timezone, its own scripts, bodies too large for the
+connection, the release) is in the audit trail of
 the Capture step as `visitor` entries with `data.activity = "browser"`; a lost connection and a
 release that could not be confirmed are warnings.
 
 **Limits of the connection.** One CDP client per session, a ping every 30 s, closed after 90 s of
-silence, messages up to 64 MiB. A body is only asked for when its reply fits: up to 8 MiB for what may
-be text (Chrome writes every non-ASCII character of a reply as `\uXXXX`, up to six times its size) and
-32 MiB for images, media and fonts; a larger one is read from a copy streamed while it loads, or
+silence, messages up to 64 MiB. A write that does not get through for 90 s counts as that silence (a
+peer that is gone stops taking what is written to it). A command that goes unanswered (60 s, more for
+a distant browser) ends the capture as a lost connection too, with the same sentence: a connection
+can die without closing, and the command gives up before the silence is long enough. Neither the
+REST client nor the upgrade to the WebSocket follows a redirect: the API key travels in a header of
+its own (`X-BB-API-Key`), which an HTTP client does not strip when a redirect leads elsewhere.
+
+A body is only asked for when its reply fits: up to 8 MiB for what may be text (Chrome writes every
+non-ASCII character of a reply as `\uXXXX`, up to six times its size) and 32 MiB for what is never
+text. "Never text" needs both: the request was for an image, media or a font, and the response's own
+MIME type is `image/*`, `video/*`, `audio/*` or `font/*` and not `+xml` (SVG) or `+json`. Measured
+on Chromium 1243, an `<img>` came back as base64 whatever it was answered with; the MIME check is
+there because Chrome has a second way to answer (from its own copy of the bytes) that goes by MIME
+type and charset, which was read in its source and not measured. The size that is compared is what
+was counted while the response arrived. A response that ended without anything counted has only its
+length on the wire, and 5 MiB of gzip can be 100 MiB of text: it is asked for only when that length
+is under a 1032nd of the limit (about 8 kB for text). Measured on Chromium 1243, every response with
+a body reports what it received, from the network, the disk cache and the memory cache alike; only
+one without a body reports nothing, so in practice this refuses nothing that has a body to read. A
+body that is too large is read from a copy streamed while it loads, or
 recorded as `tooLargeForRemote` (a `BodyState` of its own). On Browserbase every frame of every site
 runs on the page's session: there are no out-of-process iframes. A session's time limit is 120 s to
 start, the visit (45 s plus twice the observation time for none and scroll, 525 s for browse, 900 s
@@ -901,17 +929,28 @@ for manual) and 120 s of margin.
 with `GET /v1/projects`, which costs nothing, and adopts the key's project when it has one; with
 several the caller chooses. Settings only ever show `connected`, the project's name and its
 concurrency. `test_browserbase` reads project, usage and the number of running browsers and starts
-none. `probe_browserbase` starts one browser for a moment to read what a blank page sees
+none; the running browsers of whoever else uses the project are counted and not one field of them is
+read. `probe_browserbase` starts one browser for a moment to read what a blank page sees
 (`navigator.webdriver`, user agent, timezone, language, round trip) and is billed as one minute; the
-button says so. Removing the credentials first deletes the profile kept at Browserbase (best effort)
-and puts the default browser back to local.
+button says so. It reads the same facts and measures the round trip the same way as a capture does
+on arrival (the shortest of eight). Removing the credentials first deletes the profile kept at
+Browserbase (best effort) and puts the default browser back to local. A scan that is running keeps
+the credentials it started with, for its browser and for its live view.
+
+A proxy profile that is the Browserbase default and is then edited to an address only this machine
+can reach is saved, and the Browserbase default goes back to "no proxy": the profile is still good
+for scans on this machine.
 
 **Kept browser profile.** With `Settings.browserbase.persistentProfile` on (off by default, and
 independent of the local profile switch) a Browserbase scan keeps its profile in a Browserbase
 context, one per device profile, made on first use (`browserbase_contexts` in SQLite holds the ids).
 Cookies and consent then sit at Browserbase until cleared. One scan at a time uses the profile (one
 turn for both devices, apart from the turn of the local profile); `clear_browserbase_profile` deletes
-the contexts at Browserbase and is refused while a scan holds the turn.
+the contexts at Browserbase and is refused while a scan holds the turn. A scan that waited for its
+turn, or in the queue, while the credentials were removed or exchanged for another project's runs
+without the kept profile and says so in its Capture step: a context made with the old credentials
+could never be deleted by the app again, and a context on record by then is another project's
+(`RemoteProfile::generation` in `application/browserbase.rs`).
 
 **"I'll browse myself" on Browserbase.** The app's one CDP client keeps recording, and the app opens
 Browserbase's live view of the session in the user's own browser, from Rust with the opener plugin:
@@ -925,10 +964,35 @@ socket closes, and each has a time limit. As a third net every session a capture
 to the ledger `browserbase_sessions` (ids and times only) and marked when its end is confirmed. At
 start, the first app on a data directory releases what an earlier run left open
 (`BrowserbaseService::release_abandoned_sessions`): nothing happens, and the keychain is not read,
-unless the ledger has such a row; rows older than 6 h 5 min are dropped (no session lives longer);
-for the rest Browserbase is asked for the running sessions that carry this installation's id, and
-only ids that are on the ledger and in that answer are released. The project is shared with another
-application: a session without this installation's id is never listed, read or released.
+unless the ledger has such a row; rows older than 6 h 5 min are dropped (no session lives longer).
+Each remaining row is asked about by its own id (`GET /v1/sessions/{id}`), and released only when
+Browserbase reports it as running with this app's tag and this installation's id in its metadata. A
+row leaves the ledger when Browserbase has said what became of its session (ended, unknown to this
+key, or not this installation's); one that could not be asked about, or not be released, stays for
+the next start. The project's sessions are never listed for this. The project is shared with another
+application: a session without this installation's id is never read or released.
+
+The end of a session counts as confirmed when either the answer to its release or a reading of it
+says so. The status at Browserbase may lag: a release that answered `COMPLETED` stands when the
+reading right after it still says `RUNNING`, and without such an answer the session is read up to
+six times, a second apart, before the capture says `releaseUnconfirmed` and leaves the row to the
+next start.
+
+**A browser nobody has the id of.** `POST /v1/sessions` can start a browser and fail to say so: the
+answer is given up on (the request for a browser now waits 60 s, other calls 30 s; measured: 0.2 to
+0.7 s), its body cannot be read, it is a 2xx that names no session, or a 5xx from the service or a
+gateway. No id means no ledger row, so the capture looks for the browser at once: it lists the
+running sessions that carry this installation's id (`q=user_metadata['install']:'…'`), keeps those
+whose metadata, checked on this side, has this app's tag, this installation's id and this scan's
+id, and releases them; up to three looks, 2 s apart, because a request that was given up on may
+still be turning into a session. The Capture step then says so (`strayReleased`). A refusal (4xx,
+429 included) and a request that never left are not followed by a look. Not covered: the app is
+quit, or dies, while the request for a browser is under way. That browser runs to its time limit
+(325 s for a 20 s scroll scan, 1140 s for a manual visit); whether Browserbase ends a session that
+nobody ever connected to before that is not known. The start-up sweep does not look for it, because
+it would have to read the keychain at every start to do so. The same holds when Browserbase cannot
+be reached for the look either. The probe looks the same way, by the tag `scan: probe`: two probes
+started at the same moment by one installation could end each other's browser there.
 
 **ads.txt and sellers.json.** The site's ads.txt is fetched by the app, not by the cloud browser:
 through the user's named proxy when the scan uses one, otherwise the way the app's other requests
@@ -939,7 +1003,13 @@ unchanged.
 **Errors.** `ErrorCode` has `browserbaseAuth` (not set up, key or project refused), `browserbaseLimit`
 (at the limit of browsers at once or of new browsers per minute after waiting; a 429 there carries no
 `retry-after`, so the capture waits 5 s at a time for at most 60 s) and `browserbaseFailed`. The
+60 s are on the clock from the first request, the time the requests themselves take included; the
+last wait is cut to end with them, and the last request, begun within them, is heard out. The
 messages come from the browser crate as whole sentences and are passed through unchanged.
+
+A capture whose reports can no longer be stored (a full disk) is stopped and still heard out, so
+that the end of its browser reaches the ledger and the scan's usage; the scan then fails with the
+storage error.
 
 **Where the code is.** `crates/browser/src/browserbase.rs` and `cdp/browserbase/` (REST client, session
 lifecycle, WebSocket transport, built by another implementer; its own notes are in that crate),
@@ -950,7 +1020,22 @@ lifecycle, WebSocket transport, built by another implementer; its own notes are 
 `src-tauri/src/adapters.rs` (`BrowserbaseAdapter`). Tests: `crates/engine/tests/browserbase.rs` with a
 fake capture source and a fake of Browserbase's API, `src-tauri/tests/commands.rs` against a mock of
 the REST API, and `e2e-tauri/browserbase.spec.ts` against a REST mock whose sessions are local
-Chromium browsers reached over a WebSocket.
+Chromium browsers reached over a WebSocket. The REST client and the session lifecycle also have unit
+tests against a programmable HTTP stand-in (`cdp/browserbase/stand_in.rs`, test builds only): lost
+answers, lagging statuses, redirects.
+
+**Review of 2026-11-13, what was left as it is.** The review's fifteen findings are fixed (the text
+above describes the result). Of its simplifications, four were applied: one helper for the innermost
+cause of an HTTP failure, one set of facts and one measure of the round trip for the probe and the
+capture, the wait at the limit as two constants, and the count of running browsers. Left alone: the
+three identical `Auth`/`Limit`/`Failed` enums and the usage structs mirrored between the browser
+crate and the engine's ports (one type in `crates/model` would change the contract crate, and the
+engine's ports would then name a type the adapters own); `ConnectFailure` (folding it into the
+capture's error would make `cdp` depend on `capture`); the hand-written RFC 3339 parser in
+`cdp/browserbase/time.rs` (replacing it means a new dependency); and
+`BrowserbaseEndpoint.connect_url` with `ADSCAN_BROWSERBASE_CONNECT_URL` (a documented variable with a
+test of its own; it can point the DevTools connection at any `wss://` host, so removing it is worth
+doing, as a decision of its own).
 
 Not built, on purpose: reconnecting after a dropped connection, `keepAlive`, Verified sessions, session
 replay or logs inside the app, ads.txt fetched from the cloud network, a tunnel to loopback, and any
