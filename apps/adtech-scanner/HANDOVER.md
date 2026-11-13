@@ -191,6 +191,21 @@ without destroying the old ones.
   either way; the tracker runs there, which it should not. That the tracker is confined in time at
   all rests on Chrome running kept-back commands before the new document's first script: observed
   on Chromium 1243 (40 of 40 runs of a probe), not documented by Chrome, not checked on a Mac.
+- **A navigation that does not end keeps the scanner's questions to the page waiting.** Chrome
+  holds every command that the page itself must answer (reading the title, the scroll position,
+  `navigator.webdriver`, the tracker flush, the consent search) while a navigation of the tab is
+  under way. The one case that was the scanner's own doing is fixed (see "The tracker stays on the
+  scanned site"). A page that starts a navigation to a server that takes long to answer would have
+  the same effect for as long as that takes: each such command waits, up to the 60 s
+  `CALL_TIMEOUT` of `cdp/client.rs`, and is then taken for unanswered. Recording goes on
+  meanwhile. Inferred from the trace of the fixed case, not measured with a slow server.
+- **Hidden empty files in the temp dir on Linux.** A Chrome that is killed in the first fraction
+  of a second of its start can leave a `.org.chromium.Chromium.XXXXXX` file of 0 bytes in `/tmp`
+  (3 of 30 launches killed after 150 ms, 0 of 60 killed later; about 3 per run of the browser test
+  suite, from the tests that end a browser early). It is the file Chrome makes for shared memory
+  under `--disable-dev-shm-usage` and removes a moment later; without the flag the same file is
+  left in `/dev/shm`. Nothing ties such a file to a launch, so nothing removes it. The flag is
+  only passed on Linux.
 - **Ad servers other than Google Publisher Tag are not read.** Slots, ad requests, `hb_*` targeting on
   the request, fill and render timing all come from hooks on `googletag`. A page that serves through
   Xandr AST (`apntag`, `ib.adnxs.com/ut/v3`), Equativ/Smart AdServer (`sas`), Adform or a direct ad
@@ -663,7 +678,17 @@ What the backend guarantees about it:
   guard needs it. It ends with `Fetch.enable` and no patterns, not `Fetch.disable`: Chromium 153
   never loads a document whose request it was about to pause when the disable arrived, and holds
   back every later command on the tab (about 1 visit in 90 of the test below, each then waiting out
-  two 60 s command timeouts). With no pattern, such a request is still announced and continued.
+  two 60 s command timeouts; an iframe whose document is caught the same way stays empty, without
+  any sign). With no pattern, such a request is still announced and continued. That an empty
+  pattern list pauses nothing was observed on Chromium 153 only (0 of the requests of a demo visit
+  paused after it); the protocol description reads as if a missing list means "everything". On a
+  Chrome that took an empty list that way the visit would still work, with every request waiting
+  one round trip. The order of events that hangs, from a trace: `Page.frameStartedNavigating` and
+  `Network.requestWillBeSent` for the new document, then `Fetch.disable` sent and answered, and
+  never a `Fetch.requestPaused`, a response or a `Page.frameNavigated`; Chrome holds commands for
+  the page while a navigation of its tab is under way, so `Page.createIsolatedWorld` went
+  unanswered twice. Second test: `no_document_request_is_lost_when_the_scan_stops_pausing_them`
+  (a page that adds iframes all through that moment; with `Fetch.disable` it failed 20 of 20 runs).
   Until then each document of the entry page, iframes included, waits one round trip, which
   overlaps the first auction. Test:
   `a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scanned` in `tests/network.rs`,
@@ -718,6 +743,17 @@ What the backend guarantees about it:
   One scan at a time uses it; a second waits at its Capture step. `get_scan_profile` /
   `clear_scan_profile` report and remove it (`profileBusy` while a scan uses it). Throwaway profiles
   that a crash left in the temp dir are swept when the app starts.
+- **Chrome's socket directory.** Chrome keeps the socket that makes it the one browser on a profile
+  in a directory of its own in the temp dir (`org.chromium.Chromium.XXXXXX` on the test Chromium)
+  and links to it from the profile (`SingletonSocket`). It removes the directory when it exits; the
+  scanner kills the browser of every scan on a throwaway profile, so each scan left one behind, in
+  the app as in the tests. The directory the profile links to is now removed with the browser
+  (`cdp/profile.rs::remove_singleton_directory`: the two files Chrome puts there, by name, then the
+  directory if that emptied it): at shutdown, when a browser is dropped, by the watchdog, with an
+  abandoned profile at the next start, and when a kept profile is next used. Measured on Linux:
+  32 directories left per run of `tests/network.rs` before, 0 after, 0 over the whole browser
+  suite. Not checked on a Mac, where the directory has another name; it is found through the link,
+  not by name.
 - Phase 2 knows about page views: the opening message has a visit block and the timelines of the entry
   page plus up to two page views with findings; `get_telemetry` takes a `page`, `report_finding` takes
   `pages` (numbered from 1 towards the model).

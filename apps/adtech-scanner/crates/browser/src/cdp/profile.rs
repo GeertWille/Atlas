@@ -79,9 +79,32 @@ pub(crate) enum PersistentProfileError {
     Io(#[from] std::io::Error),
 }
 
+const SINGLETON_SOCKET: &str = "SingletonSocket";
+const SINGLETON_COOKIE: &str = "SingletonCookie";
 /// What a browser that was killed leaves in its profile. A new browser takes
 /// them for a running instance, hands its start over to it and exits.
-const SINGLETON_FILES: [&str; 3] = ["SingletonLock", "SingletonSocket", "SingletonCookie"];
+const SINGLETON_FILES: [&str; 3] = ["SingletonLock", SINGLETON_SOCKET, SINGLETON_COOKIE];
+
+/// Chrome keeps the socket that makes it the one browser on a profile in a
+/// directory of its own in the temp dir, because the path of a socket may
+/// only be so long, and links to it from the profile. A browser that exits
+/// removes that directory; one that is killed, as the browser of every scan
+/// on a throwaway profile is, leaves it. This removes the directory the
+/// profile links to: the two files Chrome puts there, by name, and then the
+/// directory if that emptied it. A link that leads anywhere else loses
+/// nothing but files of those names.
+pub(crate) fn remove_singleton_directory(profile: &Path) {
+    let Ok(socket) = std::fs::read_link(profile.join(SINGLETON_SOCKET)) else {
+        return;
+    };
+    let Some(directory) = socket.parent().filter(|directory| directory.is_absolute()) else {
+        return;
+    };
+    for name in [SINGLETON_SOCKET, SINGLETON_COOKIE] {
+        let _ = std::fs::remove_file(directory.join(name));
+    }
+    let _ = std::fs::remove_dir(directory);
+}
 
 impl PersistentProfile {
     /// Takes the profile at `path` for one launch, creating it when needed.
@@ -89,6 +112,7 @@ impl PersistentProfile {
         let owner = lock(path, Missing::Create)?.ok_or(PersistentProfileError::Busy)?;
         // The lock file's age is when the profile was last used.
         owner.set_modified(SystemTime::now())?;
+        remove_singleton_directory(path);
         for name in SINGLETON_FILES {
             // `SingletonLock` is a dangling symlink, which `exists` denies.
             let _ = std::fs::remove_file(path.join(name));
@@ -237,7 +261,10 @@ pub(crate) fn remove_abandoned(root: &Path) -> usize {
             is_profile && entry.file_type().is_ok_and(|kind| kind.is_dir())
         })
         .filter(|entry| is_abandoned(&entry.path()))
-        .filter(|entry| std::fs::remove_dir_all(entry.path()).is_ok())
+        .filter(|entry| {
+            remove_singleton_directory(&entry.path());
+            std::fs::remove_dir_all(entry.path()).is_ok()
+        })
         .count()
 }
 
@@ -417,6 +444,60 @@ mod tests {
         assert!(!root.path().join("SingletonLock").is_symlink());
         assert!(!root.path().join("SingletonCookie").exists());
         assert!(root.path().join("Local State").exists());
+    }
+
+    /// What a killed browser leaves outside its profile: the directory of
+    /// its socket in the temp dir, linked from the profile.
+    fn singleton_directory_of(profile: &Path, temp_dir: &Path) -> PathBuf {
+        let directory = temp_dir.join("org.chromium.Chromium.Ab12Cd");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join(SINGLETON_SOCKET), "").unwrap();
+        std::os::unix::fs::symlink("1234567890", directory.join(SINGLETON_COOKIE)).unwrap();
+        std::os::unix::fs::symlink(
+            directory.join(SINGLETON_SOCKET),
+            profile.join(SINGLETON_SOCKET),
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn the_socket_directory_a_killed_browser_left_in_the_temp_dir_goes_with_its_profile() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let kept = temp_dir.path().join("kept");
+        std::fs::create_dir(&kept).unwrap();
+        let of_kept = singleton_directory_of(&kept, temp_dir.path());
+        drop(PersistentProfile::open(&kept).unwrap());
+        assert!(!of_kept.exists(), "removed when the profile is next used");
+
+        let abandoned = left_behind_by_a_dead_owner(temp_dir.path(), "dead");
+        let of_abandoned = singleton_directory_of(&abandoned, temp_dir.path());
+        assert_eq!(remove_abandoned(temp_dir.path()), 1);
+        assert!(!of_abandoned.exists(), "removed with an abandoned profile");
+    }
+
+    #[test]
+    fn only_the_browsers_own_two_files_are_removed_where_the_profile_links_to() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profile = temp_dir.path().join("profile");
+        std::fs::create_dir(&profile).unwrap();
+        let directory = singleton_directory_of(&profile, temp_dir.path());
+        std::fs::write(directory.join("someone-elses"), "data").unwrap();
+
+        remove_singleton_directory(&profile);
+
+        assert!(!directory.join(SINGLETON_SOCKET).exists());
+        assert!(!directory.join(SINGLETON_COOKIE).is_symlink());
+        assert!(directory.join("someone-elses").exists());
+
+        // A link that does not say where in the file system it leads.
+        let relative = temp_dir.path().join("relative");
+        std::fs::create_dir(&relative).unwrap();
+        std::os::unix::fs::symlink(SINGLETON_SOCKET, relative.join(SINGLETON_SOCKET)).unwrap();
+        std::fs::write(relative.join(SINGLETON_COOKIE), "").unwrap();
+        remove_singleton_directory(&relative);
+        assert!(relative.join(SINGLETON_COOKIE).exists());
+        remove_singleton_directory(&temp_dir.path().join("missing"));
     }
 
     #[test]

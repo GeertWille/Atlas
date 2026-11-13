@@ -241,7 +241,17 @@ async fn the_demo_visit_is_recorded_on_every_target_with_links_and_bodies() {
     assert!(
         matched.url.starts_with("http://localhost:") && pixel.url.starts_with("http://127.0.0.1:")
     );
-    assert!(start.ended_at_ms.unwrap() <= matched.started_at_ms + 1.0);
+    // A redirect is one moment that the record states twice: as the end of
+    // the hop before, on the clock that timed that hop, and as the start of
+    // the hop after, on the wall clock. How far the two readings are apart
+    // depends on how busy the browser is when it takes them, so they are not
+    // compared; that the hops follow one another in time is.
+    assert!(start.started_at_ms <= start.ended_at_ms.unwrap());
+    assert!(matched.started_at_ms <= matched.ended_at_ms.unwrap());
+    assert!(
+        start.started_at_ms <= matched.started_at_ms
+            && matched.started_at_ms <= pixel.started_at_ms
+    );
     assert_eq!(pixel.kind, ResourceKind::Image);
 
     // -- Bid requests: recognised, with the request and the answer.
@@ -1341,5 +1351,53 @@ async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scann
         .collect();
     for visit in visits {
         visit.await.unwrap();
+    }
+}
+
+/// The scan stops pausing document requests once the tracker is confined.
+/// It used to do that by switching the interception off, and the browser then
+/// let go of a document request that had started and was not yet reported as
+/// paused without ever sending it: an iframe stayed empty, and a navigation
+/// of the tab never ended, which kept the page from answering the scan for
+/// two minutes. The page here starts document requests all through that
+/// moment, and the server must see every one of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_document_request_is_lost_when_the_scan_stops_pausing_them() {
+    let visits: Vec<_> = (0..4)
+        .map(|_| {
+            tokio::spawn(async {
+                let fixtures = Fixtures::start().await;
+                let mut request = support::request(
+                    &fixtures.url("network-frames-while-settling.html"),
+                    DeviceProfile::Desktop,
+                );
+                request.observe_seconds = 2;
+                let outcome = support::run(request).await;
+                outcome.result.unwrap_or_else(|error| {
+                    panic!("capture failed: {error}\n{:#?}", outcome.progress)
+                });
+                let mut frames: Vec<usize> = fixtures
+                    .requested()
+                    .iter()
+                    .filter_map(|path| path.strip_prefix("/status/200?frame=")?.parse().ok())
+                    .collect();
+                frames.sort_unstable();
+                frames
+            })
+        })
+        .collect();
+    for visit in visits {
+        let frames = visit.await.unwrap();
+        // The last few may still have been on their way when the visit
+        // ended; one that was lost leaves a gap before later ones.
+        let lost: Vec<usize> = (0..frames.last().map_or(0, |last| last + 1))
+            .filter(|frame| frames.binary_search(frame).is_err())
+            .collect();
+        assert!(
+            frames.len() > 4,
+            "only {} iframes were requested",
+            frames.len()
+        );
+        assert_eq!(lost, Vec::<usize>::new(), "of {} iframes", frames.len());
     }
 }

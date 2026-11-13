@@ -15,6 +15,9 @@ const SCROLL_GATED_UNITS: [&str; 4] = [
     "ad-inarticle-1",
 ];
 const CONFIGURED_TIMEOUT_MS: f64 = 250.0;
+/// Prebid times a bid with `Date.now()`, in whole milliseconds, at both ends;
+/// the tracker times the auction in fractions of one.
+const WHOLE_MS_CLOCK_ERROR: f64 = 2.0;
 
 async fn scan(device: DeviceProfile, auto_scroll: bool) -> Capture {
     let site = adscan_browser::start_demo_site().await.unwrap();
@@ -267,6 +270,7 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
     assert_eq!(lazy.units, ["ad-inarticle-2"]);
     assert!(lazy.started_at > main.started_at);
     assert_eq!(auctions.len(), 3, "anchor, gated and lazy auction");
+    let mut lasted: BTreeMap<&str, f64> = BTreeMap::new();
     for auction in &auctions {
         assert_eq!(auction.timeout, Some(CONFIGURED_TIMEOUT_MS));
         let ended = first_time(
@@ -279,6 +283,7 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
             (50.0..1_000.0).contains(&duration),
             "auction lasted {duration} ms"
         );
+        lasted.insert(&auction.id, duration);
     }
 
     // -- Bids of the gated auction ----------------------------------------------
@@ -331,10 +336,16 @@ async fn desktop_starts_the_gated_auction_on_first_scroll_and_shows_every_plante
             size.as_deref().is_some_and(|size| size.contains('x')),
             "{size:?}"
         );
+        // Prebid takes a bid for as long as the auction is open, and the
+        // timer that closes it at the timeout runs when the page gets round
+        // to it: on a busy machine a bid that was due well within the timeout
+        // is taken hundreds of milliseconds after it. What holds on any
+        // machine is that a bid was not taken after its auction ended.
         let latency = time_to_respond.expect("bids report their latency");
+        let auction_lasted = lasted[auction_id.as_str()];
         assert!(
-            latency > 0.0 && latency <= CONFIGURED_TIMEOUT_MS + 50.0,
-            "{bidder} answered in {latency} ms"
+            latency > 0.0 && latency <= auction_lasted + WHOLE_MS_CLOCK_ERROR,
+            "{bidder} answered in {latency} ms, in an auction that lasted {auction_lasted} ms"
         );
         if *auction_id == main.id {
             responders.insert(bidder.as_str());

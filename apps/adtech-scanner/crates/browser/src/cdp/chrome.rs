@@ -9,7 +9,9 @@
 //! A capture normally runs on a throwaway profile, which goes with the
 //! browser: removed at shutdown, by the watchdog, or by the next launch when
 //! both were prevented. A capture on the browser profile the user keeps leaves
-//! that directory alone on every one of those paths.
+//! that directory alone on every one of those paths. The directory a killed
+//! browser leaves in the temp dir for its socket is removed on all of them
+//! (`profile::remove_singleton_directory`).
 
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::path::Path;
@@ -256,6 +258,7 @@ impl Chrome {
             return;
         };
         let path = profile.path().to_path_buf();
+        profile::remove_singleton_directory(&path);
         let disposable = profile.disposable().is_some();
         // Killed processes need a moment to go and release their files. The
         // lock on a kept profile is held until they are gone.
@@ -285,6 +288,9 @@ impl Chrome {
 impl Drop for Chrome {
     fn drop(&mut self) {
         self.kill_process_tree();
+        if let Some(profile) = &self.profile {
+            profile::remove_singleton_directory(profile.path());
+        }
         if let Some(watchdog) = self.watchdog.take() {
             watchdog.disarm();
         }

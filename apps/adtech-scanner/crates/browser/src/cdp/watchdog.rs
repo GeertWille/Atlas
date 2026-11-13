@@ -2,8 +2,9 @@
 //! being killed. It is a shell that waits on a pipe from this process, in its
 //! own process group so that a Ctrl+C aimed at the app does not reach it. The
 //! pipe reports end of file when this process is gone, whatever ended it, and
-//! the shell then kills the browser's process group and removes its profile,
-//! unless the profile is one the user keeps.
+//! the shell then kills the browser's process group and removes its profile
+//! and the directory of its socket in the temp dir, which the profile links
+//! to, unless the profile is one the user keeps.
 //!
 //! macOS has no way to tie a child's life to its parent's, and a browser that
 //! hangs does not notice its DevTools pipe closing; the watchdog covers both.
@@ -22,6 +23,13 @@ trap '' HUP INT TERM
 if read -r released; then exit 0; fi
 kill -s KILL -- "-$ADSCAN_BROWSER_GROUP" 2>/dev/null
 [ -n "$ADSCAN_BROWSER_PROFILE" ] || exit 0
+socket=$(readlink "$ADSCAN_BROWSER_PROFILE/SingletonSocket" 2>/dev/null)
+case "$socket" in
+/*/SingletonSocket)
+    rm -f -- "$socket" "${socket%Socket}Cookie" 2>/dev/null
+    rmdir -- "${socket%/*}" 2>/dev/null
+    ;;
+esac
 for attempt in 1 2 3 4 5; do
     rm -rf -- "$ADSCAN_BROWSER_PROFILE" 2>/dev/null
     [ -e "$ADSCAN_BROWSER_PROFILE" ] || exit 0
@@ -156,6 +164,32 @@ mod tests {
             Some(Signal::SIGKILL as i32)
         );
         assert!(is_removed_within(profile.path(), Duration::from_secs(5)).await);
+    }
+
+    #[tokio::test]
+    async fn losing_the_owner_removes_the_socket_directory_the_profile_links_to() {
+        let mut group = ProcessGroup::start();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let profile = temp_dir.path().join("profile");
+        let sockets = temp_dir.path().join("org.chromium.Chromium.Ab12Cd");
+        let unrelated = temp_dir.path().join("unrelated");
+        for directory in [&profile, &sockets, &unrelated] {
+            std::fs::create_dir(directory).unwrap();
+        }
+        std::fs::write(sockets.join("SingletonSocket"), "").unwrap();
+        std::fs::write(sockets.join("SingletonCookie"), "").unwrap();
+        std::os::unix::fs::symlink(
+            sockets.join("SingletonSocket"),
+            profile.join("SingletonSocket"),
+        )
+        .unwrap();
+
+        drop(Watchdog::guard(group.id(), Some(&profile)).unwrap());
+
+        assert!(group.dies_within(Duration::from_secs(5)).await);
+        assert!(is_removed_within(&profile, Duration::from_secs(5)).await);
+        assert!(!sockets.exists());
+        assert!(unrelated.exists());
     }
 
     #[tokio::test]

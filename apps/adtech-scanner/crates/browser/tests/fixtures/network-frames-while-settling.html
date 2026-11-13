@@ -1,0 +1,24 @@
+<!doctype html>
+<title>A page that keeps loading iframes while the scan settles on it</title>
+<script>
+  // From its load event on, for `?for=<ms>`, the page adds numbered iframes as
+  // fast as its timer runs. Each one is a document request of its own.
+  var lasts = Number(new URLSearchParams(location.search).get('for') || 600);
+  var made = 0;
+  addEventListener('load', function () {
+    var started = performance.now();
+    var timer = setInterval(function () {
+      if (performance.now() - started > lasts) {
+        clearInterval(timer);
+        return;
+      }
+      for (var twice = 0; twice < 2; twice++) {
+        var frame = document.createElement('iframe');
+        frame.onload = function () { this.remove(); };
+        frame.src = '/status/200?frame=' + made++;
+        document.body.appendChild(frame);
+      }
+    }, 4);
+  });
+</script>
+<body></body>
