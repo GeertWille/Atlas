@@ -9,8 +9,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    DeviceProfile, FollowedLink, InitiatorKind, PageReach, ProxyScheme, RequestContext,
-    ResourceKind, ServedFrom, VisitorBehavior,
+    BrowserbaseRegion, BrowserbaseSessionSettings, DeviceProfile, FollowedLink, InitiatorKind,
+    PageReach, ProxyScheme, RequestContext, ResourceKind, ServedFrom, VisitorBehavior,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +33,96 @@ pub struct CaptureRequest {
     pub proxy: CaptureProxy,
     /// Explicit browser executable; `None` means auto-detect.
     pub chrome_path: Option<String>,
+    /// Where the browser runs. With Browserbase, `headless` and
+    /// `chrome_path` mean nothing, `proxy` is `None` or `Custom` (never
+    /// `System`), and `persistent_profile` is true exactly when
+    /// `context_id` is set.
+    #[serde(default)]
+    pub browser: CaptureBrowser,
+}
+
+/// The browser a capture drives.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CaptureBrowser {
+    /// Chrome on this machine.
+    #[default]
+    Local,
+    Browserbase(BrowserbaseCapture),
+}
+
+/// What a capture asks of Browserbase. The API key and the project id are
+/// handed over outside this type ([`BrowserbaseCredentials`]), like a proxy
+/// password, so they can never be serialised with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserbaseCapture {
+    pub region: BrowserbaseRegion,
+    /// Sent with the session exactly as given.
+    pub settings: BrowserbaseSessionSettings,
+    /// A residential exit of Browserbase. When set, `CaptureRequest.proxy`
+    /// is `None`, and the timezone is left to Browserbase. When not set, a
+    /// `Custom` proxy of the request is sent to Browserbase as an `external`
+    /// proxy with its password, and the timezone is set to the region's.
+    pub location: Option<BrowserbaseLocation>,
+    /// The Browserbase context that holds the kept browser profile of the
+    /// request's device; sent with `persist: true`. `None` for a throwaway
+    /// browser.
+    pub context_id: Option<String>,
+    /// This installation's id, for the session's `userMetadata.install`.
+    pub install_id: String,
+    /// The scan's id, for `userMetadata.scan`.
+    pub scan_id: String,
+}
+
+/// Where a Browserbase proxy should leave from. Best effort on their side.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserbaseLocation {
+    /// ISO 3166-1 alpha-2, upper case.
+    pub country: String,
+    pub state: Option<String>,
+    pub city: Option<String>,
+}
+
+/// What authenticates the app at Browserbase. In memory only: never
+/// serialised, logged or sent to the frontend.
+#[derive(Clone, PartialEq, Eq)]
+pub struct BrowserbaseCredentials {
+    pub api_key: String,
+    pub project_id: String,
+}
+
+/// Never prints the key.
+impl std::fmt::Debug for BrowserbaseCredentials {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserbaseCredentials")
+            .field("project_id", &self.project_id)
+            .finish_non_exhaustive()
+    }
+}
+
+/// What a capture tells about its Browserbase session while it runs, apart
+/// from the audit trail: the engine keeps its record of open sessions and
+/// its usage figures from these. Ids only; never a connect or live-view URL.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RemoteSessionEvent {
+    /// Browserbase started the browser. Reported before the capture
+    /// connects to it.
+    Created { session_id: String },
+    /// A manual visit is recording and the person can take over: the moment
+    /// to open the live view.
+    LiveViewReady { session_id: String },
+    /// The browser has ended and Browserbase confirmed it. Reported for
+    /// every created session, however the capture ends.
+    Released {
+        session_id: String,
+        /// `endedAt - startedAt` of the session.
+        session_seconds: Option<f64>,
+        /// As Browserbase counted them at that moment; the count lags.
+        proxy_bytes: Option<f64>,
+    },
 }
 
 /// The proxy the browser connects through. The password of a custom proxy is
@@ -201,6 +291,29 @@ pub struct CaptureEnvironment {
     pub viewport_overridden: bool,
     /// Third-party host names the pages requested: names only, at most 500.
     pub request_hosts: Vec<String>,
+    /// What a Browserbase browser reported; `None` for a local browser.
+    #[serde(default)]
+    pub browserbase: Option<BrowserbaseSessionFacts>,
+}
+
+/// What the capture learned from a Browserbase browser and its session.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserbaseSessionFacts {
+    pub session_id: String,
+    /// `Browser.getVersion` product, e.g. "Chrome/157.0.8103.79".
+    pub browser_version: Option<String>,
+    /// The page's timezone before the capture changed anything.
+    pub original_timezone: Option<String>,
+    /// What the capture set with `Emulation.setTimezoneOverride`; `None`
+    /// when it set nothing.
+    pub applied_timezone: Option<String>,
+    /// `navigator.language`.
+    pub language: Option<String>,
+    /// The lowest round trip of the samples taken at connect.
+    pub round_trip_ms: Option<f64>,
+    /// Remote clock minus this machine's, from that sample.
+    pub clock_offset_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -218,6 +331,9 @@ pub enum ActivityKind {
     Blocked,
     /// What the page can tell about the browser.
     Environment,
+    /// What a remote browser service did or reported: a session started, a
+    /// wait at its limit, the connection, the timezone, the release.
+    RemoteBrowser,
 }
 
 /// One thing that happened during a capture, reported while it runs. Every
@@ -676,6 +792,11 @@ pub enum CapturedBody {
     /// The decoded body. `bytes` holds the first `max_bytes` the sink
     /// admitted; `total_bytes` is the length before that cut.
     Read { bytes: Vec<u8>, total_bytes: u64 },
+    /// The sink admitted it, but the answer would not fit in one message of
+    /// the connection to a remote browser and no copy of it was streamed, so
+    /// the capture never asked for it. `total_bytes` is the decoded length
+    /// the browser reported.
+    TooLargeForRemote { total_bytes: u64 },
 }
 
 /// The request body (`postData`) as handed over.

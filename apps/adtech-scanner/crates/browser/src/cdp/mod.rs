@@ -29,7 +29,10 @@ pub(crate) async fn connect(
     let pipe = chrome
         .take_debugging_pipe()
         .ok_or_else(|| LaunchError::Unresponsive("it is already connected".to_string()))?;
-    let (cdp, events) = Cdp::start(pipe.from_browser, pipe.to_browser);
+    let (cdp, events) = Cdp::start(
+        pipe::MessageReader::new(pipe.from_browser),
+        pipe::MessageWriter::new(pipe.to_browser),
+    );
     let ready = cdp.send(None, "Browser.getVersion", json!({}));
     match tokio::time::timeout(chrome::STARTUP_TIMEOUT, ready).await {
         Ok(Ok(_)) => Ok((cdp, events)),

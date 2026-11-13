@@ -3,6 +3,8 @@
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use super::client::{MessageSink, MessageSource};
+
 const DELIMITER: u8 = 0;
 const READ_CHUNK: usize = 64 * 1024;
 
@@ -42,6 +44,28 @@ impl<R: AsyncRead + Unpin> MessageReader<R> {
                 return Ok(None);
             }
         }
+    }
+}
+
+impl<R: AsyncRead + Unpin + Send + 'static> MessageSource for MessageReader<R> {
+    async fn next(&mut self) -> std::io::Result<Option<Vec<u8>>> {
+        MessageReader::next(self).await
+    }
+}
+
+/// Writes messages to the browser's end of the pipe. Dropping it closes
+/// the stream, which is what makes Chrome exit.
+pub(crate) struct MessageWriter<W>(W);
+
+impl<W> MessageWriter<W> {
+    pub(crate) fn new(sink: W) -> Self {
+        Self(sink)
+    }
+}
+
+impl<W: AsyncWrite + Unpin + Send + 'static> MessageSink for MessageWriter<W> {
+    async fn send(&mut self, message: &str) -> std::io::Result<()> {
+        write_message(&mut self.0, message).await
     }
 }
 

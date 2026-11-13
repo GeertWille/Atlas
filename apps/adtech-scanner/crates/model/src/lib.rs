@@ -130,6 +130,99 @@ contract! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             host: Option<String>,
         },
+        /// A residential exit that Browserbase provides, best effort, in a
+        /// country and optionally a state and city. Only a scan whose browser
+        /// runs on Browserbase can use it.
+        #[serde(rename_all = "camelCase")]
+        BrowserbaseLocation {
+            /// ISO 3166-1 alpha-2, upper case: "BE".
+            country: String,
+            /// US state code, upper case: "NY".
+            #[ts(optional)]
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            state: Option<String>,
+            /// City name in upper case with underscores, as Browserbase
+            /// takes it: "NEW_YORK".
+            #[ts(optional)]
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            city: Option<String>,
+        },
+    }
+
+    /// Where a scan's browser can run.
+    #[derive(Copy, Eq, Hash)]
+    pub enum BrowserKind {
+        /// Chrome on this machine.
+        Local,
+        /// A browser in Browserbase's cloud, driven over a WebSocket.
+        Browserbase,
+    }
+
+    /// The cloud regions Browserbase starts browsers in. Serialized as
+    /// Browserbase names them.
+    #[derive(Copy, Eq, Hash)]
+    pub enum BrowserbaseRegion {
+        #[serde(rename = "us-west-2")]
+        UsWest2,
+        #[serde(rename = "us-east-1")]
+        UsEast1,
+        #[serde(rename = "eu-central-1")]
+        EuCentral1,
+        #[serde(rename = "ap-southeast-1")]
+        ApSoutheast1,
+    }
+
+    /// Where the browser of one scan runs.
+    #[serde(tag = "kind")]
+    pub enum BrowserChoice {
+        Local,
+        #[serde(rename_all = "camelCase")]
+        Browserbase {
+            /// Absent: `Settings.browserbase.region`.
+            #[ts(optional)]
+            #[serde(default, skip_serializing_if = "Option::is_none")]
+            region: Option<BrowserbaseRegion>,
+        },
+    }
+
+    /// The Browserbase part of the settings. The API key and the project id
+    /// are never part of it: they live in the OS keychain.
+    pub struct BrowserbaseSettings {
+        /// The region a Browserbase scan runs in unless its options say
+        /// otherwise.
+        pub region: BrowserbaseRegion,
+        /// Where a Browserbase scan leaves from unless its options say
+        /// otherwise: `none` (the cloud region), one of `Settings.proxies`,
+        /// or a Browserbase location. Never `system`.
+        pub default_proxy: ProxyChoice,
+        /// Whether Browserbase scans may keep a browser profile (one
+        /// Browserbase context per device). Off unless the user turns it on,
+        /// whatever `Settings.persistent_profile` says.
+        pub persistent_profile: bool,
+        /// Read-only: an API key and a project id are stored.
+        pub connected: bool,
+        /// Read-only: name of the stored project, as Browserbase reported it
+        /// when the credentials were saved or last tested.
+        pub project_name: Option<String>,
+        /// Read-only: browsers the project may run at once, as last reported.
+        pub concurrency: Option<u32>,
+    }
+
+    /// Partial update of [`BrowserbaseSettings`]; omitted fields keep their
+    /// value.
+    #[derive(Default)]
+    pub struct BrowserbaseSettingsPatch {
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub region: Option<BrowserbaseRegion>,
+        /// `system` is stored as `none`: a cloud browser has no use for this
+        /// machine's proxy.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_proxy: Option<ProxyChoice>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub persistent_profile: Option<bool>,
     }
 
     /// User preferences. Persisted locally; API keys and the proxy password
@@ -186,6 +279,10 @@ contract! {
         /// Store cookie and authorization header values as sent instead of
         /// their lengths. Applies to new scans.
         pub store_full_headers: bool,
+        /// Where a scan's browser runs unless its options say otherwise.
+        /// `browserbase` only while Browserbase credentials are stored.
+        pub default_browser: BrowserKind,
+        pub browserbase: BrowserbaseSettings,
     }
 
     /// Partial update; omitted fields keep their current value.
@@ -236,6 +333,12 @@ contract! {
         #[ts(optional)]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub store_full_headers: Option<bool>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub default_browser: Option<BrowserKind>,
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub browserbase: Option<BrowserbaseSettingsPatch>,
     }
 
     pub struct BrowserInfo {
@@ -257,6 +360,67 @@ contract! {
     pub struct ScanProfileInfo {
         pub exists: bool,
         pub size_bytes: f64,
+        /// Unix epoch ms of the last scan that used it.
+        pub last_used_at: Option<f64>,
+        /// A scan is running in it right now; it cannot be cleared.
+        pub in_use: bool,
+    }
+
+    /// One Browserbase project of an API key. The id is an identifier, not
+    /// a secret.
+    pub struct BrowserbaseProject {
+        pub id: String,
+        pub name: String,
+        /// Browsers the project may run at once.
+        pub concurrency: u32,
+    }
+
+    /// What `set_browserbase_credentials` answers.
+    pub struct BrowserbaseCredentialsStatus {
+        /// The key was accepted, a project is settled, and both are stored.
+        pub valid: bool,
+        /// Human-readable reason when `valid` is false.
+        pub message: Option<String>,
+        /// The key's projects when it has several and none was named: the
+        /// caller picks one and sends the credentials again with its id.
+        /// Empty otherwise.
+        pub projects: Vec<BrowserbaseProject>,
+    }
+
+    /// What `test_browserbase` reads from the account. Costs nothing.
+    pub struct BrowserbaseStatus {
+        pub project_name: String,
+        pub concurrency: u32,
+        /// Running totals of the project since its start, all its users
+        /// together. Browserbase reports no allowance and no period.
+        pub browser_minutes: f64,
+        pub proxy_bytes: f64,
+        /// Browsers running in the project right now, whoever started them.
+        pub running_sessions: u32,
+    }
+
+    /// What a page in a Browserbase browser can read, measured by
+    /// `probe_browserbase` on a blank page of one short session.
+    pub struct BrowserbaseProbe {
+        pub region: BrowserbaseRegion,
+        /// `Browser.getVersion` product, e.g. "Chrome/157.0.8103.79".
+        pub browser_version: Option<String>,
+        pub user_agent: Option<String>,
+        /// `navigator.webdriver`; `None` when it could not be read.
+        pub webdriver: Option<bool>,
+        pub timezone: Option<String>,
+        /// `navigator.language`.
+        pub language: Option<String>,
+        /// Median round trip of one command to the browser.
+        pub round_trip_ms: Option<f64>,
+        /// How long the session ran. Browserbase bills at least one minute.
+        pub session_seconds: Option<f64>,
+    }
+
+    /// The browser profile Browserbase scans keep: one Browserbase context
+    /// per device profile, both together.
+    pub struct BrowserbaseProfileInfo {
+        pub exists: bool,
         /// Unix epoch ms of the last scan that used it.
         pub last_used_at: Option<f64>,
         /// A scan is running in it right now; it cannot be cleared.
@@ -308,6 +472,52 @@ impl Default for Settings {
             keep_network_data: true,
             archive_limit_bytes: DEFAULT_ARCHIVE_LIMIT_BYTES,
             store_full_headers: false,
+            default_browser: BrowserKind::Local,
+            browserbase: BrowserbaseSettings::default(),
+        }
+    }
+}
+
+impl Default for BrowserbaseSettings {
+    fn default() -> Self {
+        Self {
+            region: BrowserbaseRegion::UsWest2,
+            default_proxy: ProxyChoice::None,
+            persistent_profile: false,
+            connected: false,
+            project_name: None,
+            concurrency: None,
+        }
+    }
+}
+
+impl BrowserbaseRegion {
+    pub const ALL: [Self; 4] = [
+        Self::UsWest2,
+        Self::UsEast1,
+        Self::EuCentral1,
+        Self::ApSoutheast1,
+    ];
+
+    /// The name Browserbase's API takes.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UsWest2 => "us-west-2",
+            Self::UsEast1 => "us-east-1",
+            Self::EuCentral1 => "eu-central-1",
+            Self::ApSoutheast1 => "ap-southeast-1",
+        }
+    }
+
+    /// The timezone the scanner gives the browser when the visit leaves
+    /// from this region without a Browserbase proxy: without it every
+    /// region reports America/Los_Angeles.
+    pub fn timezone(self) -> &'static str {
+        match self {
+            Self::UsWest2 => "America/Los_Angeles",
+            Self::UsEast1 => "America/New_York",
+            Self::EuCentral1 => "Europe/Berlin",
+            Self::ApSoutheast1 => "Asia/Singapore",
         }
     }
 }
@@ -360,6 +570,14 @@ contract! {
         #[ts(optional)]
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub budget_usd: Option<f64>,
+        /// Where the browser runs. Absent: `Settings.default_browser`, except
+        /// that an address only this machine can reach is scanned locally.
+        /// With Browserbase, an absent `proxy` is
+        /// `Settings.browserbase.default_proxy` and an absent
+        /// `persistent_profile` is `Settings.browserbase.persistent_profile`.
+        #[ts(optional)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub browser: Option<BrowserChoice>,
     }
 
     /// The saved configuration a scan was started from, as it was named then.
@@ -448,6 +666,21 @@ contract! {
         /// it was recorded.
         #[serde(default)]
         pub proxy: Option<ProxyUse>,
+        /// What the scan used of a browser that is billed by use. `None`
+        /// for local scans, and until the remote browser has ended.
+        #[serde(default)]
+        pub remote: Option<RemoteUsage>,
+    }
+
+    /// Browserbase usage of one scan. Not part of the LLM budget.
+    pub struct RemoteUsage {
+        pub region: BrowserbaseRegion,
+        /// From the browser's start to its end. Billed per started minute.
+        pub session_seconds: Option<f64>,
+        /// Traffic through a proxy, as Browserbase counted it. It is read
+        /// when the browser ends and once more half a minute later, because
+        /// the count lags; `None` until the first read.
+        pub proxy_bytes: Option<f64>,
     }
 
     /// Everything the report screen needs for one scan.
@@ -602,18 +835,85 @@ contract! {
         None,
         System,
         Profile,
+        /// A residential exit of Browserbase.
+        BrowserbaseLocation,
     }
 
     /// The proxy a scan ran through. Never carries credentials.
     pub struct ProxyUse {
         pub kind: ProxyKind,
-        /// Name and host of the proxy profile, for `profile`.
+        /// Name of the proxy profile for `profile`; the requested place for
+        /// `browserbaseLocation`, e.g. "BE" or "US, NY, NEW_YORK".
         pub name: Option<String>,
+        /// Host of the proxy profile, for `profile`.
         pub host: Option<String>,
     }
 
-    /// What the scanned pages could tell about the visit. Reported as it
-    /// was; the scanner never hides that a visit is automated.
+    /// How a Browserbase browser reached the web.
+    #[derive(Copy, Eq, Hash)]
+    pub enum BrowserbaseProxyKind {
+        /// Straight from the cloud region.
+        None,
+        /// Through one of the user's own proxies.
+        External,
+        /// Through a residential exit of Browserbase.
+        Browserbase,
+    }
+
+    /// The session settings the scanner sends to Browserbase with every
+    /// browser it starts, stated explicitly so that a changed default at
+    /// Browserbase cannot change a scan.
+    #[derive(Copy, Eq)]
+    pub struct BrowserbaseSessionSettings {
+        pub solve_captchas: bool,
+        pub record_session: bool,
+        pub log_session: bool,
+        pub block_ads: bool,
+        pub keep_alive: bool,
+    }
+
+    /// A visit that ran in a Browserbase browser: what was asked of
+    /// Browserbase and what the browser and the service reported.
+    pub struct BrowserbaseVisit {
+        pub region: BrowserbaseRegion,
+        /// Browserbase's id of the session. An identifier, not a credential.
+        pub session_id: String,
+        /// `Browser.getVersion` product, e.g. "Chrome/157.0.8103.79".
+        pub browser_version: Option<String>,
+        pub proxy_kind: BrowserbaseProxyKind,
+        /// The country asked for, with a Browserbase proxy. Best effort on
+        /// Browserbase's side.
+        pub proxy_country: Option<String>,
+        pub settings: BrowserbaseSessionSettings,
+        /// The timezone the page reported before the scanner changed
+        /// anything.
+        pub original_timezone: Option<String>,
+        /// The timezone the scanner set to match the region. `None` when it
+        /// set none: with a Browserbase proxy the service aligns it itself.
+        pub applied_timezone: Option<String>,
+        /// `navigator.language`, as reported; the scanner never changes it.
+        pub language: Option<String>,
+        /// Round trip of one command between the app and the browser. Every
+        /// frame or request the scanner holds for a moment waits this long.
+        pub round_trip_ms: Option<f64>,
+        pub session_seconds: Option<f64>,
+        pub proxy_bytes: Option<f64>,
+    }
+
+    /// Where the scan's browser ran.
+    #[derive(Default)]
+    #[serde(tag = "kind")]
+    pub enum BrowserUse {
+        /// Chrome on this machine. Also what scans stored before the
+        /// browser was recorded read as.
+        #[default]
+        Local,
+        Browserbase(BrowserbaseVisit),
+    }
+
+    /// What the scanned pages could tell about the visit, reported as it
+    /// was. The scanner adds no disguise of its own; a Browserbase browser
+    /// does not tell the page it is automated, and `webdriver` says so.
     pub struct ScanEnvironment {
         pub visitor: VisitorBehavior,
         pub seed: u32,
@@ -627,7 +927,21 @@ contract! {
         pub emulated_mobile: bool,
         pub detectors: Vec<AutomationDetector>,
         pub proxy: ProxyUse,
+        #[serde(default)]
+        pub browser: BrowserUse,
     }
+}
+
+impl BrowserbaseSessionSettings {
+    /// The owner's decision of 2026-11-13: Browserbase as it is, with its
+    /// defaults stated.
+    pub const STANDARD: Self = Self {
+        solve_captchas: true,
+        record_session: true,
+        log_session: true,
+        block_ads: false,
+        keep_alive: false,
+    };
 }
 
 // ---------------------------------------------------------------------------
@@ -1119,8 +1433,9 @@ contract! {
         /// How one script was classified: probabilities, thresholds, routing.
         Classification,
         /// What the visitor did or met during the capture: a page view, an
-        /// action, a link choice, something blocked, the environment. `data`
-        /// is `{ activity, page, detail }`.
+        /// action, a link choice, something blocked, the environment, or
+        /// what a Browserbase browser reported (`activity: "browser"`).
+        /// `data` is `{ activity, page, detail }`.
         Visitor,
     }
 
@@ -1234,6 +1549,14 @@ contract! {
         Internal,
         /// The scan profile is in use by a running scan.
         ProfileBusy,
+        /// Browserbase is not set up, or refused the API key or the project.
+        BrowserbaseAuth,
+        /// Browserbase is at its limit of browsers at once or of new
+        /// browsers per minute, and waiting did not help.
+        BrowserbaseLimit,
+        /// Browserbase could not start the browser, refused the request, or
+        /// the connection to the browser was lost.
+        BrowserbaseFailed,
     }
 }
 
@@ -1259,6 +1582,7 @@ impl ScanOptions {
             persistent_profile: None,
             proxy: None,
             budget_usd: None,
+            browser: None,
         }
     }
 }

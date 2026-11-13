@@ -162,6 +162,9 @@ contract! {
         Pending,
         /// Removed to stay under the storage limit.
         Evicted,
+        /// Larger than one message of the connection to a remote browser
+        /// can carry, so it was never asked for.
+        TooLargeForRemote,
     }
 
     #[derive(Copy, Eq, Hash)]

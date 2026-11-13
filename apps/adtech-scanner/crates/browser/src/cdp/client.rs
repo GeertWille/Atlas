@@ -1,5 +1,6 @@
-//! A small Chrome DevTools Protocol client. It speaks over any byte stream
-//! pair; `pipe` frames the messages.
+//! A small Chrome DevTools Protocol client. It speaks over any transport
+//! that carries whole messages: `pipe` frames them on Chrome's debugging
+//! pipe, `websocket` carries them to a browser somewhere else.
 //!
 //! Messages stay untyped JSON on purpose: the handful of methods the scanner
 //! uses are stable, and generated protocol bindings break on events they do not
@@ -10,10 +11,19 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 
-use super::pipe::{MessageReader, write_message};
+/// The browser's half of a connection: one protocol message per call.
+pub(crate) trait MessageSource: Send + 'static {
+    /// The next message, or `None` once the browser closed its end. Safe to
+    /// drop mid-read: nothing received is lost.
+    fn next(&mut self) -> impl Future<Output = std::io::Result<Option<Vec<u8>>>> + Send;
+}
+
+/// The client's half of a connection. Dropping it closes the connection.
+pub(crate) trait MessageSink: Send + 'static {
+    fn send(&mut self, message: &str) -> impl Future<Output = std::io::Result<()>> + Send;
+}
 
 /// Generous: a wedged renderer must not hang a scan forever, nothing more.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
@@ -65,25 +75,16 @@ pub(crate) struct Cdp {
 }
 
 impl Cdp {
-    /// Starts talking to the browser at the other end of the two streams and
+    /// Starts talking to the browser at the other end of the transport and
     /// returns the client plus the stream of protocol events. Dropping the
     /// client closes `to_browser`.
-    pub(crate) fn start<R, W>(
-        from_browser: R,
-        to_browser: W,
-    ) -> (Self, mpsc::UnboundedReceiver<CdpEvent>)
-    where
-        R: AsyncRead + Unpin + Send + 'static,
-        W: AsyncWrite + Unpin + Send + 'static,
-    {
+    pub(crate) fn start(
+        from_browser: impl MessageSource,
+        to_browser: impl MessageSink,
+    ) -> (Self, mpsc::UnboundedReceiver<CdpEvent>) {
         let (commands, command_queue) = mpsc::unbounded_channel();
         let (events, event_stream) = mpsc::unbounded_channel();
-        tokio::spawn(pump(
-            MessageReader::new(from_browser),
-            to_browser,
-            command_queue,
-            events,
-        ));
+        tokio::spawn(pump(from_browser, to_browser, command_queue, events));
         (
             Self {
                 commands,
@@ -129,22 +130,19 @@ impl Cdp {
     }
 }
 
-async fn pump<R, W>(
-    mut from_browser: MessageReader<R>,
-    mut to_browser: W,
+async fn pump(
+    mut from_browser: impl MessageSource,
+    mut to_browser: impl MessageSink,
     mut commands: mpsc::UnboundedReceiver<Command>,
     events: mpsc::UnboundedSender<CdpEvent>,
-) where
-    R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
+) {
     let mut awaiting = Awaiting::new();
     loop {
         tokio::select! {
             command = commands.recv() => {
                 let Some(command) = command else { break };
                 awaiting.insert(command.id, (command.method, command.reply));
-                if write_message(&mut to_browser, &command.text).await.is_err() {
+                if to_browser.send(&command.text).await.is_err() {
                     break;
                 }
             }
@@ -189,6 +187,7 @@ fn route(mut message: Value, awaiting: &mut Awaiting, events: &mpsc::UnboundedSe
 pub(crate) mod fake {
     use tokio::io::DuplexStream;
 
+    use super::super::pipe::{MessageReader, MessageWriter, write_message};
     use super::*;
 
     pub(crate) struct Browser {
@@ -212,7 +211,10 @@ pub(crate) mod fake {
     pub(crate) fn connected() -> (Cdp, mpsc::UnboundedReceiver<CdpEvent>, Browser) {
         let (to_browser, commands) = tokio::io::duplex(1024);
         let (replies, from_browser) = tokio::io::duplex(1024);
-        let (cdp, events) = Cdp::start(from_browser, to_browser);
+        let (cdp, events) = Cdp::start(
+            MessageReader::new(from_browser),
+            MessageWriter::new(to_browser),
+        );
         let browser = Browser {
             commands: MessageReader::new(commands),
             replies,
