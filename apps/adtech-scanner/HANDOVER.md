@@ -184,6 +184,13 @@ without destroying the old ones.
 
 ## Known open issues
 
+- **Two ways the unconfined tracker can still reach another site.** If the entry page runs into the
+  load timeout while a redirect of it is still on its way, that navigation can commit after the page
+  was taken for opened and before the tracker is confined. And a tab the page opens before the site is
+  known is set up with the unconfined tracker and keeps it. Nothing of another site is recorded
+  either way; the tracker runs there, which it should not. That the tracker is confined in time at
+  all rests on Chrome running kept-back commands before the new document's first script: observed
+  on Chromium 1243 (40 of 40 runs of a probe), not documented by Chrome, not checked on a Mac.
 - **Ad servers other than Google Publisher Tag are not read.** Slots, ad requests, `hb_*` targeting on
   the request, fill and render timing all come from hooks on `googletag`. A page that serves through
   Xandr AST (`apntag`, `ib.adnxs.com/ut/v3`), Equativ/Smart AdServer (`sas`), Adform or a direct ad
@@ -593,6 +600,20 @@ What the backend guarantees about it:
   click opens, and pages that navigate by themselves. Each refusal is a `blocked` entry (`off-site`,
   `form`, `sensitive`, `download`); a refused click ends the link following of that visit. `none` and
   `scroll` send no clicks except the consent banner's and are not guarded; `manual` is the person's.
+- **The tracker stays on the scanned site.** It is installed without a site, because redirects of the
+  entry page decide which site the visit is on, and confined to that site once the entry page has
+  settled (`Page::confine_to_site`). So that a page which leaves its site in between cannot take the
+  unconfined tracker along, every scan pauses document requests until the tracker is confined, not
+  only a scan with a proxy login or a visitor that follows links. A main-frame navigation that
+  starts after the entry page has settled confines the tracker as it is paused, without waiting for
+  the answers: Chrome keeps commands back while a tab moves to another site's process and runs them
+  there before the new document's first script, so waiting would never end. A navigation that
+  started before the entry page settled is still a redirect, and the load wait waits for it to
+  commit or fail. With the confinement the pausing ends (`Fetch.disable`), unless the proxy login or
+  the navigation guard needs it. Until then each document of the entry page, iframes included, waits
+  one round trip, which overlaps the first auction. Test:
+  `a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scanned` in `tests/network.rs`,
+  whose other site reports whether the tracker touched it.
 - **What the navigation guard does not cover.** The guard checks navigations, nothing else. A link
   that passes every check above is clicked with a real click, and whatever the page itself attached
   to that click runs: a handler added with `addEventListener` (on the link or on any ancestor, which
