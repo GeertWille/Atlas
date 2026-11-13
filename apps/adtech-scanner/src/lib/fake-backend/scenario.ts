@@ -5,6 +5,7 @@ import type {
   LogLevel,
   PipelineNode,
   ProxyUse,
+  RemoteUsage,
   ScanDetail,
   ScanOptions,
   ScriptRecord,
@@ -16,7 +17,14 @@ import { aiAvailability } from "@/shared/domain/ai-availability";
 import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { proxyUseLabel } from "@/shared/domain/proxy";
-import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
+import { MANUAL_SESSION_LIMIT_MS, VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
+import {
+  type BrowserbaseFailure,
+  CONNECTION_LOST_MESSAGE,
+  fakeBrowserbaseVisit,
+  fakeProxyBytes,
+  LIMIT_MESSAGE,
+} from "./browserbase";
 import { buildDiagnostics, isOnThisMachine } from "./diagnostics";
 import {
   aiInvestigations,
@@ -49,6 +57,8 @@ export type ScanResult = Pick<
   healthScore: number;
   prebidVersion: string | null;
   aiUsed: boolean;
+  /** What the scan used at Browserbase, as the count stands once it has settled. `null` for a local scan. */
+  remote: RemoteUsage | null;
 };
 
 export type Scenario = {
@@ -130,6 +140,20 @@ class Timeline {
       level: activity === "blocked" ? "warn" : "info",
       data: { activity, page, detail },
     });
+  }
+
+  /** What the capture says about its Browserbase browser: a `visitor` entry that belongs to no page view. */
+  remoteBrowser(event: string, message: string, detail: Record<string, unknown> = {}, after = 120) {
+    this.log(message, {
+      after,
+      kind: "visitor",
+      level: event === "connectionLost" ? "warn" : "info",
+      data: { activity: "browser", page: null, detail: { event, ...detail } },
+    });
+  }
+
+  get elapsed(): number {
+    return this.now;
   }
 
   awaitFinish() {
@@ -224,6 +248,9 @@ const TOKENS_PER_EXTRA_PAGE = 1_500;
 const MANUAL_SESSION_PAGES = 3;
 /** Simulated time the person spends on a page of a manual session before moving on. */
 const MANUAL_PAGE_MS = 5_000;
+/** The capture asks Browserbase again every five seconds for a minute before it gives up. */
+const RATE_LIMIT_WAIT_SECONDS = 5;
+const RATE_LIMIT_ATTEMPTS = 3;
 
 /** Names the script an excerpt came from and the lines it spans, as the backend does when it verifies a citation. */
 function completeEvidence(evidence: EvidenceDraft, scripts: ScriptRecord[]): Evidence {
@@ -248,6 +275,10 @@ export type ScenarioContext = {
   jevFails?: boolean;
   /** A manual session that the user finished after this many page views. */
   manualPages?: number;
+  /** The Browserbase project's name, for a scan that runs there. */
+  projectName?: string | null;
+  /** The Browserbase browser cannot be started, or goes away during the visit. */
+  browserbaseFailure?: BrowserbaseFailure;
 };
 
 export function buildScenario({
@@ -258,6 +289,8 @@ export function buildScenario({
   browserVersion,
   jevFails = false,
   manualPages = MANUAL_SESSION_PAGES,
+  projectName = null,
+  browserbaseFailure,
 }: ScenarioContext): Scenario {
   const hostname = new URL(options.url).hostname;
   const timeline = new Timeline();
@@ -275,28 +308,80 @@ export function buildScenario({
   const jevFailed = jevTriage && jevFails;
   const caveats: string[] = [];
 
+  const remote = options.browser?.kind === "browserbase" ? options.browser : null;
+  const region = remote?.region ?? "us-west-2";
+  const visitLine = (browserWindow: string) =>
+    `Visit: ${VISITOR_META[visitor].label.toLowerCase()}${visitor === "browse" ? `, up to ${pageCount} pages` : ""}, seed ${options.seed ?? 0}, ${browserWindow}, ${options.persistentProfile ? "kept browser profile" : "fresh browser profile"}, ${proxyUseLabel(proxy).toLowerCase()}`;
+
   timeline.start("launchBrowser");
-  timeline.log(`Using ${browserVersion}${headless ? " (headless)" : ""}`, { after: 80 });
-  timeline.log("Started browser with remote debugging on 127.0.0.1:9222", {
-    after: 700,
-    level: "debug",
-    data: {
-      args: [
-        ...(headless ? ["--headless=new"] : []),
-        "--remote-debugging-port=9222",
-        "--disable-background-networking",
-        "--no-first-run",
-      ],
-    },
-  });
-  timeline.log("CDP session attached; Network, Page and Runtime domains enabled", { after: 260, level: "debug" });
-  timeline.end("Browser ready");
+  if (remote) {
+    timeline.log(`Using Browserbase in ${region} (project ${projectName ?? "unknown"})`, { after: 80 });
+    timeline.end(`Browserbase, ${region}`);
+  } else {
+    timeline.log(`Using ${browserVersion}${headless ? " (headless)" : ""}`, { after: 80 });
+    timeline.log("Started browser with remote debugging on 127.0.0.1:9222", {
+      after: 700,
+      level: "debug",
+      data: {
+        args: [
+          ...(headless ? ["--headless=new"] : []),
+          "--remote-debugging-port=9222",
+          "--disable-background-networking",
+          "--no-first-run",
+        ],
+      },
+    });
+    timeline.log("CDP session attached; Network, Page and Runtime domains enabled", { after: 260, level: "debug" });
+    timeline.end("Browser ready");
+  }
 
   timeline.start("capture");
-  timeline.log(
-    `Visit: ${VISITOR_META[visitor].label.toLowerCase()}${visitor === "browse" ? `, up to ${pageCount} pages` : ""}, seed ${options.seed ?? 0}, ${headless ? "headless" : "browser shown"}, ${options.persistentProfile ? "kept browser profile" : "fresh browser profile"}, ${proxyUseLabel(proxy).toLowerCase()}`,
-    { after: 40 },
-  );
+  timeline.log(visitLine(remote ? `Browserbase ${region}` : headless ? "headless" : "browser shown"), { after: 40 });
+  let sessionStartedAt = 0;
+  if (remote) {
+    if (browserbaseFailure === "limit") {
+      for (let attempt = 1; attempt <= RATE_LIMIT_ATTEMPTS; attempt += 1) {
+        timeline.remoteBrowser(
+          "rateLimited",
+          `Browserbase is at its limit; trying again in ${RATE_LIMIT_WAIT_SECONDS} s`,
+          { waitSeconds: RATE_LIMIT_WAIT_SECONDS, attempt },
+          attempt === 1 ? 400 : RATE_LIMIT_WAIT_SECONDS * 1000,
+        );
+      }
+      timeline.wait(RATE_LIMIT_WAIT_SECONDS * 1000);
+      timeline.fail(LIMIT_MESSAGE);
+      return { beats: timeline.beats, result: null };
+    }
+    const session = fakeBrowserbaseVisit(remote, proxy, options.seed ?? 0);
+    const timeoutSeconds =
+      visitor === "manual" ? MANUAL_SESSION_LIMIT_MS / 1000 + 60 : 60 + pageCount * (30 + options.observeSeconds);
+    timeline.remoteBrowser(
+      "sessionCreated",
+      `Browserbase started a browser in ${region} (session ${session.sessionId}, time limit ${timeoutSeconds} s)`,
+      {
+        sessionId: session.sessionId,
+        region,
+        proxy: session.proxyKind,
+        context: options.persistentProfile === true,
+        timeoutSeconds,
+      },
+      450,
+    );
+    sessionStartedAt = timeline.elapsed;
+    timeline.remoteBrowser(
+      "connected",
+      `Connected to ${session.browserVersion}, round trip ${Math.round(session.roundTripMs ?? 0)} ms`,
+      { browserVersion: session.browserVersion, roundTripMs: session.roundTripMs, clockOffsetMs: -51 },
+      session.proxyKind === "browserbase" ? 1600 : 450,
+    );
+    timeline.remoteBrowser(
+      "timezone",
+      session.appliedTimezone
+        ? `Timezone set to ${session.appliedTimezone} to match the region (the browser reported ${session.originalTimezone})`
+        : `The browser reports the timezone ${session.originalTimezone}, set by Browserbase for its proxy; left as it is`,
+      { original: session.originalTimezone, applied: session.appliedTimezone },
+    );
+  }
   timeline.log(`Emulating ${options.device} (${VIEWPORT[options.device]})`, { after: 80 });
   timeline.log("Tracker injected with Page.addScriptToEvaluateOnNewDocument", { level: "debug" });
   timeline.log(`Navigating to ${options.url}`, { after: 100 });
@@ -317,6 +402,7 @@ export function buildScenario({
     headless,
     persistentProfile: options.persistentProfile ?? false,
     proxy,
+    browser: options.browser ?? { kind: "local" },
   });
   const site = visit.entry;
   const documentPages = visit.pages.filter((page) => page.view.loadMs !== null).map((page) => page.view.index);
@@ -331,12 +417,29 @@ export function buildScenario({
   );
   const metrics = visitMetrics(visit, scripts);
 
-  for (const page of visit.pages) visitPage(page);
+  for (const page of visit.pages) {
+    visitPage(page);
+    if (remote && browserbaseFailure === "lost") {
+      timeline.remoteBrowser("connectionLost", "The connection to the Browserbase browser was lost", {}, 900);
+      timeline.fail(CONNECTION_LOST_MESSAGE);
+      return { beats: timeline.beats, result: null };
+    }
+  }
   if (visitor === "manual") {
     timeline.awaitFinish();
     timeline.log(`Capture finished by you after ${pages(visit.pages.length)}`, { after: 0 });
   } else {
     timeline.log(`Observation window closed after ${options.observeSeconds} s`, { after: 200 });
+  }
+  const { browser } = visit.environment;
+  if (browser.kind === "browserbase") {
+    browser.sessionSeconds = Math.round((timeline.elapsed - sessionStartedAt) / 1000);
+    browser.proxyBytes = fakeProxyBytes(browser, visit.pages.length);
+    timeline.remoteBrowser("released", `Browserbase ended the browser after ${browser.sessionSeconds} s`, {
+      sessionSeconds: browser.sessionSeconds,
+      // The count lags: the first read after the end says nothing has gone through the proxy yet.
+      proxyBytes: 0,
+    });
   }
   const auctionCount = `${visit.auctions.length} auction${visit.auctions.length === 1 ? "" : "s"}`;
   timeline.log(
@@ -463,6 +566,10 @@ export function buildScenario({
       healthScore: score,
       prebidVersion: site.prebidVersion,
       aiUsed: triageRan,
+      remote:
+        browser.kind === "browserbase"
+          ? { region: browser.region, sessionSeconds: browser.sessionSeconds, proxyBytes: browser.proxyBytes }
+          : null,
     },
   };
 
@@ -489,6 +596,9 @@ export function buildScenario({
       timeline.log(`DOMContentLoaded at ${Math.round(view.loadMs * 0.38)} ms`, { after: 600, level: "debug" });
     }
     if (index === 0) announceEnvironment(visit);
+    if (index === 0 && remote && visitor === "manual") {
+      timeline.remoteBrowser("liveView", "The browser is ready for you in Browserbase's live view");
+    }
     if (index === 0 || story === "consentAskedAgain") handleConsent(index);
     if (index === 0) {
       timeline.log(`Prebid.js v${site.prebidVersion} detected (window.pbjs); GPT and apstag present`, { after: 200 });
@@ -532,9 +642,11 @@ export function buildScenario({
     ].filter((signal) => signal !== null);
     timeline.visitor(
       "environment",
-      signals.length > 0
-        ? `This visit is identifiable as automated: ${signals.join(", ")}`
-        : "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
+      remote
+        ? "This visit is not flagged as automated: navigator.webdriver is false (Browserbase starts its browser that way); it runs headless, which its user agent does not show"
+        : signals.length > 0
+          ? `This visit is identifiable as automated: ${signals.join(", ")}`
+          : "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
       0,
       {
         webdriver: environment.webdriver,

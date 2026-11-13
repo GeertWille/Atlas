@@ -7,10 +7,10 @@ test("search, filter, sort and page through history", async ({ page }) => {
   await openApp(page, "/history");
   await expect(page).toHaveTitle("History · Ad-Tech Scanner");
   await expect(rows(page)).toHaveCount(20);
-  await expect(page.getByText("Showing 20 of 26 scans")).toBeVisible();
+  await expect(page.getByText("Showing 20 of 27 scans")).toBeVisible();
 
   await page.getByRole("button", { name: "Load more" }).click();
-  await expect(rows(page)).toHaveCount(26);
+  await expect(rows(page)).toHaveCount(27);
   await expect(page.getByRole("button", { name: "Load more" })).toHaveCount(0);
 
   await page.getByRole("searchbox", { name: "Search scans" }).fill("techpulse");
@@ -33,7 +33,7 @@ test("search, filter, sort and page through history", async ({ page }) => {
   await expect(page.getByText("No scans match")).toBeVisible();
   await page.getByRole("button", { name: "Clear filters" }).click();
   // Both pages loaded earlier are still there.
-  await expect(rows(page)).toHaveCount(26);
+  await expect(rows(page)).toHaveCount(27);
 
   await page.getByRole("combobox", { name: "Sort" }).click();
   await page.getByRole("option", { name: "Lowest health first" }).click();
@@ -60,7 +60,7 @@ test("open, re-scan and delete from a row; delete everything from the danger zon
   await page.getByRole("menuitem", { name: "Delete…" }).click();
   await confirm.getByRole("button", { name: "Delete" }).click();
   await expect(target).toHaveCount(0);
-  await expect(page.getByText("Showing 20 of 25 scans")).toBeVisible();
+  await expect(page.getByText("Showing 20 of 26 scans")).toBeVisible();
   await expect(page.getByText("Deleted the scan of unreachable.example")).toBeVisible();
 
   // Open from a row.
@@ -77,7 +77,7 @@ test("open, re-scan and delete from a row; delete everything from the danger zon
   // Delete all.
   await page.getByRole("link", { name: "History" }).click();
   await page.getByRole("button", { name: "Delete all…" }).click();
-  await expect(confirm).toContainText("Delete all 26 scans?");
+  await expect(confirm).toContainText("Delete all 27 scans?");
   await confirm.getByRole("button", { name: "Delete all" }).click();
   await expect(page.getByText("No scans yet")).toBeVisible();
   await expect(page.getByRole("region", { name: "Danger zone" })).toHaveCount(0);

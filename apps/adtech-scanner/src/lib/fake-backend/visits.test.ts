@@ -607,12 +607,13 @@ describe("seeded history", () => {
     ]);
     const configurations = await api.listScanConfigurations();
     expect(configurations.map((configuration) => configuration.name)).toEqual([
+      "Garden Weekly from Belgium, Browserbase",
       "Morning Ledger, no proxy",
       "Sportsdesk from Belgium",
       "Sportsdesk from Germany",
       "Sportsdesk from the Netherlands, mobile",
     ]);
-    expect(configurations[1]).toMatchObject({ lastScanId: "seed-sportsdesk-browse" });
+    expect(configurations[2]).toMatchObject({ lastScanId: "seed-sportsdesk-browse" });
     expect(
       (await api.listScans({ configurationId: "config-sportsdesk-belgium" })).items.map((scan) => scan.id),
     ).toEqual(["seed-sportsdesk-browse"]);

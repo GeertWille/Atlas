@@ -3,6 +3,11 @@ import type {
   ApiProvider,
   ArchiveStorage,
   BodySide,
+  BrowserbaseCredentialsStatus,
+  BrowserbaseProbe,
+  BrowserbaseProfileInfo,
+  BrowserbaseRegion,
+  BrowserbaseStatus,
   BrowserInfo,
   DashboardStats,
   ExportFormat,
@@ -103,6 +108,25 @@ export interface ApiPort {
   /** The sellers.json files of ad exchanges that are kept between scans. */
   getSellersJsonCache(): Promise<SellersJsonCacheInfo>;
   clearSellersJsonCache(): Promise<SellersJsonCacheInfo>;
+  /**
+   * Checks a Browserbase key (free) and stores it with its project when it is accepted. Without `projectId`
+   * the key's only project is adopted; with several, the answer lists them and nothing is stored yet.
+   */
+  setBrowserbaseCredentials(apiKey: string, projectId?: string): Promise<BrowserbaseCredentialsStatus>;
+  /** Also puts "where the browser runs" back to this computer. */
+  clearBrowserbaseCredentials(): Promise<Settings>;
+  /** Free: the project, its totals and what is running in it. */
+  testBrowserbase(): Promise<BrowserbaseStatus>;
+  /** Starts one Browserbase browser for a few seconds, which is billed as a browser minute. */
+  probeBrowserbase(region?: BrowserbaseRegion): Promise<BrowserbaseProbe>;
+  getBrowserbaseProfile(): Promise<BrowserbaseProfileInfo>;
+  /** Fails with `profileBusy` while a scan is using the profile. */
+  clearBrowserbaseProfile(): Promise<BrowserbaseProfileInfo>;
+  /**
+   * Opens Browserbase's live view of a running manual visit in the default browser. The backend opens it:
+   * its address is a credential and never reaches this side.
+   */
+  openBrowserbaseLiveView(scanId: string): Promise<void>;
   subscribeScanEvents(handler: (event: ScanEvent) => void): Promise<Unsubscribe>;
 
   /** Native save dialog. Resolves to `null` when the user cancels. */

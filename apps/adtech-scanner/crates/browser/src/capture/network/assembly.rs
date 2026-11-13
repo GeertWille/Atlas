@@ -21,6 +21,11 @@
 //!   when it announces a request, to send the body along as it arrives
 //!   (`Network.streamResourceContent`). That copy stands in for the body
 //!   when the target is gone before it could hand the body over.
+//! - The connection to a remote browser carries no message beyond a size,
+//!   so a body that could make a larger answer is never asked for
+//!   (`reply.rs`). A response of the tab that grows towards that size is
+//!   asked to be sent along too, from then on: the copy is all there will
+//!   be of it.
 //! - `ExtraInfo` may come before `requestWillBeSent` or after
 //!   `loadingFinished`, and a preflight may end before the request it
 //!   clears the way for is announced. A request that has ended waits a
@@ -62,6 +67,18 @@ const REMEMBERED_ENDED: usize = 4_096;
 /// up; its body is then only to be had from the target itself.
 const MAX_COPIED_BYTES: usize = 32 * 1024 * 1024;
 
+/// What the way to the browser asks of the assembly. The default is a
+/// local browser's: nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Limits {
+    /// A response that has received this many bytes is asked to be sent
+    /// along while it loads, whichever target loads it.
+    pub copy_bodies_from: Option<u64>,
+    /// A request body is only asked for when its length is known to be
+    /// one that may be asked for.
+    pub post_length_must_be_known: bool,
+}
+
 /// What kind of target a session belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Reporter {
@@ -100,7 +117,8 @@ pub(crate) enum Output {
         session: String,
         request_id: String,
     },
-    /// A frame or worker announced a request whose answer may be kept: ask
+    /// A frame or worker announced a request whose answer may be kept, or
+    /// a response grew towards what cannot be asked for: ask
     /// `Network.streamResourceContent` and pass what it answers to
     /// [`Assembler::body_copy_started`].
     BodyCopyWanted {
@@ -231,6 +249,8 @@ struct Flight {
     end: Option<End>,
     body: Body,
     copy: Option<BodyCopy>,
+    /// The browser was asked to send the body along, whatever came of it.
+    copy_asked: bool,
 }
 
 impl Flight {
@@ -304,6 +324,12 @@ impl Flight {
 
     fn copied_bytes(&self) -> usize {
         self.copy.as_ref().map_or(0, |copy| copy.bytes.len())
+    }
+
+    /// Whether a copy of the answer is worth asking for: it may be a body
+    /// that is kept, or a bidder's answer.
+    fn wants_its_body_copied(&self) -> bool {
+        self.bid.is_some() || may_have_a_kept_body(self.kind)
     }
 
     /// Adds a piece of the body, as base64, to the copy. A copy that would
@@ -544,6 +570,7 @@ impl Ended {
 
 #[derive(Debug, Default)]
 pub(crate) struct Assembler {
+    limits: Limits,
     chains: HashMap<String, Chain>,
     next_seq: u32,
     open_flights: usize,
@@ -567,6 +594,13 @@ pub(crate) struct Assembler {
 }
 
 impl Assembler {
+    pub(crate) fn within(limits: Limits) -> Self {
+        Self {
+            limits,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn overflowed(&self) -> u32 {
         self.overflowed
     }
@@ -585,15 +619,26 @@ impl Assembler {
         if method == "Network.dataReceived" {
             // The busiest event by far, and it settles nothing.
             let room = MAX_COPIED_BYTES - self.copied_bytes;
-            if let Some(flight) = self.current(request_id) {
-                flight.decoded_bytes += params["dataLength"].as_u64().unwrap_or(0);
-                if let Some(piece) = params["data"].as_str() {
-                    let copied_before = flight.copied_bytes();
-                    flight.copy_more(piece, room);
-                    let copied = flight.copied_bytes();
-                    self.copied_bytes = self.copied_bytes - copied_before + copied;
-                }
+            let copy_from = self.limits.copy_bodies_from;
+            let Some(flight) = self.current(request_id) else {
+                return out;
+            };
+            flight.decoded_bytes += params["dataLength"].as_u64().unwrap_or(0);
+            let copied_before = flight.copied_bytes();
+            if let Some(piece) = params["data"].as_str() {
+                flight.copy_more(piece, room);
             }
+            let copied = flight.copied_bytes();
+            let grows_large = copy_from.is_some_and(|from| flight.decoded_bytes >= from);
+            if grows_large && !flight.copy_asked && flight.wants_its_body_copied() {
+                flight.copy_asked = true;
+                flight.copy = Some(BodyCopy::default());
+                out.push(Output::BodyCopyWanted {
+                    session: source.session.to_string(),
+                    request_id: request_id.to_string(),
+                });
+            }
+            self.copied_bytes = self.copied_bytes - copied_before + copied;
             return out;
         }
         self.revisit_due(source.now_ms, &mut out);
@@ -870,9 +915,11 @@ impl Assembler {
         let chain = self.chains.entry(request_id.to_string()).or_default();
         let mut redirect_from = None;
         let mut copy = None;
+        let mut copy_asked = false;
         match chain.current() {
             Some(previous) => {
                 copy = previous.copy.take();
+                copy_asked = previous.copy_asked;
                 let at = previous.epoch_of(&params["timestamp"], source.now_ms);
                 let encoded = redirect["encodedDataLength"].as_f64().unwrap_or(0.0) as u64;
                 previous.response =
@@ -923,6 +970,7 @@ impl Assembler {
         let may_go_with_its_body = source.reporter != Reporter::Tab && redirect_from.is_none();
         if may_go_with_its_body && (bid.is_some() || may_have_a_kept_body(kind)) {
             copy = Some(BodyCopy::default());
+            copy_asked = true;
             out.push(Output::BodyCopyWanted {
                 session: source.session.to_string(),
                 request_id: request_id.to_string(),
@@ -948,6 +996,9 @@ impl Assembler {
             }
             None if request["hasPostData"] != true => Post::None,
             None if known_length.is_some_and(|length| length > MAX_POST_BYTES_TO_ASK_FOR) => {
+                Post::Missing
+            }
+            None if known_length.is_none() && self.limits.post_length_must_be_known => {
                 Post::Missing
             }
             None => Post::Asked,
@@ -990,6 +1041,7 @@ impl Assembler {
             end: None,
             body: Body::None,
             copy,
+            copy_asked,
         };
         self.next_seq += 1;
         self.open_flights += 1;
@@ -1207,6 +1259,7 @@ impl Assembler {
             end: None,
             body: Body::None,
             copy: None,
+            copy_asked: false,
         };
         self.next_seq += 1;
         self.open_flights += 1;

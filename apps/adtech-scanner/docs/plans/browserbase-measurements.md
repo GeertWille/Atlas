@@ -74,6 +74,11 @@ Identical in all six measured sessions (A, A2, B, C, D, E2) except where the tab
 | `Browser.getBrowserCommandLine` | `/usr/bin/chromium-browser --disable-blink-features=AutomationControlled --disable-background-networking --disable-dev-shm-usage --disable-sync --homepage=about:blank --start-maximized --headless=new` | — |
 | `SystemInfo.getInfo` | modelName `Browserbase Sandbox`, modelVersion `42.0` | empty |
 
+> Correction, 2026-11-13, from building the integration: the conclusion of the next paragraph only holds
+> for the `navigator` values it compared. Browserbase does run scripts of its own in the page's own world
+> of every document (five that begin `/* browserbase:stealth-init-script */`, and a heartbeat). See
+> `HANDOVER.md`, "Browserbase".
+
 **Main world against isolated world.** I evaluated the same probe in both on `about:blank` and on `https://example.com/`. The only differences were `chrome.app` (main world only) and the page's own globals, and the local browser shows exactly the same differences. So Browserbase does **not** patch the main world with script. The values come from the browser itself: the launch flag turns the automation flag off, and the user agent and brands are set at browser level (the worker and a `srcdoc` iframe report the same).
 
 **Headless:** yes, `--headless=new` is on the command line. The user agent does not say so. The WebGL string names Intel hardware while the browser logs "Automatic fallback to software WebGL", so the GPU string is not the real renderer **(inference)**.

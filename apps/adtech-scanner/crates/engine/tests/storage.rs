@@ -24,6 +24,7 @@ fn summary(
     started_at: f64,
 ) -> ScanSummary {
     ScanSummary {
+        remote: None,
         configuration: None,
         proxy: None,
         id: id.into(),
@@ -1023,6 +1024,7 @@ async fn page_views_environment_proxy_and_configuration_round_trip_with_a_scan()
         },
     ];
     let environment = ScanEnvironment {
+        browser: adscan_model::BrowserUse::Local,
         visitor: VisitorBehavior::Browse,
         seed: 4_000_000_000,
         headless: true,

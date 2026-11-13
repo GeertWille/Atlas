@@ -78,6 +78,7 @@ export function createRunningScan(
     error: null,
     configuration,
     proxy,
+    remote: null,
   };
   return {
     detail: {
@@ -105,8 +106,22 @@ function stepOf(scan: StoredScan, node: PipelineStep["node"]): PipelineStep {
   return step;
 }
 
+/** The entry that says Browserbase started the scan's browser, if it got that far. */
+function sessionStart(scan: StoredScan): LogEntry | undefined {
+  return scan.logs.find((entry) => {
+    const data = entry.data as { activity?: string; detail?: { event?: string } } | null;
+    return entry.kind === "visitor" && data?.activity === "browser" && data.detail?.event === "sessionCreated";
+  });
+}
+
 function finishScan(scan: StoredScan, status: ScanSummary["status"], now: number) {
   const { summary } = scan.detail;
+  const { browser } = scan.detail.options;
+  const started = sessionStart(scan);
+  // A browser that was started is billed, whatever became of the scan.
+  if (browser?.kind === "browserbase" && browser.region && started && summary.remote === null) {
+    summary.remote = { region: browser.region, sessionSeconds: Math.round((now - started.ts) / 1000), proxyBytes: 0 };
+  }
   summary.status = status;
   summary.finishedAt = now;
   summary.durationMs = now - summary.startedAt;
@@ -189,17 +204,27 @@ export function applyBeat(scan: StoredScan, beat: Beat, now: number): ScanEvent[
   }
 }
 
-/** `archive`: how the scan's network data is kept; `null` for a scan stored before there was an archive. */
+/**
+ * `archive`: how the scan's network data is kept; `null` for a scan stored before there was an archive.
+ * `usageLags`: the scan has just ended, and the first read of its proxy traffic comes too early: Browserbase
+ * has not counted it yet. `settleProxyUsage` brings the count that the second read, half a minute later, finds.
+ */
 export function completeScan(
   scan: StoredScan,
   result: ScanResult,
   now: number,
   archive: ArchiveMode | null,
+  usageLags = false,
 ): ScanEvent[] {
-  const { healthScore, prebidVersion, aiUsed, ...analysis } = result;
+  const { healthScore, prebidVersion, aiUsed, remote, ...analysis } = result;
   Object.assign(scan.detail, analysis);
   if (archive) recordNetwork(scan.detail, archive);
-  Object.assign(scan.detail.summary, { healthScore, prebidVersion, aiUsed });
+  Object.assign(scan.detail.summary, { healthScore, prebidVersion, aiUsed, remote: remote && { ...remote } });
+  const { summary, environment } = scan.detail;
+  if (usageLags && summary.remote && environment?.browser.kind === "browserbase") {
+    summary.remote.proxyBytes = 0;
+    environment.browser.proxyBytes = 0;
+  }
   finishScan(scan, "completed", now);
   return [{ type: "scanUpdated", summary: snapshot(scan.detail.summary) }];
 }
@@ -239,4 +264,12 @@ export function cancelScan(scan: StoredScan, now: number): ScanEvent[] {
   finishScan(scan, "cancelled", now);
   events.push({ type: "scanUpdated", summary: snapshot(scan.detail.summary) });
   return events;
+}
+
+export function settleProxyUsage(scan: StoredScan, proxyBytes: number): ScanEvent[] {
+  const { summary, environment } = scan.detail;
+  if (!summary.remote || environment?.browser.kind !== "browserbase") return [];
+  summary.remote.proxyBytes = proxyBytes;
+  environment.browser.proxyBytes = proxyBytes;
+  return [{ type: "scanUpdated", summary: snapshot(summary) }];
 }

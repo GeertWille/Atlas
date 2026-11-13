@@ -108,8 +108,10 @@ contract! {
         pub username: Option<String>,
     }
 
-    /// The one proxy a scan's browser and its request for the site's ads.txt
-    /// go through. The exchanges' sellers.json are not fetched through it.
+    /// The proxy a scan's browser goes through. The app's own request for
+    /// the site's ads.txt follows it, except through a Browserbase location,
+    /// which only the cloud browser can use. The exchanges' sellers.json are
+    /// never fetched through it.
     #[serde(tag = "kind")]
     pub enum ProxyChoice {
         /// Connect directly, ignoring the system's proxy.
@@ -225,10 +227,11 @@ contract! {
         pub persistent_profile: Option<bool>,
     }
 
-    /// User preferences. Persisted locally; API keys and the proxy password
-    /// are never part of this struct, they live in the OS keychain and are
-    /// only reported via `has_api_key`, `has_typesafe_key` and each proxy
-    /// profile's `has_password`.
+    /// User preferences. Persisted locally; API keys, proxy passwords and
+    /// the Browserbase credentials are never part of this struct, they live
+    /// in the OS keychain and are only reported via `has_api_key`,
+    /// `has_typesafe_key`, each proxy profile's `has_password` and
+    /// `browserbase.connected`.
     pub struct Settings {
         /// Script triage model, used when Jev is off and as its fallback.
         pub filter_model: String,
@@ -880,6 +883,10 @@ contract! {
         pub session_id: String,
         /// `Browser.getVersion` product, e.g. "Chrome/157.0.8103.79".
         pub browser_version: Option<String>,
+        /// `navigator.userAgent` as the pages read it, device emulation
+        /// included. It does not say that the browser runs headless.
+        #[serde(default)]
+        pub user_agent: Option<String>,
         pub proxy_kind: BrowserbaseProxyKind,
         /// The country asked for, with a Browserbase proxy. Best effort on
         /// Browserbase's side.
@@ -908,7 +915,7 @@ contract! {
         /// browser was recorded read as.
         #[default]
         Local,
-        Browserbase(BrowserbaseVisit),
+        Browserbase(Box<BrowserbaseVisit>),
     }
 
     /// What the scanned pages could tell about the visit, reported as it

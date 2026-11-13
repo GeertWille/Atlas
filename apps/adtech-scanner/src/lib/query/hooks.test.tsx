@@ -16,7 +16,12 @@ function controllableBackend() {
   const failures: Array<() => void> = [];
   vi.spyOn(api, "getSettings").mockImplementation(async () => stored);
   vi.spyOn(api, "updateSettings").mockImplementation((patch: SettingsPatch) => {
-    stored = { ...stored, ...patch, chromePath: patch.chromePath === undefined ? stored.chromePath : patch.chromePath };
+    stored = {
+      ...stored,
+      ...patch,
+      chromePath: patch.chromePath === undefined ? stored.chromePath : patch.chromePath,
+      browserbase: { ...stored.browserbase, ...patch.browserbase },
+    };
     const applied = stored;
     return new Promise<Settings>((resolve, reject) => {
       answers.push(() => resolve(applied));

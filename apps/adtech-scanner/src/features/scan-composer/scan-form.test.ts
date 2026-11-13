@@ -1,7 +1,16 @@
 import { describe, expect, test } from "vitest";
 import type { ScanOptions } from "@/bindings";
-import { settingsFixture } from "@/test/fixtures";
-import { formFromOptions, newScanForm, type ScanForm, validateScanForm, withVisitor } from "./scan-form";
+import { browserbaseSettingsFixture, settingsFixture } from "@/test/fixtures";
+import {
+  formFromOptions,
+  newScanForm,
+  proxyFieldFor,
+  runsOnBrowserbase,
+  type ScanForm,
+  validateScanForm,
+  withBrowser,
+  withVisitor,
+} from "./scan-form";
 
 const form = (patch: Partial<ScanForm> = {}): ScanForm => ({
   ...newScanForm(settingsFixture),
@@ -27,7 +36,12 @@ test("a new form starts from the settings and leaves proxy, profile and budget t
     showBrowser: true,
     acceptConsent: true,
     aiEnabled: true,
+    browser: "local",
+    region: "settings",
     proxy: "settings",
+    locationCountry: "",
+    locationState: "",
+    locationCity: "",
     profile: "settings",
     budget: "",
   });
@@ -45,6 +59,8 @@ describe("the options each visitor behaviour produces", () => {
       visitor: "none",
       extraPages: 0,
       headless: true,
+      // Where the browser runs is always said: a configuration keeps it.
+      browser: { kind: "local" },
     });
   });
 
@@ -138,7 +154,10 @@ test("saved options open as the form that produces them again", () => {
   });
   const again = validateScanForm(opened);
   // The proxy goes back as a bare reference: its name and host are the backend's snapshot.
-  expect(again).toEqual({ ok: true, options: { ...saved, proxy: { kind: "profile", id: "proxy-be" } } });
+  expect(again).toEqual({
+    ok: true,
+    options: { ...saved, proxy: { kind: "profile", id: "proxy-be" }, browser: { kind: "local" } },
+  });
 });
 
 test("options stored before visitor behaviours open as scroll or observe-only with the settings' defaults", () => {
@@ -158,4 +177,121 @@ test("options stored before visitor behaviours open as scroll or observe-only wi
     profile: "settings",
     budget: "",
   });
+});
+
+describe("where the browser runs", () => {
+  const cloud = form({ browser: "browserbase" });
+
+  test("Browserbase goes out with its region only when the scan names one, and never with a window", () => {
+    expect(optionsOf(cloud)).toMatchObject({ browser: { kind: "browserbase" }, headless: true });
+    expect(optionsOf({ ...cloud, region: "eu-central-1", showBrowser: true })).toMatchObject({
+      browser: { kind: "browserbase", region: "eu-central-1" },
+      headless: true,
+    });
+    // A manual visit has no window either: it is used through the live view.
+    expect(optionsOf({ ...cloud, visitor: "manual" })).toMatchObject({ headless: true, acceptConsent: false });
+  });
+
+  test.each([
+    "http://localhost:3000/",
+    "http://127.0.0.1:47615/demo-publisher/",
+    "http://192.168.1.20/",
+    "http://printer.local/",
+  ])("%s is scanned on this Mac whatever was chosen", (url) => {
+    expect(optionsOf({ ...cloud, url, region: "eu-central-1" }).browser).toEqual({ kind: "local" });
+    expect(runsOnBrowserbase(cloud, url)).toBe(false);
+  });
+
+  test("a Browserbase location goes out as Browserbase takes it, and only with a Browserbase browser", () => {
+    const location = {
+      proxy: "browserbaseLocation",
+      locationCountry: "us",
+      locationState: "ny",
+      locationCity: "new york",
+    };
+    expect(optionsOf({ ...cloud, ...location } as Partial<ScanForm>).proxy).toEqual({
+      kind: "browserbaseLocation",
+      country: "US",
+      state: "NY",
+      city: "NEW_YORK",
+    });
+    expect(optionsOf({ ...location, browser: "local" } as Partial<ScanForm>).proxy).toBeUndefined();
+    expect(validateScanForm({ ...cloud, proxy: "browserbaseLocation" })).toEqual({
+      ok: false,
+      errors: {
+        url: undefined,
+        budget: undefined,
+        location: "Enter the country as a two-letter code, for example BE.",
+      },
+    });
+  });
+
+  test("this Mac's own proxy is not sent for a cloud browser", () => {
+    expect(optionsOf({ ...cloud, proxy: "system" }).proxy).toBeUndefined();
+    expect(optionsOf({ ...cloud, proxy: "none" }).proxy).toEqual({ kind: "none" });
+    expect(optionsOf({ ...cloud, proxy: "profile:proxy-be" }).proxy).toEqual({ kind: "profile", id: "proxy-be" });
+  });
+
+  test("moving the browser takes the proxy along where it can go", () => {
+    expect(withBrowser(form({ proxy: "system" }), "browserbase")).toMatchObject({
+      browser: "browserbase",
+      proxy: "settings",
+    });
+    expect(withBrowser({ ...cloud, proxy: "browserbaseLocation", locationCountry: "BE" }, "local")).toMatchObject({
+      browser: "local",
+      proxy: "settings",
+      // What was typed is kept for when the browser moves back.
+      locationCountry: "BE",
+    });
+    expect(withBrowser(form({ proxy: "profile:proxy-be" }), "browserbase").proxy).toBe("profile:proxy-be");
+  });
+
+  test("a new form follows the settings default only while Browserbase is set up", () => {
+    const cloudDefault = { ...browserbaseSettingsFixture, defaultBrowser: "browserbase" as const };
+    expect(newScanForm(cloudDefault).browser).toBe("browserbase");
+    expect(newScanForm({ ...settingsFixture, defaultBrowser: "browserbase" }).browser).toBe("local");
+  });
+
+  test("saved Browserbase options open as the form that produces them again", () => {
+    const saved: ScanOptions = {
+      url: "https://example.com/news",
+      device: "desktop",
+      observeSeconds: 20,
+      autoScroll: true,
+      acceptConsent: true,
+      aiEnabled: true,
+      visitor: "scroll",
+      extraPages: 0,
+      headless: true,
+      proxy: { kind: "browserbaseLocation", country: "US", state: "NY", city: "NEW_YORK" },
+      browser: { kind: "browserbase", region: "us-east-1" },
+    };
+    const opened = formFromOptions(saved, browserbaseSettingsFixture);
+    expect(opened).toMatchObject({
+      browser: "browserbase",
+      region: "us-east-1",
+      proxy: "browserbaseLocation",
+      locationCountry: "US",
+      locationState: "NY",
+      locationCity: "New York",
+    });
+    expect(validateScanForm(opened)).toEqual({ ok: true, options: saved });
+    // Options that do not say where they run open where the settings put them.
+    const { browser: _browser, proxy: _proxy, ...unsaid } = saved;
+    expect(formFromOptions(unsaid, { ...browserbaseSettingsFixture, defaultBrowser: "browserbase" }).browser).toBe(
+      "browserbase",
+    );
+    expect(formFromOptions(unsaid, browserbaseSettingsFixture).browser).toBe("local");
+  });
+});
+
+test("a proxy that cannot go where the browser runs is left to the settings without being forgotten", () => {
+  const location = form({ browser: "browserbase", proxy: "browserbaseLocation", locationCountry: "BE" });
+  expect(proxyFieldFor(location, true)).toBe("browserbaseLocation");
+  // A local address moves the scan to this Mac while Browserbase stays chosen.
+  expect(proxyFieldFor(location, false)).toBe("settings");
+  expect(optionsOf({ ...location, url: "localhost:3000" })).not.toHaveProperty("proxy");
+  expect(location.proxy).toBe("browserbaseLocation");
+  expect(proxyFieldFor(form({ proxy: "system" }), true)).toBe("settings");
+  expect(proxyFieldFor(form({ proxy: "profile:proxy-be" }), true)).toBe("profile:proxy-be");
 });

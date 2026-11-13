@@ -2,6 +2,7 @@
 //! Chromium and serving fixture pages.
 #![allow(dead_code)]
 
+pub mod browserbase;
 #[cfg(target_os = "linux")]
 pub mod chrome_processes;
 
@@ -41,6 +42,7 @@ pub fn chrome_path() -> Option<String> {
 
 pub fn request(url: &str, device: DeviceProfile) -> CaptureRequest {
     CaptureRequest {
+        browser: adscan_model::CaptureBrowser::Local,
         url: url.to_string(),
         device,
         observe_seconds: 3,
@@ -90,6 +92,7 @@ impl Reported {
                 scan_profile_dir: None,
                 proxy_password: None,
                 network: None,
+                browserbase: None,
             },
             activities,
         }
@@ -436,14 +439,16 @@ pub fn payload(query: &str) -> Vec<u8> {
 /// [`payload`], as the query wants it sent: `wait=<ms>` that much later, as
 /// from a server that is not on this machine, `encoding=gzip` compressed,
 /// `cache=1` to be kept by the browser, `stall=1` half of it and then
-/// nothing more, on a connection that stays open.
+/// nothing more, on a connection that stays open, `drip=<ms>` in sixteen
+/// pieces that far apart, `type=<mime>` as that type.
 async fn payload_response(query: &str) -> Response {
     if let Some(wait) = query_value(query, "wait") {
         tokio::time::sleep(Duration::from_millis(wait.parse().unwrap())).await;
     }
     let mut body = payload(query);
     let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+    let content_type = query_value(query, "type").unwrap_or("application/json");
+    headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
     if query_value(query, "encoding") == Some("gzip") {
         let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
         compressed.write_all(&body).unwrap();
@@ -462,6 +467,18 @@ async fn payload_response(query: &str) -> Response {
             futures_util::stream::pending(),
         ));
         return (headers, never_ends).into_response();
+    }
+    if let Some(pause) = query_value(query, "drip") {
+        let pause = Duration::from_millis(pause.parse().unwrap());
+        let piece = body.len().div_ceil(16).max(1);
+        let pieces: Vec<Vec<u8>> = body.chunks(piece).map(<[u8]>::to_vec).collect();
+        let dripping =
+            futures_util::stream::unfold(pieces.into_iter(), move |mut pieces| async move {
+                let piece = pieces.next()?;
+                tokio::time::sleep(pause).await;
+                Some((Ok::<_, std::convert::Infallible>(piece), pieces))
+            });
+        return (headers, axum::body::Body::from_stream(dripping)).into_response();
     }
     (headers, body).into_response()
 }

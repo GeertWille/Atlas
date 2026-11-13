@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use adscan_model::{
-    ActivityKind, CaptureActivity, CaptureProxy, CaptureRequest, LogKind, LogLevel, VisitorBehavior,
+    ActivityKind, BrowserbaseCredentials, BrowserbaseRegion, CaptureActivity, CaptureBrowser,
+    CaptureProxy, CaptureRequest, LogKind, LogLevel, RemoteSessionEvent, RemoteUsage, ScanEvent,
+    VisitorBehavior,
 };
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -10,9 +12,22 @@ use crate::application::AppError;
 use crate::application::archive::recording::{Recording, RecordingStart};
 use crate::application::pipeline::audit::StepRun;
 use crate::application::pipeline::state::{NodeError, NodeResult};
-use crate::application::ports::{ActivityFn, CaptureSession};
+use crate::application::ports::{ActivityFn, BrowserbaseAccess, CaptureSession, RemoteSessionFn};
+use crate::domain::DomainError;
+use crate::domain::scan::{BrowserbaseSessionIds, ResolvedBrowser};
 
 pub async fn launch_browser(run: &mut StepRun<'_>) -> NodeResult {
+    if let ResolvedBrowser::Browserbase { region } = run.job.scan.browser {
+        // No browser on this machine is needed, or looked for.
+        let region = region.as_str();
+        let project = match &run.job.settings.browserbase.project_name {
+            Some(name) => format!(" (project {name})"),
+            None => String::new(),
+        };
+        run.info(format!("Using Browserbase in {region}{project}"))
+            .await?;
+        return Ok(format!("Browserbase, {region}"));
+    }
     let browser = run
         .deps
         .capture
@@ -25,28 +40,78 @@ pub async fn launch_browser(run: &mut StepRun<'_>) -> NodeResult {
 }
 
 pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
-    let request = run.job.scan.capture_request(&run.job.settings);
-    let start = start_line(&request, run.job.scan.proxy.usage().name);
-    run.info(start).await?;
+    let scan = &run.job.scan;
+    let remote = match scan.browser {
+        ResolvedBrowser::Local => None,
+        ResolvedBrowser::Browserbase { region } => {
+            let credentials = run
+                .job
+                .browserbase
+                .clone()
+                .ok_or(DomainError::BrowserbaseNotSetUp)
+                .map_err(AppError::from)?;
+            Some((region, credentials))
+        }
+    };
+    if let Some((region, _)) = &remote
+        && scan.proxy.system_proxy_dropped
+    {
+        run.info(format!(
+            "The system proxy of this Mac does not apply to a Browserbase browser: the visit leaves from Browserbase's {} region.",
+            region.as_str()
+        ))
+        .await?;
+    }
 
     // Listening from here on: a visit that is finished while it waits for
     // the browser profile ends as soon as its page has loaded, instead of
     // losing the request.
     let finish = run.job.finish.arm();
     // Held until the browser is gone, so the next scan finds the profile free.
-    let _profile_turn = if request.persistent_profile {
-        let scan_profile = Arc::clone(&run.job.scan_profile);
-        if scan_profile.available_permits() == 0 {
+    let _profile_turn = if scan.persistent_profile {
+        let profile = Arc::clone(match remote {
+            Some(_) => &run.job.browserbase_profile,
+            None => &run.job.scan_profile,
+        });
+        if profile.available_permits() == 0 {
             run.info("Waiting for another scan to release the browser profile")
                 .await?;
         }
         tokio::select! {
-            permit = scan_profile.acquire_owned() => Some(permit.map_err(|_| NodeError::Cancelled)?),
+            permit = profile.acquire_owned() => Some(permit.map_err(|_| NodeError::Cancelled)?),
             () = run.job.cancel.cancelled() => return Err(NodeError::Cancelled),
         }
     } else {
         None
     };
+
+    let (session_tx, mut session_rx) = mpsc::unbounded_channel::<RemoteSessionEvent>();
+    let (session_ids, browserbase) = match &remote {
+        Some((_, credentials)) => {
+            let on_session: RemoteSessionFn = Arc::new(move |event| {
+                let _ = session_tx.send(event);
+            });
+            let context_id = if scan.persistent_profile {
+                Some(kept_profile_context(run, credentials).await?)
+            } else {
+                None
+            };
+            let ids = BrowserbaseSessionIds {
+                install_id: run.deps.remote_sessions.install_id().await?,
+                scan_id: run.state.summary.id.clone(),
+                context_id,
+            };
+            let access = BrowserbaseAccess {
+                credentials: credentials.clone(),
+                on_session,
+            };
+            (Some(ids), Some(access))
+        }
+        None => (None, None),
+    };
+    let request = scan.capture_request(&run.job.settings, session_ids);
+    let start = start_line(&request, scan.proxy.usage().name);
+    run.info(start).await?;
 
     let (activity_tx, mut activity_rx) = mpsc::unbounded_channel::<CaptureActivity>();
     let on_activity: ActivityFn = Arc::new(move |activity| {
@@ -59,6 +124,7 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
         on_activity,
         proxy_password: run.job.proxy_password.clone(),
         network: Some(recording.sink()),
+        browserbase,
     };
     let source = Arc::clone(&run.deps.capture);
     let capture = source.capture(request, session);
@@ -67,12 +133,18 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
         tokio::select! {
             result = &mut capture => break result,
             Some(activity) = activity_rx.recv() => record(run, activity).await?,
+            Some(event) = session_rx.recv() => remote_session_event(run, event).await?,
         }
     };
     run.job.finish.disarm();
     while let Ok(activity) = activity_rx.try_recv() {
         record(run, activity).await?;
     }
+    while let Ok(event) = session_rx.try_recv() {
+        remote_session_event(run, event).await?;
+    }
+    // Whatever became of the browser, nothing is left to show of it.
+    run.job.remote_session.ended();
     let capture = match result {
         Ok(capture) => capture,
         Err(error) => {
@@ -97,6 +169,114 @@ pub async fn capture_page(run: &mut StepRun<'_>) -> NodeResult {
     );
     run.state.capture = Some(capture);
     Ok(summary)
+}
+
+/// The Browserbase context that holds the kept profile of the scan's device,
+/// made on first use. The caller holds the profile's turn.
+async fn kept_profile_context(
+    run: &StepRun<'_>,
+    credentials: &BrowserbaseCredentials,
+) -> Result<String, NodeError> {
+    let device = run.job.scan.options.device;
+    let ledger = &run.deps.remote_sessions;
+    let now = run.deps.clock.now_ms();
+    let known = ledger
+        .contexts()
+        .await?
+        .into_iter()
+        .find(|context| context.device == device);
+    let context_id = match known {
+        Some(context) => context.context_id,
+        None => {
+            let context_id = run
+                .deps
+                .browserbase
+                .create_context(credentials)
+                .await
+                .map_err(AppError::from)?;
+            ledger.save_context(device, &context_id, now).await?;
+            context_id
+        }
+    };
+    ledger.context_used(device, now).await?;
+    Ok(context_id)
+}
+
+/// What the capture says about its Browserbase session: kept on record so
+/// that a session the app does not see end can be released at the next
+/// start, and booked as the scan's usage when it has ended.
+async fn remote_session_event(
+    run: &mut StepRun<'_>,
+    event: RemoteSessionEvent,
+) -> Result<(), NodeError> {
+    let now = run.deps.clock.now_ms();
+    match event {
+        RemoteSessionEvent::Created { session_id } => {
+            run.deps
+                .remote_sessions
+                .session_created(&session_id, now)
+                .await?;
+            run.job.remote_session.started(&session_id);
+        }
+        RemoteSessionEvent::LiveViewReady { session_id } => {
+            let Some(credentials) = &run.job.browserbase else {
+                return Ok(());
+            };
+            match run
+                .deps
+                .browserbase
+                .open_live_view(credentials, &session_id)
+                .await
+            {
+                Ok(()) => {
+                    run.info(
+                        "Opened Browserbase's live view in your browser: browse there, then finish the visit here",
+                    )
+                    .await?;
+                }
+                Err(error) => {
+                    run.warn(format!(
+                        "Browserbase's live view could not be opened ({error}). Use \"Open live view\" to try again."
+                    ))
+                    .await?;
+                }
+            }
+        }
+        RemoteSessionEvent::Released {
+            session_id,
+            session_seconds,
+            proxy_bytes,
+        } => {
+            run.deps
+                .remote_sessions
+                .session_released(&session_id, now)
+                .await?;
+            run.job.remote_session.ended();
+            run.state.remote_session_ended = Some((session_id, now));
+            if let ResolvedBrowser::Browserbase { region } = run.job.scan.browser {
+                book_remote_usage(run, region, session_seconds, proxy_bytes).await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn book_remote_usage(
+    run: &mut StepRun<'_>,
+    region: BrowserbaseRegion,
+    session_seconds: Option<f64>,
+    proxy_bytes: Option<f64>,
+) -> Result<(), NodeError> {
+    run.state.summary.remote = Some(RemoteUsage {
+        region,
+        session_seconds,
+        proxy_bytes,
+    });
+    run.deps.scans.save_summary(&run.state.summary).await?;
+    run.deps.events.emit(ScanEvent::ScanUpdated {
+        summary: run.state.summary.clone(),
+    });
+    Ok(())
 }
 
 /// Every capture is recorded for the analysis of its bid and ad-server
@@ -202,24 +382,44 @@ fn start_line(request: &CaptureRequest, proxy_name: Option<String>) -> String {
         ),
         VisitorBehavior::Manual => "a person browses; recording until they finish".to_string(),
     };
-    let proxy = match &request.proxy {
-        CaptureProxy::None => "no proxy".to_string(),
-        CaptureProxy::System => "system proxy".to_string(),
-        CaptureProxy::Custom { host, .. } => match proxy_name {
-            Some(name) => format!("proxy \"{name}\" ({host})"),
-            None => format!("proxy {host}"),
-        },
+    let named = |host: &str| match &proxy_name {
+        Some(name) => format!("proxy \"{name}\" ({host})"),
+        None => format!("proxy {host}"),
+    };
+    let (browser, proxy) = match &request.browser {
+        CaptureBrowser::Local => (
+            if request.headless {
+                "headless".to_string()
+            } else {
+                "browser shown".to_string()
+            },
+            match &request.proxy {
+                CaptureProxy::None => "no proxy".to_string(),
+                CaptureProxy::System => "system proxy".to_string(),
+                CaptureProxy::Custom { host, .. } => named(host),
+            },
+        ),
+        CaptureBrowser::Browserbase(cloud) => (
+            format!("Browserbase browser in {}", cloud.region.as_str()),
+            match (&cloud.location, &request.proxy) {
+                (Some(_), _) => format!(
+                    "Browserbase residential exit, asked for {}",
+                    proxy_name.as_deref().unwrap_or("no place")
+                ),
+                (None, CaptureProxy::Custom { host, .. }) => {
+                    format!("{}, given to Browserbase", named(host))
+                }
+                (None, CaptureProxy::None | CaptureProxy::System) => {
+                    "no proxy: leaves from the cloud region".to_string()
+                }
+            },
+        ),
     };
     format!(
-        "Loading {} as {:?}: {visit} (seed {}, {}, {} profile, accept consent {}, {proxy})",
+        "Loading {} as {:?}: {visit} (seed {}, {browser}, {} profile, accept consent {}, {proxy})",
         request.url,
         request.device,
         request.seed,
-        if request.headless {
-            "headless"
-        } else {
-            "browser shown"
-        },
         if request.persistent_profile {
             "persistent"
         } else {
@@ -249,8 +449,17 @@ async fn record(run: &mut StepRun<'_>, activity: CaptureActivity) -> Result<(), 
         ActivityKind::LinkChoice => "linkChoice",
         ActivityKind::Blocked => "blocked",
         ActivityKind::Environment => "environment",
+        ActivityKind::RemoteBrowser => "browser",
     };
-    let level = if activity.kind == ActivityKind::Blocked {
+    // What went wrong with the remote browser, among what it merely did.
+    let remote_trouble = activity.kind == ActivityKind::RemoteBrowser
+        && activity.data.as_ref().is_some_and(|detail| {
+            matches!(
+                detail["event"].as_str(),
+                Some("connectionLost" | "releaseUnconfirmed")
+            )
+        });
+    let level = if activity.kind == ActivityKind::Blocked || remote_trouble {
         LogLevel::Warn
     } else {
         LogLevel::Info

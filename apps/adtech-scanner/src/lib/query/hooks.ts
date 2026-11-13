@@ -9,6 +9,7 @@ import {
 import type {
   ApiProvider,
   BodySide,
+  BrowserbaseRegion,
   ExportFormat,
   ProxyProfileDraft,
   ScanConfigurationDraft,
@@ -44,11 +45,16 @@ export function useUpdateSettings() {
     mutationFn: (patch: SettingsPatch) => api.updateSettings(patch),
     onMutate: async (patch) => {
       await client.cancelQueries({ queryKey: queryKeys.settings });
-      const { chromePath, ...rest } = patch;
+      const { chromePath, browserbase, ...rest } = patch;
       client.setQueryData<Settings>(
         queryKeys.settings,
         (current) =>
-          current && { ...current, ...rest, chromePath: chromePath === undefined ? current.chromePath : chromePath },
+          current && {
+            ...current,
+            ...rest,
+            chromePath: chromePath === undefined ? current.chromePath : chromePath,
+            browserbase: { ...current.browserbase, ...browserbase },
+          },
       );
     },
     onSuccess: (settings, patch) => {
@@ -278,6 +284,7 @@ export function useStartScan() {
       void client.invalidateQueries({ queryKey: queryKeys.scanLists });
       void client.invalidateQueries({ queryKey: queryKeys.stats });
       void client.invalidateQueries({ queryKey: queryKeys.scanProfile });
+      void client.invalidateQueries({ queryKey: queryKeys.browserbaseProfile });
       // A run moves the configuration's "last run".
       if ("configurationId" in start) void client.invalidateQueries({ queryKey: queryKeys.configurations });
     },
@@ -317,6 +324,60 @@ function useSettingsCommand<T>(command: (input: T) => Promise<Settings>) {
       }
     },
   });
+}
+
+export function useSetBrowserbaseCredentials() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ apiKey, projectId }: { apiKey: string; projectId?: string }) =>
+      api.setBrowserbaseCredentials(apiKey, projectId),
+    onSuccess: (status) => {
+      if (status.valid) void client.invalidateQueries({ queryKey: queryKeys.settings });
+    },
+  });
+}
+
+export function useClearBrowserbaseCredentials() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.clearBrowserbaseCredentials(),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: queryKeys.settings });
+      // The profile kept at Browserbase goes with the credentials.
+      void client.invalidateQueries({ queryKey: queryKeys.browserbaseProfile });
+    },
+  });
+}
+
+/** Reads the project (free). The settings carry its name and limit, so they are read again afterwards. */
+export function useTestBrowserbase() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.testBrowserbase(),
+    onSuccess: () => client.invalidateQueries({ queryKey: queryKeys.settings }),
+  });
+}
+
+export function useProbeBrowserbase() {
+  return useMutation({ mutationFn: (region?: BrowserbaseRegion) => api.probeBrowserbase(region) });
+}
+
+export function useBrowserbaseProfile() {
+  return useQuery({ queryKey: queryKeys.browserbaseProfile, queryFn: api.getBrowserbaseProfile });
+}
+
+export function useClearBrowserbaseProfile() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: api.clearBrowserbaseProfile,
+    onSuccess: (profile) => client.setQueryData(queryKeys.browserbaseProfile, profile),
+    // A refusal means a scan is using the profile: show that state.
+    onError: () => client.invalidateQueries({ queryKey: queryKeys.browserbaseProfile }),
+  });
+}
+
+export function useOpenBrowserbaseLiveView() {
+  return useMutation({ mutationFn: (scanId: string) => api.openBrowserbaseLiveView(scanId) });
 }
 
 export function useSaveProxyProfile() {

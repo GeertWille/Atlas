@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use adscan_model::{
-    ApiKeyStatus, ApiProvider, ArchiveStorage, ProxyChoice, ProxyProfileDraft, Settings,
-    SettingsPatch,
+    ApiKeyStatus, ApiProvider, ArchiveStorage, BrowserKind, BrowserbaseCredentials,
+    BrowserbaseProject, ProxyChoice, ProxyProfileDraft, Settings, SettingsPatch,
 };
 use tokio::sync::Mutex;
 
@@ -68,12 +68,20 @@ impl SettingsService {
             .iter()
             .map(|profile| SecretName::ProxyPassword(profile.id.clone()))
             .chain([anthropic.clone(), typesafe.clone()])
+            .chain(BROWSERBASE_SECRETS)
             .collect();
         let stored = self.secrets.stored_among(candidates).await?;
         settings.has_api_key = stored.contains(&anthropic);
         settings.has_typesafe_key = stored.contains(&typesafe);
         // The key can disappear from the keychain behind the app's back.
         settings.jev_enabled &= settings.has_typesafe_key;
+        let connected = BROWSERBASE_SECRETS.iter().all(|name| stored.contains(name));
+        settings.browserbase.connected = connected;
+        if !connected {
+            settings.browserbase.project_name = None;
+            settings.browserbase.concurrency = None;
+            settings.default_browser = BrowserKind::Local;
+        }
         for profile in &mut settings.proxies {
             profile.has_password = stored.contains(&SecretName::ProxyPassword(profile.id.clone()));
         }
@@ -92,6 +100,13 @@ impl SettingsService {
         {
             return Err(AppError::InvalidInput(
                 "Add a TypeSafe API key before turning on Jev.".into(),
+            ));
+        }
+        if patch.default_browser == Some(BrowserKind::Browserbase)
+            && !self.browserbase_connected().await?
+        {
+            return Err(AppError::InvalidInput(
+                "Add a Browserbase API key before making Browserbase the default.".into(),
             ));
         }
         let mut settings = self.settings.load().await?.unwrap_or_default();
@@ -175,6 +190,63 @@ impl SettingsService {
         Ok(self.secrets.api_key(provider).await?)
     }
 
+    /// `None` unless a key and its project are stored. A keychain that
+    /// refuses is an error instead.
+    pub async fn browserbase_credentials(
+        &self,
+    ) -> Result<Option<BrowserbaseCredentials>, AppError> {
+        Ok(self.secrets.browserbase_credentials().await?)
+    }
+
+    /// Stores the credentials with what Browserbase said about their
+    /// project, which is all the settings ever show of them.
+    pub async fn connect_browserbase(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        project: &BrowserbaseProject,
+    ) -> Result<(), AppError> {
+        self.secrets
+            .store_browserbase_credentials(credentials)
+            .await?;
+        self.record_browserbase_project(project).await
+    }
+
+    /// The project's name and limit as Browserbase last reported them.
+    pub async fn record_browserbase_project(
+        &self,
+        project: &BrowserbaseProject,
+    ) -> Result<(), AppError> {
+        let _updating = self.updating.lock().await;
+        let mut settings = self.settings.load().await?.unwrap_or_default();
+        settings.browserbase.project_name = Some(project.name.clone());
+        settings.browserbase.concurrency = Some(project.concurrency);
+        self.save(settings).await
+    }
+
+    /// Removes the credentials. Browserbase cannot stay the default without
+    /// them.
+    pub async fn disconnect_browserbase(&self) -> Result<Settings, AppError> {
+        self.secrets.clear_browserbase_credentials().await?;
+        {
+            let _updating = self.updating.lock().await;
+            if let Some(mut settings) = self.settings.load().await? {
+                settings.default_browser = BrowserKind::Local;
+                settings.browserbase.project_name = None;
+                settings.browserbase.concurrency = None;
+                self.save(settings).await?;
+            }
+        }
+        self.get().await
+    }
+
+    async fn browserbase_connected(&self) -> Result<bool, AppError> {
+        let stored = self
+            .secrets
+            .stored_among(BROWSERBASE_SECRETS.to_vec())
+            .await?;
+        Ok(stored.len() == BROWSERBASE_SECRETS.len())
+    }
+
     /// Creates the profile, or with an id replaces the one stored under it.
     /// Its password is untouched either way.
     pub async fn save_proxy_profile(&self, draft: ProxyProfileDraft) -> Result<Settings, AppError> {
@@ -199,9 +271,14 @@ impl SettingsService {
         settings
             .proxies
             .sort_by_key(|profile| profile.name.to_lowercase());
-        // The default keeps a snapshot of the profile's name and host.
+        // The defaults keep a snapshot of the profile's name and host.
         settings.default_proxy =
             ResolvedProxy::resolve(&settings.default_proxy, &settings.proxies)?.choice;
+        settings.browserbase.default_proxy = ResolvedProxy::resolve_for_browserbase(
+            &settings.browserbase.default_proxy,
+            &settings.proxies,
+        )?
+        .choice;
         self.save(settings).await?;
         self.get().await
     }
@@ -252,6 +329,9 @@ impl SettingsService {
         if proxy::profile_id(&settings.default_proxy) == Some(id) {
             settings.default_proxy = ProxyChoice::System;
         }
+        if proxy::profile_id(&settings.browserbase.default_proxy) == Some(id) {
+            settings.browserbase.default_proxy = ProxyChoice::None;
+        }
         self.save(settings).await?;
         self.get().await
     }
@@ -296,12 +376,18 @@ impl SettingsService {
     async fn save(&self, mut settings: Settings) -> Result<(), AppError> {
         settings.has_api_key = false;
         settings.has_typesafe_key = false;
+        settings.browserbase.connected = false;
         for profile in &mut settings.proxies {
             profile.has_password = false;
         }
         Ok(self.settings.save(&settings).await?)
     }
 }
+
+const BROWSERBASE_SECRETS: [SecretName; 2] = [
+    SecretName::BrowserbaseApiKey,
+    SecretName::BrowserbaseProjectId,
+];
 
 fn proxy_not_found(id: &str) -> AppError {
     AppError::NotFound(format!("Proxy {id}"))
@@ -372,6 +458,21 @@ fn apply_patch(settings: &mut Settings, patch: SettingsPatch) -> Result<(), Doma
     }
     if let Some(full) = patch.store_full_headers {
         settings.store_full_headers = full;
+    }
+    if let Some(browser) = patch.default_browser {
+        settings.default_browser = browser;
+    }
+    if let Some(cloud) = patch.browserbase {
+        if let Some(region) = cloud.region {
+            settings.browserbase.region = region;
+        }
+        if let Some(choice) = cloud.default_proxy {
+            settings.browserbase.default_proxy =
+                ResolvedProxy::resolve_for_browserbase(&choice, &settings.proxies)?.choice;
+        }
+        if let Some(persistent_profile) = cloud.persistent_profile {
+            settings.browserbase.persistent_profile = persistent_profile;
+        }
     }
     Ok(())
 }

@@ -25,7 +25,6 @@ use super::error::CaptureError;
 use super::injected::{hit_test_expression, page_facts_expression};
 use super::navigation::{NavigationFailure, host_of, http_failure, network_failure};
 use super::page::Page;
-use super::recorder::epoch_ms_now;
 use super::scenario::{
     ScrollAction, ScrollStep, consent_attempt_due, due_step, observation_window, scroll_plan,
     step_distance,
@@ -46,8 +45,6 @@ const OBSERVATION_TICK: Duration = Duration::from_millis(100);
 /// A scripted visit ends here, wherever it is.
 const VISIT_DEADLINE: Duration = Duration::from_secs(8 * 60);
 const LINK_ATTEMPTS_PER_PAGE: usize = 3;
-/// A click that leads somewhere shows it within this time.
-const NAVIGATION_SIGNAL_PATIENCE: Duration = Duration::from_secs(4);
 /// A single-page app needs a moment to draw the route it changed to.
 const ROUTE_SETTLE: Duration = Duration::from_millis(500);
 /// The audit trail gets one entry per gesture, up to this many per page view.
@@ -185,7 +182,8 @@ impl Consent {
             return Ok(false);
         };
         self.wanted = false;
-        page.recorder.pages.consent_clicked(epoch_ms_now());
+        let clicked_at = page.recorder.clock.now_ms();
+        page.recorder.pages.consent_clicked(clicked_at);
         report_action(
             page,
             format!("Accepted the consent banner ({banner})"),
@@ -804,7 +802,7 @@ async fn await_navigation(
         before.opened_a_page_view(page) || before.was_refused(page) || page.download_began
     };
     let signalled = page
-        .record_until_or(Instant::now() + NAVIGATION_SIGNAL_PATIENCE, |page| {
+        .record_until_or(Instant::now() + page.patience.navigation_signal, |page| {
             shows_an_outcome(page) || before.requested_a_document(page)
         })
         .await?;

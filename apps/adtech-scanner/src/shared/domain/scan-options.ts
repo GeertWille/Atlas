@@ -74,6 +74,11 @@ export function defaultScanOptions(
   };
 }
 
+/** The built-in demo site is served from this computer, so its scan runs here whatever the settings say. */
+export function demoScanOptions(settings: Parameters<typeof defaultScanOptions>[0], demoUrl: string): ScanOptions {
+  return { ...defaultScanOptions(settings, demoUrl, "desktop"), browser: { kind: "local" } };
+}
+
 /** The same scan again: a scripted visit gets a new seed, so it moves and picks links afresh. */
 export function rescanOptions(options: ScanOptions): ScanOptions {
   const { seed: _seed, ...rest } = options;

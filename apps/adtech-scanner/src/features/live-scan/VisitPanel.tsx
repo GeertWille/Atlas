@@ -1,4 +1,5 @@
 import {
+  CloudIcon,
   CornerDownRightIcon,
   LogInIcon,
   type LucideIcon,
@@ -7,11 +8,12 @@ import {
   RouteIcon,
   UserIcon,
 } from "lucide-react";
-import type { PageReach } from "@/bindings";
+import type { BrowserbaseRegion, PageReach } from "@/bindings";
 import { Panel } from "@/shared/components/panel";
+import { regionPlace } from "@/shared/domain/browserbase";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { cn } from "@/shared/lib/cn";
-import type { VisitState } from "./visit";
+import { formatTimer, type VisitState } from "./visit";
 
 const REACH_ICON: Record<PageReach, LucideIcon> = {
   entry: LogInIcon,
@@ -22,20 +24,53 @@ const REACH_ICON: Record<PageReach, LucideIcon> = {
   reload: RefreshCwIcon,
 };
 
-/** Where the visit is and what the visitor just did, while the capture step runs. */
-export function VisitPanel({ visit }: { visit: VisitState }) {
-  const { pages, current, actions, skipped } = visit;
-  if (!current) return null;
+/**
+ * Where the visit is and what the visitor just did, while the capture step runs. A Browserbase scan shows
+ * the panel as soon as its capture starts: the browser has to be started before there is a page.
+ */
+export function VisitPanel({
+  visit,
+  browserbase,
+  now,
+}: {
+  visit: VisitState;
+  /** The region of the scan's Browserbase browser while the capture runs; `null` on this Mac. */
+  browserbase: BrowserbaseRegion | null;
+  now: number;
+}) {
+  const { pages, current, actions, skipped, remote, remoteNotice } = visit;
+  if (!current && browserbase === null) return null;
   return (
     <Panel aria-label="Visit" className="flex shrink-0 flex-col gap-2.5 px-4 py-3">
       <div className="flex items-baseline justify-between gap-4">
         <h2 className="text-sm font-semibold">Visit</h2>
-        <p className="min-w-0 truncate text-[13px] text-muted-foreground" title={current.url}>
-          {/* The audit trail announces a page before its title is known; its path always is. */}
-          Now on page {current.index + 1}: {current.title ?? pagePath(current.url)}
-        </p>
+        {current ? (
+          <p className="min-w-0 truncate text-[13px] text-muted-foreground" title={current.url}>
+            {/* The audit trail announces a page before its title is known; its path always is. */}
+            Now on page {current.index + 1}: {current.title ?? pagePath(current.url)}
+          </p>
+        ) : null}
       </div>
-      <ol aria-label="Pages visited" className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+      {browserbase ? (
+        <p className="flex items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground">
+          <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
+          {remote ? (
+            <>
+              <span className="truncate text-foreground">Browserbase {regionPlace(remote.region ?? browserbase)}</span>
+              <span className="tabular-nums">
+                · {remote.endedAt === null ? "running" : "ran"}{" "}
+                {formatTimer((remote.endedAt ?? now) - remote.startedAt)}
+              </span>
+            </>
+          ) : (
+            <span className={remoteNotice ? undefined : "shimmer"}>
+              Starting a Browserbase browser ({regionPlace(browserbase)})…
+            </span>
+          )}
+        </p>
+      ) : null}
+      {remoteNotice ? <p className="text-[13px] text-pretty text-amber-fg">{remoteNotice}</p> : null}
+      <ol aria-label="Pages visited" className="flex flex-wrap items-center gap-x-1.5 gap-y-1 empty:hidden">
         {pages.map((page) => {
           const Icon = REACH_ICON[page.reachedBy];
           return (

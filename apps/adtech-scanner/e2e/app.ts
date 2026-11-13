@@ -21,15 +21,32 @@ type FakeOptions = {
   sourceLimit?: number;
   /** `off`: the fake answers at once, for the specs that time the interface itself. */
   latency?: "on" | "off";
+  /** Browserbase scans fail: the project is at its limit of browsers, or the connection to the browser drops. */
+  browserbase?: "ok" | "limit" | "lost";
 };
 
 /** Opens the app at a hash route with the fake backend configured through its query parameters. */
 export async function openApp(
   page: Page,
   route = "/",
-  { profile = "seeded", speed = 40, jev = "ok", rows = 0, sourceLimit = 0, latency = "on" }: FakeOptions = {},
+  {
+    profile = "seeded",
+    speed = 40,
+    jev = "ok",
+    rows = 0,
+    sourceLimit = 0,
+    latency = "on",
+    browserbase = "ok",
+  }: FakeOptions = {},
 ) {
-  const fake = { fakeProfile: profile, fakeSpeed: speed, fakeJev: jev, fakeRows: rows, fakeSourceLimit: sourceLimit };
+  const fake = {
+    fakeProfile: profile,
+    fakeSpeed: speed,
+    fakeJev: jev,
+    fakeRows: rows,
+    fakeSourceLimit: sourceLimit,
+    fakeBrowserbase: browserbase,
+  };
   const query = new URLSearchParams({ ...fake, fakeLatency: latency } as unknown as Record<string, string>);
   await page.goto(`/?${query}#${route}`);
   // The shell (and with it the global shortcuts) is mounted once the sidebar renders.

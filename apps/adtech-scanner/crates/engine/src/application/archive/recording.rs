@@ -705,6 +705,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let store = SqliteStore::open_in_memory().unwrap();
         let summary = adscan_model::ScanSummary {
+            remote: None,
             id: "scan".into(),
             url: "https://pub.example/".into(),
             hostname: "pub.example".into(),

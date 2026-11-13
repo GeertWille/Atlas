@@ -260,6 +260,7 @@ pub fn state_without_bytes(body: &CapturedBody, end: &RequestEnd) -> BodyState {
         CapturedBody::Skipped(BodySkip::Backlog) => BodyState::Dropped,
         CapturedBody::Absent if *end == RequestEnd::Pending => BodyState::Pending,
         CapturedBody::Absent | CapturedBody::Unavailable(_) => BodyState::Unavailable,
+        CapturedBody::TooLargeForRemote { .. } => BodyState::TooLargeForRemote,
         CapturedBody::Read { bytes, total_bytes } => {
             if bytes.is_empty() {
                 BodyState::Empty
@@ -497,6 +498,13 @@ mod tests {
                 CapturedBody::Unavailable("gone".into()),
                 &finished,
                 BodyState::Unavailable,
+            ),
+            (
+                CapturedBody::TooLargeForRemote {
+                    total_bytes: 60_000_000,
+                },
+                &finished,
+                BodyState::TooLargeForRemote,
             ),
             (
                 CapturedBody::Absent,

@@ -75,7 +75,7 @@ const CATEGORIES: [NetworkCategory; 9] = [
     NetworkCategory::Site,
     NetworkCategory::OtherThirdParty,
 ];
-const BODY_STATES: [BodyState; 9] = [
+const BODY_STATES: [BodyState; 10] = [
     BodyState::Kept,
     BodyState::Truncated,
     BodyState::Empty,
@@ -85,6 +85,7 @@ const BODY_STATES: [BodyState; 9] = [
     BodyState::Unavailable,
     BodyState::Pending,
     BodyState::Evicted,
+    BodyState::TooLargeForRemote,
 ];
 
 const FLAG_THIRD_PARTY: i64 = 1;

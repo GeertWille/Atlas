@@ -18,15 +18,12 @@ use serde_json::{Value, json};
 use super::error::CaptureError;
 use super::injected::{ConsentAsk, consent_expression};
 use super::page::{Page, tolerate_rejection};
-use super::recorder::epoch_ms_now;
 use super::visitor::Point;
 use super::visitor::motion::Waypoint;
 
 /// An ad-heavy page has dozens of frames; the dialog is in one of the first.
 const MAX_FRAMES: usize = 40;
 const CLICK_HELD: Duration = Duration::from_millis(70);
-/// How long the control is watched for the scanner's click to arrive.
-const CLICK_ARRIVES_WITHIN_MS: u32 = 1_000;
 /// A dialog's container is on the page before its frame has drawn the
 /// controls. Only a dialog that still has no accept control after this many
 /// looks in a row is one the scanner cannot accept.
@@ -197,7 +194,9 @@ impl Page {
     /// Clicks at `at` and returns whether the accept control of `frame` saw
     /// the click.
     async fn click_and_confirm(&mut self, frame: &Frame, at: Point) -> Result<bool, CaptureError> {
-        let watch = consent_expression(ConsentAsk::WatchForClick(CLICK_ARRIVES_WITHIN_MS));
+        // How long the control is watched for the scanner's click to arrive.
+        let arrives_within_ms = self.patience.consent_click.as_millis() as u32;
+        let watch = consent_expression(ConsentAsk::WatchForClick(arrives_within_ms));
         let Some(evaluation) = self
             .evaluation_in_frame(&frame.session_id, &frame.frame_id, &watch)
             .await?
@@ -324,7 +323,7 @@ impl super::recorder::Recorder {
                 .any(|note| note.kind == kind && note.page == page);
         if !known {
             self.consent_notes.push(super::recorder::ConsentSeen {
-                at_epoch_ms: epoch_ms_now(),
+                at_epoch_ms: self.clock.now_ms(),
                 page,
                 kind,
                 banner,

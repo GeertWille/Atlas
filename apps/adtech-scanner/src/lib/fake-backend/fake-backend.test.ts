@@ -369,15 +369,15 @@ describe("seeded history", () => {
   test("lists newest first, pages, and filters by search, status and device", async () => {
     const api = seeded();
     const all = await api.listScans({ limit: 100 });
-    expect(all.total).toBe(26);
+    expect(all.total).toBe(27);
     expect(all.items.map((scan) => scan.startedAt)).toEqual(
       [...all.items.map((scan) => scan.startedAt)].sort((a, b) => b - a),
     );
     expect(new Set(all.items.map((scan) => scan.status))).toEqual(new Set(["completed", "failed", "cancelled"]));
 
     const page = await api.listScans({ limit: 10, offset: 20 });
-    expect(page.items).toHaveLength(6);
-    expect(page.total).toBe(26);
+    expect(page.items).toHaveLength(7);
+    expect(page.total).toBe(27);
 
     const sportsdesk = await api.listScans({ search: "SPORTSDESK" });
     expect(sportsdesk.items.every((scan) => scan.hostname === "www.sportsdesk.example")).toBe(true);
@@ -390,7 +390,7 @@ describe("seeded history", () => {
     const api = seeded();
     const stats = await api.getDashboardStats();
     const all = await api.listScans({ limit: 100 });
-    expect(stats.totalScans).toBe(26);
+    expect(stats.totalScans).toBe(27);
     expect(stats.sitesScanned).toBe(new Set(all.items.map((scan) => scan.hostname)).size);
     expect(stats.totalCostUsd).toBeCloseTo(
       all.items.reduce((sum, scan) => sum + scan.costUsd, 0),
@@ -416,8 +416,8 @@ describe("seeded history", () => {
   test("deleting one scan and then all scans survives a restart", async () => {
     const api = seeded();
     await api.deleteScan("seed-unreachable");
-    expect((await api.listScans({ limit: 100 })).total).toBe(25);
-    expect((await seeded().listScans({ limit: 100 })).total).toBe(25);
+    expect((await api.listScans({ limit: 100 })).total).toBe(26);
+    expect((await seeded().listScans({ limit: 100 })).total).toBe(26);
 
     await api.deleteAllScans();
     expect((await api.listScans({})).total).toBe(0);

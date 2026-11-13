@@ -17,6 +17,18 @@ use super::page::Page;
 pub(crate) const SESSION_LIMIT: Duration = Duration::from_secs(15 * 60);
 const TICK: Duration = Duration::from_secs(1);
 
+/// Where the person browses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Window {
+    /// The window of the browser on this machine. Its connection closing
+    /// is the person quitting the browser.
+    OnThisMachine,
+    /// Browserbase's live view of a browser in its cloud. Its connection
+    /// closing is the connection lost: the person can close tabs there, but
+    /// not the browser.
+    LiveView,
+}
+
 /// How a manual visit ended. Either way, what was recorded is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Ending {
@@ -33,10 +45,14 @@ pub(crate) async fn record(
     page: &mut Page,
     finish: &CancellationToken,
     limit: Instant,
+    window: Window,
 ) -> Result<Ending, CaptureError> {
     page.recorder.report(CaptureActivity::progress(format!(
-        "Recording. Browse the site in the browser window, then finish the capture in the app \
-         (up to {} minutes)",
+        "Recording. Browse the site in {}, then finish the capture in the app (up to {} minutes)",
+        match window {
+            Window::OnThisMachine => "the browser window",
+            Window::LiveView => "Browserbase's live view",
+        },
         SESSION_LIMIT.as_secs() / 60
     )));
     while Instant::now() < limit {
@@ -47,7 +63,8 @@ pub(crate) async fn record(
         };
         match recorded {
             Ok(()) => {}
-            Err(CaptureError::Protocol(CdpError::Closed) | CaptureError::TabClosed) => {
+            Err(CaptureError::TabClosed) => return Ok(Ending::BrowserGone),
+            Err(CaptureError::Protocol(CdpError::Closed)) if window == Window::OnThisMachine => {
                 return Ok(Ending::BrowserGone);
             }
             Err(error) => return Err(error),

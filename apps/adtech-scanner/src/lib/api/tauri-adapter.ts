@@ -59,6 +59,13 @@ export function createTauriAdapter(): ApiPort {
     clearArchive: () => call("clear_archive"),
     getSellersJsonCache: () => call("get_sellers_json_cache"),
     clearSellersJsonCache: () => call("clear_sellers_json_cache"),
+    setBrowserbaseCredentials: (apiKey, projectId) => call("set_browserbase_credentials", { apiKey, projectId }),
+    clearBrowserbaseCredentials: () => call("clear_browserbase_credentials"),
+    testBrowserbase: () => call("test_browserbase"),
+    probeBrowserbase: (region) => call("probe_browserbase", { region }),
+    getBrowserbaseProfile: () => call("get_browserbase_profile"),
+    clearBrowserbaseProfile: () => call("clear_browserbase_profile"),
+    openBrowserbaseLiveView: (scanId) => call("open_browserbase_live_view", { scanId }),
     subscribeScanEvents: (handler) => listen<ScanEvent>("scan-event", (event) => handler(event.payload)),
     pickExportPath: (defaultFileName, format) =>
       save({

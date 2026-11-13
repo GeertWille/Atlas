@@ -27,6 +27,15 @@ pub(crate) trait MessageSink: Send + 'static {
 
 /// Generous: a wedged renderer must not hang a scan forever, nothing more.
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// A command and its answer each cross the distance to the browser once,
+/// and a large answer takes several times that to arrive: a browser that is
+/// far away is given this many round trips on top.
+const ROUND_TRIPS_ALLOWED_FOR: u32 = 20;
+
+/// How long a command may go unanswered by a browser `round_trip` away.
+fn call_timeout_at(round_trip: Duration) -> Duration {
+    CALL_TIMEOUT + round_trip * ROUND_TRIPS_ALLOWED_FOR
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub(crate) enum CdpError {
@@ -72,6 +81,8 @@ type Awaiting = HashMap<u64, (&'static str, Reply)>;
 pub(crate) struct Cdp {
     commands: mpsc::UnboundedSender<Command>,
     next_id: AtomicU64,
+    /// How long a command may go unanswered, in ms.
+    call_timeout_ms: AtomicU64,
 }
 
 impl Cdp {
@@ -89,9 +100,18 @@ impl Cdp {
             Self {
                 commands,
                 next_id: AtomicU64::new(1),
+                call_timeout_ms: AtomicU64::new(CALL_TIMEOUT.as_millis() as u64),
             },
             event_stream,
         )
+    }
+
+    /// The browser is `round_trip` away: commands sent from here on wait
+    /// that much longer for their answer.
+    pub(crate) fn allow_for_distance(&self, round_trip: Duration) {
+        let allowed = call_timeout_at(round_trip);
+        self.call_timeout_ms
+            .store(allowed.as_millis() as u64, Ordering::Relaxed);
     }
 
     /// Queues the command immediately and returns a future for its result, so
@@ -115,8 +135,9 @@ impl Cdp {
             text: message.to_string(),
             reply,
         });
+        let patience = Duration::from_millis(self.call_timeout_ms.load(Ordering::Relaxed));
         async move {
-            match tokio::time::timeout(CALL_TIMEOUT, response).await {
+            match tokio::time::timeout(patience, response).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) => Err(CdpError::Closed),
                 Err(_) => Err(CdpError::Timeout(method)),
@@ -333,6 +354,21 @@ mod tests {
             Err(CdpError::Closed)
         );
         assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_browser_far_away_is_given_longer_to_answer() {
+        assert_eq!(call_timeout_at(Duration::ZERO), Duration::from_secs(60));
+        assert_eq!(
+            call_timeout_at(Duration::from_millis(250)),
+            Duration::from_secs(65)
+        );
+
+        let (cdp, _events, _browser) = connected();
+        let patience = || cdp.call_timeout_ms.load(Ordering::Relaxed);
+        assert_eq!(patience(), 60_000);
+        cdp.allow_for_distance(Duration::from_millis(119));
+        assert_eq!(patience(), 62_380);
     }
 
     /// Chrome exits when its end of the pipe reports end of file; this is

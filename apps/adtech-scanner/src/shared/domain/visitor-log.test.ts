@@ -98,3 +98,27 @@ test("anything that is not a well-formed visitor entry is just a message", () =>
     scrollDepth: null,
   });
 });
+
+test("what the capture says about its Browserbase browser is read by event, the region with the start", () => {
+  const browser = (detail: unknown) => makeLog({ kind: "visitor", data: { activity: "browser", page: null, detail } });
+  expect(
+    visitorActivity(
+      browser({ event: "sessionCreated", sessionId: "s-1", region: "eu-central-1", timeoutSeconds: 180 }),
+    ),
+  ).toEqual({ activity: "browser", page: null, event: "sessionCreated", region: "eu-central-1" });
+  for (const event of [
+    "rateLimited",
+    "connected",
+    "timezone",
+    "liveView",
+    "bodiesTooLarge",
+    "connectionLost",
+    "released",
+  ]) {
+    expect(visitorActivity(browser({ event }))).toEqual({ activity: "browser", page: null, event, region: null });
+  }
+  // A region or an event this version does not know is not guessed at.
+  expect(visitorActivity(browser({ event: "sessionCreated", region: "mars-north-1" }))).toMatchObject({ region: null });
+  expect(visitorActivity(browser({ event: "somethingNew" }))).toBeNull();
+  expect(visitorActivity(browser(null))).toBeNull();
+});

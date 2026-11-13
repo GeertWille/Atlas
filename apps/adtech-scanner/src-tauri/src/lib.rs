@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use tauri::{Manager, RunEvent, Runtime};
 
-pub use crate::adapters::{ChromeCaptureSource, TauriEventSink};
+pub use crate::adapters::{BrowserbaseAdapter, ChromeCaptureSource, OpenUrl, TauriEventSink};
 use crate::state::{AppConfig, AppState};
 
 /// Every command of the frontend contract, with the plugin `export_scan`
@@ -54,6 +54,13 @@ pub fn register_commands<R: Runtime>(builder: tauri::Builder<R>) -> tauri::Build
             commands::clear_archive,
             commands::get_sellers_json_cache,
             commands::clear_sellers_json_cache,
+            commands::set_browserbase_credentials,
+            commands::clear_browserbase_credentials,
+            commands::test_browserbase,
+            commands::probe_browserbase,
+            commands::get_browserbase_profile,
+            commands::clear_browserbase_profile,
+            commands::open_browserbase_live_view,
         ])
 }
 
@@ -69,8 +76,25 @@ pub fn run() {
             // Throwaway profiles that a crashed run left behind. Off the
             // startup path: it only frees disk space.
             tauri::async_runtime::spawn_blocking(adscan_browser::sweep_stale_profiles);
-            let capture = Arc::new(ChromeCaptureSource::new(&config.data_dir));
-            let state = tauri::async_runtime::block_on(AppState::build(config, capture, events))?;
+            let browserbase = adscan_browser::Browserbase::new(config.browserbase.clone())
+                .map_err(|error| error.to_string())?;
+            let capture = Arc::new(ChromeCaptureSource::new(
+                &config.data_dir,
+                browserbase.clone(),
+            ));
+            // A live view is shown in the user's own browser, opened from
+            // here: its address never passes through the webview.
+            let open_url: OpenUrl = Arc::new(|address| {
+                tauri_plugin_opener::open_url(address, None::<&str>)
+                    .map_err(|error| error.to_string())
+            });
+            let browserbase = Arc::new(BrowserbaseAdapter::new(browserbase, open_url));
+            let state = tauri::async_runtime::block_on(AppState::build(
+                config,
+                capture,
+                browserbase,
+                events,
+            ))?;
             app.manage(state);
             #[cfg(unix)]
             exit_on_termination_signals(app.handle().clone());

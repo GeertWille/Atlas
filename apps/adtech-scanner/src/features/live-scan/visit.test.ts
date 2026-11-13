@@ -22,6 +22,8 @@ test("nothing is known about a visit before its first visitor entry", () => {
     current: null,
     actions: [],
     skipped: null,
+    remote: null,
+    remoteNotice: null,
   });
 });
 
@@ -80,4 +82,63 @@ test("the session timer reads as minutes and seconds and never goes below zero",
   expect(formatTimer(134_900)).toBe("02:14");
   expect(formatTimer(15 * 60_000)).toBe("15:00");
   expect(formatTimer(-5_000)).toBe("00:00");
+});
+
+const remote = (event: string, message: string, detail: Record<string, unknown> = {}, ts = 1_000): LogEntry => {
+  sequence += 1;
+  return makeLog({
+    id: `l${sequence}`,
+    ts,
+    kind: "visitor",
+    level: event === "connectionLost" ? "warn" : "info",
+    message,
+    data: { activity: "browser", page: null, detail: { event, ...detail } },
+  });
+};
+
+test("a Browserbase browser is known from the moment Browserbase starts it, with its region and its clock", () => {
+  expect(deriveVisit([makeLog({ message: "Using Browserbase in eu-central-1" })]).remote).toBeNull();
+  const started = deriveVisit([
+    remote("sessionCreated", "Browserbase started a browser in eu-central-1", { region: "eu-central-1" }, 5_000),
+    remote("connected", "Connected to Chrome/157.0.8103.79, round trip 119 ms", {}, 5_400),
+  ]);
+  expect(started.remote).toEqual({ region: "eu-central-1", startedAt: 5_000, endedAt: null, liveViewReady: false });
+  // No page yet: the browser is there before the visit is anywhere.
+  expect(started.current).toBeNull();
+});
+
+test("the live view is ready once the capture says so, and not after the browser has ended", () => {
+  const session = remote("sessionCreated", "started", { region: "us-west-2" }, 5_000);
+  const ready = remote("liveView", "The browser is ready for you in Browserbase's live view", {}, 7_000);
+  expect(deriveVisit([session]).remote?.liveViewReady).toBe(false);
+  expect(deriveVisit([session, ready]).remote?.liveViewReady).toBe(true);
+  expect(deriveVisit([session, ready, remote("released", "ended after 41 s", {}, 46_000)]).remote).toEqual({
+    region: "us-west-2",
+    startedAt: 5_000,
+    endedAt: 46_000,
+    liveViewReady: false,
+  });
+});
+
+test("waiting at the limit and a lost connection are passed on in the backend's words", () => {
+  const waiting = deriveVisit([remote("rateLimited", "Browserbase is at its limit; trying again in 5 s")]);
+  expect(waiting).toMatchObject({ remote: null, remoteNotice: "Browserbase is at its limit; trying again in 5 s" });
+  // Once the browser starts, the wait is over.
+  const started = deriveVisit([
+    remote("rateLimited", "Browserbase is at its limit; trying again in 5 s"),
+    remote("sessionCreated", "started", { region: "us-west-2" }, 9_000),
+  ]);
+  expect(started.remoteNotice).toBeNull();
+  const lost = deriveVisit([
+    remote("sessionCreated", "started", { region: "us-west-2" }, 9_000),
+    remote("connectionLost", "The connection to the Browserbase browser was lost", {}, 30_000),
+  ]);
+  expect(lost).toMatchObject({
+    remote: { endedAt: 30_000, liveViewReady: false },
+    remoteNotice: "The connection to the Browserbase browser was lost",
+  });
+});
+
+test("an entry about the browser that names no known event is just a message", () => {
+  expect(deriveVisit([remote("somethingNew", "Browserbase did something")]).remote).toBeNull();
 });

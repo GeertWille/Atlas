@@ -21,7 +21,7 @@ pub async fn derive_telemetry(run: &mut StepRun<'_>) -> NodeResult {
     }
     let prebid_version = telemetry::prebid_version(capture);
     let scan = &run.job.scan;
-    let environment = environment::detect(capture, scan.visitor, scan.seed, scan.proxy.usage());
+    let environment = environment::detect(capture, scan, run.state.summary.remote.as_ref());
     derived.total.metrics.ad_script_count = described
         .iter()
         .filter(|script| script.record.ad_related)

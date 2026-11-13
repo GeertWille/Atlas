@@ -1,7 +1,7 @@
 import type { ScanConfiguration, Settings } from "@/bindings";
 import { DEVICE_LABEL } from "@/shared/domain/vocabulary";
 import { hostnameOf } from "@/shared/lib/url";
-import { proxySummary, visitorSummary } from "./configuration-summary";
+import { browserSummary, proxySummary, visitorSummary } from "./configuration-summary";
 
 export type ConfigurationSort = "recent" | "name";
 
@@ -15,11 +15,11 @@ export function siteOf(configuration: ScanConfiguration): string {
   return hostnameOf(configuration.options.url).replace(/^www\./, "");
 }
 
-/** Configurations whose name, address, device, proxy or visit contain every word of the search. */
+/** Configurations whose name, address, device, proxy, visit or cloud region contain every word of the search. */
 export function searchConfigurations(
   configurations: ScanConfiguration[],
   search: string,
-  settings: Pick<Settings, "proxies">,
+  settings: Pick<Settings, "proxies" | "browserbase">,
 ): ScanConfiguration[] {
   const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return configurations;
@@ -30,6 +30,7 @@ export function searchConfigurations(
       DEVICE_LABEL[configuration.options.device],
       proxySummary(configuration, settings),
       visitorSummary(configuration),
+      browserSummary(configuration, settings)?.full ?? "",
     ]
       .join(" ")
       .toLowerCase();

@@ -62,6 +62,13 @@ export function bodyNotice(body: BodyRef, side: BodySide): BodyNotice | null {
           "That is the case for failed and cancelled loads, redirects and preflights, and for bodies Chrome had already discarded.",
         storage: false,
       };
+    case "tooLargeForRemote":
+      return {
+        title: `Body not read${was}`,
+        detail:
+          "It was too large to bring over the connection to the Browserbase browser in one piece, so the scanner left it there.",
+        storage: false,
+      };
     case "pending":
       return { title: "No response before the visit ended", detail: null, storage: false };
     case "evicted":

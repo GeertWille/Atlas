@@ -1,5 +1,6 @@
 import { Outlet, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
+import { toast } from "sonner";
 import type { ThemePreference } from "@/bindings";
 import { configurationProblem, sortConfigurations } from "@/features/configurations";
 import { requestComposerFocus } from "@/features/scan-composer";
@@ -11,7 +12,7 @@ import {
   useSettings,
   useUpdateSettings,
 } from "@/lib/query/hooks";
-import { defaultScanOptions } from "@/shared/domain/scan-options";
+import { demoScanOptions } from "@/shared/domain/scan-options";
 import { isActive } from "@/shared/domain/vocabulary";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { notifyError } from "@/shared/lib/notify-error";
@@ -41,7 +42,11 @@ export function AppShell() {
   const actions: PaletteActions = {
     newScan,
     scanDemo: () => {
-      if (settings.data && demoUrl.data) launch(defaultScanOptions(settings.data, demoUrl.data, "desktop"));
+      if (!settings.data || !demoUrl.data) return;
+      if (settings.data.defaultBrowser === "browserbase") {
+        toast.info("The demo site is on this Mac, so this scan runs in this Mac's Chrome, not on Browserbase.");
+      }
+      launch(demoScanOptions(settings.data, demoUrl.data));
     },
     runConfiguration: launchConfiguration,
     openConfiguration: (configuration) => navigate({ to: "/", search: { configuration } }),

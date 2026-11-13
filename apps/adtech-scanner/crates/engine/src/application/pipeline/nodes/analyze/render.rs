@@ -5,8 +5,8 @@
 //! reads as it always did.
 
 use adscan_model::{
-    AdSlot, AdsTxtStatus, Auction, BidderDiagnostics, Capture, PageView, ScanEnvironment,
-    TrackerEventKind as Ev,
+    AdSlot, AdsTxtStatus, Auction, BidderDiagnostics, BrowserUse, BrowserbaseProxyKind,
+    BrowserbaseVisit, Capture, PageView, ScanEnvironment, TrackerEventKind as Ev,
 };
 use serde_json::json;
 
@@ -39,6 +39,36 @@ impl Scope {
     }
 }
 
+/// Where the browser ran when it was not on the user's machine, stated as
+/// fact: a cloud address, another clock and a round trip per held request
+/// all change what a page does, and none of them is a bug of the page.
+fn browserbase_line(visit: &BrowserbaseVisit) -> String {
+    let exit = match visit.proxy_kind {
+        BrowserbaseProxyKind::None => "its cloud region (a data-centre address)".to_string(),
+        BrowserbaseProxyKind::External => "the user's own proxy".to_string(),
+        BrowserbaseProxyKind::Browserbase => format!(
+            "a residential exit asked for in {}",
+            visit.proxy_country.as_deref().unwrap_or("no named country")
+        ),
+    };
+    let timezone = match (&visit.applied_timezone, &visit.original_timezone) {
+        (Some(applied), _) => format!("{applied} (set by the scanner)"),
+        (None, Some(original)) => original.clone(),
+        (None, None) => "unknown".to_string(),
+    };
+    format!(
+        "the browser ran in Browserbase's cloud, region {}, leaving through {exit}; timezone {timezone}, language {}; \
+         it runs headless without saying so in its user agent; CAPTCHAs are solved automatically: {}; \
+         round trip between scanner and browser {} ms, which delays every frame and document the scanner holds for a moment",
+        visit.region.as_str(),
+        visit.language.as_deref().unwrap_or("unknown"),
+        visit.settings.solve_captchas,
+        visit
+            .round_trip_ms
+            .map_or("unknown".to_string(), |ms| format!("{ms:.0}")),
+    )
+}
+
 /// How the visit was made and what its page views were.
 /// `consent` is what is known about consent dialogs that were answered late
 /// or not at all (`domain::consent_wait::accounts`): stated as fact, so the
@@ -66,10 +96,15 @@ pub fn visit(
             },
             environment.proxy.kind,
         ));
+        if let BrowserUse::Browserbase(visit) = &environment.browser {
+            out.push(browserbase_line(visit));
+        }
         out.push(format!(
             "what the pages could see: navigator.webdriver={} headless={} userAgentOverridden={} viewportOverridden={} detectionVendors=[{}]",
             flag(environment.webdriver),
-            environment.headless,
+            // A Browserbase browser runs headless without any sign of
+            // it that a page can read.
+            environment.headless && environment.browser == BrowserUse::Local,
             environment.user_agent_overridden,
             environment.viewport_overridden,
             environment
@@ -473,5 +508,69 @@ mod tests {
             "{block}"
         );
         assert!(!visit(None, &[], &[]).contains("consent"));
+    }
+
+    fn environment(browser: BrowserUse) -> ScanEnvironment {
+        ScanEnvironment {
+            visitor: adscan_model::VisitorBehavior::Scroll,
+            seed: 7,
+            headless: true,
+            persistent_profile: false,
+            webdriver: Some(false),
+            user_agent_overridden: false,
+            viewport_overridden: true,
+            emulated_mobile: false,
+            detectors: Vec::new(),
+            proxy: adscan_model::ProxyUse {
+                kind: adscan_model::ProxyKind::None,
+                name: None,
+                host: None,
+            },
+            browser,
+        }
+    }
+
+    #[test]
+    fn the_visit_block_says_where_the_browser_ran_when_that_was_not_this_machine() {
+        let local = visit(Some(&environment(BrowserUse::Local)), &[], &[]);
+        assert!(!local.contains("Browserbase"), "{local}");
+        assert!(local.contains("navigator.webdriver=no headless=true"));
+
+        let cloud = visit(
+            Some(&environment(BrowserUse::Browserbase(Box::new(
+                BrowserbaseVisit {
+                    region: adscan_model::BrowserbaseRegion::EuCentral1,
+                    session_id: "session-1".into(),
+                    browser_version: None,
+                    user_agent: None,
+                    proxy_kind: BrowserbaseProxyKind::Browserbase,
+                    proxy_country: Some("BE".into()),
+                    settings: adscan_model::BrowserbaseSessionSettings::STANDARD,
+                    original_timezone: Some("Europe/Brussels".into()),
+                    applied_timezone: None,
+                    language: Some("en-US".into()),
+                    round_trip_ms: Some(118.6),
+                    session_seconds: None,
+                    proxy_bytes: None,
+                },
+            )))),
+            &[],
+            &[],
+        );
+        assert!(
+            cloud.contains(
+                "the browser ran in Browserbase's cloud, region eu-central-1, leaving through a residential \
+                 exit asked for in BE; timezone Europe/Brussels, language en-US; it runs headless without \
+                 saying so in its user agent; CAPTCHAs are solved automatically: true; round trip between \
+                 scanner and browser 119 ms"
+            ),
+            "{cloud}"
+        );
+        // What the page could read is another matter than how the browser ran.
+        assert!(cloud.contains("navigator.webdriver=no headless=false"));
+        assert!(
+            !cloud.contains("session-1"),
+            "an id is of no use to the model"
+        );
     }
 }

@@ -1,7 +1,9 @@
 //! Why a capture ended without a result.
 
 use crate::BrowserError;
-use crate::cdp::{CdpError, LaunchError, PersistentProfileError};
+use crate::cdp::{
+    ApiFailure, CdpError, ConnectFailure, LaunchError, PersistentProfileError, StartFailure,
+};
 
 use super::navigation::NavigationFailure;
 
@@ -23,6 +25,27 @@ pub(crate) enum CaptureError {
     TabClosed,
     #[error("{0}")]
     Unsupported(&'static str),
+    /// Something went wrong with the browser at Browserbase.
+    #[error(transparent)]
+    Remote(#[from] ApiFailure),
+}
+
+impl From<ConnectFailure> for CaptureError {
+    fn from(failure: ConnectFailure) -> Self {
+        match failure {
+            ConnectFailure::Local(error) => Self::Launch(error),
+            ConnectFailure::Browserbase(failure) => Self::Remote(failure),
+        }
+    }
+}
+
+impl From<StartFailure> for CaptureError {
+    fn from(failure: StartFailure) -> Self {
+        match failure {
+            StartFailure::Cancelled => Self::Cancelled,
+            StartFailure::Refused(failure) => Self::Remote(failure),
+        }
+    }
 }
 
 impl From<CaptureError> for BrowserError {
@@ -36,6 +59,9 @@ impl From<CaptureError> for BrowserError {
                 BrowserError::Launch(error.to_string())
             }
             CaptureError::Navigation(failure) => BrowserError::Navigation(failure.to_string()),
+            CaptureError::Remote(ApiFailure::Auth(message)) => BrowserError::RemoteAuth(message),
+            CaptureError::Remote(ApiFailure::Limit(message)) => BrowserError::RemoteLimit(message),
+            CaptureError::Remote(ApiFailure::Failed(message)) => BrowserError::Remote(message),
             CaptureError::Protocol(_)
             | CaptureError::PageCrashed
             | CaptureError::TabClosed

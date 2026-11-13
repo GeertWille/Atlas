@@ -1,0 +1,15 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>A page that fetches what it is told to</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// `?fetch=<path and query>,<path and query>,...`: fetches each of them at
+// once and reads the answer as text, then says so.
+var asked = (new URLSearchParams(location.search).get('fetch') || '').split(',');
+Promise.all(asked.map(function (path) {
+  return fetch(path).then(function (answer) { return answer.text(); });
+})).then(function (texts) {
+  console.log('READ ' + texts.map(function (text) { return text.length; }).join(' '));
+  fetch('/status/200?all-read');
+});
+</script>
+</body></html>

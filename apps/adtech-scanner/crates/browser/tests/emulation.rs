@@ -91,6 +91,7 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
     assert_eq!(
         capture.environment,
         CaptureEnvironment {
+            browserbase: None,
             headless: true,
             persistent_profile: false,
             webdriver: Some(false),
@@ -164,6 +165,7 @@ async fn desktop_scan_is_a_desktop_and_the_browser_it_really_is() {
     assert_eq!(
         capture.environment,
         CaptureEnvironment {
+            browserbase: None,
             headless: true,
             persistent_profile: false,
             webdriver: Some(false),

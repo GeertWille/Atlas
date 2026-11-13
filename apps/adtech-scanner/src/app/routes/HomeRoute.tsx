@@ -71,15 +71,19 @@ export function HomeRoute() {
           <div className="flex flex-col gap-1">
             <h2 className="text-xl font-semibold tracking-tight">Scan a page for revenue leaks</h2>
             <p className="text-[13px] text-muted-foreground">
-              Captures Prebid auctions, GPT slots and every script in your local browser, then checks the wrapper logic.
+              Captures Prebid auctions, GPT slots and every script in{" "}
+              {settings.data.defaultBrowser === "browserbase" ? "a Browserbase browser" : "your local browser"}, then
+              checks the wrapper logic.
             </p>
           </div>
           {browser.data === null ? (
-            <Alert tone="warning">
+            <Alert tone={settings.data.browserbase.connected ? "neutral" : "warning"}>
               <TriangleAlertIcon />
-              <AlertTitle>No browser found</AlertTitle>
+              <AlertTitle>No browser found on this Mac</AlertTitle>
               <AlertDescription className="flex items-center justify-between gap-4">
-                Scans need a local Chrome or Chromium. Choose an executable in Settings.
+                {settings.data.browserbase.connected
+                  ? "Scans can run on Browserbase. Pages on this Mac or your network need a local Chrome or Chromium: choose an executable in Settings."
+                  : "Scans need a local Chrome or Chromium: choose an executable in Settings. Or set up Browserbase there to run scans in its cloud browser."}
                 <Button variant="outline" size="sm" onClick={() => navigate({ to: "/settings" })}>
                   Open settings
                 </Button>

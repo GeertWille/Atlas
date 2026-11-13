@@ -33,6 +33,7 @@ test("no notice for a scan without a recorded environment, or for a visit a pers
 test("a scripted visit is reported with the facts the page could see", () => {
   const headless = environmentNotice(makeDetail({ environment: makeEnvironment() }));
   expect(headless).toEqual({
+    kind: "identifiable",
     signals: ["navigator.webdriver was true", "Chrome ran headless"],
     canShowBrowser: true,
   });
@@ -48,17 +49,18 @@ test("a scripted visit is reported with the facts the page could see", () => {
       }),
     }),
   );
-  expect(shown?.signals).toEqual([
+  expect(shown).toMatchObject({ kind: "identifiable", canShowBrowser: false });
+  expect(shown?.kind === "identifiable" && shown.signals).toEqual([
     "navigator.webdriver was true",
     "DoubleVerify (invalid-traffic measurement) was on the page",
     "DataDome (bot protection) was on the page",
   ]);
-  // The browser was already shown: there is no second thing to try.
-  expect(shown?.canShowBrowser).toBe(false);
+  // The browser was already shown (asserted above): there is no second thing to try.
 });
 
 test("headless Chrome alone is a sign, as it is for the backend's own rule", () => {
   expect(environmentNotice(makeDetail({ environment: makeEnvironment({ webdriver: null }) }))).toEqual({
+    kind: "identifiable",
     signals: ["Chrome ran headless"],
     canShowBrowser: true,
   });

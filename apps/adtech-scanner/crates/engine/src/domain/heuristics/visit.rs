@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use adscan_model::{
-    AdSlot, BidStatus, FindingCategory, PageReach, PageView, ScanEnvironment, Severity,
+    AdSlot, BidStatus, BrowserUse, FindingCategory, PageReach, PageView, ScanEnvironment, Severity,
     SlotRequest, TrackerEvent, TrackerEventKind as Ev,
 };
 
@@ -696,7 +696,10 @@ pub(super) fn automation_indicators(environment: Option<&ScanEnvironment>) -> Op
     if environment.webdriver == Some(true) {
         indicators.push("navigator.webdriver was true");
     }
-    if environment.headless {
+    // A local headless Chrome names itself in its user agent. Browserbase's
+    // browser runs headless too, but neither its user agent nor
+    // `navigator.webdriver` says so: nothing the page reads gives it away.
+    if environment.headless && environment.browser == BrowserUse::Local {
         indicators.push("the browser ran headless");
     }
     (!indicators.is_empty()).then(|| indicators.join(", "))

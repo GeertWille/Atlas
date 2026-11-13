@@ -37,6 +37,21 @@ export const settingsFixture: Settings = {
   keepNetworkData: true,
   archiveLimitBytes: 5 * 1024 ** 3,
   storeFullHeaders: false,
+  defaultBrowser: "local",
+  browserbase: {
+    region: "us-west-2",
+    defaultProxy: { kind: "none" },
+    persistentProfile: false,
+    connected: false,
+    projectName: null,
+    concurrency: null,
+  },
+};
+
+/** Settings with Browserbase set up, as after saving a key whose one project is "Local". */
+export const browserbaseSettingsFixture: Settings = {
+  ...settingsFixture,
+  browserbase: { ...settingsFixture.browserbase, connected: true, projectName: "Local", concurrency: 3 },
 };
 
 export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
@@ -57,6 +72,7 @@ export function makeSummary(overrides: Partial<ScanSummary> = {}): ScanSummary {
     error: null,
     configuration: null,
     proxy: null,
+    remote: null,
     ...overrides,
   };
 }
@@ -289,6 +305,7 @@ export function makeEnvironment(overrides: Partial<ScanEnvironment> = {}): ScanE
     emulatedMobile: false,
     detectors: [],
     proxy: { kind: "system", name: null, host: null },
+    browser: { kind: "local" },
     ...overrides,
   };
 }

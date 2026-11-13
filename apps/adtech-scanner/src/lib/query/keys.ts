@@ -23,6 +23,7 @@ export const queryKeys = {
   archiveStorage: ["archive-storage"] as const,
   sellersJsonCache: ["sellers-json-cache"] as const,
   scanProfile: ["scan-profile"] as const,
+  browserbaseProfile: ["browserbase-profile"] as const,
   configurations: ["configurations"] as const,
   logSearches: ["log-search"] as const,
   logSearch: (query: string) => ["log-search", query] as const,

@@ -125,6 +125,15 @@ test("read commands answer with the contract's shapes", async () => {
     keepNetworkData: true,
     archiveLimitBytes: 5 * 1024 ** 3,
     storeFullHeaders: false,
+    defaultBrowser: "local",
+    browserbase: {
+      region: "us-west-2",
+      defaultProxy: { kind: "none" },
+      persistentProfile: false,
+      connected: false,
+      projectName: null,
+      concurrency: null,
+    },
   });
 
   const detected = await invokeOk<BrowserInfo | null>(browser, "detect_browser");

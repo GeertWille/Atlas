@@ -3,7 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import type { ProxyProfile, Settings, SettingsPatch } from "@/bindings";
 import { useDeleteProxyProfile } from "@/lib/query/hooks";
-import { type ProxyChoiceKey, proxyAddress, proxyChoiceFromKey, proxyChoiceKey } from "@/shared/domain/proxy";
+import { proxyAddress, proxyChoiceFromKey, proxyChoiceKey, type SavedProxyKey } from "@/shared/domain/proxy";
 import { notifyError } from "@/shared/lib/notify-error";
 import {
   AlertDialog,
@@ -67,11 +67,11 @@ export function ProxySection({ settings, save }: { settings: Settings; save: (pa
     <>
       <Field
         label="Scans use"
-        description="A scan can choose differently under Options. Pages on this computer, like the demo site, always connect directly."
+        description="For scans that run on this Mac. A scan can choose differently under Options. Pages on this computer, like the demo site, always connect directly."
       >
         <Select
           value={proxyChoiceKey(settings.defaultProxy)}
-          onValueChange={(key) => save({ defaultProxy: proxyChoiceFromKey(key as ProxyChoiceKey) })}
+          onValueChange={(key) => save({ defaultProxy: proxyChoiceFromKey(key as SavedProxyKey) })}
         >
           <SelectTrigger aria-label="Default proxy" className="w-44">
             <SelectValue />

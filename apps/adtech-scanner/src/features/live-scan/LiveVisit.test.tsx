@@ -188,3 +188,127 @@ test("Finish capture ends the recording, keeps the pages seen and lets the scan 
   expect(detail.pages).toHaveLength(3);
   expect(detail.environment?.visitor).toBe("manual");
 });
+
+const frankfurt: ScanOptions = { ...baseOptions, browser: { kind: "browserbase", region: "eu-central-1" } };
+const remoteEvent = (event: string, message: string, detail: Record<string, unknown> = {}, ts = Date.now()) => {
+  sequence += 1;
+  return makeLog({
+    id: `r${sequence}`,
+    ts,
+    kind: "visitor",
+    level: event === "connectionLost" ? "warn" : "info",
+    message,
+    data: { activity: "browser", page: null, detail: { event, ...detail } },
+  });
+};
+
+test("a Browserbase scan says that it is starting a browser there, until that browser exists", async () => {
+  await renderWithApp(view(running(frankfurt), [makeLog({ message: "Using Browserbase in eu-central-1" })]));
+  expect(screen.getByText("Step 2 of 3: Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  const visit = screen.getByRole("region", { name: "Visit" });
+  expect(within(visit).getByText("Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  expect(within(visit).queryByText(/Now on page/)).toBeNull();
+  // The one step that differs from a scan on this Mac.
+  const pipeline = screen.getByRole("list", { name: "Pipeline" });
+  expect(pipeline).toHaveTextContent("Start a Browserbase browser in Frankfurt");
+  expect(pipeline).not.toHaveTextContent("Start local Chrome over CDP");
+});
+
+test("once the browser runs, the visit panel names the region and counts its billed time", async () => {
+  const started = Date.now() - 72_000;
+  await renderWithApp(
+    view(running(frankfurt), [
+      remoteEvent(
+        "sessionCreated",
+        "Browserbase started a browser in eu-central-1",
+        { region: "eu-central-1" },
+        started,
+      ),
+      ...browseLogs,
+    ]),
+  );
+  expect(screen.getByText("Step 2 of 3: Capture page")).toBeInTheDocument();
+  const visit = screen.getByRole("region", { name: "Visit" });
+  expect(within(visit).getByText("Browserbase Frankfurt")).toBeInTheDocument();
+  expect(within(visit).getByText(/· running 01:1[2-4]/)).toBeInTheDocument();
+  expect(within(visit).getByText("Now on page 2: /sport/final")).toBeInTheDocument();
+});
+
+test("waiting at Browserbase's limit and a lost connection show the backend's own message", async () => {
+  const waiting = await renderWithApp(
+    view(running(frankfurt), [
+      remoteEvent("rateLimited", "Browserbase is at its limit; trying again in 5 s", { waitSeconds: 5, attempt: 1 }),
+    ]),
+  );
+  const visit = screen.getByRole("region", { name: "Visit" });
+  expect(within(visit).getByText("Browserbase is at its limit; trying again in 5 s")).toBeInTheDocument();
+  expect(within(visit).getByText("Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  waiting.unmount();
+
+  await renderWithApp(
+    view(running(frankfurt), [
+      remoteEvent("sessionCreated", "started", { region: "eu-central-1" }, Date.now() - 30_000),
+      remoteEvent("connectionLost", "The connection to the Browserbase browser was lost", {}, Date.now() - 4_000),
+    ]),
+  );
+  const lost = screen.getByRole("region", { name: "Visit" });
+  expect(within(lost).getByText("The connection to the Browserbase browser was lost")).toBeInTheDocument();
+  expect(within(lost).getByText(/· ran 00:2[5-7]/)).toBeInTheDocument();
+});
+
+test("a scan on this Mac shows none of it", async () => {
+  await renderWithApp(view(running(baseOptions), browseLogs));
+  expect(screen.queryByText(/Browserbase/)).toBeNull();
+  expect(screen.getByRole("list", { name: "Pipeline" })).toHaveTextContent("Start local Chrome over CDP");
+});
+
+test("a manual Browserbase visit is used through the live view, which can be opened again by scan id", async () => {
+  const user = userEvent.setup();
+  const openLiveView = vi.spyOn(api, "openBrowserbaseLiveView").mockResolvedValue();
+  const manual: ScanOptions = { ...frankfurt, visitor: "manual", extraPages: 0 };
+  const session = remoteEvent("sessionCreated", "started", { region: "eu-central-1" });
+  const entry = browseLogs.slice(0, 1);
+
+  // The page has opened, but the capture has not said yet that a person can take over.
+  const early = await renderWithApp(view(running(manual), [session, ...entry]));
+  const waiting = screen.getByRole("region", { name: "Manual session" });
+  expect(within(waiting).getByRole("heading")).toHaveTextContent("Starting a Browserbase browser for www.example.com");
+  expect(within(waiting).getByRole("button", { name: "Open live view" })).toBeDisabled();
+  expect(within(waiting).getByRole("button", { name: "Finish capture" })).toBeDisabled();
+  early.unmount();
+
+  await renderWithApp(
+    view(running(manual), [
+      session,
+      ...entry,
+      remoteEvent("liveView", "The browser is ready for you in Browserbase's live view"),
+    ]),
+  );
+  const bar = screen.getByRole("region", { name: "Manual session" });
+  expect(within(bar).getByRole("heading")).toHaveTextContent("You are browsing www.example.com");
+  expect(bar).toHaveTextContent(
+    "Use Browserbase's live view, which opened in your own browser. Pages of this site are recorded as you open them; other sites are not. Browserbase bills the session until you finish.",
+  );
+  expect(within(bar).getByRole("button", { name: "Finish capture" })).toBeEnabled();
+  expect(within(bar).getByRole("button", { name: "Cancel scan" })).toBeInTheDocument();
+
+  await user.click(within(bar).getByRole("button", { name: "Open live view" }));
+  // Only the scan's id goes out: the address of the live view never reaches this side.
+  expect(openLiveView).toHaveBeenCalledWith("scan-1");
+  expect(await screen.findByText("Live view opened in your browser")).toBeInTheDocument();
+
+  openLiveView.mockRejectedValueOnce({
+    code: "invalidInput",
+    message: "This scan has no Browserbase browser to show right now.",
+  });
+  await user.click(within(bar).getByRole("button", { name: "Open live view" }));
+  expect(await screen.findByText("This scan has no Browserbase browser to show right now.")).toBeInTheDocument();
+  openLiveView.mockRestore();
+});
+
+test("a manual visit on this Mac has no live view to open", async () => {
+  await renderWithApp(view(running({ ...baseOptions, visitor: "manual", extraPages: 0 }), browseLogs.slice(0, 1)));
+  const bar = screen.getByRole("region", { name: "Manual session" });
+  expect(within(bar).queryByRole("button", { name: "Open live view" })).toBeNull();
+  expect(bar).toHaveTextContent("Use the Chrome window that opened.");
+});

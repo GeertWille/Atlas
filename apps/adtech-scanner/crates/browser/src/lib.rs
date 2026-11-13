@@ -1,8 +1,10 @@
-//! Browser capture: drives a locally installed Chrome/Chromium over the DevTools
-//! protocol, injects the tracker script, and returns an in-memory [`Capture`].
+//! Browser capture: drives a locally installed Chrome/Chromium, or a browser
+//! at Browserbase, over the DevTools protocol, injects the tracker script, and
+//! returns an in-memory [`Capture`].
 //!
 //! The public API below is a fixed contract consumed by `src-tauri`.
 
+mod browserbase;
 mod capture;
 mod cdp;
 mod demo;
@@ -18,6 +20,11 @@ use adscan_model::{
 };
 use tokio_util::sync::CancellationToken;
 
+pub use browserbase::{
+    BROWSERBASE_API_URL, Browserbase, BrowserbaseEndpoint, BrowserbaseError, BrowserbaseHooks,
+    BrowserbaseProjectUsage, BrowserbaseSessionUsage,
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum BrowserError {
     #[error("No Chrome or Chromium installation was found")]
@@ -32,6 +39,15 @@ pub enum BrowserError {
     ProfileBusy,
     #[error("{0}")]
     Other(String),
+    /// Browserbase did not accept the API key or the project.
+    #[error("{0}")]
+    RemoteAuth(String),
+    /// Browserbase is at a limit of the project, after waiting for it.
+    #[error("{0}")]
+    RemoteLimit(String),
+    /// Anything else that went wrong with the browser at Browserbase.
+    #[error("{0}")]
+    Remote(String),
 }
 
 /// Callbacks and cancellation for one capture.
@@ -54,6 +70,9 @@ pub struct CaptureHooks {
     /// Where every request of the visit is handed over while it happens.
     /// `None`: the scan keeps no network data and no body is read for it.
     pub network: Option<Arc<dyn NetworkSink>>,
+    /// How Browserbase is reached and who is asking. Needed when the
+    /// request's browser is Browserbase.
+    pub browserbase: Option<BrowserbaseHooks>,
 }
 
 /// Find a usable browser. `explicit` is the user's configured path, if any.

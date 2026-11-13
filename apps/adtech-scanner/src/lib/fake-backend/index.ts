@@ -1,6 +1,9 @@
 import type {
   ArchiveStorage,
+  BrowserbaseProfileInfo,
+  BrowserbaseProject,
   BrowserInfo,
+  BrowserKind,
   DashboardStats,
   ProxyProfile,
   ProxyProfileDraft,
@@ -19,13 +22,27 @@ import { ApiError } from "@/lib/api/error";
 import type { ApiPort } from "@/lib/api/port";
 import { isProxyHost, PROXY_NAME_MAX } from "@/shared/domain/proxy";
 import { CONFIGURATION_NAME_MAX, MANUAL_SESSION_LIMIT_MS, visitorOf } from "@/shared/domain/scan-options";
+import {
+  DISCONNECTED,
+  FAKE_PROJECT,
+  FAKE_PROJECT_USAGE,
+  FAKE_SECOND_PROJECT,
+  fakeProbe,
+  OTHER_APPLICATION_SESSIONS,
+} from "./browserbase";
 import { type FakeConfig, readFakeConfig } from "./config";
 import { isOnThisMachine } from "./diagnostics";
 import { downloadDocument, renderExport } from "./export";
 import { searchLogs } from "./log-search";
 import { bodyChunk, type FakeNetwork, listRows, materializeNetwork, requestDetail, summarise } from "./network";
-import { type ResolvedScan, resolveScanOptions, UNKNOWN_PROXY } from "./resolve";
-import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan } from "./runtime";
+import {
+  BROWSERBASE_NOT_SET_UP,
+  type ResolvedScan,
+  resolveBrowserbaseProxy,
+  resolveScanOptions,
+  UNKNOWN_PROXY,
+} from "./resolve";
+import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan, settleProxyUsage } from "./runtime";
 import { buildScenario, type ScenarioContext } from "./scenario";
 import { FAKE_BROWSER_VERSION, SEED_PROXIES, seedConfigurations, seedScans } from "./seed";
 import { fakeScriptSource } from "./sources";
@@ -52,7 +69,12 @@ const DEFAULT_SETTINGS: Settings = {
   keepNetworkData: true,
   archiveLimitBytes: 5 * 1024 ** 3,
   storeFullHeaders: false,
+  defaultBrowser: "local",
+  browserbase: DISCONNECTED,
 };
+
+/** Browserbase reads a session's proxy traffic again this long after its end, because the count lags. */
+const PROXY_USAGE_REREAD_MS = 30_000;
 
 /** The sellers.json files of the exchanges the simulated sites sell through, as a scan with the check on leaves them. */
 const KEPT_SELLERS_JSON: SellersJsonCacheInfo = { entries: 6, storedBytes: 7_340_000 };
@@ -82,6 +104,8 @@ type Persisted = {
   /** Seeded scans whose network data "Clear stored scan data" removed. */
   clearedSeedArchives?: string[];
   sellersJsonCache?: SellersJsonCacheInfo;
+  /** When a scan last used the browser profile kept at Browserbase; `null` while none is kept. */
+  browserbaseProfileUsedAt?: number | null;
 };
 
 const ARCHIVE_LIMIT_MIN_BYTES = 100 * 1024 ** 2;
@@ -113,6 +137,7 @@ class FakeBackend {
   private scanProfile: StoredProfile;
   private clearedSeedArchives: string[];
   private sellersJsonCache: SellersJsonCacheInfo;
+  private browserbaseProfileUsedAt: number | null;
   /** Request lists are derived from the scans on demand and kept while the page lives. */
   private readonly networks = new Map<string, FakeNetwork>();
 
@@ -131,8 +156,13 @@ class FakeBackend {
       ...DEFAULT_SETTINGS,
       hasApiKey: seeded,
       proxies: seeded ? structuredClone(SEED_PROXIES) : [],
+      // The seeded history has scans that ran on Browserbase: the account is set up.
+      browserbase: seeded
+        ? { ...DISCONNECTED, connected: true, projectName: FAKE_PROJECT.name, concurrency: FAKE_PROJECT.concurrency }
+        : DISCONNECTED,
       ...persisted?.settings,
     };
+    this.browserbaseProfileUsedAt = persisted?.browserbaseProfileUsedAt ?? null;
     this.deletedSeedIds = persisted?.deletedSeedIds ?? [];
     this.configurations = persisted?.configurations ?? (seeded ? seedConfigurations(Date.now()) : []);
     this.scanProfile = persisted?.scanProfile ?? { sizeBytes: 0, lastUsedAt: null };
@@ -172,6 +202,7 @@ class FakeBackend {
       scanProfile: this.scanProfile,
       clearedSeedArchives: this.clearedSeedArchives,
       sellersJsonCache: this.sellersJsonCache,
+      browserbaseProfileUsedAt: this.browserbaseProfileUsedAt,
     };
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(state));
@@ -237,25 +268,49 @@ class FakeBackend {
     this.manualSessions.delete(scanId);
   }
 
+  /** A scan is running in the kept profile of this kind of browser. */
+  private profileInUse(kind: BrowserKind): boolean {
+    return this.scans.some(
+      ({ detail }) =>
+        detail.summary.status === "running" &&
+        detail.options.persistentProfile === true &&
+        (detail.options.browser?.kind ?? "local") === kind,
+    );
+  }
+
   private profileInfo(): ScanProfileInfo {
     return {
       exists: this.scanProfile.sizeBytes > 0,
       sizeBytes: this.scanProfile.sizeBytes,
       lastUsedAt: this.scanProfile.lastUsedAt,
-      inUse: this.scans.some(
-        (scan) => scan.detail.summary.status === "running" && scan.detail.options.persistentProfile === true,
-      ),
+      inUse: this.profileInUse("local"),
     };
   }
 
+  private browserbaseProfileInfo(): BrowserbaseProfileInfo {
+    return {
+      exists: this.browserbaseProfileUsedAt !== null,
+      lastUsedAt: this.browserbaseProfileUsedAt,
+      inUse: this.profileInUse("browserbase"),
+    };
+  }
+
+  private requireBrowserbase() {
+    if (!this.settings.browserbase.connected) throw new ApiError("browserbaseAuth", BROWSERBASE_NOT_SET_UP);
+  }
+
   private start(resolved: ResolvedScan, scanId: string, configuration: ScanConfigurationRef | null): ScanSummary {
-    if (!this.browser()) {
+    const remote = resolved.options.browser?.kind === "browserbase";
+    // A Browserbase scan needs no browser on this computer.
+    if (!remote && !this.browser()) {
       throw new ApiError("browserNotFound", "No Chrome or Chromium installation was found. Choose one in Settings.");
     }
     const now = Date.now();
     const scan = createRunningScan(scanId, resolved.options, now, resolved.proxy, configuration);
     this.scans.unshift(scan);
-    if (resolved.options.persistentProfile) {
+    if (remote && resolved.options.persistentProfile) {
+      this.browserbaseProfileUsedAt = now;
+    } else if (resolved.options.persistentProfile) {
       this.scanProfile = {
         sizeBytes: Math.min(PROFILE_MAX_BYTES, this.scanProfile.sizeBytes + PROFILE_GROWTH_BYTES),
         lastUsedAt: now,
@@ -279,6 +334,8 @@ class FakeBackend {
       settings: this.settings,
       browserVersion: this.browser()?.version ?? FAKE_BROWSER_VERSION,
       jevFails: this.config.jevFails,
+      projectName: this.settings.browserbase.projectName,
+      browserbaseFailure: this.config.browserbaseFailure,
     };
     let { beats, result } = buildScenario(context);
     let cursor = 0;
@@ -308,7 +365,17 @@ class FakeBackend {
             redactHeaders: !this.settings.storeFullHeaders,
             padTo: this.config.rows,
           };
-          this.emit(completeScan(scan, result, Date.now(), archive));
+          this.emit(completeScan(scan, result, Date.now(), archive, true));
+          const counted = result.remote?.proxyBytes ?? 0;
+          settle();
+          if (counted > 0) {
+            const reread = () => {
+              this.emit(settleProxyUsage(scan, counted));
+              this.persist();
+            };
+            this.timers.set(id, setTimeout(reread, PROXY_USAGE_REREAD_MS / this.config.speed));
+          }
+          return;
         }
         return settle();
       }
@@ -396,6 +463,19 @@ class FakeBackend {
       if (defaultProxy?.kind === "profile" && !this.settings.proxies.some((proxy) => proxy.id === defaultProxy.id)) {
         throw new ApiError("invalidInput", UNKNOWN_PROXY);
       }
+      if (patch.defaultBrowser === "browserbase" && !this.settings.browserbase.connected) {
+        throw new ApiError("invalidInput", "Add a Browserbase API key before making Browserbase the default.");
+      }
+      if (defaultProxy?.kind === "browserbaseLocation") {
+        throw new ApiError(
+          "invalidInput",
+          "A Browserbase location can only be used when the browser runs on Browserbase.",
+        );
+      }
+      const browserbase = { ...this.settings.browserbase, ...patch.browserbase };
+      if (patch.browserbase?.defaultProxy) {
+        browserbase.defaultProxy = resolveBrowserbaseProxy(patch.browserbase.defaultProxy, this.settings);
+      }
       const { archiveLimitBytes } = patch;
       if (
         archiveLimitBytes !== undefined &&
@@ -404,7 +484,7 @@ class FakeBackend {
         throw new ApiError("invalidInput", "The storage limit must be between 100 MB and 1 TB");
       }
       const { chromePath, ...rest } = patch;
-      this.settings = { ...this.settings, ...rest };
+      this.settings = { ...this.settings, ...rest, browserbase };
       if (chromePath !== undefined) this.settings.chromePath = chromePath;
       this.persist();
       return clone(this.settings);
@@ -575,6 +655,10 @@ class FakeBackend {
       this.settings.proxies = this.settings.proxies.filter((proxy) => proxy.id !== id);
       const { defaultProxy } = this.settings;
       if (defaultProxy.kind === "profile" && defaultProxy.id === id) this.settings.defaultProxy = { kind: "system" };
+      const cloudProxy = this.settings.browserbase.defaultProxy;
+      if (cloudProxy.kind === "profile" && cloudProxy.id === id) {
+        this.settings.browserbase = { ...this.settings.browserbase, defaultProxy: { kind: "none" } };
+      }
       this.persist();
       return clone(this.settings);
     },
@@ -699,6 +783,86 @@ class FakeBackend {
       this.sellersJsonCache = NO_SELLERS_JSON;
       this.persist();
       return clone(this.sellersJsonCache);
+    },
+    setBrowserbaseCredentials: async (apiKey, projectId) => {
+      await this.latency(500);
+      const key = apiKey.trim();
+      const refused = (message: string, projects: BrowserbaseProject[] = []) => ({ valid: false, message, projects });
+      if (key === "") return refused("Enter a Browserbase API key.");
+      // Browserbase documents no key format: any key passes unless it announces itself as invalid.
+      if (/\s/.test(key) || key.includes("invalid")) return refused("Browserbase did not accept the API key.");
+      const projects = key.includes("multi") ? [FAKE_PROJECT, FAKE_SECOND_PROJECT] : [FAKE_PROJECT];
+      const [only] = projects;
+      const project = projectId === undefined ? only : projects.find((candidate) => candidate.id === projectId);
+      if (!project) return refused("This Browserbase project was not found for this key.");
+      if (projectId === undefined && projects.length > 1) {
+        return refused("This key has more than one Browserbase project. Choose the one to use.", projects);
+      }
+      this.settings.browserbase = {
+        ...this.settings.browserbase,
+        connected: true,
+        projectName: project.name,
+        concurrency: project.concurrency,
+      };
+      this.persist();
+      return { valid: true, message: null, projects: [] };
+    },
+    clearBrowserbaseCredentials: async () => {
+      await this.latency();
+      this.settings.browserbase = {
+        ...this.settings.browserbase,
+        connected: false,
+        projectName: null,
+        concurrency: null,
+      };
+      this.settings.defaultBrowser = "local";
+      // The profile kept at Browserbase is deleted there with the last use of the key.
+      this.browserbaseProfileUsedAt = null;
+      this.persist();
+      return clone(this.settings);
+    },
+    testBrowserbase: async () => {
+      await this.latency(400);
+      this.requireBrowserbase();
+      const own = this.scans.filter(
+        ({ detail }) => detail.summary.status === "running" && detail.options.browser?.kind === "browserbase",
+      ).length;
+      return {
+        projectName: this.settings.browserbase.projectName ?? FAKE_PROJECT.name,
+        concurrency: this.settings.browserbase.concurrency ?? FAKE_PROJECT.concurrency,
+        ...FAKE_PROJECT_USAGE,
+        runningSessions: own + OTHER_APPLICATION_SESSIONS,
+      };
+    },
+    probeBrowserbase: async (region) => {
+      await this.latency(1_500);
+      this.requireBrowserbase();
+      return fakeProbe(region ?? this.settings.browserbase.region);
+    },
+    getBrowserbaseProfile: async () => {
+      await this.latency();
+      return this.browserbaseProfileInfo();
+    },
+    clearBrowserbaseProfile: async () => {
+      await this.latency(200);
+      this.requireBrowserbase();
+      if (this.profileInUse("browserbase")) {
+        throw new ApiError(
+          "profileBusy",
+          "The browser profile is in use by a running scan. Try again when that scan has finished.",
+        );
+      }
+      this.browserbaseProfileUsedAt = null;
+      this.persist();
+      return this.browserbaseProfileInfo();
+    },
+    openBrowserbaseLiveView: async (scanId) => {
+      await this.latency();
+      const { detail } = this.find(scanId);
+      const capturing = detail.steps.some((step) => step.node === "capture" && step.status === "running");
+      if (detail.options.browser?.kind !== "browserbase" || !capturing) {
+        throw new ApiError("invalidInput", "This scan has no Browserbase browser to show right now.");
+      }
     },
     subscribeScanEvents: async (handler) => {
       const subscription = Symbol("scan-events");

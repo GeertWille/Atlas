@@ -21,13 +21,15 @@ export function dismissOnboarding() {
 /**
  * First run: something is still missing and the user has not chosen to skip setup. A stored key of
  * either provider counts as set up: someone who works with a TypeSafe key alone has made their choice
- * and is not asked for an Anthropic key on every launch.
+ * and is not asked for an Anthropic key on every launch. So does Browserbase in place of a local
+ * browser: scans have somewhere to run.
  */
 export function needsOnboarding(
   browser: BrowserInfo | null,
-  settings: Pick<Settings, "hasApiKey" | "hasTypesafeKey">,
+  settings: Pick<Settings, "hasApiKey" | "hasTypesafeKey" | "browserbase">,
   dismissed: boolean,
 ): boolean {
   const hasAnyKey = settings.hasApiKey || settings.hasTypesafeKey;
-  return !dismissed && (browser === null || !hasAnyKey);
+  const hasBrowser = browser !== null || settings.browserbase.connected;
+  return !dismissed && (!hasBrowser || !hasAnyKey);
 }

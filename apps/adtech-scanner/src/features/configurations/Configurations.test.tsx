@@ -274,3 +274,37 @@ test("the last run says how the health score moved against the run before", asyn
   const moved = `${change > 0 ? `+${change}` : `−${-change}`}, ${change > 0 ? "up" : "down"} ${Math.abs(change)} from the run before,`;
   expect(lastRun.textContent).toBe(`${after}${change === 0 ? "" : moved}just now`);
 });
+
+test("a configuration that runs on Browserbase carries its mark, and is broken once the credentials are gone", async () => {
+  const user = userEvent.setup();
+  await api.setBrowserbaseCredentials("bb_live_0123456789abcdef");
+  await api.saveScanConfiguration({
+    name: "Example via Frankfurt",
+    options: {
+      ...options,
+      headless: true,
+      browser: { kind: "browserbase", region: "eu-central-1" },
+      proxy: { kind: "browserbaseLocation", country: "BE" },
+    },
+  });
+  const first = await renderWithApp(<Connected />);
+  const row = within(await rowOf("Example via Frankfurt"));
+  expect(row.getByTitle("Runs in a Browserbase Frankfurt browser")).toHaveTextContent("Browserbase Frankfurt");
+  expect(row.getByText("Belgium (Browserbase proxy)")).toBeInTheDocument();
+  expect(row.getByRole("button", { name: "Run Example via Frankfurt" })).toBeEnabled();
+
+  // It is found by where it runs.
+  await user.type(screen.getByRole("searchbox"), "browserbase frankfurt");
+  expect(await rowOf("Example via Frankfurt")).toBeInTheDocument();
+  first.unmount();
+
+  await api.clearBrowserbaseCredentials();
+  await renderWithApp(<Connected />);
+  const broken = within(await rowOf("Example via Frankfurt"));
+  expect(
+    broken.getByText(
+      "Browserbase is not set up any more. Add its key in Settings, or edit the configuration to run on this Mac.",
+    ),
+  ).toBeInTheDocument();
+  expect(broken.getByRole("button", { name: "Run Example via Frankfurt" })).toBeDisabled();
+});

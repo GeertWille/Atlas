@@ -6,12 +6,14 @@ mod common;
 
 use adscan_engine::domain::finding::FindingDraft;
 use adscan_engine::domain::heuristics::{self, RuleInput};
+use adscan_engine::domain::scan::ValidatedScan;
 use adscan_engine::domain::telemetry::{self, ScanTelemetry};
 use adscan_engine::domain::{environment, scripts};
 use adscan_model::{
-    AutomationDetector, BidStatus, Capture, CaptureEnvironment, ConsentNote, ConsentNoteKind,
-    DetectorKind, EvidenceKind, PageReach, ProxyKind, ProxyUse, ScanEnvironment, Severity,
-    SlotOutcome, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev, VisitorBehavior,
+    AutomationDetector, BidStatus, BrowserChoice, Capture, CaptureEnvironment, ConsentNote,
+    ConsentNoteKind, DetectorKind, EvidenceKind, PageReach, ProxyKind, ProxyUse, ScanEnvironment,
+    ScanOptions, Settings, Severity, SlotOutcome, TrackedAdUnit, TrackerEvent,
+    TrackerEventKind as Ev, VisitorBehavior,
 };
 use common::*;
 
@@ -1041,6 +1043,7 @@ fn a_dialog_the_scanner_accepted_at_once_changes_nothing() {
 
 fn visit_environment(webdriver: Option<bool>, headless: bool, detector: bool) -> ScanEnvironment {
     ScanEnvironment {
+        browser: adscan_model::BrowserUse::Local,
         visitor: VisitorBehavior::Scroll,
         seed: 1,
         headless,
@@ -1228,16 +1231,67 @@ fn the_environment_of_a_capture_feeds_the_rule() {
         request_hosts: strings(&["cdn.adsafeprotected.com"]),
         ..CaptureEnvironment::default()
     };
-    let proxy = ProxyUse {
-        kind: ProxyKind::None,
-        name: None,
-        host: None,
-    };
-    let environment = environment::detect(&capture, VisitorBehavior::Scroll, 5, proxy);
+    let scan =
+        ValidatedScan::new(ScanOptions::for_url("pub.example"), &Settings::default(), 5).unwrap();
+    let environment = environment::detect(&capture, &scan, None);
     let finding = automation_finding(&capture, &environment).unwrap();
     assert!(
         finding
             .description
             .contains("Integral Ad Science is on the page")
     );
+}
+
+#[test]
+fn a_browserbase_visit_is_not_called_identifiable_because_its_browser_runs_headless() {
+    // What a Browserbase browser reports: headless, which its user agent
+    // does not show, and navigator.webdriver false. A detection vendor is on
+    // the page and a bidder declined every time: with a local headless
+    // browser that is the finding.
+    let mut capture = capture_with_a_silent_bidder();
+    capture.environment = CaptureEnvironment {
+        headless: true,
+        webdriver: Some(false),
+        request_hosts: strings(&["cdn.adsafeprotected.com"]),
+        ..CaptureEnvironment::default()
+    };
+    let local =
+        ValidatedScan::new(ScanOptions::for_url("pub.example"), &Settings::default(), 5).unwrap();
+    assert!(
+        automation_finding(&capture, &environment::detect(&capture, &local, None)).is_some(),
+        "a local headless Chrome names itself in its user agent"
+    );
+
+    let mut connected = Settings::default();
+    connected.browserbase.connected = true;
+    let cloud = ValidatedScan::new(
+        ScanOptions {
+            browser: Some(BrowserChoice::Browserbase { region: None }),
+            ..ScanOptions::for_url("pub.example")
+        },
+        &connected,
+        5,
+    )
+    .unwrap();
+    let environment = environment::detect(&capture, &cloud, None);
+    assert!(environment.headless);
+    assert!(automation_finding(&capture, &environment).is_none());
+    // Nor is the caveat hung on the bidder finding.
+    assert!(
+        evaluate_in(&capture, Some(&environment))
+            .iter()
+            .all(|(_, finding)| {
+                finding
+                    .evidence
+                    .iter()
+                    .all(|evidence| !evidence.label.starts_with("Caveat"))
+            })
+    );
+
+    // Should a page there ever read the flag as true, the finding is back.
+    capture.environment.webdriver = Some(true);
+    let flagged = environment::detect(&capture, &cloud, None);
+    let finding = automation_finding(&capture, &flagged).unwrap();
+    assert!(finding.description.contains("navigator.webdriver was true"));
+    assert!(!finding.description.contains("headless"));
 }

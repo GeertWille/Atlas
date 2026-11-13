@@ -9,14 +9,15 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adscan_browser::{Browserbase, BrowserbaseEndpoint};
 use adscan_engine::application::ports::EventSink;
 use adscan_model::{
     AdsTxtStatus, DeviceProfile, DiagnosticStatus, FindingCategory, LogEntry, LogKind, PageReach,
     PipelineNode, ProxyKind, ScanDetail, ScanEvent, ScanOptions, ScanStatus, SettingsPatch,
     StepStatus, VisitorBehavior,
 };
-use adtech_scanner_lib::ChromeCaptureSource;
 use adtech_scanner_lib::state::{AppConfig, AppState};
+use adtech_scanner_lib::{BrowserbaseAdapter, ChromeCaptureSource};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -108,6 +109,7 @@ async fn run_demo_scan(options_for: impl FnOnce(String) -> ScanOptions) -> DemoS
         .mount(&server)
         .await;
     let data_dir = tempfile::tempdir().unwrap();
+    let browserbase = Browserbase::new(BrowserbaseEndpoint::default()).unwrap();
     let state = AppState::build(
         AppConfig {
             data_dir: data_dir.path().to_path_buf(),
@@ -116,8 +118,16 @@ async fn run_demo_scan(options_for: impl FnOnce(String) -> ScanOptions) -> DemoS
             api_key_override: Some("sk-ant-real-browser-test".into()),
             typesafe_api_key_override: None,
             proxy_password_override: None,
+            browserbase: BrowserbaseEndpoint::default(),
+            browserbase_api_key_override: None,
+            browserbase_project_id_override: None,
         },
-        Arc::new(ChromeCaptureSource::new(data_dir.path())),
+        Arc::new(ChromeCaptureSource::new(
+            data_dir.path(),
+            browserbase.clone(),
+        )),
+        // These scans run in this machine's Chromium; nothing is opened.
+        Arc::new(BrowserbaseAdapter::new(browserbase, Arc::new(|_| Ok(())))),
         Arc::new(CollectedEvents::default()),
     )
     .await

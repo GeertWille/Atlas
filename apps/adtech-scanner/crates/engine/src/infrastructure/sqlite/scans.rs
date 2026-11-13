@@ -17,7 +17,7 @@ const MAX_PAGE_SIZE: u32 = 200;
 
 const SUMMARY_COLUMNS: &str = "id, url, hostname, device, status, started_at, finished_at, duration_ms, cost_usd, \
      critical_count, high_count, medium_count, low_count, info_count, health_score, prebid_version, ai_used, error, \
-     configuration_id, configuration_name, proxy";
+     configuration_id, configuration_name, proxy, remote";
 
 #[async_trait]
 impl ScanRepository for SqliteStore {
@@ -377,7 +377,7 @@ fn write_summary(connection: &Connection, summary: &ScanSummary) -> rusqlite::Re
     connection.execute(
         "UPDATE scans SET status = ?2, finished_at = ?3, duration_ms = ?4, cost_usd = ?5,
              critical_count = ?6, high_count = ?7, medium_count = ?8, low_count = ?9, info_count = ?10,
-             health_score = ?11, prebid_version = ?12, ai_used = ?13, error = ?14
+             health_score = ?11, prebid_version = ?12, ai_used = ?13, error = ?14, remote = ?15
          WHERE id = ?1",
         params![
             summary.id,
@@ -394,6 +394,7 @@ fn write_summary(connection: &Connection, summary: &ScanSummary) -> rusqlite::Re
             summary.prebid_version,
             summary.ai_used,
             summary.error,
+            summary.remote.as_ref().map(to_json).transpose()?,
         ],
     )?;
     Ok(())
@@ -440,6 +441,11 @@ fn read_summary(row: &Row<'_>) -> rusqlite::Result<ScanSummary> {
         },
         proxy: row
             .get::<_, Option<String>>(20)?
+            .as_deref()
+            .map(from_json)
+            .transpose()?,
+        remote: row
+            .get::<_, Option<String>>(21)?
             .as_deref()
             .map(from_json)
             .transpose()?,

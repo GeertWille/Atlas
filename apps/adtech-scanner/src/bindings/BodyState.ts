@@ -3,4 +3,4 @@
 /**
  * Whether a body can be read, and if not, why.
  */
-export type BodyState = "kept" | "truncated" | "empty" | "notKeptType" | "scanLimit" | "dropped" | "unavailable" | "pending" | "evicted";
+export type BodyState = "kept" | "truncated" | "empty" | "notKeptType" | "scanLimit" | "dropped" | "unavailable" | "pending" | "evicted" | "tooLargeForRemote";

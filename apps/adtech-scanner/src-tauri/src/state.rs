@@ -2,16 +2,18 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
-use adscan_browser::DemoSite;
+use adscan_browser::{BROWSERBASE_API_URL, BrowserbaseEndpoint, DemoSite};
 use adscan_engine::application::AppError;
 use adscan_engine::application::archive::Archive;
 use adscan_engine::application::archive::network::NetworkView;
 use adscan_engine::application::archive::source::ScriptSources;
+use adscan_engine::application::browserbase::BrowserbaseService;
 use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureSource, Clock, EventSink, IdGenerator, SecretStore, SourceFormatter,
+    BrowserbaseApi, CaptureSource, Clock, EventSink, IdGenerator, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::sellers_json::SellersJsonSource;
@@ -26,6 +28,7 @@ use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::{self, TypesafeClient};
+use adscan_model::BrowserbaseCredentials;
 
 const DATA_DIR_ENV: &str = "ADSCAN_DATA_DIR";
 const BASE_URL_ENV: &str = "ADSCAN_ANTHROPIC_BASE_URL";
@@ -33,6 +36,13 @@ const API_KEY_ENV: &str = "ADSCAN_API_KEY";
 const TYPESAFE_BASE_URL_ENV: &str = "ADSCAN_TYPESAFE_BASE_URL";
 const TYPESAFE_API_KEY_ENV: &str = "ADSCAN_TYPESAFE_API_KEY";
 const PROXY_PASSWORD_ENV: &str = "ADSCAN_PROXY_PASSWORD";
+const BROWSERBASE_BASE_URL_ENV: &str = "ADSCAN_BROWSERBASE_BASE_URL";
+const BROWSERBASE_CONNECT_URL_ENV: &str = "ADSCAN_BROWSERBASE_CONNECT_URL";
+const BROWSERBASE_API_KEY_ENV: &str = "ADSCAN_BROWSERBASE_API_KEY";
+const BROWSERBASE_PROJECT_ID_ENV: &str = "ADSCAN_BROWSERBASE_PROJECT_ID";
+
+/// Browserbase counts a session's proxy traffic up to half a minute late.
+const PROXY_COUNT_DELAY: Duration = Duration::from_secs(30);
 
 pub struct AppConfig {
     /// Directory of the SQLite file.
@@ -45,6 +55,12 @@ pub struct AppConfig {
     pub typesafe_api_key_override: Option<String>,
     /// Stands in for the password of every proxy profile.
     pub proxy_password_override: Option<String>,
+    /// Where Browserbase is reached; the connect address is for tests.
+    pub browserbase: BrowserbaseEndpoint,
+    /// Stand in for the stored Browserbase key and project id. Credentials
+    /// exist only when both are set.
+    pub browserbase_api_key_override: Option<String>,
+    pub browserbase_project_id_override: Option<String>,
 }
 
 impl AppConfig {
@@ -65,6 +81,13 @@ impl AppConfig {
             api_key_override: non_empty(API_KEY_ENV),
             typesafe_api_key_override: non_empty(TYPESAFE_API_KEY_ENV),
             proxy_password_override: non_empty(PROXY_PASSWORD_ENV),
+            browserbase: BrowserbaseEndpoint {
+                api_url: non_empty(BROWSERBASE_BASE_URL_ENV)
+                    .unwrap_or_else(|| BROWSERBASE_API_URL.to_string()),
+                connect_url: non_empty(BROWSERBASE_CONNECT_URL_ENV),
+            },
+            browserbase_api_key_override: non_empty(BROWSERBASE_API_KEY_ENV),
+            browserbase_project_id_override: non_empty(BROWSERBASE_PROJECT_ID_ENV),
         }
     }
 }
@@ -90,6 +113,7 @@ pub struct AppState {
     pub scans: Arc<ScanService>,
     pub settings: Arc<SettingsService>,
     pub configurations: Arc<ConfigurationService>,
+    pub browserbase: Arc<BrowserbaseService>,
     pub network: NetworkView,
     pub sources: ScriptSources,
     pub sellers_json: Arc<SellersJsonSource>,
@@ -103,8 +127,10 @@ impl AppState {
     pub async fn build(
         config: AppConfig,
         capture: Arc<dyn CaptureSource>,
+        browserbase_api: Arc<dyn BrowserbaseApi>,
         events: Arc<dyn EventSink>,
     ) -> Result<Self, AppError> {
+        let started_at = SystemClock.now_ms();
         let store = SqliteStore::open(&config.data_dir)?;
         let llm = Arc::new(AnthropicClient::new(
             &config.anthropic_base_url,
@@ -118,15 +144,27 @@ impl AppState {
             config.api_key_override,
             config.typesafe_api_key_override,
             config.proxy_password_override,
+            config.browserbase_api_key_override,
+            config.browserbase_project_id_override,
         ) {
-            (None, None, None) => Arc::new(VaultSecretStore::new(
+            (None, None, None, None, None) => Arc::new(VaultSecretStore::new(
                 Arc::new(OsKeychain),
                 Arc::new(store.clone()),
             )),
-            (anthropic, typesafe, proxy_password) => Arc::new(
-                MemorySecretStore::with_keys(anthropic, typesafe)
-                    .with_proxy_password(proxy_password),
-            ),
+            (anthropic, typesafe, proxy_password, browserbase_key, browserbase_project) => {
+                let browserbase =
+                    browserbase_key
+                        .zip(browserbase_project)
+                        .map(|(api_key, project_id)| BrowserbaseCredentials {
+                            api_key,
+                            project_id,
+                        });
+                Arc::new(
+                    MemorySecretStore::with_keys(anthropic, typesafe)
+                        .with_proxy_password(proxy_password)
+                        .with_browserbase(browserbase),
+                )
+            }
         };
         let archive = Archive {
             packs: Arc::new(LocalPackStore::new(&config.data_dir)),
@@ -150,6 +188,12 @@ impl AppState {
             Arc::clone(&clock),
             Arc::clone(&ids),
         ));
+        let browserbase = Arc::new(BrowserbaseService::new(
+            Arc::clone(&browserbase_api),
+            Arc::new(store.clone()),
+            Arc::clone(&settings),
+            Arc::clone(&clock),
+        ));
         let files = Arc::new(HttpPublicFileFetcher);
         let sellers_json = Arc::new(SellersJsonSource::new(
             files.clone(),
@@ -163,6 +207,9 @@ impl AppState {
                 llm,
                 judge,
                 capture,
+                browserbase: browserbase_api,
+                remote_sessions: Arc::new(store.clone()),
+                proxy_count_delay: PROXY_COUNT_DELAY,
                 files,
                 sellers_json: Arc::clone(&sellers_json),
                 formatter: Arc::clone(&formatter),
@@ -173,6 +220,7 @@ impl AppState {
             },
             Arc::clone(&settings),
             Arc::new(store.clone()),
+            browserbase.profile_turn(),
         ));
         // A second app on the same data directory finds scans that are
         // running, not interrupted, and packs that are being written, not
@@ -184,6 +232,15 @@ impl AppState {
             // writing, and files that a crash left without rows, are removed.
             archive.sweep().await?;
             sellers_json.sweep_cache().await;
+            // Browserbase browsers that a crash or a forced quit left
+            // running bill by the minute. Off the startup path: it talks to
+            // Browserbase, and only when such a browser is on record.
+            let abandoned = Arc::clone(&browserbase);
+            tokio::spawn(async move {
+                // Best effort: what cannot be released now stays on record
+                // for the next start, and ends at its own time limit.
+                let _ = abandoned.release_abandoned_sessions(started_at).await;
+            });
         }
         let network = NetworkView::new(archive.clone(), Arc::new(store.clone()));
         let sources =
@@ -195,6 +252,7 @@ impl AppState {
             scans,
             settings,
             configurations,
+            browserbase,
             network,
             sources,
             sellers_json,

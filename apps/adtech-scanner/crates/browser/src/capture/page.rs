@@ -19,6 +19,8 @@ use super::injected::{TRACKER_BINDING, TRACKER_FLUSH_EVENT, tracker_script};
 use super::interception::{DocumentRequest, Interception, Paused};
 use super::network::assembly::Reporter;
 use super::network::targets::ChildTargets;
+use super::noise::ServiceNoise;
+use super::patience::Patience;
 use super::recorder::{Recorder, Reported, committed_address};
 use super::tabs::{NewTab, Tab, Tabs, on_new_tab};
 use super::visitor::links::loggable;
@@ -26,8 +28,6 @@ use super::visitor::site::Site;
 use super::visitor::{Point, Size};
 
 const TAB_PATIENCE: Duration = Duration::from_secs(10);
-/// A tab that opens this soon after the visitor's click was opened by it.
-const CLICK_OPENS_TAB_WITHIN: Duration = Duration::from_secs(3);
 
 /// Isolated world for the scanner's own evaluations, invisible to page scripts.
 const SCANNER_WORLD: &str = "adscan";
@@ -65,6 +65,11 @@ pub(crate) struct TabSetup {
     /// browsed like a visitor would: its window is the viewport.
     pub override_viewport: bool,
     pub visitor: VisitorBehavior,
+    /// The browser runs at Browserbase, which keeps a client of its own on
+    /// every page: what that client does there is not the page's doing.
+    pub hosted_by_service: bool,
+    /// The timezone the scan gives the browser, once it has one to give.
+    pub timezone: Option<&'static str>,
 }
 
 impl TabSetup {
@@ -109,6 +114,12 @@ impl TabSetup {
         }
         if let Some(identity) = self.emulation.user_agent_override() {
             commands.push(("Emulation.setUserAgentOverride", identity));
+        }
+        if let Some(timezone) = self.timezone {
+            commands.push((
+                "Emulation.setTimezoneOverride",
+                json!({ "timezoneId": timezone }),
+            ));
         }
         // A tab set up before the site is known carries the unconfined
         // tracker: its documents are paused whatever the visit needs.
@@ -163,6 +174,11 @@ pub(crate) struct Page {
     setup: TabSetup,
     pub recorder: Recorder,
     pub interception: Interception,
+    /// Tells what the service that hosts the browser does in a page from
+    /// what the page does. `None` for a browser on this machine.
+    noise: Option<ServiceNoise>,
+    /// How long things that take a round trip to the browser are waited for.
+    pub(super) patience: Patience,
     /// Identifier of the tracker script installed in the first tab.
     tracker_script_id: Option<String>,
     /// Network id of a navigation of the recorded tab that was let through
@@ -209,6 +225,8 @@ impl Page {
             recorder: recorder(first.main_frame_id.clone()),
             tabs: Tabs::starting_with(first),
             children: ChildTargets::default(),
+            noise: setup.hosted_by_service.then(ServiceNoise::default),
+            patience: Patience::LOCAL,
             setup,
             interception,
             tracker_script_id: None,
@@ -328,6 +346,7 @@ impl Page {
     fn handle(&mut self, event: CdpEvent) {
         match event.session_id.clone() {
             None => self.on_browser_event(&event),
+            Some(session_id) if self.is_service_noise(&session_id, &event) => {}
             Some(session_id) if self.tabs.is_recorded(&session_id) => {
                 self.on_recorded_tab_event(&session_id, &event)
             }
@@ -335,6 +354,17 @@ impl Page {
                 self.on_other_tab_event(&session_id, &event)
             }
             Some(session_id) => self.on_child_event(&session_id, &event),
+        }
+    }
+
+    /// Whether an event of a tab is the doing of the service that hosts the
+    /// browser, not of the page.
+    fn is_service_noise(&mut self, session_id: &str, event: &CdpEvent) -> bool {
+        match &mut self.noise {
+            Some(noise) if self.tabs.contains(session_id) => {
+                noise.is_noise(session_id, &event.method, &event.params)
+            }
+            _ => false,
         }
     }
 
@@ -636,6 +666,13 @@ impl Page {
                     self.cdp
                         .notify(Some(child), "Emulation.setUserAgentOverride", identity);
                 }
+                if let Some(timezone) = self.setup.timezone {
+                    self.cdp.notify(
+                        Some(child),
+                        "Emulation.setTimezoneOverride",
+                        json!({ "timezoneId": timezone }),
+                    );
+                }
                 // Consent dialogs are looked for in the iframes of the tab itself.
                 if let Some(tab) = parent_session.and_then(|parent| self.tabs.by_session(parent)) {
                     tab.frame_sessions.push(child.to_string());
@@ -662,7 +699,7 @@ impl Page {
 
     /// The visitor is about to click: a tab that opens now is the click's.
     pub(crate) fn expect_tab(&mut self) {
-        self.expecting_tab_until = Some(Instant::now() + CLICK_OPENS_TAB_WITHIN);
+        self.expecting_tab_until = Some(Instant::now() + self.patience.click_opens_tab);
     }
 
     fn on_tab_opened(&mut self, attached: &Value) {
@@ -951,6 +988,21 @@ impl Page {
         self.record_until_or(deadline, |page| !page.recorder.has_pending_bodies())
             .await
             .map(drop)
+    }
+
+    /// Gives the recorded tab, and every tab and frame set up from here
+    /// on, this timezone.
+    pub(crate) async fn set_timezone(
+        &mut self,
+        timezone: &'static str,
+    ) -> Result<(), CaptureError> {
+        self.setup.timezone = Some(timezone);
+        self.call(
+            "Emulation.setTimezoneOverride",
+            json!({ "timezoneId": timezone }),
+        )
+        .await
+        .map(drop)
     }
 
     pub(crate) fn emulation(&self) -> &Emulation {

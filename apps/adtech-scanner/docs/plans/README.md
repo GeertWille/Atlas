@@ -12,4 +12,5 @@ Paths starting with `/tmp/` or `/home/user/` refer to the machine they were writ
 | `visitor-and-multi-page.md` | Built. |
 | `jev-strategy.md` | Built. Thresholds are provisional. |
 | `ad-servers.md` | Not built. Planned in three phases; see the tickets. |
-| `browserbase.md` | Not built. Blocked on a test with a real account; see the ticket. |
+| `browserbase.md` | Built on 2026-11-13, with the owner's decisions of that day overriding the plan: no fail-closed probe, Browserbase's defaults (CAPTCHA solving, video, log) on, residential locations and manual visits included. `HANDOVER.md`, "Browserbase", is the description of what is built. |
+| `browserbase-measurements.md` | The spike against the real service that the plan asked for: measured behaviour, not a plan. |

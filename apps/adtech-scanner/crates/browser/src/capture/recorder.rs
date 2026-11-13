@@ -5,7 +5,6 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use adscan_model::{
     ActivityKind, BodyAdmission, BodyOffer, BodySkip, CaptureActivity, CapturedBody,
@@ -22,10 +21,13 @@ use url::Url;
 use crate::cdp::{Cdp, CdpError, CdpEvent};
 
 use super::bid_endpoints::{BidRequest, BidResponseLog, MAX_BODY_BYTES, no_bid_reason, short};
+use super::clock::CaptureClock;
 use super::console::ConsoleLog;
 use super::injected::{TRACKER_BINDING, is_tracker_script};
-use super::network::assembly::{Assembler, Ended, Finished, Output, Reporter, Source};
+use super::network::assembly::{Assembler, Ended, Finished, Limits, Output, Reporter, Source};
 use super::network::fields::{body_of, captured_body};
+use super::network::reply::ReplyLimit;
+use super::noise::is_service_script;
 use super::pages::{Change, Committed, PageLog};
 use super::progress::Milestones;
 use super::scripts::{
@@ -53,6 +55,71 @@ pub(crate) struct Reported<'a> {
     pub in_recorded_tab: bool,
 }
 
+/// The address every request of a browser behind a Browserbase proxy
+/// reports as its server's: the proxy's own, inside the service.
+const SERVICE_PROXY_ADDRESS: &str = "10.255.255.1";
+
+/// What the recording has to know about the way to its browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BrowserLink {
+    /// The browser is hosted by a service that puts scripts of its own
+    /// into every page.
+    pub hosted_by_service: bool,
+    /// The largest answer the connection carries.
+    pub reply_limit: ReplyLimit,
+    /// The browser reaches the web through a proxy of the service that
+    /// hosts it, and reports that proxy as the server of every request.
+    pub behind_service_proxy: bool,
+}
+
+impl BrowserLink {
+    /// Chrome on this machine, on its debugging pipe.
+    pub(crate) const LOCAL: Self = Self {
+        hosted_by_service: false,
+        reply_limit: ReplyLimit::Unlimited,
+        behind_service_proxy: false,
+    };
+
+    fn limits(self) -> Limits {
+        Limits {
+            copy_bodies_from: self.reply_limit.copies_bodies_from(),
+            post_length_must_be_known: self.reply_limit != ReplyLimit::Unlimited,
+        }
+    }
+}
+
+/// Whether `address` (`ip:port`) is the service's proxy, not a server.
+fn is_service_proxy(address: &str) -> bool {
+    address
+        .strip_prefix(SERVICE_PROXY_ADDRESS)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(':'))
+}
+
+/// The answer to the question for a response body.
+enum BodyAnswer {
+    Browser(Result<Value, CdpError>),
+    /// Never asked: the answer could have been more than the connection
+    /// to the browser carries.
+    TooLarge {
+        total_bytes: u64,
+    },
+}
+
+/// Scripts in the page's own world that the service hosting the browser
+/// put there. They are no part of the scan's scripts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ServiceScripts {
+    pub count: u32,
+    pub chars: u64,
+}
+
+/// Response bodies that were not asked for because of their size.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TooLarge {
+    pub count: u32,
+    pub largest_bytes: u64,
+}
+
 /// A script file the page loaded, for the script library.
 struct ScriptLoad {
     url: String,
@@ -76,7 +143,7 @@ enum Fetched {
         for_sink: Result<usize, CapturedBody>,
         script: Option<ScriptLoad>,
         bid: Option<BidAnswer>,
-        response: Result<Value, CdpError>,
+        response: BodyAnswer,
     },
     RequestBody {
         seq: u32,
@@ -126,6 +193,8 @@ pub(crate) struct ConsentSeen {
 }
 
 pub(crate) struct Recorder {
+    /// The clock every moment the recording notes is read from.
+    pub clock: CaptureClock,
     pub consent_notes: Vec<ConsentSeen>,
     /// How many looks in a row found a consent dialog without an accept
     /// control.
@@ -146,6 +215,7 @@ pub(crate) struct Recorder {
     /// URL of the main frame's current document, on the site or not.
     document_url: String,
     main_frame_id: String,
+    link: BrowserLink,
     requests: Assembler,
     /// Where finished requests go. `None`: the scan keeps no network data.
     sink: Option<Arc<dyn NetworkSink>>,
@@ -165,6 +235,8 @@ pub(crate) struct Recorder {
     /// 122): what a frame or worker loaded is lost when it goes away before
     /// it handed the body over.
     cannot_copy_bodies: bool,
+    too_large: TooLarge,
+    service_scripts: ServiceScripts,
     third_party_hosts: BTreeSet<String>,
     milestones: Milestones,
     on_activity: ActivitySink,
@@ -181,6 +253,7 @@ impl Recorder {
         sink: Option<Arc<dyn NetworkSink>>,
     ) -> Self {
         Self {
+            clock: CaptureClock::SHARED,
             consent_notes: Vec::new(),
             dialog_without_accept_seen: 0,
             tracker: TrackerLog::default(),
@@ -194,6 +267,7 @@ impl Recorder {
             on_site: false,
             document_url: String::new(),
             main_frame_id,
+            link: BrowserLink::LOCAL,
             requests: Assembler::default(),
             sink,
             request_counts: RequestCounts::default(),
@@ -203,6 +277,8 @@ impl Recorder {
             fetches: FuturesUnordered::new(),
             targets_gone: HashMap::new(),
             cannot_copy_bodies: false,
+            too_large: TooLarge::default(),
+            service_scripts: ServiceScripts::default(),
             third_party_hosts: BTreeSet::new(),
             milestones: Milestones::default(),
             on_activity,
@@ -210,6 +286,24 @@ impl Recorder {
             overflow_announced: false,
             malformed_announced: 0,
         }
+    }
+
+    /// The same recorder for a browser that is reached over `link`. Before
+    /// anything is recorded.
+    pub(crate) fn linked_by(mut self, link: BrowserLink) -> Self {
+        self.link = link;
+        self.requests = Assembler::within(link.limits());
+        self
+    }
+
+    /// What the service that hosts the browser ran in the pages' own world.
+    pub(crate) fn service_scripts(&self) -> ServiceScripts {
+        self.service_scripts
+    }
+
+    /// Response bodies that were too large to ask the browser for.
+    pub(crate) fn too_large_bodies(&self) -> TooLarge {
+        self.too_large
     }
 
     /// Recording moves to another tab: its main frame is the one to watch,
@@ -340,7 +434,7 @@ impl Recorder {
             self.site = Some(site_of_document);
         }
         self.on_site = self.site.as_ref().is_some_and(|site| site.contains(&url));
-        let now = epoch_ms_now();
+        let now = self.clock.now_ms();
         let change = self.pages.document_committed(Committed {
             url: &self.document_url,
             // A tab the visit just moved to asked for its document before
@@ -464,7 +558,7 @@ impl Recorder {
             main_frame_id: reported.main_frame_id,
             recording,
             page_url: &self.document_url,
-            now_ms: epoch_ms_now(),
+            now_ms: self.clock.now_ms(),
         };
         let outputs = self.requests.observe(&source, &event.method, &event.params);
         for output in outputs {
@@ -570,7 +664,9 @@ impl Recorder {
 
     fn ask_for_request_body(&mut self, seq: u32, session: &str, request_id: &str, cdp: &Cdp) {
         if self.sink.is_none() {
-            let settled = self.requests.post_data_settled(seq, None, epoch_ms_now());
+            let settled = self
+                .requests
+                .post_data_settled(seq, None, self.clock.now_ms());
             return self.hand_over(settled);
         }
         let response = self.ask_for_body(cdp, session, "Network.getRequestPostData", request_id);
@@ -661,20 +757,37 @@ impl Recorder {
         let for_sink = match for_sink {
             Err(instead) if script.is_none() && bid.is_none() => {
                 // Nobody wants it read.
-                let settled = self
-                    .requests
-                    .body_settled(finished.seq, instead, epoch_ms_now());
+                let settled =
+                    self.requests
+                        .body_settled(finished.seq, instead, self.clock.now_ms());
                 return self.hand_over(settled);
             }
             wanted => wanted,
         };
+        let seq = finished.seq;
+        let total_bytes = finished.expected_bytes;
+        if !self
+            .link
+            .reply_limit
+            .admits_body(finished.kind, total_bytes)
+        {
+            // The answer to the question that set the copy going arrived
+            // before the response finished: it is taken first.
+            self.store_what_has_arrived();
+            return self.store(Fetched::Response {
+                seq,
+                for_sink,
+                script,
+                bid,
+                response: BodyAnswer::TooLarge { total_bytes },
+            });
+        }
         let response = self.ask_for_body(
             cdp,
             &finished.session,
             "Network.getResponseBody",
             &finished.request_id,
         );
-        let seq = finished.seq;
         self.fetches.push(
             response
                 .map(move |response| Fetched::Response {
@@ -682,10 +795,17 @@ impl Recorder {
                     for_sink,
                     script,
                     bid,
-                    response,
+                    response: BodyAnswer::Browser(response),
                 })
                 .boxed(),
         );
+    }
+
+    /// Stores every answer of the browser that is here already.
+    fn store_what_has_arrived(&mut self) {
+        while let Some(Some(fetched)) = self.fetches.next().now_or_never() {
+            self.store(fetched);
+        }
     }
 
     fn hand_over(&mut self, outputs: Vec<Output>) {
@@ -716,6 +836,7 @@ impl Recorder {
         if ended.is_of_child_target() {
             self.request_counts.in_child_targets += 1;
         }
+        let behind_service_proxy = self.link.behind_service_proxy;
         let mut record = ended.into_record(
             |epoch_ms| self.pages.place_at(epoch_ms),
             |session, frame| {
@@ -732,6 +853,11 @@ impl Recorder {
             .and_then(|url| Url::parse(url).ok())
             .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
             .unwrap_or_default();
+        if behind_service_proxy {
+            record
+                .remote_address
+                .take_if(|address| is_service_proxy(address));
+        }
         sink.record(record);
     }
 
@@ -764,11 +890,15 @@ impl Recorder {
         if !in_page_world || !(is_inline_block(params) || is_substantial_runtime_script(params)) {
             return;
         }
+        let length = params["length"].as_u64().unwrap_or(0);
+        if !self.link.reply_limit.admits_script_source(length) {
+            return;
+        }
         let Some(script_id) = params["scriptId"].as_str().map(str::to_string) else {
             return;
         };
         let session = session_id.to_string();
-        let parsed_at_epoch_ms = epoch_ms_now();
+        let parsed_at_epoch_ms = self.clock.now_ms();
         let creator = params["stackTrace"]["callFrames"][0]["url"]
             .as_str()
             .filter(|url| !url.is_empty())
@@ -805,12 +935,14 @@ impl Recorder {
                 // The frame or worker is gone, and its session with it: what
                 // it sent along while loading is the body then.
                 let copied = match &response {
-                    Err(CdpError::Rejected { .. }) => self.requests.take_body_copy(seq),
-                    _ => None,
+                    BodyAnswer::Browser(Err(CdpError::Rejected { .. }))
+                    | BodyAnswer::TooLarge { .. } => self.requests.take_body_copy(seq),
+                    BodyAnswer::Browser(_) => None,
                 };
-                let text = || match &copied {
-                    Some(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
-                    None => response.as_ref().ok().and_then(response_text),
+                let text = || match (&copied, &response) {
+                    (Some(bytes), _) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                    (None, BodyAnswer::Browser(Ok(answer))) => response_text(answer),
+                    (None, _) => None,
                 };
                 if let Some(answer) = bid {
                     let reason =
@@ -832,12 +964,21 @@ impl Recorder {
                         request_seq,
                     ))
                 });
-                let body = match (for_sink, copied) {
-                    (Ok(max_bytes), Some(bytes)) => body_of(bytes, max_bytes),
-                    (Ok(max_bytes), None) => captured_body(response, max_bytes),
-                    (Err(instead), _) => instead,
+                if let (BodyAnswer::TooLarge { total_bytes }, None) = (&response, &copied) {
+                    self.too_large.count += 1;
+                    self.too_large.largest_bytes = self.too_large.largest_bytes.max(*total_bytes);
+                }
+                let body = match (for_sink, copied, response) {
+                    (Ok(max_bytes), Some(bytes), _) => body_of(bytes, max_bytes),
+                    (Ok(max_bytes), None, BodyAnswer::Browser(answer)) => {
+                        captured_body(answer, max_bytes)
+                    }
+                    (Ok(_), None, BodyAnswer::TooLarge { total_bytes }) => {
+                        CapturedBody::TooLargeForRemote { total_bytes }
+                    }
+                    (Err(instead), _, _) => instead,
                 };
-                let settled = self.requests.body_settled(seq, body, epoch_ms_now());
+                let settled = self.requests.body_settled(seq, body, self.clock.now_ms());
                 self.hand_over(settled);
                 admission
             }
@@ -848,9 +989,9 @@ impl Recorder {
                         Value::String(text) => Some(text),
                         _ => None,
                     });
-                let settled = self
-                    .requests
-                    .post_data_settled(seq, text.as_deref(), epoch_ms_now());
+                let settled =
+                    self.requests
+                        .post_data_settled(seq, text.as_deref(), self.clock.now_ms());
                 self.hand_over(settled);
                 None
             }
@@ -884,6 +1025,11 @@ impl Recorder {
                     return;
                 };
                 if is_tracker_script(&body) {
+                    return;
+                }
+                if self.link.hosted_by_service && is_service_script(&body) {
+                    self.service_scripts.count += 1;
+                    self.service_scripts.chars += body.chars().count() as u64;
                     return;
                 }
                 let fingerprint = inline_fingerprint(&body);
@@ -924,13 +1070,6 @@ fn is_substantial_runtime_script(script_parsed: &Value) -> bool {
     const MIN_CHARS: u64 = 200;
     script_parsed["url"].as_str().is_some_and(str::is_empty)
         && script_parsed["length"].as_u64().unwrap_or(0) >= MIN_CHARS
-}
-
-pub(crate) fn epoch_ms_now() -> f64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs_f64() * 1000.0)
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -1126,5 +1265,336 @@ mod tests {
                 total_bytes: 11
             }
         );
+    }
+    const MIB: usize = 1024 * 1024;
+
+    /// The recorded tab itself, in a browser at Browserbase.
+    const TAB: Reported<'static> = Reported {
+        session: "tab",
+        reporter: Reporter::Tab,
+        target_id: None,
+        main_frame_id: Some("main"),
+        in_recorded_tab: true,
+    };
+
+    fn remote_recorder(sink: Arc<Kept>, cdp: &Cdp, behind_service_proxy: bool) -> Recorder {
+        let mut recorder = Recorder::new(
+            "main".to_string(),
+            PageLog::new(8, false),
+            Arc::new(|_| {}),
+            Some(sink),
+        )
+        .linked_by(BrowserLink {
+            hosted_by_service: true,
+            reply_limit: ReplyLimit::Remote,
+            behind_service_proxy,
+        });
+        let committed = json!({ "frame": { "id": "main", "loaderId": "L.1", "url": "https://www.pub.example/" } });
+        recorder.observe(&event("Page.frameNavigated", committed), cdp, "tab");
+        recorder
+    }
+
+    /// The tab asks for `url` and its answer's headers arrive, from
+    /// `server` (`ip`, `port`).
+    fn tab_loads(recorder: &mut Recorder, cdp: &Cdp, id: &str, url: &str, server: (&str, u16)) {
+        let announced = json!({
+            "requestId": id, "frameId": "main", "type": "Script",
+            "timestamp": 1_000.0, "wallTime": 1_700_000_000.0,
+            "request": { "url": url, "method": "GET", "headers": {} },
+            "initiator": { "type": "parser" },
+        });
+        recorder.observe_network(&TAB, &event("Network.requestWillBeSent", announced), cdp);
+        let headers = json!({
+            "requestId": id, "type": "Script", "timestamp": 1_000.1, "hasExtraInfo": false,
+            "response": { "status": 200, "mimeType": "text/javascript", "headers": {},
+                "remoteIPAddress": server.0, "remotePort": server.1 },
+        });
+        recorder.observe_network(&TAB, &event("Network.responseReceived", headers), cdp);
+    }
+
+    fn tab_receives(recorder: &mut Recorder, cdp: &Cdp, id: &str, piece: &str, sent_along: bool) {
+        let mut received = json!({ "requestId": id, "timestamp": 1_000.2,
+            "dataLength": piece.len(), "encodedDataLength": piece.len() });
+        if sent_along {
+            received["data"] = json!(base64_of(piece));
+        }
+        recorder.observe_network(&TAB, &event("Network.dataReceived", received), cdp);
+    }
+
+    fn tab_finishes(recorder: &mut Recorder, cdp: &Cdp, id: &str) {
+        let end = json!({ "requestId": id, "timestamp": 1_000.3, "encodedDataLength": 60 });
+        recorder.observe_network(&TAB, &event("Network.loadingFinished", end), cdp);
+    }
+
+    /// The next command the browser gets is `Browser.getVersion`: nothing
+    /// was asked of it before.
+    async fn assert_nothing_else_was_asked(cdp: &Cdp, browser: &mut Browser) {
+        cdp.notify(None, "Browser.getVersion", json!({}));
+        assert_eq!(browser.received().await["method"], "Browser.getVersion");
+    }
+
+    /// Over the connection to a remote browser an answer of more than
+    /// about 50 MiB ends the session. A body that could make one is never
+    /// asked for: it was sent along while it loaded, from the moment it
+    /// grew large, and that copy is the body.
+    #[tokio::test]
+    async fn a_large_body_of_a_remote_tab_is_taken_from_its_copy_and_never_asked_for() {
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = remote_recorder(sink.clone(), &cdp, false);
+        const URL: &str = "https://cdn.example/bundle.js";
+        let first = "a".repeat(5 * MIB);
+        let rest = "b".repeat(4 * MIB);
+
+        tab_loads(&mut recorder, &cdp, "T.1", URL, ("203.0.113.9", 443));
+        tab_receives(&mut recorder, &cdp, "T.1", &first, false);
+        let command = browser.received().await;
+        assert_eq!(
+            (
+                &command["method"],
+                &command["sessionId"],
+                &command["params"]["requestId"]
+            ),
+            (
+                &json!("Network.streamResourceContent"),
+                &json!("tab"),
+                &json!("T.1")
+            )
+        );
+        browser
+            .say(json!({ "id": command["id"], "result": { "bufferedData": base64_of(&first) } }))
+            .await;
+        tab_receives(&mut recorder, &cdp, "T.1", &rest, true);
+        // The browser's answer is here before the response ends, as on the
+        // wire: the answer was sent before the end was.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tab_finishes(&mut recorder, &cdp, "T.1");
+
+        assert_eq!(
+            sink.body_of(URL),
+            CapturedBody::Read {
+                bytes: vec![b'a'; 1024],
+                total_bytes: 9 * MIB as u64,
+            }
+        );
+        assert_eq!(recorder.too_large_bodies(), TooLarge::default());
+        assert!(!recorder.has_pending_bodies());
+        assert_nothing_else_was_asked(&cdp, &mut browser).await;
+    }
+
+    #[tokio::test]
+    async fn a_large_body_of_a_remote_tab_without_a_whole_copy_is_recorded_as_too_large() {
+        let (cdp, _events, mut browser) = connected();
+        let sink = Arc::new(Kept::default());
+        let mut recorder = remote_recorder(sink.clone(), &cdp, false);
+        let large = "a".repeat(9 * MIB);
+
+        // There at once, as from a cache: the copy is asked for and the
+        // response has ended before the browser can answer.
+        tab_loads(
+            &mut recorder,
+            &cdp,
+            "T.1",
+            "https://cdn.example/cached.js",
+            ("203.0.113.9", 443),
+        );
+        tab_receives(&mut recorder, &cdp, "T.1", &large, false);
+        tab_finishes(&mut recorder, &cdp, "T.1");
+        let late = browser.received().await;
+        assert_eq!(late["method"], "Network.streamResourceContent");
+        browser
+            .say(json!({ "id": late["id"], "error": { "code": -32602,
+                "message": "Request with the provided ID has already finished loading" } }))
+            .await;
+        // A second one, larger still, and a body of ordinary size.
+        tab_loads(
+            &mut recorder,
+            &cdp,
+            "T.2",
+            "https://cdn.example/larger.js",
+            ("203.0.113.9", 443),
+        );
+        tab_receives(&mut recorder, &cdp, "T.2", &large, false);
+        tab_receives(&mut recorder, &cdp, "T.2", &large, false);
+        tab_finishes(&mut recorder, &cdp, "T.2");
+        let later = browser.received().await;
+        assert_eq!(later["method"], "Network.streamResourceContent");
+        browser
+            .say(json!({ "id": later["id"], "error": { "code": -32602,
+                "message": "Request with the provided ID has already finished loading" } }))
+            .await;
+        tab_loads(
+            &mut recorder,
+            &cdp,
+            "T.3",
+            "https://cdn.example/small.js",
+            ("203.0.113.9", 443),
+        );
+        tab_receives(&mut recorder, &cdp, "T.3", "let a = 1;", false);
+        tab_finishes(&mut recorder, &cdp, "T.3");
+        let read = browser.received().await;
+        assert_eq!(
+            (&read["method"], &read["params"]["requestId"]),
+            (&json!("Network.getResponseBody"), &json!("T.3"))
+        );
+        browser
+            .say(json!({ "id": read["id"], "result": { "body": "let a = 1;", "base64Encoded": false } }))
+            .await;
+        while recorder.has_pending_bodies() {
+            recorder.store_next_body().await;
+        }
+
+        assert_eq!(
+            sink.body_of("https://cdn.example/cached.js"),
+            CapturedBody::TooLargeForRemote {
+                total_bytes: 9 * MIB as u64
+            }
+        );
+        assert_eq!(
+            sink.body_of("https://cdn.example/larger.js"),
+            CapturedBody::TooLargeForRemote {
+                total_bytes: 18 * MIB as u64
+            }
+        );
+        assert_eq!(
+            sink.body_of("https://cdn.example/small.js"),
+            CapturedBody::Read {
+                bytes: b"let a = 1;".to_vec(),
+                total_bytes: 10
+            }
+        );
+        assert_eq!(
+            recorder.too_large_bodies(),
+            TooLarge {
+                count: 2,
+                largest_bytes: 18 * MIB as u64
+            }
+        );
+        assert_nothing_else_was_asked(&cdp, &mut browser).await;
+    }
+
+    /// A script source is text, and every character of it can take six
+    /// bytes in an answer.
+    #[tokio::test]
+    async fn an_inline_script_too_large_for_one_answer_is_not_asked_of_a_remote_browser() {
+        let (cdp, _events, mut browser) = connected();
+        let mut recorder = remote_recorder(Arc::new(Kept::default()), &cdp, false);
+        let parsed = |script_id: &str, length: usize| {
+            event(
+                "Debugger.scriptParsed",
+                json!({
+                    "scriptId": script_id, "url": "", "length": length,
+                    "startLine": 0, "startColumn": 0,
+                    "executionContextAuxData": { "isDefault": true, "frameId": "main" },
+                }),
+            )
+        };
+
+        recorder.observe(&parsed("1", 9 * MIB), &cdp, "tab");
+        recorder.observe(&parsed("2", 5_000), &cdp, "tab");
+
+        let asked = browser.received().await;
+        assert_eq!(
+            (&asked["method"], &asked["params"]["scriptId"]),
+            (&json!("Debugger.getScriptSource"), &json!("2"))
+        );
+        assert_nothing_else_was_asked(&cdp, &mut browser).await;
+    }
+
+    /// Browserbase runs scripts of its own in the page's world of every
+    /// document. They are counted and kept out of the scan's scripts; the
+    /// same text in a local browser would be the page's own.
+    #[tokio::test]
+    async fn the_services_own_scripts_are_not_the_pages() {
+        let parsed = |script_id: &str| {
+            event(
+                "Debugger.scriptParsed",
+                json!({
+                    "scriptId": script_id, "url": "", "length": 40_000,
+                    "startLine": 0, "startColumn": 0,
+                    "executionContextAuxData": { "isDefault": true, "frameId": "main" },
+                }),
+            )
+        };
+        let services = format!(
+            "(() => {{\n      /* browserbase:stealth-init-script */\n\"use strict\";\n{}\n    }})();",
+            "var solved = true;".repeat(20)
+        );
+        let pages = format!("(() => {{ {} }})();", "window.adsReady = true;".repeat(20));
+        for hosted_by_service in [true, false] {
+            let (cdp, _events, mut browser) = connected();
+            let mut recorder = remote_recorder(Arc::new(Kept::default()), &cdp, false);
+            if !hosted_by_service {
+                recorder = recorder.linked_by(BrowserLink::LOCAL);
+            }
+            for (script_id, source) in [("1", &services), ("2", &pages)] {
+                recorder.observe(&parsed(script_id), &cdp, "tab");
+                let asked = browser.received().await;
+                assert_eq!(asked["method"], "Debugger.getScriptSource");
+                browser
+                    .say(json!({ "id": asked["id"], "result": { "scriptSource": source } }))
+                    .await;
+                recorder.store_next_body().await;
+            }
+
+            let kept = recorder.scripts.into_captured(|_| (0, 0.0));
+            if hosted_by_service {
+                assert_eq!(kept.len(), 1);
+                assert_eq!(kept[0].body, pages);
+                assert_eq!(
+                    recorder.service_scripts,
+                    ServiceScripts {
+                        count: 1,
+                        chars: services.chars().count() as u64
+                    }
+                );
+            } else {
+                assert_eq!(kept.len(), 2);
+                assert_eq!(recorder.service_scripts, ServiceScripts::default());
+            }
+        }
+    }
+
+    /// Behind a proxy of Browserbase every request reports the proxy as
+    /// its server. That is not where the request went, so it is not said.
+    #[tokio::test]
+    async fn the_address_of_browserbases_proxy_is_not_handed_over_as_the_servers() {
+        assert!(is_service_proxy("10.255.255.1:8091"));
+        assert!(is_service_proxy("10.255.255.1"));
+        assert!(!is_service_proxy("10.255.255.10:8091"));
+        assert!(!is_service_proxy("203.0.113.9:443"));
+
+        for (behind_service_proxy, server, handed_over) in [
+            (true, ("10.255.255.1", 8091), None),
+            (true, ("203.0.113.9", 443), Some("203.0.113.9:443")),
+            (false, ("10.255.255.1", 8091), Some("10.255.255.1:8091")),
+        ] {
+            let (cdp, _events, mut browser) = connected();
+            let sink = Arc::new(Kept::default());
+            let mut recorder = remote_recorder(sink.clone(), &cdp, behind_service_proxy);
+            tab_loads(
+                &mut recorder,
+                &cdp,
+                "T.1",
+                "https://cdn.example/app.js",
+                server,
+            );
+            tab_receives(&mut recorder, &cdp, "T.1", "let a = 1;", false);
+            tab_finishes(&mut recorder, &cdp, "T.1");
+            let read = browser.received().await;
+            browser
+                .say(json!({ "id": read["id"], "result": { "body": "let a = 1;", "base64Encoded": false } }))
+                .await;
+            while recorder.has_pending_bodies() {
+                recorder.store_next_body().await;
+            }
+
+            let records = sink.0.lock().unwrap();
+            assert_eq!(
+                records[0].remote_address.as_deref(),
+                handed_over,
+                "behind the proxy: {behind_service_proxy}, server {server:?}"
+            );
+        }
     }
 }

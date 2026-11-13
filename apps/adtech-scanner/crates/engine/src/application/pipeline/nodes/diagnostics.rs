@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use adscan_model::{DiagnosticStatus, LogKind, LogLevel};
+use adscan_model::{CaptureProxy, DiagnosticStatus, LogKind, LogLevel};
 use serde_json::json;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -22,6 +22,7 @@ use crate::domain::diagnostics::sellers_cache::utc_day;
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
 use crate::domain::diagnostics::site::{AdsTxtLocation, ads_txt_location, subdomain_ads_txt_url};
 use crate::domain::diagnostics::{self, SellersLookup, SiteFiles};
+use crate::domain::scan::ResolvedBrowser;
 
 /// Far above any real ads.txt; the largest in the wild are a few hundred KB.
 const ADS_TXT_MAX_BYTES: usize = 1024 * 1024;
@@ -116,10 +117,12 @@ pub async fn diagnose_bidders(run: &mut StepRun<'_>) -> NodeResult {
 
 /// The site's ads.txt is read the way its pages were: through the scan's
 /// proxy, so a site that answers differently per country is judged by the
-/// same answer.
+/// same answer. A Browserbase browser's own network cannot be used for it:
+/// then the file is read through the user's proxy if the scan has one, and
+/// from this machine otherwise.
 fn scan_proxy(run: &StepRun<'_>) -> FetchProxy {
     FetchProxy {
-        route: run.job.scan.proxy.capture.clone(),
+        route: run.job.scan.proxy.fetch.clone(),
         password: run.job.proxy_password.clone(),
     }
 }
@@ -152,7 +155,16 @@ async fn fetch_ads_txt(
     location: &AdsTxtLocation,
     url: String,
 ) -> Result<AdsTxtOutcome, NodeError> {
-    run.info(format!("Requesting {url}")).await?;
+    let from = match (run.job.scan.browser, &run.job.scan.proxy.fetch) {
+        (ResolvedBrowser::Local, _) => "",
+        (ResolvedBrowser::Browserbase { .. }, CaptureProxy::Custom { .. }) => {
+            " through the scan's proxy, from this Mac (not from the Browserbase browser)"
+        }
+        (ResolvedBrowser::Browserbase { .. }, CaptureProxy::None | CaptureProxy::System) => {
+            " from this Mac, not from the Browserbase browser: a site that answers differently per country may have shown the browser another file"
+        }
+    };
+    run.info(format!("Requesting {url}{from}")).await?;
     let request = PublicFileRequest {
         url: url.clone(),
         max_bytes: ADS_TXT_MAX_BYTES,

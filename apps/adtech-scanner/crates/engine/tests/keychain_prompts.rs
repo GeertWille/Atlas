@@ -258,6 +258,94 @@ async fn starting_the_app_and_fetching_settings_never_touches_the_keychain() {
 }
 
 #[tokio::test]
+async fn the_browserbase_key_and_its_project_are_one_write_of_the_same_item() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let keychain = Arc::new(CountingKeychain::default());
+    an_earlier_run_stored_everything(&store, &keychain).await;
+
+    let app = launch(CaptureBehavior::NoBrowser, &store, &keychain);
+    let status = app
+        .browserbase
+        .set_credentials(BROWSERBASE_KEY, None)
+        .await
+        .unwrap();
+    assert!(status.valid);
+    // One read to unlock, one write for both secrets: one prompt at most.
+    assert_eq!(keychain.accesses(), (1, 1, 0));
+    assert_eq!(keychain.accounts(), [VAULT]);
+    let vault = vault_of(&keychain);
+    assert_eq!(vault["browserbase"], BROWSERBASE_KEY);
+    assert_eq!(vault["browserbase-project"], "project-1");
+    assert_eq!(vault["anthropic"], "sk-ant-stored", "the rest is kept");
+
+    // What the settings show comes from the record, not from the keychain.
+    keychain.forget_accesses();
+    let restarted = launch(CaptureBehavior::NoBrowser, &store, &keychain);
+    let settings = restarted.settings.get().await.unwrap();
+    assert!(settings.browserbase.connected);
+    assert_eq!(settings.browserbase.project_name.as_deref(), Some("Local"));
+    assert_eq!(keychain.accesses(), (0, 0, 0));
+
+    restarted.browserbase.clear_credentials().await.unwrap();
+    assert_eq!(keychain.accesses(), (1, 1, 0));
+    let vault = vault_of(&keychain);
+    assert!(vault.get("browserbase").is_none() && vault.get("browserbase-project").is_none());
+    assert!(
+        !restarted
+            .settings
+            .get()
+            .await
+            .unwrap()
+            .browserbase
+            .connected
+    );
+}
+
+#[tokio::test]
+async fn the_start_up_sweep_reads_the_keychain_only_for_a_session_left_open() {
+    let store = SqliteStore::open_in_memory().unwrap();
+    let keychain = Arc::new(CountingKeychain::default());
+    an_earlier_run_stored_everything(&store, &keychain).await;
+    launch(CaptureBehavior::NoBrowser, &store, &keychain)
+        .browserbase
+        .set_credentials(BROWSERBASE_KEY, None)
+        .await
+        .unwrap();
+    keychain.forget_accesses();
+
+    // A clean start: nothing on record, nothing read.
+    let clean = launch(CaptureBehavior::NoBrowser, &store, &keychain);
+    assert_eq!(
+        clean
+            .browserbase
+            .release_abandoned_sessions(f64::INFINITY)
+            .await,
+        Ok(0)
+    );
+    assert_eq!(keychain.accesses(), (0, 0, 0));
+    assert!(clean.browserbase_api.calls().is_empty());
+
+    // A start after a run that left a browser behind.
+    use adscan_engine::application::ports::BrowserbaseLedger;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs_f64()
+        * 1_000.0;
+    store.session_created("left-open", now).await.unwrap();
+    let after_a_crash = launch(CaptureBehavior::NoBrowser, &store, &keychain);
+    *after_a_crash.browserbase_api.running.lock().unwrap() = vec!["left-open".to_string()];
+    assert_eq!(
+        after_a_crash
+            .browserbase
+            .release_abandoned_sessions(f64::INFINITY)
+            .await,
+        Ok(1)
+    );
+    assert_eq!(keychain.accesses(), (1, 0, 0));
+}
+
+#[tokio::test]
 async fn the_first_scan_that_needs_every_secret_reads_the_keychain_once() {
     let store = SqliteStore::open_in_memory().unwrap();
     let keychain = Arc::new(CountingKeychain::default());

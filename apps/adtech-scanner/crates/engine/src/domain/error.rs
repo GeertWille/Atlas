@@ -28,6 +28,24 @@ pub enum DomainError {
     ProxySocksCredentials,
     #[error("The chosen proxy no longer exists. Pick another proxy.")]
     UnknownProxy,
+    #[error("Browserbase is not set up. Add the API key in Settings.")]
+    BrowserbaseNotSetUp,
+    #[error(
+        "This address is on this Mac or your network; a cloud browser cannot reach it. Scan it with this Mac's Chrome."
+    )]
+    NotReachableFromCloud,
+    #[error("A Browserbase location can only be used when the browser runs on Browserbase.")]
+    LocationNeedsBrowserbase,
+    #[error("Enter the country of the Browserbase location as a two-letter code, for example BE")]
+    LocationCountryInvalid,
+    #[error("Enter the state of the Browserbase location as a two-letter code, for example NY")]
+    LocationStateInvalid,
+    #[error("Enter the city of the Browserbase location in letters, at most {max} characters")]
+    LocationCityInvalid { max: usize },
+    #[error(
+        "Browserbase cannot reach the proxy \"{0}\": its address is on this Mac or your network. Use a proxy that is reachable from the internet."
+    )]
+    ProxyNotReachableFromCloud(String),
     #[error("Give the scan configuration a name of at most {max} characters")]
     ConfigurationNameInvalid { max: usize },
     #[error("A scan configuration named \"{0}\" already exists")]

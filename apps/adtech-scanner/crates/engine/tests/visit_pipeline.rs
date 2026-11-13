@@ -47,6 +47,7 @@ fn two_page_capture() -> adscan_model::Capture {
         ),
     ]);
     capture.environment = CaptureEnvironment {
+        browserbase: None,
         headless: true,
         persistent_profile: false,
         webdriver: Some(true),

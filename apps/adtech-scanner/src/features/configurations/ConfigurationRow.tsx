@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import {
+  CloudIcon,
   CopyIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -30,6 +31,7 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { Hint } from "@/shared/ui/tooltip";
 import {
+  browserSummary,
   configurationProblem,
   duplicateName,
   healthChange,
@@ -107,6 +109,7 @@ export function ConfigurationRow({
   const save = useSaveScanConfiguration();
   const { options, name } = configuration;
   const problem = configurationProblem(configuration, settings);
+  const cloud = browserSummary(configuration, settings);
 
   const duplicate = () =>
     save.mutate(
@@ -152,7 +155,16 @@ export function ConfigurationRow({
             <DeviceLabel device={options.device} />
             <span className="truncate text-muted-foreground">{proxySummary(configuration, settings)}</span>
           </span>
-          <span className="truncate text-subtle-foreground">{visitorSummary(configuration)}</span>
+          <span className="flex min-w-0 items-center gap-1.5 text-subtle-foreground">
+            {cloud ? (
+              <span className="inline-flex shrink-0 items-center gap-1" title={`Runs in a ${cloud.full} browser`}>
+                <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="sr-only">Browserbase </span>
+                {cloud.place}
+              </span>
+            ) : null}
+            <span className="truncate">{visitorSummary(configuration)}</span>
+          </span>
         </div>
       </td>
       <td className={`${CELL} text-xs`}>

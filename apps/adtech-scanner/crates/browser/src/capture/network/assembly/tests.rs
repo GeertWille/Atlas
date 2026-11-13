@@ -1972,3 +1972,123 @@ fn copies_are_given_up_beyond_what_is_held_at_once_and_let_go_with_their_request
     assembler.finish();
     assert_eq!(megabytes_held(&assembler), 0);
 }
+
+const REMOTE: Limits = Limits {
+    copy_bodies_from: Some(4_000),
+    post_length_must_be_known: true,
+};
+
+fn received(id: &str, bytes: u64) -> Value {
+    json!({ "requestId": id, "timestamp": 1_200.1, "dataLength": bytes, "encodedDataLength": bytes })
+}
+
+/// The connection to a remote browser cannot carry a large body in one
+/// answer: a response of the tab that grows towards that size is asked to
+/// be sent along from then on, once.
+#[test]
+fn a_response_of_the_tab_that_grows_large_is_asked_to_be_sent_along_once() {
+    let mut assembler = Assembler::within(REMOTE);
+    let now = epoch(1_200.0);
+    let mut observe = |method: &str, params: &Value| assembler.observe(&tab(now), method, params);
+    observe(
+        "Network.requestWillBeSent",
+        &request("9.1", "https://cdn.example/bundle.js", 1_200.0),
+    );
+
+    assert!(copies_wanted(&observe("Network.dataReceived", &received("9.1", 3_999))).is_empty());
+    assert_eq!(
+        copies_wanted(&observe("Network.dataReceived", &received("9.1", 1))),
+        [("tab", "9.1")]
+    );
+    assert!(copies_wanted(&observe("Network.dataReceived", &received("9.1", 50_000))).is_empty());
+
+    // An image is never text and never kept: nothing is asked for it.
+    let mut image = request("9.2", "https://cdn.example/hero.jpg", 1_200.0);
+    image["type"] = json!("Image");
+    observe("Network.requestWillBeSent", &image);
+    assert!(copies_wanted(&observe("Network.dataReceived", &received("9.2", 90_000))).is_empty());
+}
+
+#[test]
+fn a_local_browser_is_never_asked_to_send_a_tabs_response_along() {
+    let mut assembler = Assembler::default();
+    let now = epoch(1_200.0);
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("9.1", "https://cdn.example/bundle.js", 1_200.0),
+    );
+
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.dataReceived",
+        &received("9.1", 900_000_000),
+    );
+
+    assert!(outputs.is_empty());
+}
+
+/// A copy that began in the middle of a response is whole when what had
+/// arrived before, as the browser hands it over, and every piece since
+/// add up to the response.
+#[test]
+fn a_copy_that_began_while_the_response_loaded_is_the_whole_body() {
+    let base64 = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+    let mut assembler = Assembler::within(REMOTE);
+    let now = epoch(1_200.0);
+    let first = "a".repeat(4_000);
+    assembler.observe(
+        &tab(now),
+        "Network.requestWillBeSent",
+        &request("9.1", "https://cdn.example/bundle.js", 1_200.0),
+    );
+    let outputs = assembler.observe(&tab(now), "Network.dataReceived", &received("9.1", 4_000));
+    assert_eq!(copies_wanted(&outputs), [("tab", "9.1")]);
+    // A piece sent along is seen before the answer that started the copy.
+    let mut later = received("9.1", 3);
+    later["data"] = json!(base64("bcd"));
+    assembler.observe(&tab(now), "Network.dataReceived", &later);
+    assembler.body_copy_started("9.1", &base64(&first));
+    let outputs = assembler.observe(
+        &tab(now),
+        "Network.loadingFinished",
+        &finished("9.1", 1_200.3, 4_100),
+    );
+    let finished = finished_of(&outputs).unwrap();
+
+    assert_eq!(finished.expected_bytes, 4_003);
+    assert_eq!(
+        assembler.take_body_copy(finished.seq),
+        Some(format!("{first}bcd").into_bytes())
+    );
+}
+
+/// A request body whose size is not known could be any size: over a
+/// connection that carries no large answer it is not asked for.
+#[test]
+fn a_request_body_of_unknown_length_is_not_asked_of_a_remote_browser() {
+    let now = epoch(1_110.0);
+    let post = |id: &str, length: Option<&str>| {
+        let mut event = request(id, "https://rtb.openx.net/openrtbb/prebidjs", 1_110.0);
+        event["request"]["method"] = json!("POST");
+        event["request"]["hasPostData"] = json!(true);
+        if let Some(length) = length {
+            event["request"]["headers"]["Content-Length"] = json!(length);
+        }
+        event
+    };
+    let asked_for = |limits: Limits, length: Option<&str>| {
+        let mut assembler = Assembler::within(limits);
+        let outputs =
+            assembler.observe(&tab(now), "Network.requestWillBeSent", &post("1.1", length));
+        outputs
+            .iter()
+            .any(|output| matches!(output, Output::PostDataWanted { .. }))
+    };
+
+    assert!(asked_for(Limits::default(), None));
+    assert!(!asked_for(REMOTE, None));
+    assert!(asked_for(REMOTE, Some("2000000")));
+    assert!(!asked_for(REMOTE, Some("9000000")));
+    assert!(!asked_for(Limits::default(), Some("9000000")));
+}

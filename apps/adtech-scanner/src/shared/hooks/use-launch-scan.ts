@@ -1,8 +1,19 @@
 import { useNavigate } from "@tanstack/react-router";
 import { toast } from "sonner";
-import type { ScanOptions } from "@/bindings";
+import type { ErrorCode, ScanOptions } from "@/bindings";
 import { toApiError } from "@/lib/api";
 import { type ScanStart, useStartScan } from "@/lib/query/hooks";
+
+/** What a refused start is called, by its code. The description is always the backend's own sentence. */
+const FAILURE_TITLE: Partial<Record<ErrorCode, string>> = {
+  browserNotFound: "No browser found",
+  browserbaseAuth: "Browserbase is not ready",
+  browserbaseLimit: "Browserbase is at its limit",
+  browserbaseFailed: "Browserbase could not run the browser",
+};
+
+/** Failures that are fixed on the settings screen. */
+const NEEDS_SETTINGS: ErrorCode[] = ["browserNotFound", "apiKeyMissing", "apiKeyInvalid", "browserbaseAuth"];
 
 /** Starts a scan and opens its live view; failures become toasts with a way forward. */
 export function useLaunchScan() {
@@ -14,10 +25,11 @@ export function useLaunchScan() {
       onSuccess: (summary) => navigate({ to: "/scans/$scanId", params: { scanId: summary.id } }),
       onError: (reason) => {
         const error = toApiError(reason);
-        const needsSettings = ["browserNotFound", "apiKeyMissing", "apiKeyInvalid"].includes(error.code);
-        toast.error(error.code === "browserNotFound" ? "No browser found" : "Could not start the scan", {
+        toast.error(FAILURE_TITLE[error.code] ?? "Could not start the scan", {
           description: error.message,
-          action: needsSettings ? { label: "Open settings", onClick: () => navigate({ to: "/settings" }) } : undefined,
+          action: NEEDS_SETTINGS.includes(error.code)
+            ? { label: "Open settings", onClick: () => navigate({ to: "/settings" }) }
+            : undefined,
         });
       },
     });

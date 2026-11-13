@@ -1,7 +1,7 @@
 use adscan_model::ErrorCode;
 
 use super::llm::LlmError;
-use super::ports::{CaptureError, RepositoryError, SecretError};
+use super::ports::{BrowserbaseError, CaptureError, RepositoryError, SecretError};
 use crate::domain::DomainError;
 
 /// Failure of a use case, in terms the UI can show.
@@ -31,6 +31,13 @@ pub enum AppError {
         "The browser profile is in use by a running scan. Try again when that scan has finished."
     )]
     ProfileBusy,
+    /// Browserbase is not set up, or refused the key or the project.
+    #[error("{0}")]
+    BrowserbaseAuth(String),
+    #[error("{0}")]
+    BrowserbaseLimit(String),
+    #[error("{0}")]
+    BrowserbaseFailed(String),
     #[error("{0}")]
     Internal(String),
 }
@@ -48,6 +55,9 @@ impl AppError {
             Self::Storage(_) => ErrorCode::Storage,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::ProfileBusy => ErrorCode::ProfileBusy,
+            Self::BrowserbaseAuth(_) => ErrorCode::BrowserbaseAuth,
+            Self::BrowserbaseLimit(_) => ErrorCode::BrowserbaseLimit,
+            Self::BrowserbaseFailed(_) => ErrorCode::BrowserbaseFailed,
             Self::Internal(_) => ErrorCode::Internal,
         }
     }
@@ -55,7 +65,20 @@ impl AppError {
 
 impl From<DomainError> for AppError {
     fn from(error: DomainError) -> Self {
-        Self::InvalidInput(error.to_string())
+        match error {
+            DomainError::BrowserbaseNotSetUp => Self::BrowserbaseAuth(error.to_string()),
+            other => Self::InvalidInput(other.to_string()),
+        }
+    }
+}
+
+impl From<BrowserbaseError> for AppError {
+    fn from(error: BrowserbaseError) -> Self {
+        match error {
+            BrowserbaseError::Auth(message) => Self::BrowserbaseAuth(message),
+            BrowserbaseError::Limit(message) => Self::BrowserbaseLimit(message),
+            BrowserbaseError::Failed(message) => Self::BrowserbaseFailed(message),
+        }
     }
 }
 
@@ -77,6 +100,9 @@ impl From<CaptureError> for AppError {
             CaptureError::BrowserNotFound => Self::BrowserNotFound,
             CaptureError::Cancelled => Self::Cancelled,
             CaptureError::ProfileBusy => Self::ProfileBusy,
+            CaptureError::RemoteAuth(message) => Self::BrowserbaseAuth(message),
+            CaptureError::RemoteLimit(message) => Self::BrowserbaseLimit(message),
+            CaptureError::Remote(message) => Self::BrowserbaseFailed(message),
             failure @ (CaptureError::Launch(_)
             | CaptureError::Navigation(_)
             | CaptureError::Other(_)) => Self::BrowserFailed(failure.to_string()),
@@ -91,5 +117,69 @@ impl From<LlmError> for AppError {
             LlmError::Cancelled => Self::Cancelled,
             other => Self::Llm(other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn browserbase_failures_keep_their_kind_and_their_message_up_to_the_command_layer() {
+        let cases = [
+            (
+                AppError::from(CaptureError::RemoteAuth("key refused".into())),
+                ErrorCode::BrowserbaseAuth,
+                "key refused",
+            ),
+            (
+                AppError::from(CaptureError::RemoteLimit("at the limit".into())),
+                ErrorCode::BrowserbaseLimit,
+                "at the limit",
+            ),
+            (
+                AppError::from(CaptureError::Remote("connection lost".into())),
+                ErrorCode::BrowserbaseFailed,
+                "connection lost",
+            ),
+            (
+                AppError::from(BrowserbaseError::Auth("project not found".into())),
+                ErrorCode::BrowserbaseAuth,
+                "project not found",
+            ),
+            (
+                AppError::from(BrowserbaseError::Limit("too many".into())),
+                ErrorCode::BrowserbaseLimit,
+                "too many",
+            ),
+            (
+                AppError::from(BrowserbaseError::Failed("unreachable".into())),
+                ErrorCode::BrowserbaseFailed,
+                "unreachable",
+            ),
+        ];
+        for (error, code, message) in cases {
+            assert_eq!(error.code(), code);
+            assert_eq!(error.to_string(), message);
+        }
+    }
+
+    #[test]
+    fn browserbase_without_credentials_is_an_authentication_problem_not_bad_input() {
+        let error = AppError::from(DomainError::BrowserbaseNotSetUp);
+        assert_eq!(error.code(), ErrorCode::BrowserbaseAuth);
+        assert_eq!(
+            error.to_string(),
+            "Browserbase is not set up. Add the API key in Settings."
+        );
+        assert_eq!(
+            AppError::from(DomainError::NotReachableFromCloud).code(),
+            ErrorCode::InvalidInput
+        );
+    }
+
+    #[test]
+    fn a_cancelled_remote_capture_is_still_a_cancellation() {
+        assert_eq!(AppError::from(CaptureError::Cancelled), AppError::Cancelled);
     }
 }

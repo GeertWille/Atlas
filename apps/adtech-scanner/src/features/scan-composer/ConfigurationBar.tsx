@@ -6,8 +6,13 @@ import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import { Hint } from "@/shared/ui/tooltip";
 
-function status(edited: boolean, blocked: boolean): string {
-  if (blocked) return "This configuration cannot run until another proxy is chosen under Origin.";
+type Blocked = "proxy" | "browserbase" | null;
+
+function status(edited: boolean, blocked: Blocked): string {
+  if (blocked === "proxy") return "This configuration cannot run until another proxy is chosen under Origin.";
+  if (blocked === "browserbase") {
+    return "This configuration cannot run until Browserbase is set up again, or This Mac is chosen under Origin.";
+  }
   if (edited) return "Scan runs these edited options once; they are not saved yet.";
   return "Scan runs this configuration as saved and records it as its last run.";
 }
@@ -28,8 +33,11 @@ export function ConfigurationBar({
 }: {
   configuration: ScanConfiguration;
   edited: boolean;
-  /** The options name a saved proxy that has been deleted: nothing can be scanned or saved until that changes. */
-  blocked: boolean;
+  /**
+   * The options name a saved proxy that has been deleted, or Browserbase after its credentials were removed:
+   * nothing can be scanned or saved until that changes.
+   */
+  blocked: Blocked;
   saving: boolean;
   onRevert: () => void;
   onUpdate: () => void;

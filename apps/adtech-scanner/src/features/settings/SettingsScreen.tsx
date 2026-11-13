@@ -23,6 +23,7 @@ import { Skeleton } from "@/shared/ui/skeleton";
 import { Switch } from "@/shared/ui/switch";
 import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { AiAnalysisFields } from "./AiAnalysisFields";
+import { BrowserbaseSection } from "./BrowserbaseSection";
 import { ProxySection } from "./ProxySection";
 import { ScanDefaultsFields } from "./ScanDefaultsFields";
 import { ScanProfileField } from "./ScanProfileField";
@@ -160,7 +161,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
 
       <Section
         title="Browser"
-        description="Scans drive a Chromium-based browser on this computer over the DevTools protocol."
+        description="Scans drive a Chromium-based browser on this computer over the DevTools protocol, unless a scan is set to run on Browserbase."
       >
         <BrowserField browser={browser} settings={settings} save={save} />
         <Field
@@ -171,6 +172,13 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
           <Switch id={ids.headless} checked={settings.headless} onCheckedChange={(headless) => save({ headless })} />
         </Field>
         <ScanProfileField settings={settings} save={save} />
+      </Section>
+
+      <Section
+        title="Browserbase"
+        description="Optional: run a scan's browser in Browserbase's cloud instead of on this Mac, from one of four regions or through a residential connection in a country you choose."
+      >
+        <BrowserbaseSection settings={settings} save={save} />
       </Section>
 
       <Section
@@ -215,11 +223,11 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
 
       <Section
         title="Data"
-        description="Everything is stored locally. Nothing is uploaded except the model requests you enable."
+        description="Everything is stored locally. Nothing is uploaded except the model requests you enable and, for a scan that runs on Browserbase, what its browser loads there."
       >
         <Field
           label="What is stored"
-          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan; passwords, tokens and other values with a credential name in addresses, request bodies and JSON responses are replaced before it is written, and so are cookie and credential headers unless “Store full headers” is on. A site’s ads.txt is read in memory and not kept; the sellers.json files of ad exchanges are kept apart from the scans (see “Kept sellers.json files” above). API keys and proxy passwords are in the Keychain, never in these files."
+          description="Reports keep findings with short excerpts, derived auctions, slots, metrics, bidder check results, script metadata and the audit trail. With “Keep network data” on, each scan also keeps the requests it made and the text it received, compressed, in a file of its own that is deleted with the scan; passwords, tokens and other values with a credential name in addresses, request bodies and JSON responses are replaced before it is written, and so are cookie and credential headers unless “Store full headers” is on. A site’s ads.txt is read in memory and not kept; the sellers.json files of ad exchanges are kept apart from the scans (see “Kept sellers.json files” above). A scan that ran on Browserbase is stored here in the same way; Browserbase additionally keeps its own video and log of that session, which this app neither stores nor can delete. API keys, the Browserbase key and proxy passwords are in the Keychain, never in these files."
         >
           <DeleteAllScansButton />
         </Field>
@@ -228,7 +236,7 @@ export function SettingsScreen({ settings, browser }: { settings: Settings; brow
       <Section title="About">
         <Field
           label="Ad-Tech Scanner"
-          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, unless the sellers.json check is switched off, the ad exchanges that ads.txt names. A scan's traffic to the site goes through the proxy you chose for it, if any; the requests to the exchanges and to the model APIs do not. Scan data never leaves this Mac unless you export a report or copy something out of it yourself."
+          description="Finds hidden revenue leaks caused by logic bugs in ad-tech wrappers. Outbound traffic goes only to the site being scanned (the page you enter, the pages a browse visit follows on that site and its ads.txt), api.anthropic.com, api.typesafe.ai when Jev is enabled and, unless the sellers.json check is switched off, the ad exchanges that ads.txt names. A scan's traffic to the site goes through the proxy you chose for it, if any; the requests to the exchanges and to the model APIs do not. With Browserbase set up, the app also talks to api.browserbase.com and to the browser at connect.browserbase.com: for a scan that runs there, the scanned pages are loaded by Browserbase's browser and everything the scanner reads from them passes through Browserbase, which keeps a video and a log of the session. Scan results are stored on this Mac only, and leave it only when you export a report or copy something out of it yourself."
         >
           <span className="selectable font-mono text-xs text-muted-foreground">v{__APP_VERSION__}</span>
         </Field>

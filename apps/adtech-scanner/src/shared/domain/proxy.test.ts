@@ -47,3 +47,16 @@ test("options that name a deleted profile are missing their proxy; everything el
   expect(hasMissingProxy({ proxy: { kind: "system" } }, settings)).toBe(false);
   expect(hasMissingProxy({}, settings)).toBe(false);
 });
+
+test("a Browserbase location is named by its country, as a choice and as a finished scan records it", () => {
+  expect(proxyChoiceKey({ kind: "browserbaseLocation", country: "BE" })).toBe("browserbaseLocation");
+  expect(proxyChoiceLabel({ kind: "browserbaseLocation", country: "BE" }, [])).toBe("Belgium (Browserbase proxy)");
+  expect(proxyChoiceLabel({ kind: "browserbaseLocation", country: "US", state: "NY", city: "NEW_YORK" }, [])).toBe(
+    "New York, NY, United States (Browserbase proxy)",
+  );
+  expect(proxyUseLabel({ kind: "browserbaseLocation", name: "BE", host: null })).toBe("Belgium (Browserbase proxy)");
+  expect(proxyUseLabel({ kind: "browserbaseLocation", name: "US, NY, NEW_YORK", host: null })).toBe(
+    "New York, NY, United States (Browserbase proxy)",
+  );
+  expect(proxyUseLabel({ kind: "browserbaseLocation", name: null, host: null })).toBe("Browserbase proxy");
+});

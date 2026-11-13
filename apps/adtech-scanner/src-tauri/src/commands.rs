@@ -3,11 +3,12 @@
 use adscan_engine::application::AppError;
 use adscan_engine::application::archive::source::OriginalPosition;
 use adscan_model::{
-    ApiKeyStatus, ApiProvider, ArchiveStorage, BodySide, BrowserInfo, CommandError, DashboardStats,
-    ErrorCode, ExportFormat, LogEntry, LogSearchHit, NetworkBodyChunk, NetworkRequestDetail,
-    NetworkRowChunk, NetworkSummary, ProxyProfileDraft, ScanConfiguration, ScanConfigurationDraft,
-    ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo, ScanSummary, ScriptSource,
-    SellersJsonCacheInfo, Settings, SettingsPatch, SourceView,
+    ApiKeyStatus, ApiProvider, ArchiveStorage, BodySide, BrowserInfo, BrowserbaseCredentialsStatus,
+    BrowserbaseProbe, BrowserbaseProfileInfo, BrowserbaseRegion, BrowserbaseStatus, CommandError,
+    DashboardStats, ErrorCode, ExportFormat, LogEntry, LogSearchHit, NetworkBodyChunk,
+    NetworkRequestDetail, NetworkRowChunk, NetworkSummary, ProxyProfileDraft, ScanConfiguration,
+    ScanConfigurationDraft, ScanDetail, ScanList, ScanListQuery, ScanOptions, ScanProfileInfo,
+    ScanSummary, ScriptSource, SellersJsonCacheInfo, Settings, SettingsPatch, SourceView,
 };
 use std::path::Path;
 
@@ -226,6 +227,79 @@ pub async fn clear_scan_profile(state: State<'_, AppState>) -> CommandResult<Sca
     state
         .scans
         .clear_scan_profile()
+        .await
+        .map_err(command_error)
+}
+
+/// Stores the Browserbase key and its project when Browserbase accepts
+/// them. Without a `project_id` the key's only project is adopted.
+#[tauri::command]
+pub async fn set_browserbase_credentials(
+    state: State<'_, AppState>,
+    api_key: String,
+    project_id: Option<String>,
+) -> CommandResult<BrowserbaseCredentialsStatus> {
+    state
+        .browserbase
+        .set_credentials(&api_key, project_id.as_deref())
+        .await
+        .map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn clear_browserbase_credentials(state: State<'_, AppState>) -> CommandResult<Settings> {
+    state
+        .browserbase
+        .clear_credentials()
+        .await
+        .map_err(command_error)
+}
+
+/// Project, usage and running browsers. Starts no browser.
+#[tauri::command]
+pub async fn test_browserbase(state: State<'_, AppState>) -> CommandResult<BrowserbaseStatus> {
+    state.browserbase.status().await.map_err(command_error)
+}
+
+/// Starts one browser to read what a page in it sees. Browserbase bills it
+/// as one browser minute.
+#[tauri::command]
+pub async fn probe_browserbase(
+    state: State<'_, AppState>,
+    region: Option<BrowserbaseRegion>,
+) -> CommandResult<BrowserbaseProbe> {
+    state.browserbase.probe(region).await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn get_browserbase_profile(
+    state: State<'_, AppState>,
+) -> CommandResult<BrowserbaseProfileInfo> {
+    state.browserbase.profile().await.map_err(command_error)
+}
+
+#[tauri::command]
+pub async fn clear_browserbase_profile(
+    state: State<'_, AppState>,
+) -> CommandResult<BrowserbaseProfileInfo> {
+    state
+        .browserbase
+        .clear_profile()
+        .await
+        .map_err(command_error)
+}
+
+/// Shows the Browserbase browser of a running scan in the user's own
+/// browser. The live view's address is a credential and stays in the
+/// backend: the frontend names the scan and learns only whether it worked.
+#[tauri::command]
+pub async fn open_browserbase_live_view(
+    state: State<'_, AppState>,
+    scan_id: String,
+) -> CommandResult<()> {
+    state
+        .scans
+        .open_live_view(&scan_id)
         .await
         .map_err(command_error)
 }

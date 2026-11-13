@@ -3,8 +3,9 @@
 use std::fmt::Write;
 
 use adscan_model::{
-    AdSlot, Auction, EvidenceKind, LogEntry, LogKind, PageView, PipelineNode, ProxyKind,
-    ScanDetail, ScanMetrics, ScriptCategory, ScriptRecord, VisitorBehavior,
+    AdSlot, Auction, BrowserUse, BrowserbaseProxyKind, BrowserbaseVisit, EvidenceKind, LogEntry,
+    LogKind, PageView, PipelineNode, ProxyKind, ScanDetail, ScanMetrics, ScriptCategory,
+    ScriptRecord, VisitorBehavior,
 };
 
 use super::AppError;
@@ -74,6 +75,64 @@ fn summary_section(out: &mut String, detail: &ScanDetail) {
     }
 }
 
+/// What a visit in a Browserbase browser adds: the session, what was asked
+/// of Browserbase, what the browser reported and what it cost.
+fn browserbase_lines(out: &mut String, visit: &BrowserbaseVisit) {
+    let on = |enabled: bool| if enabled { "on" } else { "off" };
+    let _ = writeln!(
+        out,
+        "- **Browserbase session:** {}{}",
+        cell(&visit.session_id),
+        visit
+            .browser_version
+            .as_deref()
+            .map(|version| format!(", {}", cell(version)))
+            .unwrap_or_default(),
+    );
+    let _ = writeln!(
+        out,
+        "- **Browserbase settings sent:** CAPTCHA solving {}, session video {}, session log {}, ad blocking {}",
+        on(visit.settings.solve_captchas),
+        on(visit.settings.record_session),
+        on(visit.settings.log_session),
+        on(visit.settings.block_ads),
+    );
+    let original = visit.original_timezone.as_deref().unwrap_or("not read");
+    let timezone = match &visit.applied_timezone {
+        Some(applied) => format!(
+            "{} (set by the scanner to match the region; the browser reported {})",
+            cell(applied),
+            cell(original)
+        ),
+        None => format!("{} (as the browser reported it)", cell(original)),
+    };
+    let _ = writeln!(
+        out,
+        "- **Timezone and language:** {timezone}; language {}",
+        cell(visit.language.as_deref().unwrap_or("not read")),
+    );
+    if let Some(round_trip) = visit.round_trip_ms {
+        let _ = writeln!(
+            out,
+            "- **Round trip to the browser:** {round_trip:.0} ms (frames and requests the scanner holds for a moment wait this long)"
+        );
+    }
+    let duration = visit
+        .session_seconds
+        .map_or("not reported".to_string(), |seconds| {
+            format!("{seconds:.0} s")
+        });
+    let traffic = match (visit.proxy_kind, visit.proxy_bytes) {
+        (BrowserbaseProxyKind::None, _) => String::new(),
+        (_, Some(bytes)) => format!(", {:.1} MB through the proxy", bytes / 1_000_000.0),
+        (_, None) => ", proxy traffic not reported".to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "- **Browserbase usage:** {duration} of browser time{traffic} (billed by Browserbase, not part of the LLM cost)"
+    );
+}
+
 /// How the pages were visited and what they could tell about the visit.
 /// Scans stored before this was recorded have no such section.
 fn visit_section(out: &mut String, detail: &ScanDetail) {
@@ -89,15 +148,18 @@ fn visit_section(out: &mut String, detail: &ScanDetail) {
         let _ = writeln!(
             out,
             "- **Browser:** {}, {} profile{}",
-            if environment.headless {
-                "headless"
-            } else {
-                "shown"
+            match &environment.browser {
+                BrowserUse::Local if environment.headless => "headless".to_string(),
+                BrowserUse::Local => "shown".to_string(),
+                BrowserUse::Browserbase(visit) => format!(
+                    "Browserbase, {} (headless, not shown in its user agent)",
+                    visit.region.as_str()
+                ),
             },
-            if environment.persistent_profile {
-                "persistent scan"
-            } else {
-                "throwaway"
+            match (&environment.browser, environment.persistent_profile) {
+                (BrowserUse::Local, true) => "persistent scan",
+                (BrowserUse::Browserbase(_), true) => "kept at Browserbase",
+                (_, false) => "throwaway",
             },
             if environment.emulated_mobile {
                 ", mobile emulation"
@@ -113,8 +175,15 @@ fn visit_section(out: &mut String, detail: &ScanDetail) {
                 environment.proxy.name.as_deref().unwrap_or("unnamed"),
                 environment.proxy.host.as_deref().unwrap_or("unknown host"),
             ),
+            ProxyKind::BrowserbaseLocation => format!(
+                "Browserbase residential exit, asked for {}",
+                environment.proxy.name.as_deref().unwrap_or("no place"),
+            ),
         };
         let _ = writeln!(out, "- **Proxy:** {}", cell(&proxy));
+        if let BrowserUse::Browserbase(visit) = &environment.browser {
+            browserbase_lines(out, visit);
+        }
         let _ = writeln!(
             out,
             "- **Automation signals the pages could see:** navigator.webdriver {}, user agent {}, viewport {}",

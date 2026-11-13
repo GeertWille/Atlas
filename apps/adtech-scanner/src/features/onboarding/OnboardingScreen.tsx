@@ -1,7 +1,9 @@
+import { useNavigate } from "@tanstack/react-router";
 import {
   ArrowRightIcon,
   CheckIcon,
   CircleDashedIcon,
+  CloudIcon,
   ExternalLinkIcon,
   FolderOpenIcon,
   PlayIcon,
@@ -12,7 +14,7 @@ import type { BrowserInfo, Settings } from "@/bindings";
 import { useDemoUrl, useUpdateSettings } from "@/lib/query/hooks";
 import { ApiKeyForm } from "@/shared/components/api-key-form";
 import { anyAiAvailable } from "@/shared/domain/ai-availability";
-import { defaultScanOptions } from "@/shared/domain/scan-options";
+import { demoScanOptions } from "@/shared/domain/scan-options";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
 import { notifyError } from "@/shared/lib/notify-error";
@@ -47,7 +49,15 @@ function Step({ state, title, children }: { state: StepState; title: string; chi
   );
 }
 
-function BrowserStep({ browser }: { browser: BrowserInfo | null }) {
+function BrowserStep({
+  browser,
+  browserbaseConnected,
+  onSetUpBrowserbase,
+}: {
+  browser: BrowserInfo | null;
+  browserbaseConnected: boolean;
+  onSetUpBrowserbase: () => void;
+}) {
   const updateSettings = useUpdateSettings();
   const choose = async () => {
     const path = await chooseBrowserExecutable();
@@ -68,15 +78,37 @@ function BrowserStep({ browser }: { browser: BrowserInfo | null }) {
       </Step>
     );
   }
+  if (browserbaseConnected) {
+    return (
+      <Step state="done" title="Browserbase is set up">
+        <p className="text-[13px] text-pretty text-muted-foreground">
+          No Chrome or Chromium was found on this Mac, so scans run in Browserbase's cloud browser. Pages on this Mac,
+          like the demo site, need a local browser.
+        </p>
+        <div>
+          <Button variant="outline" size="sm" onClick={choose}>
+            <FolderOpenIcon />
+            Choose browser…
+          </Button>
+        </div>
+      </Step>
+    );
+  }
   return (
     <Step state="required" title="No Chrome or Chromium found">
-      <p className="text-[13px] text-muted-foreground">
-        Scans drive a local Chromium-based browser. Install Google Chrome, or point to an existing executable.
+      <p className="text-[13px] text-pretty text-muted-foreground">
+        Scans drive a local Chromium-based browser. Install Google Chrome, or point to an existing executable. Without
+        one, scans can run in Browserbase's cloud browser instead: the scanned pages then pass through Browserbase, a
+        paid third-party service.
       </p>
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="outline" size="sm" onClick={choose}>
           <FolderOpenIcon />
           Choose browser…
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onSetUpBrowserbase}>
+          <CloudIcon />
+          Set up Browserbase instead
         </Button>
       </div>
     </Step>
@@ -120,6 +152,7 @@ export function OnboardingScreen({
   onDone: () => void;
 }) {
   const demoUrl = useDemoUrl();
+  const navigate = useNavigate();
   const { launch, isPending } = useLaunchScan();
 
   const finish = () => {
@@ -130,7 +163,12 @@ export function OnboardingScreen({
   const scanDemo = () => {
     if (!demoUrl.data) return;
     dismissOnboarding();
-    launch(defaultScanOptions(settings, demoUrl.data, "desktop"));
+    launch(demoScanOptions(settings, demoUrl.data));
+  };
+
+  const setUpBrowserbase = () => {
+    finish();
+    void navigate({ to: "/settings" });
   };
 
   return (
@@ -144,12 +182,21 @@ export function OnboardingScreen({
       </div>
 
       <ol className="rounded-xl border bg-card shadow-xs">
-        <BrowserStep browser={browser} />
+        <BrowserStep
+          browser={browser}
+          browserbaseConnected={settings.browserbase.connected}
+          onSetUpBrowserbase={setUpBrowserbase}
+        />
         <ApiKeyStep hasApiKey={settings.hasApiKey} />
         <Step state="optional" title="Try it on the built-in demo site">
           <p className="text-[13px] text-pretty text-muted-foreground">
             A sample publisher page with a real wrapper bug: desktop visitors are treated as mobile and half the slots
             never bid.
+            {browser === null
+              ? " It is served from this Mac and needs a local browser."
+              : settings.defaultBrowser === "browserbase"
+                ? " It is served from this Mac, so this scan runs in this Mac's Chrome, not on Browserbase."
+                : ""}
           </p>
           <div>
             <Button size="sm" disabled={!browser || !demoUrl.data || isPending} onClick={scanDemo}>

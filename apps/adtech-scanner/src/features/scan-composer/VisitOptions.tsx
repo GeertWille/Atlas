@@ -19,12 +19,16 @@ import type { ScanForm } from "./scan-form";
 const MANUAL_LIMIT_MINUTES = MANUAL_SESSION_LIMIT_MS / 60_000;
 
 /** What the page can tell about the visit. Scripted visits never pretend to be a person. */
-function AutomationNote({ visitor }: { visitor: VisitorBehavior }) {
+function AutomationNote({ visitor, remote }: { visitor: VisitorBehavior; remote: boolean }) {
+  if (!isScripted(visitor)) {
+    return <OptionHelp>You drive the browser. The page can still notice the debugger that records it.</OptionHelp>;
+  }
+  // No longer than the note for this Mac, so that it takes no more lines.
   return (
     <OptionHelp>
-      {isScripted(visitor)
-        ? "This visit is automated and says so to the page (navigator.webdriver is true). Ad partners can treat it differently from a person's visit."
-        : "You drive the browser. The page can still notice the debugger that records it."}
+      {remote
+        ? "This visit is automated, but Browserbase's browser does not tell the page (navigator.webdriver is false). The report records it."
+        : "This visit is automated and says so to the page (navigator.webdriver is true). Ad partners can treat it differently from a person's visit."}
     </OptionHelp>
   );
 }
@@ -113,21 +117,37 @@ function SwitchOption({
   );
 }
 
+/** A cloud browser has no window on this Mac to show or hide. */
+function NoBrowserWindow() {
+  return (
+    <OptionCell label="Show the browser" control={<FixedValue>No window</FixedValue>}>
+      <OptionHelp>A cloud browser has no window. The report shows what it loaded.</OptionHelp>
+    </OptionCell>
+  );
+}
+
 /** A manual session leaves nothing to set: each option keeps its place and says what holds instead. */
-function ManualSessionFacts() {
+function ManualSessionFacts({ remote }: { remote: boolean }) {
   return (
     <>
       <OptionCell label="Session length" control={<FixedValue>Up to {MANUAL_LIMIT_MINUTES} minutes</FixedValue>}>
         <OptionHelp>
-          Chrome opens; browse the site, then press <span className="font-medium text-foreground">Finish capture</span>.
+          {remote ? "Browserbase's live view opens in your own browser" : "Chrome opens"}; browse the site, then press{" "}
+          <span className="font-medium text-foreground">Finish capture</span>.
         </OptionHelp>
       </OptionCell>
       <OptionCell label="Pages to visit" control={<FixedValue>As you go</FixedValue>}>
-        <OptionHelp>Every page you open in that window is recorded.</OptionHelp>
+        <OptionHelp>Every page you open in that {remote ? "browser" : "window"} is recorded.</OptionHelp>
       </OptionCell>
-      <OptionCell label="Show the browser" control={<FixedValue>Always</FixedValue>}>
-        <OptionHelp>There is nobody to browse a hidden window.</OptionHelp>
-      </OptionCell>
+      {remote ? (
+        <OptionCell label="Show the browser" control={<FixedValue>In the live view</FixedValue>}>
+          <OptionHelp>Browserbase bills the session for as long as it is open.</OptionHelp>
+        </OptionCell>
+      ) : (
+        <OptionCell label="Show the browser" control={<FixedValue>Always</FixedValue>}>
+          <OptionHelp>There is nobody to browse a hidden window.</OptionHelp>
+        </OptionCell>
+      )}
       <OptionCell label="Accept consent banner" control={<FixedValue>By you</FixedValue>}>
         <OptionHelp>You handle the consent banner yourself; nothing is clicked for you.</OptionHelp>
       </OptionCell>
@@ -138,10 +158,13 @@ function ManualSessionFacts() {
 /** How the visit behaves: who the visitor is, for how long and how far, and what the browser does meanwhile. */
 export function VisitOptions({
   form,
+  remote,
   update,
   onVisitorChange,
 }: {
   form: ScanForm;
+  /** The scan runs in a Browserbase browser. */
+  remote: boolean;
   update: (patch: Partial<ScanForm>) => void;
   onVisitorChange: (visitor: VisitorBehavior) => void;
 }) {
@@ -156,23 +179,31 @@ export function VisitOptions({
           ))}
         </ToggleGroup>
         <div className="flex flex-col gap-0.5">
-          <p className="text-xs text-pretty text-foreground">{VISITOR_META[form.visitor].description}</p>
-          <AutomationNote visitor={form.visitor} />
+          <p className="text-xs text-pretty text-foreground">
+            {remote && form.visitor === "manual"
+              ? "You use the site in Browserbase's live view while it records. Nothing is clicked for you."
+              : VISITOR_META[form.visitor].description}
+          </p>
+          <AutomationNote visitor={form.visitor} remote={remote} />
         </div>
       </div>
       <div className="grid auto-rows-[minmax(5.5rem,auto)] grid-cols-2 gap-x-8 gap-y-2 xl:auto-rows-[minmax(4.5rem,auto)]">
         {form.visitor === "manual" ? (
-          <ManualSessionFacts />
+          <ManualSessionFacts remote={remote} />
         ) : (
           <>
             <ObserveTime form={form} update={update} />
             <PagesToVisit form={form} update={update} />
-            <SwitchOption
-              label="Show the browser"
-              description="Watch the visit in a Chrome window. Headless Chrome is easier for ad partners to recognise as automated."
-              checked={form.showBrowser}
-              onCheckedChange={(showBrowser) => update({ showBrowser })}
-            />
+            {remote ? (
+              <NoBrowserWindow />
+            ) : (
+              <SwitchOption
+                label="Show the browser"
+                description="Watch the visit in a Chrome window. Headless Chrome is easier for ad partners to recognise as automated."
+                checked={form.showBrowser}
+                onCheckedChange={(showBrowser) => update({ showBrowser })}
+              />
+            )}
             <SwitchOption
               label="Accept consent banner"
               description="Click through the CMP so bidding is not blocked."

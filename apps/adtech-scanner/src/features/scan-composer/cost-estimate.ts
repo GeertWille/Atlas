@@ -1,6 +1,8 @@
 import type { Effort, Settings } from "@/bindings";
 import { aiAvailability } from "@/shared/domain/ai-availability";
+import type { BrowserbaseEstimate } from "@/shared/domain/browserbase";
 import { costOf, JEV_MODEL } from "@/shared/domain/model-pricing";
+import { pluralize } from "@/shared/lib/format";
 
 /** Assumed token volume of a typical scan at medium effort; real spend is reported by the backend. */
 const FILTER_TOKENS = { input: 15_000, output: 1_300 };
@@ -60,4 +62,11 @@ export function estimateScanCost(
     cappedByBudget: uncapped > budgetUsd,
     fallbackPricing: !filter.knownModel || !analysis.knownModel,
   };
+}
+
+/** "about 2 browser minutes and 54 MB of proxy traffic": what a scan is likely to use at Browserbase, in units. */
+export function describeBrowserbaseUsage(estimate: BrowserbaseEstimate): string {
+  const time = `${estimate.upTo ? "up to" : "about"} ${pluralize(estimate.minutes, "browser minute")}`;
+  if (estimate.proxyMb === 0) return `${time}, no proxy traffic`;
+  return `${time} and ${estimate.proxyMb} MB of proxy traffic${estimate.proxyPerPage ? " per page" : ""}`;
 }

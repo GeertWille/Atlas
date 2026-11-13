@@ -1,4 +1,5 @@
 import type {
+  BrowserChoice,
   DeviceProfile,
   ProxyChoice,
   ProxyProfile,
@@ -7,6 +8,7 @@ import type {
   Settings,
   VisitorBehavior,
 } from "@/bindings";
+import { DISCONNECTED, FAKE_PROJECT } from "./browserbase";
 import { resolveScanOptions } from "./resolve";
 import { applyBeat, cancelScan, completeScan, createRunningScan, type StoredScan } from "./runtime";
 import { buildScenario } from "./scenario";
@@ -38,6 +40,9 @@ const SPORTSDESK_URL = "https://www.sportsdesk.example/football/transfer-news";
 const LEDGER_URL = "https://www.morningledger.example/";
 const SPORTSDESK_BELGIUM = { id: "config-sportsdesk-belgium", name: "Sportsdesk from Belgium" };
 const LEDGER_DIRECT = { id: "config-morningledger-direct", name: "Morning Ledger, no proxy" };
+const GARDEN_URL = "https://www.gardenweekly.example/spring-planting";
+const FRANKFURT: BrowserChoice = { kind: "browserbase", region: "eu-central-1" };
+const BELGIAN_HOUSEHOLD: ProxyChoice = { kind: "browserbaseLocation", country: "BE" };
 
 type SeedSpec = {
   id: string;
@@ -48,6 +53,8 @@ type SeedSpec = {
   visitor?: VisitorBehavior;
   extraPages?: number;
   proxy?: ProxyChoice;
+  /** Where the browser ran; this Mac unless said otherwise. */
+  browser?: BrowserChoice;
   /** The saved configuration the scan was started from. */
   configuration?: { id: string; name: string };
   /** Stored before visits had pages: no page views, no environment, no network data, only the options of that time. */
@@ -63,6 +70,14 @@ const MINUTES_PER_DAY = 1440;
 const FEATURED: SeedSpec[] = [
   { id: "seed-sportsdesk-desktop", url: SPORTSDESK_URL, device: "desktop", minutesAgo: 34 },
   { id: "seed-sportsdesk-mobile", url: SPORTSDESK_URL, device: "mobile", minutesAgo: 29 },
+  {
+    id: "seed-morningledger-browserbase",
+    url: LEDGER_URL,
+    device: "desktop",
+    minutesAgo: 75,
+    browser: FRANKFURT,
+    proxy: BELGIAN_HOUSEHOLD,
+  },
   {
     id: "seed-morningledger-desktop",
     url: LEDGER_URL,
@@ -169,6 +184,7 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number, padTo: number)
       visitor,
       extraPages: spec.extraPages,
       proxy: spec.proxy,
+      browser: spec.browser ?? { kind: "local" },
     },
     settings,
     spec.id,
@@ -180,6 +196,7 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number, padTo: number)
     proxy,
     settings,
     browserVersion: FAKE_BROWSER_VERSION,
+    projectName: settings.browserbase.projectName,
   });
   let elapsed = 0;
   for (const beat of scenario.beats) {
@@ -215,6 +232,13 @@ export function seedScans(settings: Settings, now: number, padTo = 0): StoredSca
     budgetUsd: 0.5,
     proxies: SEED_PROXIES,
     defaultProxy: { kind: "system" },
+    defaultBrowser: "local",
+    browserbase: {
+      ...DISCONNECTED,
+      connected: true,
+      projectName: FAKE_PROJECT.name,
+      concurrency: FAKE_PROJECT.concurrency,
+    },
   };
   return [...FEATURED, ...archiveSpecs()].map((spec) => runSeed(spec, seedSettings, now, padTo));
 }
@@ -239,7 +263,10 @@ function configurationOptions(
   };
 }
 
-/** One site set up for several countries and devices, plus one whose proxy has since been deleted. */
+/**
+ * One site set up for several countries and devices, one whose proxy has since been deleted, and one that
+ * runs in a Browserbase browser.
+ */
 export function seedConfigurations(now: number): ScanConfiguration[] {
   const created = now - 6 * MINUTES_PER_DAY * 60_000;
   const lastRun = (id: string) => now - (FEATURED.find((spec) => spec.id === id)?.minutesAgo ?? 0) * 60_000;
@@ -281,6 +308,18 @@ export function seedConfigurations(now: number): ScanConfiguration[] {
         name: "Germany",
         host: "de.proxy.example",
       }),
+      createdAt: created,
+      updatedAt: created,
+      ...never,
+    },
+    {
+      id: "config-gardenweekly-browserbase",
+      name: "Garden Weekly from Belgium, Browserbase",
+      options: {
+        ...configurationOptions(GARDEN_URL, "desktop", "scroll", BELGIAN_HOUSEHOLD),
+        headless: true,
+        browser: FRANKFURT,
+      },
       createdAt: created,
       updatedAt: created,
       ...never,

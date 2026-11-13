@@ -183,6 +183,7 @@ mod tests {
 
     fn environment(visitor: VisitorBehavior, headless: bool) -> ScanEnvironment {
         ScanEnvironment {
+            browser: adscan_model::BrowserUse::Local,
             visitor,
             seed: 1,
             headless,

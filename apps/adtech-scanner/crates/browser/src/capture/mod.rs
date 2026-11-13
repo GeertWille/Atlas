@@ -1,6 +1,7 @@
 //! One capture, start to finish: launch, emulate, visit, collect.
 
 mod bid_endpoints;
+mod clock;
 mod consent;
 mod console;
 mod driver;
@@ -12,10 +13,13 @@ mod interception;
 mod manual;
 mod navigation;
 mod network;
+mod noise;
 mod page;
 mod pages;
+mod patience;
 mod progress;
 mod recorder;
+mod remote;
 mod scenario;
 mod scripts;
 mod tabs;
@@ -24,34 +28,40 @@ mod visitor;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use adscan_model::{
-    Capture, CaptureActivity, CaptureEnvironment, CaptureProxy, CaptureRequest, CapturedPage,
-    ConsentNote, DeviceProfile, ProxyScheme, VisitorBehavior,
+    BrowserbaseCapture, Capture, CaptureActivity, CaptureBrowser, CaptureEnvironment, CaptureProxy,
+    CaptureRequest, CapturedPage, ConsentNote, DeviceProfile, ProxyScheme, RemoteSessionEvent,
+    VisitorBehavior,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::Instant;
 use url::Url;
 
-use crate::cdp::{Cdp, CdpEvent, Chrome, LaunchOptions, ProfileChoice, ProxyServer};
+use crate::cdp::{
+    ApiFailure, Backend, Cdp, CdpError, CdpEvent, Chrome, LaunchOptions, ProfileChoice,
+    ProxyServer, RemoteBrowser, SessionState,
+};
 use crate::device::{emulation_for, window_size};
-use crate::{BrowserError, CaptureHooks, detect};
+use crate::{BrowserError, BrowserbaseHooks, CaptureHooks, detect};
 
 use environment::Observed;
 use error::CaptureError;
 use interception::{Interception, ProxyLogin};
-use manual::Ending;
+use manual::{Ending, Window};
 use navigation::parse_address;
+use network::reply::ReplyLimit;
 use page::{Page, TabSetup};
 use pages::{PageLog, ViewFacts};
-use recorder::{Recorder, epoch_ms_now};
+use recorder::{BrowserLink, Recorder};
 
-const BODY_PATIENCE: Duration = Duration::from_secs(3);
-/// A browser on the kept browser profile is asked to close and given this long
-/// to write its cookies before it is killed.
-const CLOSE_PATIENCE: Duration = Duration::from_secs(5);
+const NOT_SET_UP: &str = "Browserbase is not set up. Add the API key in Settings.";
+const CONNECTION_LOST: &str = "The connection to the Browserbase browser was lost. The browser \
+                               has ended. Nothing was kept.";
+const TIME_LIMIT_REACHED: &str =
+    "Browserbase ended the browser at its time limit. Nothing was kept.";
+
 /// Page views of one visit. A person browsing gets more than a script.
 const MAX_PAGE_VIEWS: usize = 8;
 const MAX_PAGE_VIEWS_MANUAL: usize = 25;
@@ -69,13 +79,108 @@ fn scan_profile_of(root: &Path, device: DeviceProfile) -> PathBuf {
     })
 }
 
+/// What a visit has to know about the browser it runs in.
+struct Venue<'a> {
+    /// The login of the scan's own proxy, when this machine's browser has
+    /// to give it. A browser at Browserbase is signed in by the service.
+    proxy_login: Option<ProxyLogin>,
+    /// The scan's own proxy by name, for the words of a failure.
+    proxy_host: Option<String>,
+    at_browserbase: Option<RemoteVenue<'a>>,
+}
+
+struct RemoteVenue<'a> {
+    capture: &'a BrowserbaseCapture,
+    hooks: &'a BrowserbaseHooks,
+    session_id: String,
+}
+
 pub(crate) async fn run(
     request: CaptureRequest,
     hooks: CaptureHooks,
 ) -> Result<Capture, BrowserError> {
     let started = Instant::now();
     let address = parse_address(&request.url).map_err(CaptureError::from)?;
-    let (proxy, proxy_login) = proxy_of(&request, &hooks)?;
+    let (mut backend, venue) = match &request.browser {
+        CaptureBrowser::Local => launch_local(&request, &hooks).await?,
+        CaptureBrowser::Browserbase(capture) => launch_remote(&request, capture, &hooks).await?,
+    };
+    let connected = tokio::select! {
+        biased;
+        _ = hooks.cancel.cancelled() => Err(CaptureError::Cancelled),
+        connected = backend.connect() => connected.map_err(CaptureError::from),
+    };
+    let (cdp, outcome) = match connected {
+        Ok((cdp, events)) => {
+            let cdp = Arc::new(cdp);
+            let visit = Visit {
+                request: &request,
+                address: &address,
+                hooks: &hooks,
+                venue,
+                started,
+            };
+            let outcome = tokio::select! {
+                biased;
+                _ = hooks.cancel.cancelled() => Err(CaptureError::Cancelled),
+                outcome = visit.scan(cdp.clone(), events) => outcome,
+            };
+            (Some(cdp), outcome)
+        }
+        Err(error) => (None, Err(error)),
+    };
+    let outcome = match (outcome, backend.remote()) {
+        (Err(CaptureError::Protocol(CdpError::Closed)), Some(browser)) => {
+            (hooks.on_activity)(remote::connection_lost());
+            Err(connection_lost(browser))
+        }
+        (outcome, _) => outcome,
+    };
+    let remote_session = backend
+        .remote()
+        .map(|browser| browser.session_id().to_string());
+    let ended = backend.close(cdp.as_deref()).await;
+    if let Some(session_id) = remote_session {
+        report_remote_end(&hooks, session_id, ended);
+    }
+    Ok(outcome?)
+}
+
+/// Why a capture ends when the connection to its Browserbase browser is
+/// gone. The service ends a browser at the time limit it was started with
+/// by closing the connection.
+fn connection_lost(browser: &RemoteBrowser) -> CaptureError {
+    let message = if browser.has_reached_its_time_limit() {
+        TIME_LIMIT_REACHED
+    } else {
+        CONNECTION_LOST
+    };
+    CaptureError::Remote(ApiFailure::Failed(message.into()))
+}
+
+/// Tells the audit trail and the engine how a Browserbase session ended.
+/// The engine only hears of an end that the service confirmed: it keeps
+/// its record of the session otherwise, and releases it at its next start.
+fn report_remote_end(hooks: &CaptureHooks, session_id: String, ended: Option<SessionState>) {
+    let Some(ended) = ended else {
+        return (hooks.on_activity)(remote::release_unconfirmed());
+    };
+    (hooks.on_activity)(remote::released(&ended));
+    if let Some(browserbase) = &hooks.browserbase {
+        (browserbase.on_session)(RemoteSessionEvent::Released {
+            session_id,
+            session_seconds: ended.seconds(),
+            proxy_bytes: ended.proxy_bytes,
+        });
+    }
+}
+
+/// Starts Chrome on this machine.
+async fn launch_local<'a>(
+    request: &CaptureRequest,
+    hooks: &CaptureHooks,
+) -> Result<(Backend, Venue<'a>), BrowserError> {
+    let (proxy, proxy_login) = proxy_of(request, hooks)?;
     let kept_profile = match (&hooks.scan_profile_dir, request.persistent_profile) {
         (Some(root), true) => Some(scan_profile_of(root, request.device)),
         (None, true) => {
@@ -113,7 +218,7 @@ pub(crate) async fn run(
         },
     )));
 
-    let mut chrome = Chrome::spawn(LaunchOptions {
+    let chrome = Chrome::spawn(LaunchOptions {
         executable: Path::new(&browser.path),
         headless: request.headless,
         window_size: window_size(request.device),
@@ -123,38 +228,56 @@ pub(crate) async fn run(
         proxy: &proxy,
     })
     .map_err(CaptureError::from)?;
-    let connected = tokio::select! {
-        biased;
-        _ = hooks.cancel.cancelled() => Err(CaptureError::Cancelled),
-        connected = crate::cdp::connect(&mut chrome) => connected.map_err(CaptureError::from),
+    let venue = Venue {
+        proxy_host: proxy_login.as_ref().map(|proxy| proxy.host.clone()),
+        proxy_login,
+        at_browserbase: None,
     };
-    let outcome = match connected {
-        Ok((cdp, events)) => {
-            let cdp = Arc::new(cdp);
-            let visit = Visit {
-                request: &request,
-                address: &address,
-                hooks: &hooks,
-                proxy_login,
-                started,
-            };
-            let outcome = tokio::select! {
-                biased;
-                _ = hooks.cancel.cancelled() => Err(CaptureError::Cancelled),
-                outcome = visit.scan(cdp.clone(), events) => outcome,
-            };
-            if chrome.keeps_its_profile() {
-                // Killed, the browser would lose the cookies it has not
-                // written yet; closing makes it write them.
-                cdp.notify(None, "Browser.close", json!({}));
-                chrome.wait_for_exit(CLOSE_PATIENCE).await;
-            }
-            outcome
-        }
-        Err(error) => Err(error),
+    Ok((Backend::Local(chrome), venue))
+}
+
+/// Asks Browserbase for a browser. The engine hears of the session the
+/// moment it exists, before anything else is done with it.
+async fn launch_remote<'a>(
+    request: &CaptureRequest,
+    capture: &'a BrowserbaseCapture,
+    hooks: &'a CaptureHooks,
+) -> Result<(Backend, Venue<'a>), BrowserError> {
+    let Some(browserbase) = &hooks.browserbase else {
+        return Err(BrowserError::RemoteAuth(NOT_SET_UP.into()));
     };
-    chrome.shutdown().await;
-    Ok(outcome?)
+    let order = remote::session_order(request, capture, hooks.proxy_password.as_deref())?;
+    (hooks.on_activity)(CaptureActivity::progress(format!(
+        "Asking Browserbase for a browser in {}",
+        capture.region.as_str()
+    )));
+    let browser = RemoteBrowser::start(
+        browserbase.client.api(),
+        &browserbase.credentials,
+        &order,
+        &hooks.cancel,
+        |attempt, wait| (hooks.on_activity)(remote::rate_limited(attempt, wait)),
+    )
+    .await
+    .map_err(CaptureError::from)?;
+    let session_id = browser.session_id().to_string();
+    (browserbase.on_session)(RemoteSessionEvent::Created {
+        session_id: session_id.clone(),
+    });
+    (hooks.on_activity)(remote::session_created(&session_id, &order));
+    let venue = Venue {
+        proxy_login: None,
+        proxy_host: match &request.proxy {
+            CaptureProxy::Custom { host, .. } => Some(host.clone()),
+            CaptureProxy::System | CaptureProxy::None => None,
+        },
+        at_browserbase: Some(RemoteVenue {
+            capture,
+            hooks: browserbase,
+            session_id,
+        }),
+    };
+    Ok((Backend::Browserbase(browser), venue))
 }
 
 /// How the browser reaches the network, and what it may tell a proxy that
@@ -214,7 +337,7 @@ struct Visit<'a> {
     request: &'a CaptureRequest,
     address: &'a Url,
     hooks: &'a CaptureHooks,
-    proxy_login: Option<ProxyLogin>,
+    venue: Venue<'a>,
     /// When the capture was asked for.
     started: Instant,
 }
@@ -227,8 +350,33 @@ impl Visit<'_> {
     ) -> Result<Capture, CaptureError> {
         let request = self.request;
         let on_activity = &self.hooks.on_activity;
-        let proxy_host = self.proxy_login.as_ref().map(|proxy| proxy.host.clone());
-        let mut page = attach(cdp, events, request, self.proxy_login, self.hooks).await?;
+        let Venue {
+            proxy_login,
+            proxy_host,
+            at_browserbase,
+        } = self.venue;
+        let link = match &at_browserbase {
+            Some(remote) => BrowserLink {
+                hosted_by_service: true,
+                reply_limit: ReplyLimit::Remote,
+                behind_service_proxy: remote.capture.location.is_some(),
+            },
+            None => BrowserLink::LOCAL,
+        };
+        let (mut page, version) =
+            attach(cdp, events, request, proxy_login, link, self.hooks).await?;
+        let arrival = match &at_browserbase {
+            Some(remote) => {
+                let arrival = page
+                    .arrive_at_remote_browser(remote.capture, &version)
+                    .await?;
+                let facts = arrival.facts(&remote.session_id, version["product"].as_str());
+                on_activity(remote::connected(&facts));
+                on_activity(remote::timezone(&facts));
+                Some((arrival.seen, facts))
+            }
+            None => None,
+        };
         on_activity(CaptureActivity::progress(format!(
             "Opening {} as {}",
             self.address,
@@ -241,20 +389,42 @@ impl Visit<'_> {
         driver::open(&mut page, self.address, proxy_host.as_deref()).await?;
         page.confine_to_site().await?;
         let observed = page.observe_environment().await?;
+        let (mut seen, facts) = arrival.unzip();
+        if let Some(seen) = seen.as_mut().filter(|seen| seen.brands.is_empty()) {
+            // A blank page has no client hints to read; the loaded page has.
+            seen.brands.clone_from(&observed.brands);
+        }
         let environment = CaptureEnvironment {
-            headless: request.headless,
-            persistent_profile: request.persistent_profile,
+            // A browser at Browserbase runs headless, whatever was asked for.
+            headless: request.headless || at_browserbase.is_some(),
+            persistent_profile: match &at_browserbase {
+                Some(remote) => remote.capture.context_id.is_some(),
+                None => request.persistent_profile,
+            },
             webdriver: observed.webdriver,
             user_agent_overridden: page.emulation().user_agent_override().is_some(),
             viewport_overridden: page.overrides_viewport(),
             request_hosts: Vec::new(),
+            browserbase: facts,
         };
-        page.recorder.report(environment::activity(&environment));
+        page.recorder
+            .report(environment::activity(&environment, seen.as_ref()));
 
         let (consent_accepted, ending) = match request.visitor {
             VisitorBehavior::Manual => {
+                let window = match &at_browserbase {
+                    Some(remote) => {
+                        // The page is recording: the person can take over.
+                        (remote.hooks.on_session)(RemoteSessionEvent::LiveViewReady {
+                            session_id: remote.session_id.clone(),
+                        });
+                        on_activity(remote::live_view());
+                        Window::LiveView
+                    }
+                    None => Window::OnThisMachine,
+                };
                 let limit = self.started + manual::SESSION_LIMIT;
-                let ending = manual::record(&mut page, &self.hooks.finish, limit).await?;
+                let ending = manual::record(&mut page, &self.hooks.finish, limit, window).await?;
                 (false, ending)
             }
             VisitorBehavior::Browse => (
@@ -289,14 +459,17 @@ impl Visit<'_> {
     }
 }
 
-/// Sets the browser up for the visit and attaches to its first tab.
+/// Sets the browser up for the visit and attaches to its first tab. Also
+/// returns what the browser says of itself (`Browser.getVersion`).
 async fn attach(
     cdp: Arc<Cdp>,
     events: UnboundedReceiver<CdpEvent>,
     request: &CaptureRequest,
     proxy_login: Option<ProxyLogin>,
+    link: BrowserLink,
     hooks: &CaptureHooks,
-) -> Result<Page, CaptureError> {
+) -> Result<(Page, Value), CaptureError> {
+    let remote = request.browser != CaptureBrowser::Local;
     // A scanned page must not be able to put files in the user's Downloads.
     cdp.send(
         None,
@@ -306,13 +479,16 @@ async fn attach(
     .await?;
     let version = cdp.send(None, "Browser.getVersion", json!({})).await?;
     let setup = TabSetup {
-        override_viewport: overrides_viewport(request),
+        // A remote browser's own window is whatever its host gave it.
+        override_viewport: remote || overrides_viewport(request),
         emulation: emulation_for(
             request.device,
             version["userAgent"].as_str().unwrap_or_default(),
             version["product"].as_str().unwrap_or_default(),
         ),
         visitor: request.visitor,
+        hosted_by_service: remote,
+        timezone: None,
     };
     let follows_links = request.visitor == VisitorBehavior::Browse;
     let interception = Interception::new(proxy_login, follows_links);
@@ -326,15 +502,16 @@ async fn attach(
     let network = hooks.network.clone();
     let mut page = Page::attach(cdp, events, setup, interception, |main_frame_id| {
         let pages = PageLog::new(page_views, manual);
-        Recorder::new(main_frame_id, pages, on_activity, network)
+        Recorder::new(main_frame_id, pages, on_activity, network).linked_by(link)
     })
     .await?;
-    if !request.headless {
+    if !request.headless && !remote {
         // Once: the window opens behind the app otherwise. A scan never
-        // takes the focus again after that.
+        // takes the focus again after that. A remote browser has no window
+        // on this machine.
         page.call("Page.bringToFront", json!({})).await?;
     }
-    Ok(page)
+    Ok((page, version))
 }
 
 /// Turns what was recorded into the capture. With the browser gone, that is
@@ -350,9 +527,23 @@ async fn collect(
     if ending == Ending::BrowserOpen {
         page.flush_tracker().await?;
         page.note_title().await?;
-        page.settle_bodies(BODY_PATIENCE).await?;
+        page.settle_bodies(page.patience.bodies).await?;
     }
     page.recorder.finish_requests();
+    let service_scripts = page.recorder.service_scripts();
+    if service_scripts.count > 0 {
+        page.recorder.report(remote::service_scripts(
+            service_scripts.count,
+            service_scripts.chars,
+        ));
+    }
+    let too_large = page.recorder.too_large_bodies();
+    if too_large.count > 0 {
+        page.recorder.report(remote::bodies_too_large(
+            too_large.count,
+            too_large.largest_bytes,
+        ));
+    }
     let requests = page.recorder.request_counts();
     if page.recorder.keeps_requests() {
         page.recorder.report(CaptureActivity::progress(format!(
@@ -360,7 +551,7 @@ async fn collect(
             requests.total, requests.in_child_targets
         )));
     }
-    let ended_at = epoch_ms_now();
+    let ended_at = page.recorder.clock.now_ms();
     let emulated = page.emulation().clone();
     let viewport = if page.overrides_viewport() {
         emulated.viewport
@@ -432,6 +623,7 @@ async fn collect(
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
+    use std::time::Duration;
 
     use adscan_model::{
         BodyAdmission, BodyOffer, NetworkRecord, NetworkSink, PageReach, RequestEnd, ResourceKind,
@@ -479,6 +671,8 @@ mod tests {
             emulation,
             override_viewport: true,
             visitor: VisitorBehavior::Manual,
+            hosted_by_service: false,
+            timezone: None,
         };
         let requests = Arc::new(Kept::default());
         let sink = requests.clone();
@@ -515,7 +709,7 @@ mod tests {
         });
         let never_finished = tokio_util::sync::CancellationToken::new();
         let limit = Instant::now() + manual::SESSION_LIMIT;
-        let ending = manual::record(&mut page, &never_finished, limit)
+        let ending = manual::record(&mut page, &never_finished, limit, Window::OnThisMachine)
             .await
             .unwrap();
         the_person.await.unwrap();
@@ -533,6 +727,7 @@ mod tests {
             persistent_profile: false,
             proxy: CaptureProxy::System,
             chrome_path: None,
+            browser: CaptureBrowser::Local,
         };
         let capture = collect(
             page,

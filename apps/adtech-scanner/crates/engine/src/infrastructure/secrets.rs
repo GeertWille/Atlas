@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use adscan_model::ApiProvider;
+use adscan_model::{ApiProvider, BrowserbaseCredentials};
 use async_trait::async_trait;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -18,6 +18,8 @@ use crate::application::ports::{
 const VAULT_ACCOUNT: &str = "vault";
 
 const PROXY_PREFIX: &str = "proxy:";
+const BROWSERBASE_KEY: &str = "browserbase";
+const BROWSERBASE_PROJECT: &str = "browserbase-project";
 
 /// The name a secret goes by, in the vault and in the record of what exists.
 pub(crate) fn secret_key(name: &SecretName) -> String {
@@ -25,6 +27,8 @@ pub(crate) fn secret_key(name: &SecretName) -> String {
         SecretName::ApiKey(ApiProvider::Anthropic) => "anthropic".to_string(),
         SecretName::ApiKey(ApiProvider::Typesafe) => "typesafe".to_string(),
         SecretName::ProxyPassword(proxy_id) => format!("{PROXY_PREFIX}{proxy_id}"),
+        SecretName::BrowserbaseApiKey => BROWSERBASE_KEY.to_string(),
+        SecretName::BrowserbaseProjectId => BROWSERBASE_PROJECT.to_string(),
     }
 }
 
@@ -32,6 +36,8 @@ pub(crate) fn secret_name(key: &str) -> Option<SecretName> {
     match key {
         "anthropic" => Some(SecretName::ApiKey(ApiProvider::Anthropic)),
         "typesafe" => Some(SecretName::ApiKey(ApiProvider::Typesafe)),
+        BROWSERBASE_KEY => Some(SecretName::BrowserbaseApiKey),
+        BROWSERBASE_PROJECT => Some(SecretName::BrowserbaseProjectId),
         _ => key
             .strip_prefix(PROXY_PREFIX)
             .map(|proxy_id| SecretName::ProxyPassword(proxy_id.to_string())),
@@ -40,12 +46,14 @@ pub(crate) fn secret_name(key: &str) -> Option<SecretName> {
 
 /// The account of the keychain item that held this secret alone, before the
 /// vault. These names must not change, or secrets stored by earlier versions
-/// would not be found.
-fn legacy_account(name: &SecretName) -> String {
+/// would not be found. The Browserbase secrets came after the vault and
+/// never had an item of their own.
+fn legacy_account(name: &SecretName) -> Option<String> {
     match name {
-        SecretName::ApiKey(ApiProvider::Anthropic) => "anthropic-api-key".to_string(),
-        SecretName::ApiKey(ApiProvider::Typesafe) => "typesafe-api-key".to_string(),
-        SecretName::ProxyPassword(proxy_id) => format!("proxy-password:{proxy_id}"),
+        SecretName::ApiKey(ApiProvider::Anthropic) => Some("anthropic-api-key".to_string()),
+        SecretName::ApiKey(ApiProvider::Typesafe) => Some("typesafe-api-key".to_string()),
+        SecretName::ProxyPassword(proxy_id) => Some(format!("proxy-password:{proxy_id}")),
+        SecretName::BrowserbaseApiKey | SecretName::BrowserbaseProjectId => None,
     }
 }
 
@@ -113,22 +121,37 @@ impl VaultSecretStore {
 
     /// Stores `secret` under `name`, or with `None` removes it.
     async fn change(&self, name: SecretName, secret: Option<&str>) -> Result<(), SecretError> {
+        self.change_together(&[(name, secret)]).await
+    }
+
+    /// Several changes in one write of the keychain item: all or none.
+    async fn change_together(
+        &self,
+        changes: &[(SecretName, Option<&str>)],
+    ) -> Result<(), SecretError> {
         let mut vault = self.vault.lock().await;
-        if secret.is_none() && vault.is_none() && !self.recorded().await?.contains(&name) {
-            return Ok(());
+        let only_removes = changes.iter().all(|(_, secret)| secret.is_none());
+        if only_removes && vault.is_none() {
+            let recorded = self.recorded().await?;
+            if !changes.iter().any(|(name, _)| recorded.contains(name)) {
+                return Ok(());
+            }
         }
         let vault = self.unlocked(&mut vault).await?;
         let mut changed = Vault(vault.0.clone());
-        let key = secret_key(&name);
-        match secret {
-            Some(secret) => {
-                changed.0.insert(key, secret.to_string());
-            }
-            None => {
-                if changed.0.remove(&key).is_none() {
-                    return Ok(());
+        let mut differs = false;
+        for (name, secret) in changes {
+            let key = secret_key(name);
+            match secret {
+                Some(secret) => {
+                    changed.0.insert(key, (*secret).to_string());
+                    differs = true;
                 }
+                None => differs |= changed.0.remove(&key).is_some(),
             }
+        }
+        if !differs {
+            return Ok(());
         }
         // An emptied vault is still written, not deleted: a missing item
         // would send the next launch back to the items of earlier versions.
@@ -184,7 +207,9 @@ impl VaultSecretStore {
             let mut vault = Vault::default();
             let mut adopted = Vec::new();
             for name in &candidates {
-                let account = legacy_account(name);
+                let Some(account) = legacy_account(name) else {
+                    continue;
+                };
                 if let Some(secret) = keychain.read(&account)? {
                     vault.0.insert(secret_key(name), secret);
                     adopted.push(account);
@@ -278,6 +303,41 @@ impl SecretStore for VaultSecretStore {
         self.change(SecretName::ProxyPassword(proxy_id.to_string()), None)
             .await
     }
+
+    async fn browserbase_credentials(&self) -> Result<Option<BrowserbaseCredentials>, SecretError> {
+        let Some(api_key) = self.secret(SecretName::BrowserbaseApiKey).await? else {
+            return Ok(None);
+        };
+        Ok(self
+            .secret(SecretName::BrowserbaseProjectId)
+            .await?
+            .map(|project_id| BrowserbaseCredentials {
+                api_key,
+                project_id,
+            }))
+    }
+
+    async fn store_browserbase_credentials(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<(), SecretError> {
+        self.change_together(&[
+            (SecretName::BrowserbaseApiKey, Some(&credentials.api_key)),
+            (
+                SecretName::BrowserbaseProjectId,
+                Some(&credentials.project_id),
+            ),
+        ])
+        .await
+    }
+
+    async fn clear_browserbase_credentials(&self) -> Result<(), SecretError> {
+        self.change_together(&[
+            (SecretName::BrowserbaseApiKey, None),
+            (SecretName::BrowserbaseProjectId, None),
+        ])
+        .await
+    }
 }
 
 /// Keeps the secrets in process memory only.
@@ -287,6 +347,7 @@ pub struct MemorySecretStore {
     proxy_passwords: Mutex<HashMap<String, String>>,
     /// Stands in for the password of every proxy that has none of its own.
     proxy_password_override: Option<String>,
+    browserbase: Mutex<Option<BrowserbaseCredentials>>,
 }
 
 impl MemorySecretStore {
@@ -315,6 +376,18 @@ impl MemorySecretStore {
         self
     }
 
+    /// A store that already holds these Browserbase credentials.
+    pub fn with_browserbase(self, credentials: Option<BrowserbaseCredentials>) -> Self {
+        *self.lock_browserbase() = credentials;
+        self
+    }
+
+    fn lock_browserbase(&self) -> std::sync::MutexGuard<'_, Option<BrowserbaseCredentials>> {
+        self.browserbase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn lock_proxy_passwords(&self) -> std::sync::MutexGuard<'_, HashMap<String, String>> {
         self.proxy_passwords
             .lock()
@@ -338,6 +411,9 @@ impl SecretStore for MemorySecretStore {
                 SecretName::ProxyPassword(proxy_id) => {
                     self.proxy_password_override.is_some()
                         || self.lock_proxy_passwords().contains_key(proxy_id)
+                }
+                SecretName::BrowserbaseApiKey | SecretName::BrowserbaseProjectId => {
+                    self.lock_browserbase().is_some()
                 }
             };
             if exists {
@@ -383,6 +459,23 @@ impl SecretStore for MemorySecretStore {
         self.lock_proxy_passwords().remove(proxy_id);
         Ok(())
     }
+
+    async fn browserbase_credentials(&self) -> Result<Option<BrowserbaseCredentials>, SecretError> {
+        Ok(self.lock_browserbase().clone())
+    }
+
+    async fn store_browserbase_credentials(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<(), SecretError> {
+        *self.lock_browserbase() = Some(credentials.clone());
+        Ok(())
+    }
+
+    async fn clear_browserbase_credentials(&self) -> Result<(), SecretError> {
+        *self.lock_browserbase() = None;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -418,18 +511,23 @@ mod tests {
     #[test]
     fn the_legacy_accounts_differ_and_the_anthropic_one_is_unchanged() {
         assert_eq!(
-            legacy_account(&SecretName::ApiKey(ApiProvider::Anthropic)),
-            "anthropic-api-key"
+            legacy_account(&SecretName::ApiKey(ApiProvider::Anthropic)).as_deref(),
+            Some("anthropic-api-key")
         );
         assert_eq!(
-            legacy_account(&SecretName::ApiKey(ApiProvider::Typesafe)),
-            "typesafe-api-key"
+            legacy_account(&SecretName::ApiKey(ApiProvider::Typesafe)).as_deref(),
+            Some("typesafe-api-key")
         );
+        assert_eq!(legacy_account(&SecretName::BrowserbaseApiKey), None);
+        assert_eq!(legacy_account(&SecretName::BrowserbaseProjectId), None);
     }
 
     #[test]
     fn each_proxy_profile_had_its_own_legacy_account() {
-        assert_eq!(legacy_account(&proxy("p1")), "proxy-password:p1");
+        assert_eq!(
+            legacy_account(&proxy("p1")).as_deref(),
+            Some("proxy-password:p1")
+        );
         assert_ne!(legacy_account(&proxy("p1")), legacy_account(&proxy("p2")));
     }
 
@@ -440,6 +538,8 @@ mod tests {
             SecretName::ApiKey(ApiProvider::Typesafe),
             proxy("p1"),
             proxy("with:colon"),
+            SecretName::BrowserbaseApiKey,
+            SecretName::BrowserbaseProjectId,
         ] {
             assert_eq!(secret_name(&secret_key(&name)), Some(name));
         }
@@ -475,6 +575,35 @@ mod tests {
             with_override.stored_among(candidates).await.unwrap(),
             HashSet::from([proxy("p1"), proxy("p2")])
         );
+    }
+
+    #[tokio::test]
+    async fn browserbase_credentials_exist_in_memory_as_a_pair() {
+        let credentials = BrowserbaseCredentials {
+            api_key: "bb_live_key".into(),
+            project_id: "project-1".into(),
+        };
+        let names = vec![
+            SecretName::BrowserbaseApiKey,
+            SecretName::BrowserbaseProjectId,
+        ];
+        let store = MemorySecretStore::default();
+        assert_eq!(store.browserbase_credentials().await.unwrap(), None);
+        assert!(store.stored_among(names.clone()).await.unwrap().is_empty());
+
+        store
+            .store_browserbase_credentials(&credentials)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.browserbase_credentials().await.unwrap(),
+            Some(credentials)
+        );
+        assert_eq!(store.stored_among(names.clone()).await.unwrap().len(), 2);
+
+        store.clear_browserbase_credentials().await.unwrap();
+        assert_eq!(store.browserbase_credentials().await.unwrap(), None);
+        assert!(store.stored_among(names).await.unwrap().is_empty());
     }
 
     #[tokio::test]

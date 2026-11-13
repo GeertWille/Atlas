@@ -226,6 +226,80 @@ This is the site that exposed most of the real-world problems.
 - [ ] Switch the check off: the next report says "Not looked up for this scan" under Bidder checks
 - [ ] `~/Library/Application Support/com.webclew.adtech-scanner/cache/sellers-json` is readable only by you
 
+## 12a. Browserbase (ticket #16)
+
+Needs a Browserbase API key. Every scan and every probe here starts a real browser that Browserbase
+bills by the minute; a residential location is also billed per megabyte (about $12 per GB overage).
+The project behind the saved key is shared with another application: nothing below should ever touch a
+session that is not this app's.
+
+Set-up
+
+- [ ] Settings → Browserbase shows the disclosure text before a key can be saved
+- [ ] A wrong key is refused with "Browserbase did not accept the API key." and nothing is stored
+- [ ] The right key: one Keychain prompt at most, the project's name and "3 browsers at once" (or
+      whatever the project allows) appear, the key itself is never shown again
+- [ ] A key with several projects asks which one
+- [ ] "Test connection" shows project, usage and running browsers, and the Browserbase dashboard shows
+      no new session afterwards
+- [ ] "Check what a page sees" (the probe) says it costs a minute, then shows `navigator.webdriver`
+      false, a Chrome user agent without "Headless", the timezone and the round trip; the dashboard
+      shows one session of a few seconds with metadata `app: adscan`, `scan: probe`
+- [ ] Quit and reopen the app: Settings still shows "connected" without a Keychain prompt
+
+A scan
+
+- [ ] With no Chrome installed (or a wrong Chrome path in Settings) a Browserbase scan still runs
+- [ ] Scan a real publisher page in Frankfurt without a proxy: the report says Browserbase,
+      eu-central-1, session seconds, timezone "Europe/Berlin (set by the scanner …; the browser
+      reported America/Los_Angeles)", `navigator.webdriver` false. Does the page show the EU consent
+      dialog, and is it accepted?
+- [ ] The same page locally: compare auctions, bidders and slots. On Browserbase every frame runs in
+      the page's own process; anything that differs by more than the page itself varies is worth a note
+- [ ] "Try the demo" with Browserbase as the default browser still runs in local Chrome; choosing
+      Browserbase for a `localhost` address is not possible in the composer and is refused by the backend
+- [ ] The system proxy as the choice for a Browserbase scan: the Capture step says it does not apply
+- [ ] One of your own proxies with a password, reachable from the internet: the scan leaves through it
+      (check the exit with a what-is-my-IP page), the report says "external proxy". **Never tested with
+      a real proxy.** Note what happens with a wrong password, and with a SOCKS5 proxy
+- [ ] A Browserbase location, Belgium: exit in Belgium, timezone left to Browserbase
+      (Europe/Brussels), and half a minute after the scan the proxy megabytes in the report move from
+      0 to the real figure. Try a location with a city ("New York"): is the spelling accepted?
+- [ ] Four scans at once on a project with concurrency 3 (or while the other application uses it): the
+      fourth waits with "Browserbase is at its limit" lines and then starts, or fails after a minute
+      with a sentence that says so
+- [ ] Cancel a Browserbase scan while it runs: the session is `COMPLETED` in the dashboard within
+      seconds, and the scan still shows the browser time it used
+- [ ] Pull the network cable during a Browserbase scan: it fails with "The connection to the
+      Browserbase browser was lost …" after at most 90 s and the session ends by itself
+- [ ] Force-quit the app during a Browserbase scan, reopen it: the session is ended (by the closed
+      socket, or by the app's start-up sweep); sessions of the other application are untouched
+
+"I'll browse myself"
+
+- [ ] A manual Browserbase scan opens Browserbase's live view in your default browser by itself;
+      browsing there is recorded; "Open live view" in the app opens it again; "Finish capture" ends
+      it with a report. **The opener was never run on macOS, and the live view never driven by hand.**
+- [ ] The live view's address is in no log line, no report, no export
+- [ ] Cancel during a manual Browserbase session discards it
+
+Kept profile
+
+- [ ] Off by default even with the local "keep a browser profile" on
+- [ ] Switched on: the second scan of a site shows no consent dialog; a desktop and a mobile scan
+      keep separate profiles; two such scans at once: the second waits
+- [ ] "Clear" deletes the contexts (check in the Browserbase dashboard) and is disabled during a scan
+- [ ] Removing the Browserbase key also removes the kept profile there
+
+Worth writing down
+
+| What | Your value |
+|---|---|
+| Browser seconds and proxy MB of one scan of a heavy news page through a location | |
+| Round trip from your network to each region (the probe shows it) | |
+| Whether a response body over 32 MB is ever reported as too large for the connection | |
+| Whether an idle manual session survives more than 5 minutes without input | |
+
 ## 13. Signing and release (ticket #2)
 
 - [ ] Decide: Apple Developer ID or a self-signed certificate (steps in `HANDOVER.md`, "Keychain prompts")

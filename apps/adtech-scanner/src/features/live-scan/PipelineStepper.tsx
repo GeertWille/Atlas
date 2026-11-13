@@ -1,5 +1,6 @@
-import type { PipelineStep } from "@/bindings";
+import type { BrowserbaseRegion, PipelineStep } from "@/bindings";
 import { StepStatusIcon } from "@/shared/components/status";
+import { regionPlace } from "@/shared/domain/browserbase";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { cn } from "@/shared/lib/cn";
 import { formatCompact, formatDuration, formatUsd } from "@/shared/lib/format";
@@ -10,8 +11,23 @@ function scrollIntoViewOnMount(element: HTMLLIElement | null) {
   element?.scrollIntoView({ block: "nearest" });
 }
 
-function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; now: number }) {
+function StepNode({
+  step,
+  isLast,
+  now,
+  browserbase,
+}: {
+  step: PipelineStep;
+  isLast: boolean;
+  now: number;
+  browserbase: BrowserbaseRegion | null;
+}) {
   const meta = PIPELINE_NODE_META[step.node];
+  // The one step that differs: no Chrome is started on this computer.
+  const description =
+    browserbase && step.node === "launchBrowser"
+      ? `Start a Browserbase browser in ${regionPlace(browserbase)}`
+      : meta.description;
   const elapsed = stepElapsedMs(step, now);
   const running = step.status === "running";
   const usedModel = step.inputTokens + step.outputTokens > 0;
@@ -53,7 +69,7 @@ function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; 
             title={step.summary ?? undefined}
             className={cn("truncate text-xs text-muted-foreground", running && !step.summary && "shimmer")}
           >
-            {step.summary ?? meta.description}
+            {step.summary ?? description}
           </p>
         )}
         {usedModel ? (
@@ -71,11 +87,20 @@ function StepNode({ step, isLast, now }: { step: PipelineStep; isLast: boolean; 
 }
 
 /** The scan graph as a vertical stepper with live status, durations, tokens and cost. */
-export function PipelineStepper({ steps, now }: { steps: PipelineStep[]; now: number }) {
+export function PipelineStepper({
+  steps,
+  now,
+  browserbase = null,
+}: {
+  steps: PipelineStep[];
+  now: number;
+  /** The region of the scan's Browserbase browser; `null` for a scan on this computer. */
+  browserbase?: BrowserbaseRegion | null;
+}) {
   return (
     <ol aria-label="Pipeline" className="flex flex-col">
       {steps.map((step, index) => (
-        <StepNode key={step.id} step={step} isLast={index === steps.length - 1} now={now} />
+        <StepNode key={step.id} step={step} isLast={index === steps.length - 1} now={now} browserbase={browserbase} />
       ))}
     </ol>
   );

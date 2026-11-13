@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
+import { estimateBrowserbaseUsage } from "@/shared/domain/browserbase";
 import { settingsFixture } from "@/test/fixtures";
-import { estimateScanCost } from "./cost-estimate";
+import { describeBrowserbaseUsage, estimateScanCost } from "./cost-estimate";
 
 test("default settings stay under the budget cap", () => {
   const estimate = estimateScanCost(settingsFixture);
@@ -78,4 +79,22 @@ test("a scan's own budget replaces the settings' cap", () => {
     fallbackPricing: false,
   });
   expect(estimateScanCost({ ...settingsFixture, analysisEffort: "high" }, { budgetUsd: 2 }).cappedByBudget).toBe(false);
+});
+
+test("Browserbase usage is described in units, apart from any model cost", () => {
+  const scan = { visitor: "scroll", pages: 1, observeSeconds: 20, browserbaseProxy: false } as const;
+  expect(describeBrowserbaseUsage(estimateBrowserbaseUsage(scan))).toBe("about 1 browser minute, no proxy traffic");
+  expect(
+    describeBrowserbaseUsage(
+      estimateBrowserbaseUsage({ ...scan, visitor: "browse", pages: 3, browserbaseProxy: true }),
+    ),
+  ).toBe("about 2 browser minutes and 54 MB of proxy traffic");
+  expect(
+    describeBrowserbaseUsage(estimateBrowserbaseUsage({ ...scan, visitor: "manual", browserbaseProxy: true })),
+  ).toBe("up to 15 browser minutes and 18 MB of proxy traffic per page");
+});
+
+test("the model estimate knows nothing of where the browser runs", () => {
+  const cloud = { ...settingsFixture, defaultBrowser: "browserbase" as const };
+  expect(estimateScanCost(cloud)).toEqual(estimateScanCost(settingsFixture));
 });

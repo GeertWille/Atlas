@@ -6,15 +6,17 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use adscan_browser::{Browserbase, BrowserbaseEndpoint};
 use adscan_engine::application::ports::{CaptureError, CaptureSession, CaptureSource};
 use adscan_model::{
-    ApiKeyStatus, BrowserInfo, Capture, CaptureRequest, CommandError, DashboardStats, ErrorCode,
-    LogEntry, LogSearchHit, PipelineNode, ProxyChoice, SCAN_EVENT, ScanConfiguration, ScanDetail,
-    ScanEvent, ScanList, ScanProfileInfo, ScanStatus, ScanSummary, Settings, StepStatus,
-    VisitorBehavior,
+    ApiKeyStatus, BrowserInfo, BrowserKind, BrowserbaseCredentialsStatus, BrowserbaseProfileInfo,
+    BrowserbaseStatus, Capture, CaptureRequest, CommandError, DashboardStats, ErrorCode, LogEntry,
+    LogSearchHit, PipelineNode, ProxyChoice, RemoteSessionEvent, SCAN_EVENT, ScanConfiguration,
+    ScanDetail, ScanEvent, ScanList, ScanProfileInfo, ScanStatus, ScanSummary, Settings,
+    StepStatus, VisitorBehavior,
 };
 use adtech_scanner_lib::state::{AppConfig, AppState};
-use adtech_scanner_lib::{TauriEventSink, register_commands};
+use adtech_scanner_lib::{BrowserbaseAdapter, OpenUrl, TauriEventSink, register_commands};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -27,7 +29,7 @@ use tauri::{Listener, Manager, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_fs::FsExt;
 
 /// The commands of the frontend contract.
-const CONTRACT_COMMANDS: [&str; 35] = [
+const CONTRACT_COMMANDS: [&str; 42] = [
     "get_settings",
     "update_settings",
     "set_api_key",
@@ -63,6 +65,13 @@ const CONTRACT_COMMANDS: [&str; 35] = [
     "clear_archive",
     "get_sellers_json_cache",
     "clear_sellers_json_cache",
+    "set_browserbase_credentials",
+    "clear_browserbase_credentials",
+    "test_browserbase",
+    "probe_browserbase",
+    "get_browserbase_profile",
+    "clear_browserbase_profile",
+    "open_browserbase_live_view",
 ];
 
 /// A machine without Chrome: every scan fails at the first pipeline node.
@@ -292,25 +301,37 @@ impl CaptureSource for RecordedBrowser {
 struct TestApp {
     window: WebviewWindow<MockRuntime>,
     events: Arc<Mutex<Vec<ScanEvent>>>,
+    /// Every address the app opened in the user's browser.
+    opened: Arc<Mutex<Vec<String>>>,
     _data_dir: tempfile::TempDir,
 }
+
+/// Nothing listens here: calls fail fast and offline.
+const NOWHERE: &str = "http://127.0.0.1:1";
 
 fn test_app() -> TestApp {
     test_app_with_typesafe_key(None)
 }
 
 fn test_app_with_typesafe_key(typesafe_key: Option<&str>) -> TestApp {
-    build_test_app(Arc::new(NoBrowser), typesafe_key, None)
+    build_test_app(Arc::new(NoBrowser), typesafe_key, None, NOWHERE)
 }
 
 fn test_app_with_browser(browser: Arc<dyn CaptureSource>) -> TestApp {
-    build_test_app(browser, None, None)
+    build_test_app(browser, None, None, NOWHERE)
+}
+
+/// The app with Browserbase's API at `browserbase_url`: the real client and
+/// adapter, and a recorder where the operating system's opener would be.
+fn test_app_with_browserbase(browser: Arc<dyn CaptureSource>, browserbase_url: &str) -> TestApp {
+    build_test_app(browser, None, None, browserbase_url)
 }
 
 fn build_test_app(
     browser: Arc<dyn CaptureSource>,
     typesafe_key: Option<&str>,
     proxy_password: Option<&str>,
+    browserbase_url: &str,
 ) -> TestApp {
     let data_dir = tempfile::tempdir().unwrap();
     let app = register_commands(mock_builder())
@@ -324,17 +345,34 @@ fn build_test_app(
             .unwrap()
             .push(serde_json::from_str(event.payload()).unwrap());
     });
+    let endpoint = BrowserbaseEndpoint {
+        api_url: browserbase_url.into(),
+        connect_url: None,
+    };
+    let opened = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&opened);
+    let open_url: OpenUrl = Arc::new(move |address| {
+        recorder.lock().unwrap().push(address.to_string());
+        Ok(())
+    });
     let state = tauri::async_runtime::block_on(AppState::build(
         AppConfig {
             data_dir: data_dir.path().to_path_buf(),
             // Nothing listens here: key validation fails fast and offline.
-            anthropic_base_url: "http://127.0.0.1:1".into(),
-            typesafe_base_url: "http://127.0.0.1:1".into(),
+            anthropic_base_url: NOWHERE.into(),
+            typesafe_base_url: NOWHERE.into(),
             api_key_override: Some("sk-ant-test".into()),
             typesafe_api_key_override: typesafe_key.map(str::to_string),
             proxy_password_override: proxy_password.map(str::to_string),
+            browserbase: endpoint.clone(),
+            browserbase_api_key_override: None,
+            browserbase_project_id_override: None,
         },
         browser,
+        Arc::new(BrowserbaseAdapter::new(
+            Browserbase::new(endpoint).unwrap(),
+            open_url,
+        )),
         Arc::new(TauriEventSink {
             app: app.handle().clone(),
         }),
@@ -347,6 +385,7 @@ fn build_test_app(
     TestApp {
         window,
         events,
+        opened,
         _data_dir: data_dir,
     }
 }
@@ -1093,7 +1132,12 @@ fn proxy_commands_manage_profiles_and_their_passwords() {
 
 #[test]
 fn the_proxy_password_override_answers_for_every_profile() {
-    let app = build_test_app(Arc::new(NoBrowser), None, Some("from-the-environment"));
+    let app = build_test_app(
+        Arc::new(NoBrowser),
+        None,
+        Some("from-the-environment"),
+        NOWHERE,
+    );
     let saved: Settings = invoke(&app, "save_proxy_profile", belgium());
     assert!(saved.proxies[0].has_password);
     assert!(
@@ -1552,13 +1596,20 @@ fn only_the_first_app_on_a_data_directory_cleans_up_after_earlier_runs() {
         tauri::async_runtime::block_on(AppState::build(
             AppConfig {
                 data_dir: data_dir.path().to_path_buf(),
-                anthropic_base_url: "http://127.0.0.1:1".into(),
-                typesafe_base_url: "http://127.0.0.1:1".into(),
+                anthropic_base_url: NOWHERE.into(),
+                typesafe_base_url: NOWHERE.into(),
                 api_key_override: Some("sk-ant-test".into()),
                 typesafe_api_key_override: None,
                 proxy_password_override: None,
+                browserbase: BrowserbaseEndpoint::default(),
+                browserbase_api_key_override: None,
+                browserbase_project_id_override: None,
             },
             Arc::new(NoBrowser),
+            Arc::new(BrowserbaseAdapter::new(
+                Browserbase::new(BrowserbaseEndpoint::default()).unwrap(),
+                Arc::new(|_| Ok(())),
+            )),
             Arc::new(Silent),
         ))
         .unwrap()
@@ -1584,4 +1635,451 @@ fn only_the_first_app_on_a_data_directory_cleans_up_after_earlier_runs() {
     let alone = start();
     assert!(!being_written.exists());
     drop(alone);
+}
+
+// -- Browserbase ----------------------------------------------------------------
+
+const BROWSERBASE_KEY: &str = "bb_live_command_test_key";
+const BROWSERBASE_PROJECT: &str = "0b6a4f8e-2c1d-4e5f-9a7b-3c2d1e0f9a8b";
+const LIVE_SESSION: &str = "7f3e2d1c-0b9a-4876-a543-210fedcba987";
+/// What makes the live view's address a credential.
+const LIVE_VIEW_TOKEN: &str = "live-view-signing-token";
+
+/// Browserbase's REST API as far as these commands go, on the mock runtime's
+/// own executor. Any request without the right key is refused.
+fn browserbase_api() -> wiremock::MockServer {
+    use wiremock::matchers::{any, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    tauri::async_runtime::block_on(async {
+        let server = MockServer::start().await;
+        let project = json!({
+            "id": BROWSERBASE_PROJECT, "name": "Local", "ownerId": "owner", "defaultTimeout": 1800,
+            "concurrency": 3, "createdAt": "2026-11-01T10:00:00.000Z", "updatedAt": "2026-11-01T10:04:00.000Z"
+        });
+        let with_key = |verb: &str, route: String| {
+            Mock::given(method(verb))
+                .and(path(route))
+                .and(header("X-BB-API-Key", BROWSERBASE_KEY))
+        };
+        with_key("GET", "/v1/projects".into())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([project])))
+            .mount(&server)
+            .await;
+        with_key("GET", format!("/v1/projects/{BROWSERBASE_PROJECT}"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(project.clone()))
+            .mount(&server)
+            .await;
+        with_key("GET", format!("/v1/projects/{BROWSERBASE_PROJECT}/usage"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    json!({ "browserMinutes": 483, "proxyBytes": 1_998_349_077_u64 }),
+                ),
+            )
+            .mount(&server)
+            .await;
+        // Two browsers of another application run in the shared project.
+        with_key("GET", "/v1/sessions".into())
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                { "id": "11111111-1111-4111-8111-111111111111", "status": "RUNNING",
+                  "userMetadata": { "scanId": "theirs" } },
+                { "id": "22222222-2222-4222-8222-222222222222", "status": "RUNNING",
+                  "userMetadata": { "scanId": "theirs too" } }
+            ])))
+            .mount(&server)
+            .await;
+        with_key("GET", format!("/v1/sessions/{LIVE_SESSION}/debug"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "debuggerFullscreenUrl": format!("https://www.browserbase.com/devtools-fullscreen/inspector.html?wss=connect.browserbase.com/debug/{LIVE_SESSION}/devtools/page/A1?token={LIVE_VIEW_TOKEN}"),
+                "debuggerUrl": format!("https://www.browserbase.com/devtools/inspector.html?token={LIVE_VIEW_TOKEN}"),
+                "wsUrl": format!("wss://connect.browserbase.com/debug/{LIVE_SESSION}/devtools/browser/B2?{LIVE_VIEW_TOKEN}"),
+                "pages": []
+            })))
+            .mount(&server)
+            .await;
+        // Starting a browser is refused: the project went away.
+        with_key("POST", "/v1/sessions".into())
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "statusCode": 401, "error": "Unauthorized", "message": "Unauthorized Project ID"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "statusCode": 401, "error": "Unauthorized", "message": "Unauthorized"
+            })))
+            .with_priority(10)
+            .mount(&server)
+            .await;
+        server
+    })
+}
+
+fn requests_to(server: &wiremock::MockServer) -> Vec<String> {
+    tauri::async_runtime::block_on(server.received_requests())
+        .unwrap_or_default()
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect()
+}
+
+fn connect_browserbase(app: &TestApp) {
+    let status: BrowserbaseCredentialsStatus = invoke(
+        app,
+        "set_browserbase_credentials",
+        json!({ "apiKey": BROWSERBASE_KEY }),
+    );
+    assert!(status.valid, "{:?}", status.message);
+}
+
+#[test]
+fn browserbase_credentials_are_checked_stored_and_only_reported_as_connected() {
+    let api = browserbase_api();
+    let app = test_app_with_browserbase(Arc::new(NoBrowser), &api.uri());
+    let before: Settings = invoke(&app, "get_settings", json!({}));
+    assert!(!before.browserbase.connected);
+
+    let refused: BrowserbaseCredentialsStatus = invoke(
+        &app,
+        "set_browserbase_credentials",
+        json!({ "apiKey": "bb_wrong" }),
+    );
+    assert_eq!(
+        (refused.valid, refused.message.as_deref()),
+        (false, Some("Browserbase did not accept the API key."))
+    );
+    let unknown_project: BrowserbaseCredentialsStatus = invoke(
+        &app,
+        "set_browserbase_credentials",
+        json!({ "apiKey": BROWSERBASE_KEY, "projectId": "another-project" }),
+    );
+    assert_eq!(
+        unknown_project.message.as_deref(),
+        Some("This Browserbase project was not found for this key.")
+    );
+
+    // The key's one project is adopted; the answer uses the contract's names.
+    let accepted = invoke_raw(
+        &app,
+        "set_browserbase_credentials",
+        json!({ "apiKey": BROWSERBASE_KEY }),
+    )
+    .unwrap();
+    assert_eq!(
+        accepted,
+        json!({ "valid": true, "message": null, "projects": [] })
+    );
+    let raw = invoke_raw(&app, "get_settings", json!({})).unwrap();
+    assert_eq!(
+        raw["browserbase"],
+        json!({
+            "region": "us-west-2", "defaultProxy": { "kind": "none" }, "persistentProfile": false,
+            "connected": true, "projectName": "Local", "concurrency": 3
+        })
+    );
+    assert_eq!(raw["defaultBrowser"], "local");
+    let text = raw.to_string();
+    assert!(!text.contains(BROWSERBASE_KEY) && !text.contains(BROWSERBASE_PROJECT));
+
+    // With credentials Browserbase can be the default, in a region.
+    let patched: Settings = invoke(
+        &app,
+        "update_settings",
+        json!({ "patch": {
+            "defaultBrowser": "browserbase",
+            "browserbase": { "region": "eu-central-1", "defaultProxy": { "kind": "browserbaseLocation", "country": "be" } }
+        } }),
+    );
+    assert_eq!(patched.default_browser, BrowserKind::Browserbase);
+    let raw = invoke_raw(&app, "get_settings", json!({})).unwrap();
+    assert_eq!(raw["browserbase"]["region"], "eu-central-1");
+    assert_eq!(
+        raw["browserbase"]["defaultProxy"],
+        json!({ "kind": "browserbaseLocation", "country": "BE" })
+    );
+
+    let cleared: Settings = invoke(&app, "clear_browserbase_credentials", json!({}));
+    assert!(!cleared.browserbase.connected);
+    assert_eq!(cleared.default_browser, BrowserKind::Local);
+    assert_eq!(cleared.browserbase.project_name, None);
+    let without = invoke_error(
+        &app,
+        "update_settings",
+        json!({ "patch": { "defaultBrowser": "browserbase" } }),
+    );
+    assert_eq!(without.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        without.message,
+        "Add a Browserbase API key before making Browserbase the default."
+    );
+}
+
+#[test]
+fn testing_browserbase_reads_the_account_and_starts_no_browser() {
+    let api = browserbase_api();
+    let app = test_app_with_browserbase(Arc::new(NoBrowser), &api.uri());
+    let not_set_up = invoke_error(&app, "test_browserbase", json!({}));
+    assert_eq!(not_set_up.code, ErrorCode::BrowserbaseAuth);
+    assert_eq!(
+        not_set_up.message,
+        "Browserbase is not set up. Add the API key in Settings."
+    );
+    assert!(requests_to(&api).is_empty());
+
+    connect_browserbase(&app);
+    let status: BrowserbaseStatus = invoke(&app, "test_browserbase", json!({}));
+    assert_eq!(status.project_name, "Local");
+    assert_eq!(status.concurrency, 3);
+    assert_eq!(status.browser_minutes, 483.0);
+    assert_eq!(status.proxy_bytes, 1_998_349_077.0);
+    assert_eq!(status.running_sessions, 2);
+    let raw = invoke_raw(&app, "test_browserbase", json!({})).unwrap();
+    assert_eq!(
+        raw,
+        json!({
+            "projectName": "Local", "concurrency": 3, "browserMinutes": 483.0,
+            "proxyBytes": 1_998_349_077.0, "runningSessions": 2
+        })
+    );
+    // Nothing but reads: no browser was started, none was ended.
+    let requests = requests_to(&api);
+    assert!(!requests.is_empty());
+    assert!(
+        requests.iter().all(|request| request.starts_with("GET ")),
+        "{requests:?}"
+    );
+}
+
+#[test]
+fn a_refusal_by_browserbase_reaches_the_frontend_with_its_own_code() {
+    let api = browserbase_api();
+    let app = test_app_with_browserbase(Arc::new(NoBrowser), &api.uri());
+    // Not set up: a scan there cannot start, and neither can a probe.
+    let on_browserbase = json!({ "options": {
+        "url": "example.com", "device": "desktop", "observeSeconds": 10,
+        "autoScroll": true, "acceptConsent": true, "aiEnabled": false,
+        "browser": { "kind": "browserbase", "region": "eu-central-1" }
+    } });
+    let not_set_up = invoke_error(&app, "start_scan", on_browserbase.clone());
+    assert_eq!(not_set_up.code, ErrorCode::BrowserbaseAuth);
+    assert_eq!(
+        invoke_error(&app, "probe_browserbase", json!({})).code,
+        ErrorCode::BrowserbaseAuth
+    );
+    let listed: ScanList = invoke(&app, "list_scans", json!({ "query": {} }));
+    assert_eq!(listed.total, 0, "a refused scan leaves no row");
+
+    connect_browserbase(&app);
+    // The mock refuses to start a browser for this project.
+    let refused = invoke_error(
+        &app,
+        "probe_browserbase",
+        json!({ "region": "ap-southeast-1" }),
+    );
+    assert_eq!(refused.code, ErrorCode::BrowserbaseAuth);
+    assert_eq!(
+        refused.message,
+        "This Browserbase project was not found for this key."
+    );
+    assert!(
+        invoke_raw(&app, "probe_browserbase", json!({ "region": "mars-1" })).is_err(),
+        "an unknown region is not a region"
+    );
+
+    // An address only this machine can reach never goes to the cloud, and a
+    // Browserbase location is no proxy for a local browser.
+    let mut local_page = on_browserbase.clone();
+    local_page["options"]["url"] = json!("http://127.0.0.1:4100/");
+    let unreachable = invoke_error(&app, "start_scan", local_page);
+    assert_eq!(unreachable.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        unreachable.message,
+        "This address is on this Mac or your network; a cloud browser cannot reach it. Scan it with this Mac's Chrome."
+    );
+    let mut misplaced = scan_options("example.com");
+    misplaced["options"]["proxy"] = json!({ "kind": "browserbaseLocation", "country": "BE" });
+    let refused = invoke_error(&app, "start_scan", misplaced);
+    assert_eq!(refused.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        refused.message,
+        "A Browserbase location can only be used when the browser runs on Browserbase."
+    );
+}
+
+#[test]
+fn browserbase_profile_commands_report_and_clear_without_a_profile() {
+    let api = browserbase_api();
+    let app = test_app_with_browserbase(Arc::new(NoBrowser), &api.uri());
+    let raw = invoke_raw(&app, "get_browserbase_profile", json!({})).unwrap();
+    assert_eq!(
+        raw,
+        json!({ "exists": false, "lastUsedAt": null, "inUse": false })
+    );
+    // Nothing is kept, so nothing is asked of Browserbase, set up or not.
+    let cleared: BrowserbaseProfileInfo = invoke(&app, "clear_browserbase_profile", json!({}));
+    assert!(!cleared.exists && !cleared.in_use);
+    assert!(requests_to(&api).is_empty());
+}
+
+/// A person's visit in a Browserbase browser: the session is announced, is
+/// ready for the live view, and ends when the visit is finished.
+struct CloudManualBrowser;
+
+#[async_trait]
+impl CaptureSource for CloudManualBrowser {
+    async fn locate_browser(&self, _explicit: Option<String>) -> Option<BrowserInfo> {
+        None
+    }
+
+    async fn capture(
+        &self,
+        request: CaptureRequest,
+        session: CaptureSession,
+    ) -> Result<Capture, CaptureError> {
+        let access = session
+            .browserbase
+            .expect("a Browserbase scan hands its credentials over");
+        assert_eq!(access.credentials.api_key, BROWSERBASE_KEY);
+        assert_eq!(access.credentials.project_id, BROWSERBASE_PROJECT);
+        let session_id = || LIVE_SESSION.to_string();
+        (access.on_session)(RemoteSessionEvent::Created {
+            session_id: session_id(),
+        });
+        (access.on_session)(RemoteSessionEvent::LiveViewReady {
+            session_id: session_id(),
+        });
+        let outcome = tokio::select! {
+            () = session.finish.cancelled() => Ok(Capture::single_page(request.url, Vec::new())),
+            () = session.cancel.cancelled() => Err(CaptureError::Cancelled),
+        };
+        (access.on_session)(RemoteSessionEvent::Released {
+            session_id: session_id(),
+            session_seconds: Some(73.0),
+            proxy_bytes: Some(0.0),
+        });
+        outcome
+    }
+
+    async fn scan_profile_info(&self) -> ScanProfileInfo {
+        no_scan_profile()
+    }
+
+    async fn clear_scan_profile(&self) -> Result<(), CaptureError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn the_live_view_is_opened_from_the_backend_and_its_address_never_reaches_the_frontend() {
+    let api = browserbase_api();
+    // No Chrome on this machine: a Browserbase scan does not need one.
+    let app = test_app_with_browserbase(Arc::new(CloudManualBrowser), &api.uri());
+    connect_browserbase(&app);
+
+    let started: ScanSummary = invoke(
+        &app,
+        "start_scan",
+        json!({ "options": {
+            "url": "example.com", "device": "desktop", "observeSeconds": 10,
+            "autoScroll": false, "acceptConsent": true, "aiEnabled": false,
+            "visitor": "manual", "browser": { "kind": "browserbase", "region": "eu-central-1" }
+        } }),
+    );
+    // The backend opens it by itself once the visit is ready for a person.
+    let opened = |count: usize| {
+        for _ in 0..500 {
+            if app.opened.lock().unwrap().len() >= count {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("the live view was not opened {count} time(s)");
+    };
+    opened(1);
+
+    // "Open it again" names the scan and learns nothing but that it worked.
+    assert_eq!(
+        invoke::<Value>(
+            &app,
+            "open_browserbase_live_view",
+            json!({ "scanId": started.id })
+        ),
+        Value::Null
+    );
+    opened(2);
+    {
+        let addresses = app.opened.lock().unwrap();
+        assert!(addresses.iter().all(|address| {
+            address.starts_with("https://www.browserbase.com/devtools-fullscreen/")
+                && address.contains(LIVE_VIEW_TOKEN)
+        }));
+    }
+    let unknown = invoke_error(
+        &app,
+        "open_browserbase_live_view",
+        json!({ "scanId": "nope" }),
+    );
+    assert_eq!(unknown.code, ErrorCode::NotFound);
+
+    assert_eq!(
+        invoke::<Value>(&app, "finish_capture", json!({ "scanId": started.id })),
+        Value::Null
+    );
+    let detail = wait_for_end(&app, &started.id);
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert_eq!(
+        detail.steps[0].summary.as_deref(),
+        Some("Browserbase, eu-central-1")
+    );
+
+    // The stored scan says where it ran and what it used, in the
+    // contract's names.
+    let raw = invoke_raw(&app, "get_scan", json!({ "scanId": started.id })).unwrap();
+    assert_eq!(
+        raw["summary"]["remote"],
+        json!({ "region": "eu-central-1", "sessionSeconds": 73.0, "proxyBytes": 0.0 })
+    );
+    assert_eq!(
+        raw["options"]["browser"],
+        json!({ "kind": "browserbase", "region": "eu-central-1" })
+    );
+    assert_eq!(raw["options"]["headless"], true);
+    assert_eq!(raw["environment"]["browser"]["kind"], "browserbase");
+    assert_eq!(raw["environment"]["browser"]["region"], "eu-central-1");
+    assert_eq!(raw["environment"]["browser"]["proxyKind"], "none");
+    assert_eq!(
+        raw["environment"]["browser"]["settings"],
+        json!({
+            "solveCaptchas": true, "recordSession": true, "logSession": true,
+            "blockAds": false, "keepAlive": false
+        })
+    );
+
+    // Once the browser is gone there is nothing to show.
+    let ended = invoke_error(
+        &app,
+        "open_browserbase_live_view",
+        json!({ "scanId": started.id }),
+    );
+    assert_eq!(ended.code, ErrorCode::InvalidInput);
+    assert_eq!(
+        ended.message,
+        "This scan has no Browserbase browser to show right now."
+    );
+    assert_eq!(app.opened.lock().unwrap().len(), 2);
+
+    // Nothing the frontend can read holds the live view's address, the key
+    // or the project: not the scan, not its audit trail, not an event.
+    let logs = invoke_raw(&app, "get_logs", json!({ "scanId": started.id })).unwrap();
+    let events = serde_json::to_string(&*app.events.lock().unwrap()).unwrap();
+    for readable in [raw.to_string(), logs.to_string(), events] {
+        for secret in [
+            LIVE_VIEW_TOKEN,
+            "devtools-fullscreen",
+            BROWSERBASE_KEY,
+            BROWSERBASE_PROJECT,
+        ] {
+            assert!(!readable.contains(secret), "`{secret}` leaked");
+        }
+    }
 }

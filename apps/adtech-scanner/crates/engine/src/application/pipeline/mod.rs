@@ -4,6 +4,7 @@ pub mod audit;
 pub mod graph;
 mod judging;
 pub mod nodes;
+pub mod proxy_count;
 pub mod state;
 
 use std::sync::Arc;
@@ -14,12 +15,13 @@ use adscan_model::{
 
 use self::audit::StepRun;
 use self::graph::OnFailure;
+use self::proxy_count::EndedSession;
 use self::state::{NodeError, NodeResult, ScanJob, ScanState};
 use super::AppError;
 use super::archive::Archive;
 use super::ports::{
-    CaptureSource, Clock, EventSink, IdGenerator, JudgeClient, LlmClient, LogRepository,
-    PublicFileFetcher, RepoResult, ScanRepository, SourceFormatter,
+    BrowserbaseApi, BrowserbaseLedger, CaptureSource, Clock, EventSink, IdGenerator, JudgeClient,
+    LlmClient, LogRepository, PublicFileFetcher, RepoResult, ScanRepository, SourceFormatter,
 };
 use super::sellers_json::SellersJsonSource;
 use crate::domain::pricing::Budget;
@@ -31,6 +33,13 @@ pub struct PipelineDeps {
     pub llm: Arc<dyn LlmClient>,
     pub judge: Arc<dyn JudgeClient>,
     pub capture: Arc<dyn CaptureSource>,
+    pub browserbase: Arc<dyn BrowserbaseApi>,
+    /// The record of the Browserbase sessions and contexts of this
+    /// installation.
+    pub remote_sessions: Arc<dyn BrowserbaseLedger>,
+    /// How long after a Browserbase session ended its proxy traffic is read
+    /// once more: the count lags.
+    pub proxy_count_delay: std::time::Duration,
     pub files: Arc<dyn PublicFileFetcher>,
     pub sellers_json: Arc<SellersJsonSource>,
     pub formatter: Arc<dyn SourceFormatter>,
@@ -57,14 +66,15 @@ impl Pipeline {
 
     /// Runs the scan to a final status. The returned summary is what was
     /// persisted, unless storage itself failed, in which case it still carries
-    /// the final status for the caller to write.
-    pub async fn run(&self, job: ScanJob) -> ScanSummary {
+    /// the final status for the caller to write. With it comes the scan's
+    /// Browserbase session when its proxy traffic is still to be counted
+    /// again: the caller starts that once nothing else writes the summary.
+    pub async fn run(&self, job: ScanJob) -> (ScanSummary, Option<EndedSession>) {
         let budget = match Budget::new(job.scan.budget_usd) {
             Ok(budget) => budget,
             Err(error) => {
-                return self
-                    .finalize(job.summary.clone(), RunOutcome::Failed(error.into()))
-                    .await;
+                let failed = RunOutcome::Failed(error.into());
+                return (self.finalize(job.summary.clone(), failed).await, None);
             }
         };
         let mut state = ScanState::new(job.summary.clone(), budget);
@@ -72,7 +82,23 @@ impl Pipeline {
             Ok(outcome) => outcome,
             Err(error) => RunOutcome::Failed(error.into()),
         };
-        self.finalize(state.summary, outcome).await
+        let ended_session = state.remote_session_ended.take();
+        let summary = self.finalize(state.summary, outcome).await;
+        // Browserbase only counts traffic that went through a proxy.
+        let through_proxy =
+            job.scan.proxy.location.is_some() || job.scan.proxy.profile_id.is_some();
+        let uncounted = match (ended_session, job.browserbase) {
+            (Some((session_id, ended_at)), Some(credentials)) if through_proxy => {
+                Some(EndedSession {
+                    scan_id: summary.id.clone(),
+                    session_id,
+                    ended_at,
+                    credentials,
+                })
+            }
+            _ => None,
+        };
+        (summary, uncounted)
     }
 
     async fn execute(&self, job: &ScanJob, state: &mut ScanState) -> RepoResult<RunOutcome> {

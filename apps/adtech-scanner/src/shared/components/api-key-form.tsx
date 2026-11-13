@@ -1,5 +1,5 @@
 import { EyeIcon, EyeOffIcon, KeyRoundIcon } from "lucide-react";
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { toast } from "sonner";
 import { z } from "zod";
 import type { ApiProvider } from "@/bindings";
@@ -15,31 +15,42 @@ const apiKeySchema = z
   .min(1, "Paste your API key.")
   .refine((value) => !/\s/.test(value), "An API key cannot contain spaces.");
 
-const PROVIDER_COPY: Record<ApiProvider, { name: string; placeholder: string; keyNoun: string }> = {
-  anthropic: { name: "Anthropic", placeholder: "sk-ant-…", keyNoun: "key" },
-  // TypeSafe does not document a key format, so there is no prefix to hint at.
-  typesafe: { name: "TypeSafe", placeholder: "Paste your key", keyNoun: "TypeSafe key" },
-};
+/** `reason`: why the service refused the key. Without one the failure has been reported elsewhere. */
+export type KeySaveResult = { saved: true } | { saved: false; reason?: string };
 
-/** Validates an API key against its provider and stores it in the keychain when it is accepted. */
-export function ApiKeyForm({
-  provider = "anthropic",
+/**
+ * The field every API key is entered in: hidden until revealed, checked for shape, and handed to `onSave`.
+ * The field empties once a key is saved, and shows the reason when the service refuses it.
+ */
+export function KeyForm({
+  name,
+  placeholder,
+  keyNoun = "key",
   submitLabel,
   submitVariant = "default",
+  pending,
+  onSave,
+  children,
 }: {
-  provider?: ApiProvider;
+  /** Whose key this is: "Anthropic" makes the field "Anthropic API key". */
+  name: string;
+  placeholder: string;
+  /** What the reveal button calls it, where several keys share a section. */
+  keyNoun?: string;
   submitLabel: string;
   submitVariant?: "default" | "outline";
+  pending: boolean;
+  onSave: (key: string) => Promise<KeySaveResult>;
+  /** More to fill in before saving, shown between the field and its error. */
+  children?: ReactNode;
 }) {
-  const { name, placeholder, keyNoun } = PROVIDER_COPY[provider];
-  const setApiKey = useSetApiKey();
   const errorId = useId();
   const [key, setKey] = useState("");
   const [revealed, setRevealed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const revealLabel = `${revealed ? "Hide" : "Show"} ${keyNoun}`;
 
-  const save = (event: FormEvent) => {
+  const save = async (event: FormEvent) => {
     event.preventDefault();
     const parsed = apiKeySchema.safeParse(key);
     if (!parsed.success) {
@@ -47,20 +58,9 @@ export function ApiKeyForm({
       return;
     }
     setError(null);
-    setApiKey.mutate(
-      { key: parsed.data, provider },
-      {
-        onSuccess: (status) => {
-          if (status.valid) {
-            setKey("");
-            toast.success("API key validated and saved to your keychain");
-          } else {
-            setError(status.message ?? `${name} did not accept this key.`);
-          }
-        },
-        onError: (reason) => notifyError("Could not save the API key", reason),
-      },
-    );
+    const result = await onSave(parsed.data);
+    if (result.saved) setKey("");
+    else if (result.reason) setError(result.reason);
   };
 
   return (
@@ -95,15 +95,60 @@ export function ApiKeyForm({
             </button>
           </Hint>
         </div>
-        <Button type="submit" variant={submitVariant} disabled={setApiKey.isPending}>
-          {setApiKey.isPending ? "Validating…" : submitLabel}
+        <Button type="submit" variant={submitVariant} disabled={pending}>
+          {pending ? "Validating…" : submitLabel}
         </Button>
       </div>
+      {children}
       {error ? (
         <p id={errorId} role="alert" className="text-[13px] text-red-fg">
           {error}
         </p>
       ) : null}
     </form>
+  );
+}
+
+const PROVIDER_COPY: Record<ApiProvider, { name: string; placeholder: string; keyNoun: string }> = {
+  anthropic: { name: "Anthropic", placeholder: "sk-ant-…", keyNoun: "key" },
+  // TypeSafe does not document a key format, so there is no prefix to hint at.
+  typesafe: { name: "TypeSafe", placeholder: "Paste your key", keyNoun: "TypeSafe key" },
+};
+
+/** Validates an API key against its provider and stores it in the keychain when it is accepted. */
+export function ApiKeyForm({
+  provider = "anthropic",
+  submitLabel,
+  submitVariant = "default",
+}: {
+  provider?: ApiProvider;
+  submitLabel: string;
+  submitVariant?: "default" | "outline";
+}) {
+  const { name, placeholder, keyNoun } = PROVIDER_COPY[provider];
+  const setApiKey = useSetApiKey();
+
+  const save = async (key: string): Promise<KeySaveResult> => {
+    try {
+      const status = await setApiKey.mutateAsync({ key, provider });
+      if (!status.valid) return { saved: false, reason: status.message ?? `${name} did not accept this key.` };
+      toast.success("API key validated and saved to your keychain");
+      return { saved: true };
+    } catch (reason) {
+      notifyError("Could not save the API key", reason);
+      return { saved: false };
+    }
+  };
+
+  return (
+    <KeyForm
+      name={name}
+      placeholder={placeholder}
+      keyNoun={keyNoun}
+      submitLabel={submitLabel}
+      submitVariant={submitVariant}
+      pending={setApiKey.isPending}
+      onSave={save}
+    />
   );
 }

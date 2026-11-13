@@ -6,6 +6,11 @@ import type { ProxyKind } from "./ProxyKind";
  */
 export type ProxyUse = { kind: ProxyKind, 
 /**
- * Name and host of the proxy profile, for `profile`.
+ * Name of the proxy profile for `profile`; the requested place for
+ * `browserbaseLocation`, e.g. "BE" or "US, NY, NEW_YORK".
  */
-name: string | null, host: string | null, };
+name: string | null, 
+/**
+ * Host of the proxy profile, for `profile`.
+ */
+host: string | null, };

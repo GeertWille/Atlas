@@ -1,16 +1,22 @@
 import { expect, test } from "vitest";
 import { aiAvailability } from "@/shared/domain/ai-availability";
-import { makeProxy, settingsFixture } from "@/test/fixtures";
+import { browserbaseSettingsFixture, makeProxy, settingsFixture } from "@/test/fixtures";
 import { newScanForm, type ScanForm } from "./scan-form";
 import { scanSummary } from "./scan-summary";
 
-const line = (form: Partial<ScanForm>, settings = settingsFixture, extra: { budgetUsd?: number } = {}) =>
+const line = (
+  form: Partial<ScanForm>,
+  settings = settingsFixture,
+  extra: { budgetUsd?: number; remote?: boolean; browserMissing?: boolean } = {},
+) =>
   scanSummary({
     form: { ...newScanForm(settings), ...form },
     settings,
     ai: aiAvailability(settings),
     budgetUsd: extra.budgetUsd,
     proxyMissing: false,
+    remote: extra.remote ?? false,
+    browserMissing: extra.browserMissing ?? false,
   })
     .map((part) => part.text)
     .join(" · ");
@@ -66,6 +72,71 @@ test("a deleted proxy is named as such and flagged", () => {
     ai: aiAvailability(settingsFixture),
     budgetUsd: undefined,
     proxyMissing: true,
+    remote: false,
+    browserMissing: false,
   });
   expect(parts.find((part) => part.warning)).toEqual({ text: "deleted proxy", warning: true });
+});
+
+test("on Browserbase the region stands where the browser window would, and the location is named", () => {
+  const cloud = { remote: true };
+  expect(line({ browser: "browserbase" }, browserbaseSettingsFixture, cloud)).toBe(
+    "Scroll · Browserbase Oregon · no proxy · AI on, about $0.36",
+  );
+  expect(
+    line(
+      { browser: "browserbase", region: "eu-central-1", proxy: "browserbaseLocation", locationCountry: "be" },
+      browserbaseSettingsFixture,
+      cloud,
+    ),
+  ).toBe("Scroll · Browserbase Frankfurt · Belgium (Browserbase proxy) · AI on, about $0.36");
+  expect(
+    line(
+      {
+        browser: "browserbase",
+        proxy: "browserbaseLocation",
+        locationCountry: "US",
+        locationState: "ny",
+        locationCity: "new york",
+      },
+      browserbaseSettingsFixture,
+      cloud,
+    ),
+  ).toMatch(/· New York, NY, United States \(Browserbase proxy\) ·/);
+  // The Browserbase default applies, not the one for this Mac.
+  const withDefault = {
+    ...browserbaseSettingsFixture,
+    proxies: [makeProxy()],
+    browserbase: {
+      ...browserbaseSettingsFixture.browserbase,
+      region: "ap-southeast-1" as const,
+      defaultProxy: { kind: "profile" as const, id: "proxy-be" },
+      persistentProfile: true,
+    },
+  };
+  expect(line({ browser: "browserbase" }, withDefault, cloud)).toBe(
+    "Scroll · Browserbase Singapore · Belgium proxy · kept browser profile · AI on, about $0.36",
+  );
+  // The profile setting of this Mac's browser plays no part there.
+  expect(
+    line({ browser: "browserbase" }, { ...browserbaseSettingsFixture, persistentProfile: true }, cloud),
+  ).not.toMatch(/kept browser profile/);
+});
+
+test("a Browserbase location without a country, and Browserbase without credentials, are flagged", () => {
+  const parts = (extra: { remote: boolean; browserMissing: boolean }, form: Partial<ScanForm>) =>
+    scanSummary({
+      form: { ...newScanForm(browserbaseSettingsFixture), ...form },
+      settings: browserbaseSettingsFixture,
+      ai: aiAvailability(browserbaseSettingsFixture),
+      budgetUsd: undefined,
+      proxyMissing: false,
+      ...extra,
+    }).filter((part) => part.warning);
+  expect(
+    parts({ remote: true, browserMissing: false }, { browser: "browserbase", proxy: "browserbaseLocation" }),
+  ).toEqual([{ text: "Browserbase location not set", warning: true }]);
+  expect(parts({ remote: false, browserMissing: true }, { browser: "browserbase" })).toEqual([
+    { text: "Browserbase not set up", warning: true },
+  ]);
 });

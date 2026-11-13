@@ -1,10 +1,10 @@
 # AdTech Scanner
 
 A Tauri 2 desktop app for macOS that looks for revenue leaks caused by logic bugs in a publisher's ad-tech wrapper.
-It loads a page in your local Chrome, records Prebid, Google Publisher Tag and Amazon TAM activity and every script and request.
+It loads a page in your local Chrome, or in a browser at Browserbase if you set that up, and records Prebid, Google Publisher Tag and Amazon TAM activity and every script and request.
 From that it derives auctions, ad slots and bidder checks and runs deterministic rules; this part needs no API key.
 With an Anthropic key, a model reads the ad scripts and reports logic bugs with code evidence, under a budget cap per scan.
-Everything is stored on your machine. `HANDOVER.md` is the detailed description of what is built and what was never verified.
+Results are stored on your machine only. `HANDOVER.md` is the detailed description of what is built and what was never verified.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ Everything is stored on your machine. `HANDOVER.md` is the detailed description 
 - Rust, stable (1.97 was used)
 - Node 22
 - pnpm 10
-- Google Chrome
+- Google Chrome (not needed for scans that run at Browserbase)
 
 The app was built and tested on Linux. It has not been run on macOS yet: `docs/MAC-TESTING.md` is the list to work through on the first run.
 
@@ -64,8 +64,11 @@ For tests and local runs. Without them the app uses the OS app-data directory, t
 | `ADSCAN_TYPESAFE_BASE_URL` | Replaces `https://api.typesafe.ai` (https, or loopback). |
 | `ADSCAN_TYPESAFE_API_KEY` | TypeSafe key; the Keychain is not used. |
 | `ADSCAN_PROXY_PASSWORD` | Password for every proxy profile that has none of its own; the Keychain is not used. |
+| `ADSCAN_BROWSERBASE_API_KEY`, `ADSCAN_BROWSERBASE_PROJECT_ID` | Browserbase key and project id (both are needed); the Keychain is not used. |
+| `ADSCAN_BROWSERBASE_BASE_URL` | Replaces `https://api.browserbase.com` (https, or loopback). |
+| `ADSCAN_BROWSERBASE_CONNECT_URL` | Used in place of the address of every Browserbase browser (`wss://`, or `ws://` on loopback). For tests. |
 
-When any of the three secret variables is set, all secrets live in memory only.
+When any of the secret variables is set, all secrets live in memory only.
 
 ## Where data is stored
 
@@ -77,9 +80,15 @@ On macOS under `~/Library/Application Support/com.webclew.adtech-scanner/` (or `
 | What a scan loaded: every request with its headers, and the text bodies (scripts, documents, JSON, bid requests and responses). Never images, video, audio or fonts. Cookie and credential values are replaced before anything is written. | `archive/scans/<scan id>.pack.zst` | Deleting the scan, "Clear stored scan data", the size limit (5 GB by default), or never written with "Keep network data" off |
 | The sellers.json files of ad exchanges, shared by all scans | `cache/sellers-json/` | "Clear kept files" in Settings; at most 500 MB |
 | The browser profile, only with "keep a browser profile" on | `scan-profile/` | "Clear browser profile" in Settings |
-| API keys and proxy passwords | the macOS Keychain, one item | Removing the key or password in Settings |
+| API keys, proxy passwords, the Browserbase key and project id | the macOS Keychain, one item | Removing the key or password in Settings |
+| Which Browserbase browsers the app started and not yet seen end, and the ids of the profile kept at Browserbase (ids only) | `adtech-scanner.sqlite3` | By themselves when the browser has ended; "Clear" for the Browserbase profile |
 
 Outbound traffic: the scanned site, its ads.txt, the ad exchanges that ads.txt names (their sellers.json, at most 12 per scan, unless switched off in Settings), `api.anthropic.com` with AI analysis on, and `api.typesafe.ai` with Jev on.
+With Browserbase set up: `api.browserbase.com`, and for a scan that runs there `connect.<region>.browserbase.com`.
+
+With Browserbase the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party.
+Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets; CAPTCHAs on scanned pages are solved automatically, the browser does not tell the page it is automated, and Browserbase runs scripts of its own in every page it loads (the scanner keeps those out of its results).
+With "keep a browser profile" switched on for Browserbase, cookies and consent choices stay at Browserbase until you clear the profile. The report and the scan's network data are stored on this Mac as for any other scan. Browserbase bills browser time per minute and proxy traffic per megabyte; the app shows both per scan, apart from the LLM cost.
 The exact rules for what is stored, replaced and never stored are in `HANDOVER.md` under "Scan archive" and "sellers.json cache".
 
 ## More
@@ -93,7 +102,6 @@ The exact rules for what is stored, replaced and never stored are in `HANDOVER.m
 Tracked as GitHub tickets in this repository:
 
 - #14: ad servers other than Google Publisher Tag (Xandr, Smart AdServer and others). Pages that serve through them get Prebid results but no ad slots.
-- #16: running scans in Browserbase instead of the local Chrome.
 - #17, #18: AI visual analysis and AI dynamic analysis.
 - #19 to #24: follow-ups to what is built. `docs/plans/README.md` names the open ones per design document.
 

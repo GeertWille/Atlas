@@ -362,7 +362,7 @@ describe("the simulated network record", () => {
 
   it("removes network data on request and leaves the reports", async () => {
     const before = await api.getArchiveStorage();
-    expect(before.scans).toBe(3);
+    expect(before.scans).toBe(4);
     expect(before.evictedScans).toBe(1);
     expect(before.storedBytes).toBeGreaterThan(1_000_000);
     const after = await api.clearArchive();

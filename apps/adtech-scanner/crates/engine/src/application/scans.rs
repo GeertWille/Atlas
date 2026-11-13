@@ -14,12 +14,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::AppError;
 use super::export;
-use super::pipeline::state::{FinishSignal, ScanJob};
-use super::pipeline::{Pipeline, PipelineDeps};
+use super::pipeline::state::{FinishSignal, RemoteSession, ScanJob};
+use super::pipeline::{Pipeline, PipelineDeps, proxy_count};
 use super::ports::ScanConfigurationRepository;
 use super::settings::SettingsService;
 use crate::domain::DomainError;
-use crate::domain::scan::{ValidatedScan, seed_from_id};
+use crate::domain::scan::{ResolvedBrowser, ValidatedScan, seed_from_id};
 use crate::domain::telemetry::merge_ad_units_by_code;
 
 /// Each scan drives its own browser; more than two at once starve each other.
@@ -34,6 +34,7 @@ struct ActiveScan {
     finish: FinishSignal,
     /// Cancelled once the scan's final status is written.
     finished: CancellationToken,
+    remote_session: RemoteSession,
 }
 
 type ActiveScans = Arc<Mutex<HashMap<String, ActiveScan>>>;
@@ -53,6 +54,9 @@ pub struct ScanService {
     /// One browser at a time in the persistent browser profile: Chrome refuses
     /// to share a profile directory, so a second scan waits its turn.
     scan_profile: Arc<Semaphore>,
+    /// The same for the profile kept at Browserbase; shared with whoever
+    /// clears that profile.
+    browserbase_profile: Arc<Semaphore>,
 }
 
 impl ScanService {
@@ -60,6 +64,7 @@ impl ScanService {
         deps: PipelineDeps,
         settings: Arc<SettingsService>,
         configurations: Arc<dyn ScanConfigurationRepository>,
+        browserbase_profile: Arc<Semaphore>,
     ) -> Self {
         Self {
             deps,
@@ -69,6 +74,7 @@ impl ScanService {
             registration: RwLock::new(()),
             capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_SCANS)),
             scan_profile: Arc::new(Semaphore::new(1)),
+            browserbase_profile,
         }
     }
 
@@ -126,6 +132,15 @@ impl ScanService {
             Some(profile_id) => self.settings.proxy_password(profile_id).await?,
             None => None,
         };
+        let browserbase = match scan.browser {
+            ResolvedBrowser::Browserbase { .. } => Some(
+                self.settings
+                    .browserbase_credentials()
+                    .await?
+                    .ok_or(DomainError::BrowserbaseNotSetUp)?,
+            ),
+            ResolvedBrowser::Local => None,
+        };
         let ai_enabled = scan.options.ai_enabled;
         let api_key = if ai_enabled {
             self.settings.api_key(ApiProvider::Anthropic).await?
@@ -164,6 +179,7 @@ impl ScanService {
                 name: configuration.name,
             }),
             proxy: Some(scan.proxy.usage()),
+            remote: None,
         };
         self.deps.scans.create(&summary, &scan.options).await?;
         if let Some(configuration) = &summary.configuration {
@@ -177,12 +193,14 @@ impl ScanService {
         let cancel = CancellationToken::new();
         let finish = FinishSignal::default();
         let finished = CancellationToken::new();
+        let remote_session = RemoteSession::default();
         self.lock_active().insert(
             summary.id.clone(),
             ActiveScan {
                 cancel: cancel.clone(),
                 finish: finish.clone(),
                 finished: finished.clone(),
+                remote_session: remote_session.clone(),
             },
         );
         drop(registering);
@@ -199,6 +217,9 @@ impl ScanService {
             cancel,
             finish,
             scan_profile: Arc::clone(&self.scan_profile),
+            browserbase,
+            browserbase_profile: Arc::clone(&self.browserbase_profile),
+            remote_session,
         };
         tokio::spawn(supervise(
             self.deps.clone(),
@@ -228,6 +249,32 @@ impl ScanService {
             return Ok(());
         }
         self.summary(scan_id).await.map(drop)
+    }
+
+    /// Shows the Browserbase browser of a running scan to the user, in
+    /// Browserbase's live view. Opened from here, so that its address, a
+    /// credential, never reaches the frontend.
+    pub async fn open_live_view(&self, scan_id: &str) -> Result<(), AppError> {
+        let session_id = self
+            .lock_active()
+            .get(scan_id)
+            .and_then(|active| active.remote_session.id());
+        let Some(session_id) = session_id else {
+            self.summary(scan_id).await?;
+            return Err(AppError::InvalidInput(
+                "This scan has no Browserbase browser to show right now.".into(),
+            ));
+        };
+        let credentials = self
+            .settings
+            .browserbase_credentials()
+            .await?
+            .ok_or(DomainError::BrowserbaseNotSetUp)?;
+        Ok(self
+            .deps
+            .browserbase
+            .open_live_view(&credentials, &session_id)
+            .await?)
     }
 
     pub async fn scan_profile(&self) -> ScanProfileInfo {
@@ -394,8 +441,13 @@ async fn supervise(
     match run.await {
         // The pipeline already published its final summary; writing it again
         // only matters if that write failed.
-        Ok(Some(summary)) => {
+        Ok(Some((summary, uncounted_session))) => {
             let _ = deps.scans.save_summary(&summary).await;
+            // After the last write of the scan itself, so that the later
+            // reading cannot be overwritten by an earlier one.
+            if let Some(session) = uncounted_session {
+                proxy_count::read_again_later(deps.clone(), session);
+            }
         }
         Ok(None) => {
             close_without_pipeline(&deps, fallback.clone(), ScanStatus::Cancelled, None).await;

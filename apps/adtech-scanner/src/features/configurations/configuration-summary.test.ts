@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
-import { makeConfiguration, makeProxy } from "@/test/fixtures";
+import { browserbaseSettingsFixture, makeConfiguration, makeProxy, settingsFixture } from "@/test/fixtures";
 import {
+  browserSummary,
   configurationProblem,
   duplicateName,
   healthChange,
@@ -8,7 +9,7 @@ import {
   visitorSummary,
 } from "./configuration-summary";
 
-const settings = { proxies: [makeProxy()] };
+const settings = { proxies: [makeProxy()], browserbase: browserbaseSettingsFixture.browserbase };
 const withProxy = (proxy: NonNullable<ReturnType<typeof makeConfiguration>["options"]["proxy"]>) =>
   makeConfiguration({ options: { ...makeConfiguration().options, proxy } });
 
@@ -62,4 +63,22 @@ test("the health change compares the two newest runs, and only when both complet
   expect(healthChange([])).toBeNull();
   expect(healthChange([run(null, "running"), run(72)])).toBeNull();
   expect(healthChange([run(84), run(null, "failed")])).toBeNull();
+});
+
+test("a configuration that runs on Browserbase says where, and cannot run once the credentials are gone", () => {
+  const cloud = (region?: "eu-central-1") =>
+    makeConfiguration({ options: { ...makeConfiguration().options, browser: { kind: "browserbase", region } } });
+  expect(browserSummary(makeConfiguration(), settings)).toBeNull();
+  expect(browserSummary(cloud("eu-central-1"), settings)).toEqual({
+    full: "Browserbase Frankfurt",
+    place: "Frankfurt",
+  });
+  // Without a region of its own it runs in the settings' region.
+  expect(browserSummary(cloud(), settings)?.full).toBe("Browserbase Oregon");
+  expect(configurationProblem(cloud("eu-central-1"), settings)).toBeNull();
+  expect(configurationProblem(cloud("eu-central-1"), { ...settings, browserbase: settingsFixture.browserbase })).toBe(
+    "Browserbase is not set up any more. Add its key in Settings, or edit the configuration to run on this Mac.",
+  );
+  const location = withProxy({ kind: "browserbaseLocation", country: "BE" });
+  expect(proxySummary(location, settings)).toBe("Belgium (Browserbase proxy)");
 });

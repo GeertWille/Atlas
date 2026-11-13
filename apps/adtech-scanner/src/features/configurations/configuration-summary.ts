@@ -1,4 +1,5 @@
 import type { ScanConfiguration, ScanSummary, Settings } from "@/bindings";
+import { regionPlace } from "@/shared/domain/browserbase";
 import { hasMissingProxy, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import { pluralize } from "@/shared/lib/format";
@@ -6,9 +7,12 @@ import { pluralize } from "@/shared/lib/format";
 /** Why a configuration cannot run as it is saved, in words that say how to fix it. `null` when it can. */
 export function configurationProblem(
   configuration: ScanConfiguration,
-  settings: Pick<Settings, "proxies">,
+  settings: Pick<Settings, "proxies" | "browserbase">,
 ): string | null {
-  const { proxy } = configuration.options;
+  const { proxy, browser } = configuration.options;
+  if (browser?.kind === "browserbase" && !settings.browserbase.connected) {
+    return "Browserbase is not set up any more. Add its key in Settings, or edit the configuration to run on this Mac.";
+  }
   if (!hasMissingProxy(configuration.options, settings)) return null;
   const name = proxy?.kind === "profile" && proxy.name ? `“${proxy.name}”` : "it used";
   return `The proxy ${name} was deleted. Edit the configuration and choose another proxy.`;
@@ -21,6 +25,20 @@ export function visitorSummary(configuration: ScanConfiguration): string {
   const label = VISITOR_META[visitor].label;
   if (visitor !== "browse" || options.extraPages === undefined) return label;
   return `${label}, ${pluralize(options.extraPages + 1, "page")}`;
+}
+
+/**
+ * "Browserbase Frankfurt" for a configuration that runs there, and the same without the name for where a
+ * mark already says it; `null` for one that runs on this Mac or follows the settings.
+ */
+export function browserSummary(
+  configuration: ScanConfiguration,
+  settings: Pick<Settings, "browserbase">,
+): { full: string; place: string } | null {
+  const { browser } = configuration.options;
+  if (browser?.kind !== "browserbase") return null;
+  const place = regionPlace(browser.region ?? settings.browserbase.region);
+  return { full: `Browserbase ${place}`, place };
 }
 
 /** The proxy a run would use; a configuration that names none follows the settings at run time. */

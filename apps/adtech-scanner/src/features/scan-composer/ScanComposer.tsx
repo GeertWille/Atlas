@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import type { ScanConfiguration, Settings } from "@/bindings";
 import { useSaveScanConfiguration } from "@/lib/query/hooks";
 import { aiAvailability } from "@/shared/domain/ai-availability";
+import { estimateBrowserbaseUsage, reachableFromCloud } from "@/shared/domain/browserbase";
 import { proxyChoiceKey } from "@/shared/domain/proxy";
 import { useLaunchScan } from "@/shared/hooks/use-launch-scan";
 import { cn } from "@/shared/lib/cn";
@@ -32,13 +33,16 @@ import { SaveConfigurationDialog } from "./SaveConfigurationDialog";
 import {
   formFromOptions,
   newScanForm,
+  proxyFieldFor,
   type ScanForm,
   type ScanFormErrors,
   sameScan,
   validateScanForm,
+  withBrowser,
   withVisitor,
 } from "./scan-form";
 import { scanSummary } from "./scan-summary";
+import { normalizeScanUrl } from "./scan-url";
 import { VisitOptions } from "./VisitOptions";
 
 export function ScanComposer({
@@ -69,6 +73,24 @@ export function ScanComposer({
   const proxyMissing =
     form.proxy.startsWith("profile:") &&
     !settings.proxies.some((proxy) => proxyChoiceKey({ kind: "profile", id: proxy.id }) === form.proxy);
+  const typedUrl = normalizeScanUrl(form.url);
+  const unreachable = typedUrl.ok && !reachableFromCloud(typedUrl.url);
+  const wantsBrowserbase = form.browser === "browserbase" && !unreachable;
+  // A configuration can name Browserbase after its credentials were removed: nothing runs until that changes.
+  const browserMissing = wantsBrowserbase && !settings.browserbase.connected;
+  const remote = wantsBrowserbase && !browserMissing;
+  const blocked = proxyMissing || browserMissing;
+  const cloudProxy = proxyFieldFor(form, true);
+  const usage = remote
+    ? estimateBrowserbaseUsage({
+        visitor: form.visitor,
+        pages: form.visitor === "browse" ? form.pages : 1,
+        observeSeconds: form.observeSeconds,
+        browserbaseProxy:
+          cloudProxy === "browserbaseLocation" ||
+          (cloudProxy === "settings" && settings.browserbase.defaultProxy.kind === "browserbaseLocation"),
+      })
+    : null;
   const edited = saved !== null && !sameScan(form, saved);
   // Set when the composer itself moves on (a scan started, a new configuration opened): no question then.
   const leaving = useRef(false);
@@ -87,14 +109,19 @@ export function ScanComposer({
     setForm((current) => ({ ...current, ...patch }));
     if (patch.url !== undefined) setErrors((current) => ({ ...current, url: undefined }));
     if (patch.budget !== undefined) setErrors((current) => ({ ...current, budget: undefined }));
+    if (Object.keys(patch).some((field) => field.startsWith("location") || field === "proxy")) {
+      setErrors((current) => ({ ...current, location: undefined }));
+    }
   };
 
   /** The options to scan or save, or `null` after pointing at what has to be fixed first. */
   const validOptions = () => {
-    if (validation.ok && !proxyMissing) return validation.options;
+    if (validation.ok && !blocked) return validation.options;
     setErrors(validation.ok ? {} : validation.errors);
-    // Both are fixed inside the options.
-    if (proxyMissing || (!validation.ok && validation.errors.budget)) setOptionsOpen(true);
+    // These are fixed inside the options.
+    if (blocked || (!validation.ok && (validation.errors.budget || validation.errors.location))) {
+      setOptionsOpen(true);
+    }
     return null;
   };
 
@@ -169,7 +196,7 @@ export function ScanComposer({
         <ConfigurationBar
           configuration={configuration}
           edited={edited}
-          blocked={proxyMissing}
+          blocked={proxyMissing ? "proxy" : browserMissing ? "browserbase" : null}
           saving={saveConfiguration.isPending}
           onRevert={() => saved && setForm(saved)}
           onUpdate={updateConfiguration}
@@ -220,7 +247,7 @@ export function ScanComposer({
         <div className="flex min-h-11 items-center justify-between gap-4 py-2 pr-2 pl-4">
           <ComposerSummary
             id={summaryId}
-            parts={scanSummary({ form: effective, settings, ai, budgetUsd, proxyMissing })}
+            parts={scanSummary({ form: effective, settings, ai, budgetUsd, proxyMissing, remote, browserMissing })}
             needsKey={ai.triage === null}
           />
           <div className="flex shrink-0 items-center gap-1">
@@ -241,13 +268,29 @@ export function ScanComposer({
         <CollapsibleContent>
           <VisitOptions
             form={form}
+            // A configuration that names Browserbase shows what it holds, also while it cannot run there.
+            remote={remote || browserMissing}
             update={update}
             onVisitorChange={(visitor) => {
               leaving.current = false;
               setForm((current) => withVisitor(current, visitor, settings));
             }}
           />
-          <OriginOptions form={form} settings={settings} proxyMissing={proxyMissing} update={update} />
+          <OriginOptions
+            form={form}
+            settings={settings}
+            remote={remote}
+            unreachable={unreachable}
+            browserMissing={browserMissing}
+            proxyMissing={proxyMissing}
+            locationError={errors.location}
+            usage={usage}
+            update={update}
+            onBrowserChange={(browser) => {
+              leaving.current = false;
+              setForm((current) => withBrowser(current, browser));
+            }}
+          />
           <AnalysisOptions
             form={form}
             settings={settings}
@@ -255,6 +298,7 @@ export function ScanComposer({
             aiEnabled={effective.aiEnabled}
             budgetUsd={budgetUsd}
             budgetError={errors.budget}
+            usage={settings.browserbase.connected ? usage : undefined}
             update={update}
           />
         </CollapsibleContent>

@@ -1,8 +1,9 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use adscan_model::{
-    BidderDiagnostics, Capture, Finding, ScanEnvironment, ScanSummary, ScriptRecord, Settings,
+    BidderDiagnostics, BrowserbaseCredentials, Capture, Finding, ScanEnvironment, ScanSummary,
+    ScriptRecord, Settings,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +33,38 @@ pub struct ScanJob {
     pub finish: FinishSignal,
     /// One permit: the turn to run a browser in the persistent browser profile.
     pub scan_profile: Arc<Semaphore>,
+    /// Browserbase key and project, for a scan whose browser runs there. In
+    /// memory only.
+    pub browserbase: Option<BrowserbaseCredentials>,
+    /// One permit: the turn to run a browser in the profile kept at
+    /// Browserbase.
+    pub browserbase_profile: Arc<Semaphore>,
+    pub remote_session: RemoteSession,
+}
+
+/// The Browserbase session a scan's capture is running in right now, for
+/// whoever wants to show it to the user. An id only.
+#[derive(Clone, Default)]
+pub struct RemoteSession(Arc<Mutex<Option<String>>>);
+
+impl RemoteSession {
+    pub fn started(&self, session_id: &str) {
+        *self.lock() = Some(session_id.to_string());
+    }
+
+    pub fn ended(&self) {
+        *self.lock() = None;
+    }
+
+    pub fn id(&self) -> Option<String> {
+        self.lock().clone()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<String>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }
 
 /// The user's "finish capture" for a manual visit. It only counts while the
@@ -85,6 +118,9 @@ pub struct ScanState {
     pub telemetry: Option<ScanTelemetry>,
     /// What the pages could tell about the visit; set with the telemetry.
     pub environment: Option<ScanEnvironment>,
+    /// The scan's Browserbase session, once it has ended, and when (epoch
+    /// ms).
+    pub remote_session_ended: Option<(String, f64)>,
     /// `None` when the page has no bidders to check.
     pub diagnostics: Option<BidderDiagnostics>,
     pub scripts: Vec<DescribedScript>,
@@ -110,6 +146,7 @@ impl ScanState {
             archived: false,
             telemetry: None,
             environment: None,
+            remote_session_ended: None,
             diagnostics: None,
             scripts: Vec::new(),
             sources: Vec::new(),

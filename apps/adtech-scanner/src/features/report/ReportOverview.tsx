@@ -2,6 +2,7 @@ import { TriangleAlertIcon } from "lucide-react";
 import type { ScanDetail } from "@/bindings";
 import { Stat, StatGrid } from "@/shared/components/stat";
 import { Badge } from "@/shared/ui/badge";
+import { BrowserbaseVisitDetails } from "./BrowserbaseVisitDetails";
 import { EnvironmentNotice } from "./EnvironmentNotice";
 import { buildKeyMetrics, detectedStack } from "./key-metrics";
 import { splitOverview } from "./overview-caveats";
@@ -47,6 +48,7 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
                   </Badge>
                 ))}
               </div>
+              <BrowserbaseVisitDetails detail={detail} />
               <EnvironmentNotice detail={detail} />
             </div>
           ) : null}

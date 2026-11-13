@@ -5,12 +5,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use adscan_model::{
-    AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo, Capture,
-    CaptureActivity, CaptureProxy, CaptureRequest, DashboardStats, Finding, LogEntry, LogSearchHit,
-    NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView, PipelineStep,
-    ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent, ScanList, ScanListQuery,
-    ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord, SellersJsonCacheInfo,
-    Settings,
+    AdSlot, ApiProvider, ArchiveStorage, Auction, BidderDiagnostics, BrowserInfo,
+    BrowserbaseCredentials, BrowserbaseProbe, BrowserbaseProject, BrowserbaseRegion, Capture,
+    CaptureActivity, CaptureProxy, CaptureRequest, DashboardStats, DeviceProfile, Finding,
+    LogEntry, LogSearchHit, NetworkArchiveInfo, NetworkAvailability, NetworkSink, PageView,
+    PipelineStep, RemoteSessionEvent, ScanConfiguration, ScanDetail, ScanEnvironment, ScanEvent,
+    ScanList, ScanListQuery, ScanMetrics, ScanOptions, ScanProfileInfo, ScanSummary, ScriptRecord,
+    SellersJsonCacheInfo, Settings,
 };
 use async_trait::async_trait;
 use tokio_util::sync::CancellationToken;
@@ -114,10 +115,13 @@ pub enum SecretName {
     ApiKey(ApiProvider),
     /// By proxy profile id.
     ProxyPassword(String),
+    BrowserbaseApiKey,
+    /// An identifier, kept with the key it belongs to.
+    BrowserbaseProjectId,
 }
 
-/// Where the secrets live: one API key per provider and one password per
-/// proxy profile.
+/// Where the secrets live: one API key per provider, one password per
+/// proxy profile, and the Browserbase key with its project id.
 ///
 /// Reading a secret can make the system ask the user for permission, so a
 /// failure is never the same as "nothing stored": callers must report it.
@@ -133,6 +137,14 @@ pub trait SecretStore: Send + Sync {
     async fn store_proxy_password(&self, proxy_id: &str, password: &str)
     -> Result<(), SecretError>;
     async fn clear_proxy_password(&self, proxy_id: &str) -> Result<(), SecretError>;
+    /// `None` unless both the key and the project id are stored.
+    async fn browserbase_credentials(&self) -> Result<Option<BrowserbaseCredentials>, SecretError>;
+    /// Key and project id are stored together or not at all.
+    async fn store_browserbase_credentials(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<(), SecretError>;
+    async fn clear_browserbase_credentials(&self) -> Result<(), SecretError>;
 }
 
 /// The record of which secrets exist, kept outside the keychain so that
@@ -182,11 +194,32 @@ pub enum CaptureError {
     Cancelled,
     #[error("The browser profile is in use by a running scan")]
     ProfileBusy,
+    /// Browserbase refused the key or the project.
+    #[error("{0}")]
+    RemoteAuth(String),
+    /// Browserbase stayed at its limit for as long as the capture waited.
+    #[error("{0}")]
+    RemoteLimit(String),
+    /// Browserbase could not start the browser, or the connection was lost.
+    #[error("{0}")]
+    Remote(String),
     #[error("{0}")]
     Other(String),
 }
 
 pub type ActivityFn = Arc<dyn Fn(CaptureActivity) + Send + Sync>;
+pub type RemoteSessionFn = Arc<dyn Fn(RemoteSessionEvent) + Send + Sync>;
+
+/// What a capture in a Browserbase browser needs besides its request.
+#[derive(Clone)]
+pub struct BrowserbaseAccess {
+    /// Kept out of the request so they cannot be logged or serialised with
+    /// it.
+    pub credentials: BrowserbaseCredentials,
+    /// Told when the session starts, when a person can take it over, and
+    /// when it has ended.
+    pub on_session: RemoteSessionFn,
+}
 
 /// Everything about one capture that is not part of the request: how to
 /// stop it, where it reports, and the one secret it may need.
@@ -203,6 +236,8 @@ pub struct CaptureSession {
     /// Where the capture hands over every request while it runs. `None`
     /// when the scan keeps no network data.
     pub network: Option<Arc<dyn NetworkSink>>,
+    /// Set when the request's browser runs on Browserbase.
+    pub browserbase: Option<BrowserbaseAccess>,
 }
 
 #[async_trait]
@@ -222,6 +257,140 @@ pub trait CaptureSource: Send + Sync {
     /// Removes that profile. [`CaptureError::ProfileBusy`] while a browser
     /// runs in it.
     async fn clear_scan_profile(&self) -> Result<(), CaptureError>;
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum BrowserbaseError {
+    /// The key or the project was refused.
+    #[error("{0}")]
+    Auth(String),
+    /// Too many browsers at once, or too many new ones per minute.
+    #[error("{0}")]
+    Limit(String),
+    #[error("{0}")]
+    Failed(String),
+}
+
+/// Running totals of a Browserbase project, all its users together.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ProjectUsage {
+    pub browser_minutes: f64,
+    pub proxy_bytes: f64,
+}
+
+/// What Browserbase says a session used.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RemoteSessionUsage {
+    pub ended: bool,
+    pub session_seconds: Option<f64>,
+    /// Lags behind the end of the session by up to half a minute.
+    pub proxy_bytes: Option<f64>,
+}
+
+/// Browserbase's own API, apart from the browser a capture drives: the
+/// account, the sessions this installation left behind, the contexts that
+/// hold a kept profile, and the live view.
+#[async_trait]
+pub trait BrowserbaseApi: Send + Sync {
+    /// The projects of a key. Costs nothing; this is how a key is checked.
+    async fn projects(&self, api_key: &str) -> Result<Vec<BrowserbaseProject>, BrowserbaseError>;
+    async fn project(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<BrowserbaseProject, BrowserbaseError>;
+    async fn project_usage(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<ProjectUsage, BrowserbaseError>;
+    /// Browsers running in the project, whoever started them.
+    async fn running_session_count(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<u32, BrowserbaseError>;
+    /// Ids of the running sessions that carry this installation's id in
+    /// their metadata. Never a session of anyone else: the project may be
+    /// shared.
+    async fn running_sessions_of(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        install_id: &str,
+    ) -> Result<Vec<String>, BrowserbaseError>;
+    async fn session_usage(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<RemoteSessionUsage, BrowserbaseError>;
+    /// Ends the session. One that has ended already is not an error.
+    async fn release_session(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<(), BrowserbaseError>;
+    /// A new, empty context; returns its id.
+    async fn create_context(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<String, BrowserbaseError>;
+    /// A context that is already gone is not an error.
+    async fn delete_context(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        context_id: &str,
+    ) -> Result<(), BrowserbaseError>;
+    /// Starts one browser, reads what a blank page in it can see, and
+    /// releases it. Billed as one browser minute.
+    async fn probe(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        region: BrowserbaseRegion,
+        install_id: &str,
+    ) -> Result<BrowserbaseProbe, BrowserbaseError>;
+    /// Shows the session's live view in the user's own browser. Its address
+    /// is a credential: it is fetched, opened and forgotten here, and never
+    /// returned, logged or put in an error.
+    async fn open_live_view(
+        &self,
+        credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<(), BrowserbaseError>;
+}
+
+/// A Browserbase context that holds the kept browser profile of a device.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredContext {
+    pub device: DeviceProfile,
+    pub context_id: String,
+    pub last_used_at: Option<f64>,
+}
+
+/// A session this installation started and has not seen end.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenRemoteSession {
+    pub session_id: String,
+    pub created_at: f64,
+}
+
+/// The app's own record of its Browserbase use. Identifiers only.
+#[async_trait]
+pub trait BrowserbaseLedger: Send + Sync {
+    /// This installation's id: what its sessions carry in their metadata.
+    async fn install_id(&self) -> RepoResult<String>;
+    async fn session_created(&self, session_id: &str, at_ms: f64) -> RepoResult<()>;
+    async fn session_released(&self, session_id: &str, at_ms: f64) -> RepoResult<()>;
+    /// Sessions without a recorded end, oldest first.
+    async fn open_sessions(&self) -> RepoResult<Vec<OpenRemoteSession>>;
+    /// Forgets the sessions whose end is recorded.
+    async fn forget_released_sessions(&self) -> RepoResult<()>;
+    async fn contexts(&self) -> RepoResult<Vec<StoredContext>>;
+    /// Records the context of `device`, replacing an earlier one.
+    async fn save_context(
+        &self,
+        device: DeviceProfile,
+        context_id: &str,
+        at_ms: f64,
+    ) -> RepoResult<()>;
+    async fn context_used(&self, device: DeviceProfile, at_ms: f64) -> RepoResult<()>;
+    async fn forget_contexts(&self) -> RepoResult<()>;
 }
 
 /// A request for a public text file of a website (ads.txt, sellers.json).

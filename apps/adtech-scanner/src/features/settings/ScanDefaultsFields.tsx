@@ -1,4 +1,4 @@
-import { MonitorIcon, SmartphoneIcon } from "lucide-react";
+import { CloudIcon, LaptopIcon, MonitorIcon, SmartphoneIcon } from "lucide-react";
 import { useId } from "react";
 import type { Settings, SettingsPatch, VisitorBehavior } from "@/bindings";
 import { OBSERVE_SECONDS, VISIT_PAGES, VISITOR_BEHAVIORS, VISITOR_META } from "@/shared/domain/scan-options";
@@ -10,7 +10,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/shared/ui/toggle-group";
 import { CommitInput } from "./CommitInput";
 import { parseObserveSeconds } from "./settings-schema";
 
-/** What the new-scan composer starts from: device, visitor, pages of a browse visit and observation time. */
+/** What the new-scan composer starts from: device, where the browser runs, visitor, pages of a browse visit and observation time. */
 export function ScanDefaultsFields({ settings, save }: { settings: Settings; save: (patch: SettingsPatch) => void }) {
   const ids = { observe: useId(), pages: useId() };
   return (
@@ -28,6 +28,33 @@ export function ScanDefaultsFields({ settings, save }: { settings: Settings; sav
           <ToggleGroupItem value="mobile">
             <SmartphoneIcon />
             Mobile
+          </ToggleGroupItem>
+        </ToggleGroup>
+      </Field>
+      <Field
+        label="Where the browser runs"
+        description={
+          settings.browserbase.connected
+            ? "Browserbase runs the browser in its cloud. An address on this Mac or your network, like the demo site, is always scanned on this Mac."
+            : "Set up Browserbase above to run scans in its cloud. Until then every scan runs on this Mac."
+        }
+      >
+        <ToggleGroup
+          aria-label="Default for where the browser runs"
+          value={settings.browserbase.connected ? settings.defaultBrowser : "local"}
+          onValueChange={(defaultBrowser) => save({ defaultBrowser })}
+        >
+          <ToggleGroupItem value="local">
+            <LaptopIcon />
+            This Mac
+          </ToggleGroupItem>
+          <ToggleGroupItem
+            value="browserbase"
+            disabled={!settings.browserbase.connected}
+            className="disabled:pointer-events-none disabled:opacity-50"
+          >
+            <CloudIcon />
+            Browserbase
           </ToggleGroupItem>
         </ToggleGroup>
       </Field>

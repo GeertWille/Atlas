@@ -1,18 +1,28 @@
-//! Chrome adapter: the browser process and the DevTools protocol connection.
+//! Browser adapters and the DevTools protocol connection.
 //!
-//! `chrome` owns the process and its lifetime (with `profile` and `watchdog`),
-//! `client` speaks the protocol, `pipe` frames its messages. They meet in
-//! [`connect`].
+//! `client` speaks the protocol over a transport that carries whole
+//! messages. For Chrome on this machine, `chrome` owns the process and its
+//! lifetime (with `profile` and `watchdog`), `pipe` frames the messages, and
+//! they meet in [`connect`]. For a browser at Browserbase, `browserbase`
+//! starts and ends it and `websocket` carries the messages. `backend` is
+//! the choice between the two.
 
+mod backend;
+mod browserbase;
 mod chrome;
 mod client;
 mod pipe;
 mod profile;
 mod watchdog;
+mod websocket;
 
 use serde_json::json;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+pub(crate) use backend::{Backend, ConnectFailure};
+pub(crate) use browserbase::{
+    Api, ApiFailure, Exit, Project, RemoteBrowser, SessionOrder, SessionState, StartFailure,
+};
 pub(crate) use chrome::{Chrome, LaunchError, LaunchOptions, ProfileChoice, ProxyServer};
 #[cfg(test)]
 pub(crate) use client::fake;
@@ -21,6 +31,8 @@ pub(crate) use profile::{
     PersistentProfileError, clear as clear_persistent_profile,
     inspect as inspect_persistent_profile, remove_abandoned as remove_abandoned_profiles,
 };
+#[cfg(test)]
+pub(crate) use websocket::MAX_MESSAGE_BYTES;
 
 /// Connects to a browser that was just spawned and waits until it answers.
 pub(crate) async fn connect(

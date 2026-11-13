@@ -8,7 +8,8 @@ No PR, nothing merged.
 A Tauri 2 desktop app that finds revenue leaks caused by logic bugs in a publisher's ad-tech wrapper.
 One scan runs these pipeline steps:
 
-1. **Capture**: launches local Chrome over CDP, injects a tracker before any page script, loads the page
+1. **Capture**: launches local Chrome over CDP, or starts a browser at Browserbase and drives it over a
+   WebSocket (see "Browserbase"), injects a tracker before any page script, loads the page
    (desktop or mobile emulation), optionally accepts the consent banner, and then behaves as the scan's
    visitor: watches only, scrolls, browses like a reader and follows same-site links, or records while a
    person browses (see "Visits" below). Records Prebid activity, GPT slot lifecycle and timings, Amazon
@@ -25,13 +26,17 @@ One scan runs these pipeline steps:
 
 Rules that came from you and must keep holding:
 
-- Local only. A SQLite file in the app data dir, no server, no cloud storage. Outbound traffic is the
-  scanned site (through Chrome) and that site's ads.txt (one GET from the app itself),
-  api.anthropic.com, api.typesafe.ai only while Jev is on, and, unless "Check sellers.json at ad
-  exchanges" is switched off (it is on by default since 2026-11-12, your decision), a GET of
+- Stored locally only (this replaced "local only" on 2026-11-13, when Browserbase became a second place
+  the browser can run). A SQLite file in the app data dir, no server and no cloud storage of the app's
+  own. Outbound traffic is the scanned site (through Chrome) and that site's ads.txt (one GET from the
+  app itself), api.anthropic.com, api.typesafe.ai only while Jev is on, and, unless "Check sellers.json
+  at ad exchanges" is switched off (it is on by default since 2026-11-12, your decision), a GET of
   sellers.json at the ad-system domains that ads.txt names, at most twelve per scan and at most once a
   day per exchange (see "sellers.json cache"). A scan can send the first two kinds through one proxy
   the user configured (see "Proxies"); the sellers.json requests and the two model APIs never use it.
+  With Browserbase credentials stored, the app also talks to `api.browserbase.com`, and a scan that
+  runs there to `connect.<region>.browserbase.com`: the scanned site is then loaded by Browserbase's
+  browser, and Browserbase keeps a video and a log of the session (see "Browserbase").
 - Raw scan data is stored locally and only locally (this replaced "no raw payloads stored"): one
   compressed archive per scan with every request, its headers, and the bodies of scripts, documents,
   JSON, text, CSS and POST requests, bid requests and responses included. Never images, video, audio
@@ -44,11 +49,19 @@ Rules that came from you and must keep holding:
   read in memory and not kept; the sellers.json files of ad exchanges are kept, apart from the scans
   (public files, the same for every site: see "sellers.json cache"); the audit trail still holds
   bounded excerpts only, never whole scripts.
-- API keys and proxy passwords live in the macOS Keychain, all in one item (service
-  `com.webclew.adtech-scanner`, account `vault`; see "Keychain prompts"), never in SQLite, logs or the
-  frontend. SQLite only records which of them exist (table `secret_presence`, names without values).
-- A scripted visit never hides that it is automated: no stealth flags, no spoofed fingerprint. What the
-  page could see is recorded with the scan and reported (rule `scan-identifiable-as-automated`).
+- API keys, proxy passwords and the Browserbase key with its project id live in the macOS Keychain, all
+  in one item (service `com.webclew.adtech-scanner`, account `vault`; see "Keychain prompts"), never in
+  SQLite, logs or the frontend. SQLite only records which of them exist (table `secret_presence`, names
+  without values).
+- What the page could see of the visit is recorded with the scan and reported as it was. The app adds
+  no disguise of its own beyond two things you decided: local Chrome is started with
+  `--disable-blink-features=AutomationControlled` in every mode (your commit 643a33e), and a
+  Browserbase browser is used as Browserbase provides it (your decision of 2026-11-13): it reports
+  `navigator.webdriver` false, runs headless without saying so in its user agent, solves CAPTCHAs, and
+  runs scripts of Browserbase's own in every page (see "Browserbase"; that last point was found after
+  your decision and is not in the disclosure text).
+  The rule `scan-identifiable-as-automated` only claims what a page could read: `navigator.webdriver`
+  true, or a local headless Chrome, never a Browserbase visit as such.
 - Per-scan LLM budget cap, default $0.50.
 - `clew-app` is read-only inspiration.
 - Run a simplify pass and a review pass after every change, fix, repeat.
@@ -58,11 +71,11 @@ Rules that came from you and must keep holding:
 | Part | Path | State |
 |---|---|---|
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
-| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 237 unit tests; the integration tests drive real Chromium. |
+| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 307 unit tests; the integration tests drive real Chromium, the Browserbase ones through a mock of its API whose sessions are local Chromium browsers behind a WebSocket. One test against the real service is ignored unless asked for. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1096 tests, 5 ignored (2026-11-13). |
+| Tauri shell (42 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1264 tests, 6 ignored (2026-11-13, with Browserbase). |
 | React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 788 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-13). |
-| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: 41 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
+| Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), a Browserbase scan against a mock (key saved in Settings, scan started in the composer, environment record and usage checked, probe, key removed), and every command's contract: 47 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
 
 ## Run it on a Mac
 
@@ -106,6 +119,11 @@ Environment overrides for tests and local runs:
 - `ADSCAN_CHROME_PATH`: browser executable.
 - `ADSCAN_PROXY_PASSWORD`: stands in for the password of every proxy profile that has none of its own.
   Like the key variables it moves every secret to memory and leaves the Keychain alone.
+- `ADSCAN_BROWSERBASE_API_KEY` and `ADSCAN_BROWSERBASE_PROJECT_ID`: the Browserbase credentials (both
+  are needed to count as set up). Either one moves every secret to memory, like the other key variables.
+- `ADSCAN_BROWSERBASE_BASE_URL`: replaces `https://api.browserbase.com` (must be https unless loopback).
+- `ADSCAN_BROWSERBASE_CONNECT_URL`: used in place of the address of every Browserbase session's browser
+  (`wss://`, or `ws://` on loopback). For tests.
 
 The built-in demo publisher page is the fastest way to see a full scan. It is served on a random
 loopback port and has seven planted bugs, documented in `crates/browser/demo-site/README.md`:
@@ -164,6 +182,20 @@ without destroying the old ones.
 - The scan archive on macOS: nothing of it ran there. On real publisher pages: only the demo site
   and fixtures were recorded, so the request assembly across sessions was measured on Chromium 1243
   for Linux only.
+- Browserbase from the app. The service itself was measured once from a sandbox
+  (`docs/plans/browserbase-measurements.md`), and the browser crate's capture ran against it from the
+  same sandbox (us-east-1, through the sandbox's proxy: example.com, and theguardian.com/international
+  with a 20 s scroll visit in 40 s, 1,111 requests, 265 bodies, none unavailable, 2 Prebid auctions
+  with 4 bids). The app as a whole (engine, shell, window) only ran against a mock of the REST API and
+  local Chromium browsers reached over a WebSocket. Never verified: a Browserbase scan started in the
+  app against the real service, what Browserbase's own scripts in the page change for a publisher
+  page, the user's own proxy as an `external` proxy (including how its failure
+  is reported, and whether a SOCKS5 proxy is accepted), the spelling Browserbase expects for a city of
+  a location (upper case with underscores is from its documentation as remembered), the live view
+  opened by the opener plugin on macOS and driven by hand, a kept profile across real scans, the
+  start-up sweep against the real session list, whether the 50 MiB message limit and the 300 s idle
+  close belong to Browserbase or to the sandbox's proxy (both guards are built), and the cost of a scan
+  through a residential location.
 - Proxies of any kind: no scan was run through a real proxy. The browser side (flag mapping, answering
   the proxy's password challenge) and the fetcher side were tested against local stand-ins only, and
   SOCKS5 not at all beyond building the client.
@@ -496,7 +528,8 @@ settings fetch and again when a scan started.
 What the app does now:
 
 - **One item.** Every secret is in one generic-password item, account `vault`, holding a small JSON
-  map (`anthropic`, `typesafe`, `proxy:<profile id>`). One item means one prompt at most.
+  map (`anthropic`, `typesafe`, `proxy:<profile id>`, `browserbase`, `browserbase-project`). One item
+  means one prompt at most.
 - **Read once, on first need.** Nothing reads the Keychain at start, for Settings, or while browsing
   scans and reports. `hasApiKey`, `hasTypesafeKey` and `hasPassword` come from the SQLite table
   `secret_presence`. The first action that needs a secret reads the vault once and keeps it in memory
@@ -786,6 +819,143 @@ profile: `Settings.defaultProxy`, or `ScanOptions.proxy` per scan.
   `infrastructure/public_files.rs` and the Settings copy must say it too.
 - Not built: proxy pools, rotation, per-request proxies.
 
+## Browserbase
+
+Built on 2026-11-13 (ticket #16). A scan's browser runs on this machine (as before, the default) or in
+Browserbase's cloud: `ScanOptions.browser`, or `Settings.defaultBrowser` for scans that name none. The
+design is `docs/plans/browserbase.md`, what the real service does is `docs/plans/browserbase-measurements.md`,
+and where the two disagree your decisions of 2026-11-13 hold: no fail-closed probe, Browserbase's
+defaults stated explicitly, residential locations and manual visits included.
+
+**What a Browserbase scan is.** The capture creates one session (`POST /v1/sessions`), connects one
+CDP client to it over a WebSocket and runs the same visit as locally. Sent with every session, stated
+explicitly so that a changed default at Browserbase cannot change a scan: `solveCaptchas: true`,
+`recordSession: true`, `logSession: true`, `blockAds: false`, `keepAlive: false`
+(`BrowserbaseSessionSettings::STANDARD` in `crates/model`). Never sent: `verified`, `advancedStealth`,
+`os` (refused on this account). The session's metadata is `{app: "adscan", install: <this
+installation's id>, scan: <scan id>}`, never the address that is scanned.
+
+**What Browserbase itself does to a page** (found by the browser crate's implementer on the real
+service on 2026-11-13; the earlier measurements file says the opposite and is wrong on this point):
+Browserbase runs scripts of its own in the page's own world of every document, before the page's
+scripts: five scripts of 37 to 73 kB that begin `/* browserbase:stealth-init-script */` and hold its
+CAPTCHA solving, plus a heartbeat (`./dist/scripts/keepalive.js`). So on Browserbase the page's world
+is not untouched. What those scripts change for a page was not examined. The capture recognises them
+by that first line, keeps them out of the scan's scripts (Triage and Phase 2 never see them), counts
+them and says so in the audit trail (`serviceScripts`). This belongs with your decision 1 and the
+disclosure text: the text says the browser does not tell the page it is automated; it does not say
+that Browserbase's own code runs in the page.
+
+**Where the visit leaves from** (`ScanOptions.proxy`, or `Settings.browserbase.defaultProxy`):
+
+- the cloud region (`us-west-2`, `us-east-1`, `eu-central-1`, `ap-southeast-1`): a data-centre address;
+- one of the user's named proxies, given to Browserbase as an `external` proxy in the session request
+  with its password. The password is not answered over CDP there, so it stays out of Browserbase's
+  session log; it does leave this machine to Browserbase. A proxy on a local-only address is refused;
+- a Browserbase location (`ProxyChoice::BrowserbaseLocation`: country, optional state and city): a
+  residential exit, best effort. It is billed per megabyte and is the larger part of the cost.
+
+This machine's system proxy means nothing to a cloud browser: asked for, it is stored as "no proxy"
+and the Capture step says so. A Browserbase location with a local browser is refused.
+
+**What a Browserbase scan cannot do.** Load an address only this machine or its network can reach:
+loopback, private and link-local addresses, names without a dot and names under `.local`,
+`.localhost`, `.internal`, `.home.arpa` (`domain/reach.rs`). The built-in demo site is one. Chosen
+explicitly, such a scan is refused before it exists ("This address is on this Mac or your network; a
+cloud browser cannot reach it. Scan it with this Mac's Chrome."); left to the default, it runs
+locally. The headless setting is ignored: the browser there always runs headless (stored as
+`headless: true`), and a person drives it through the live view.
+
+**Timezone and language.** Without a Browserbase proxy the browser reports `America/Los_Angeles` and
+`en-US` in every region. The capture sets the timezone to the region's (`BrowserbaseRegion::timezone`:
+Frankfurt `Europe/Berlin`, Virginia `America/New_York`, Oregon `America/Los_Angeles`, Singapore
+`Asia/Singapore`), also when the visit leaves through the user's own proxy; with a Browserbase
+location the service aligns the timezone itself and the capture leaves it. The language is never
+changed. Both timezones and the language are recorded.
+
+**What is recorded.** `ScanDetail.environment.browser` is `local` (also for every scan stored before)
+or `browserbase` with region, session id, browser version, user agent, proxy kind and requested
+country, the settings sent, original and applied timezone, language, the round trip between app and
+browser, session seconds and proxy bytes. `environment.webdriver` stays what the page read (false
+there), `environment.headless` is true. `ScanSummary.remote` holds region, session seconds and proxy
+bytes, for failed and cancelled scans too: the browser ran and is billed. The LLM budget of a scan is
+not touched by any of this. Proxy bytes are read when the browser ends and once more 30 s later
+(`application/pipeline/proxy_count.rs`), after the scan has finished and only for a scan through a
+proxy, because Browserbase counts them late; the second reading arrives as an ordinary scan update.
+What the service did during the capture (session started, a wait at its limit, the connection, the
+timezone, its own scripts, bodies too large for the connection, the release) is in the audit trail of
+the Capture step as `visitor` entries with `data.activity = "browser"`; a lost connection and a
+release that could not be confirmed are warnings.
+
+**Limits of the connection.** One CDP client per session, a ping every 30 s, closed after 90 s of
+silence, messages up to 64 MiB. A body is only asked for when its reply fits: up to 8 MiB for what may
+be text (Chrome writes every non-ASCII character of a reply as `\uXXXX`, up to six times its size) and
+32 MiB for images, media and fonts; a larger one is read from a copy streamed while it loads, or
+recorded as `tooLargeForRemote` (a `BodyState` of its own). On Browserbase every frame of every site
+runs on the page's session: there are no out-of-process iframes. A session's time limit is 120 s to
+start, the visit (45 s plus twice the observation time for none and scroll, 525 s for browse, 900 s
+for manual) and 120 s of margin.
+
+**Credentials.** API key and project id are two more names in the keychain vault (`browserbase`,
+`browserbase-project`), stored together in one write. `set_browserbase_credentials` checks the key
+with `GET /v1/projects`, which costs nothing, and adopts the key's project when it has one; with
+several the caller chooses. Settings only ever show `connected`, the project's name and its
+concurrency. `test_browserbase` reads project, usage and the number of running browsers and starts
+none. `probe_browserbase` starts one browser for a moment to read what a blank page sees
+(`navigator.webdriver`, user agent, timezone, language, round trip) and is billed as one minute; the
+button says so. Removing the credentials first deletes the profile kept at Browserbase (best effort)
+and puts the default browser back to local.
+
+**Kept browser profile.** With `Settings.browserbase.persistentProfile` on (off by default, and
+independent of the local profile switch) a Browserbase scan keeps its profile in a Browserbase
+context, one per device profile, made on first use (`browserbase_contexts` in SQLite holds the ids).
+Cookies and consent then sit at Browserbase until cleared. One scan at a time uses the profile (one
+turn for both devices, apart from the turn of the local profile); `clear_browserbase_profile` deletes
+the contexts at Browserbase and is refused while a scan holds the turn.
+
+**"I'll browse myself" on Browserbase.** The app's one CDP client keeps recording, and the app opens
+Browserbase's live view of the session in the user's own browser, from Rust with the opener plugin:
+by itself when the visit is ready, and again on `open_browserbase_live_view { scanId }`. The live
+view's address is a credential. It is fetched, opened and dropped inside
+`BrowserbaseAdapter::open_live_view` (`src-tauri/src/adapters.rs`); it is never returned by a
+command, logged, stored or put in an error. Finish and cancel work as for a local manual visit.
+
+**Sessions that outlive the app.** Sessions run without `keepAlive`, so Browserbase ends one when its
+socket closes, and each has a time limit. As a third net every session a capture starts is written
+to the ledger `browserbase_sessions` (ids and times only) and marked when its end is confirmed. At
+start, the first app on a data directory releases what an earlier run left open
+(`BrowserbaseService::release_abandoned_sessions`): nothing happens, and the keychain is not read,
+unless the ledger has such a row; rows older than 6 h 5 min are dropped (no session lives longer);
+for the rest Browserbase is asked for the running sessions that carry this installation's id, and
+only ids that are on the ledger and in that answer are released. The project is shared with another
+application: a session without this installation's id is never listed, read or released.
+
+**ads.txt and sellers.json.** The site's ads.txt is fetched by the app, not by the cloud browser:
+through the user's named proxy when the scan uses one, otherwise the way the app's other requests
+leave this machine (the system's proxy, if any). The Bidder checks step says which, and that a site
+which answers differently per country may have shown the browser another file. sellers.json is
+unchanged.
+
+**Errors.** `ErrorCode` has `browserbaseAuth` (not set up, key or project refused), `browserbaseLimit`
+(at the limit of browsers at once or of new browsers per minute after waiting; a 429 there carries no
+`retry-after`, so the capture waits 5 s at a time for at most 60 s) and `browserbaseFailed`. The
+messages come from the browser crate as whole sentences and are passed through unchanged.
+
+**Where the code is.** `crates/browser/src/browserbase.rs` and `cdp/browserbase/` (REST client, session
+lifecycle, WebSocket transport, built by another implementer; its own notes are in that crate),
+`crates/engine/src/domain/{scan,proxy,reach,environment}.rs` (what may run where),
+`application/browserbase.rs` (credentials, status, probe, profile, start-up sweep),
+`application/pipeline/nodes/capture.rs` (ledger, usage, live view),
+`infrastructure/sqlite/browserbase.rs` (migration 8, ledger, contexts, install id),
+`src-tauri/src/adapters.rs` (`BrowserbaseAdapter`). Tests: `crates/engine/tests/browserbase.rs` with a
+fake capture source and a fake of Browserbase's API, `src-tauri/tests/commands.rs` against a mock of
+the REST API, and `e2e-tauri/browserbase.spec.ts` against a REST mock whose sessions are local
+Chromium browsers reached over a WebSocket.
+
+Not built, on purpose: reconnecting after a dropped connection, `keepAlive`, Verified sessions, session
+replay or logs inside the app, ads.txt fetched from the cloud network, a tunnel to loopback, and any
+abstraction over more than this one provider.
+
 ## Scan configurations
 
 A saved setup to scan one site again and again (`ScanConfiguration`: name, the scan options including
@@ -793,7 +963,8 @@ URL, visitor, pages, headless, profile, consent, observation time, AI on/off, bu
 a seed). SQLite table `scan_configurations`, use cases in `application/configurations.rs`.
 
 - Names are unique without regard to case. Options are validated like a scan start when saved.
-- `start_scan { configurationId }` runs the saved options settled against the settings of that moment,
+- `start_scan { configurationId }` runs the saved options settled against the settings of that moment
+  (where the browser runs included, when the configuration names none),
   records `ScanSummary.configuration` (id and name as they were) and the configuration's last run.
   `list_scans` filters by `configurationId`; exports name the configuration.
 - Deleting a configuration never deletes scans. Deleting a scan only clears the configuration's link
@@ -985,14 +1156,17 @@ mode.
 
 ```
 crates/model     shared types, serde camelCase, ts-rs export
-crates/browser   detect/, cdp/, capture/, injected/tracker.js, injected/consent.js, demo-site/
+crates/browser   detect/, cdp/ (pipe and WebSocket transport, local Chrome, Browserbase sessions),
+                 browserbase.rs (Browserbase's REST API), capture/, injected/tracker.js,
+                 injected/consent.js, demo-site/
 crates/engine    domain/          pure: scan, pricing, telemetry, diagnostics (adapter table, ads.txt and
                                   sellers.json parsers, consent), heuristics (Rule trait), synthesis,
                                   archive (pack format, request document, redaction, kept kinds),
                                   network (classification, exchange matching, OpenRTB), source
                  application/     use cases, ports, pipeline graph and nodes, archive (recording,
                                   analysis, network view, script sources, storage), sellers.json
-                                  source (kept copy or download)
+                                  source (kept copy or download), Browserbase (credentials,
+                                  profile, start-up sweep)
                  infrastructure/  sqlite, anthropic and typesafe (reqwest, shared http retry),
                                   public file fetcher, sellers.json cache, keychain, oxc beautifier,
                                   pack store
@@ -1002,8 +1176,8 @@ src/             app/ (shell, routes), features/*, shared/, lib/api.ts, lib/fake
 
 The engine depends on ports only (`ScanRepository`, `LogRepository`, `SettingsRepository`,
 `ScanConfigurationRepository`, `SecretStore`, `SecretPresenceRepository`, `LlmClient`, `JudgeClient`, `CaptureSource`,
-`PublicFileFetcher`, `SellersJsonCache`, `SourceFormatter`, `PackStore`, `ArchiveRepository`,
-`EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
+`BrowserbaseApi`, `BrowserbaseLedger`, `PublicFileFetcher`, `SellersJsonCache`, `SourceFormatter`,
+`PackStore`, `ArchiveRepository`, `EventSink`, `Clock`, `IdGenerator`), so it has no dependency on the browser crate or on Tauri. The frontend runs in a plain browser against
 the fake backend, which is how Vitest and Playwright test it.
 
 ## Tauri commands
@@ -1047,6 +1221,13 @@ Defined in `src-tauri/src/commands.rs`. Arguments are camelCase JSON; all return
 | `clear_archive` | – | `ArchiveStorage` (network data of all finished scans; reports stay) |
 | `get_sellers_json_cache` | – | `SellersJsonCacheInfo` (`entries`, `storedBytes`) |
 | `clear_sellers_json_cache` | – | `SellersJsonCacheInfo` (the kept sellers.json files; scans are not touched) |
+| `set_browserbase_credentials` | `{ apiKey, projectId? }` | `BrowserbaseCredentialsStatus` (stored only if Browserbase accepts the key; the key's only project is adopted, several are listed to choose from) |
+| `clear_browserbase_credentials` | – | `Settings` (also deletes the profile kept at Browserbase and makes local the default browser) |
+| `test_browserbase` | – | `BrowserbaseStatus` (project, usage, running browsers; starts none, costs nothing) |
+| `probe_browserbase` | `{ region? }` | `BrowserbaseProbe` (starts one browser for a moment: billed as one minute) |
+| `get_browserbase_profile` | – | `BrowserbaseProfileInfo` (from the app's own record) |
+| `clear_browserbase_profile` | – | `BrowserbaseProfileInfo` (`profileBusy` while a scan uses the profile) |
+| `open_browserbase_live_view` | `{ scanId }` | `null` (opens the live view of that scan's browser from the backend; its address never reaches the frontend) |
 
 `provider` is `"anthropic"` (the default when omitted) or `"typesafe"`.
 

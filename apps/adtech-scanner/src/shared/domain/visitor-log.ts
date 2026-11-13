@@ -1,4 +1,5 @@
-import type { LogEntry, PageReach } from "@/bindings";
+import type { BrowserbaseRegion, LogEntry, PageReach } from "@/bindings";
+import { BROWSERBASE_REGIONS } from "./browserbase";
 
 type LinkCandidate = { text: string; href: string; score: number | null };
 
@@ -23,7 +24,22 @@ export type VisitorActivity =
       skipped: { reason: string; count: number }[];
     }
   | { activity: "blocked"; page: number | null; reason: string | null; host: string | null }
-  | { activity: "environment"; page: number | null; webdriver: boolean | null; headless: boolean | null };
+  | { activity: "environment"; page: number | null; webdriver: boolean | null; headless: boolean | null }
+  /** What the capture says about its Browserbase browser. `region` comes with `sessionCreated`. */
+  | { activity: "browser"; page: null; event: RemoteBrowserEvent; region: BrowserbaseRegion | null };
+
+const REMOTE_BROWSER_EVENTS = [
+  "sessionCreated",
+  "rateLimited",
+  "connected",
+  "timezone",
+  "liveView",
+  "bodiesTooLarge",
+  "connectionLost",
+  "released",
+] as const;
+
+type RemoteBrowserEvent = (typeof REMOTE_BROWSER_EVENTS)[number];
 
 const PAGE_REACHES: readonly PageReach[] = [
   "entry",
@@ -106,6 +122,12 @@ export function visitorActivity(entry: LogEntry): VisitorActivity | null {
       return { activity: "blocked", page, reason: text(detail.reason), host: text(detail.host) };
     case "environment":
       return { activity: "environment", page, webdriver: flag(detail.webdriver), headless: flag(detail.headless) };
+    case "browser": {
+      const event = REMOTE_BROWSER_EVENTS.find((known) => known === detail.event);
+      if (!event) return null;
+      const region = BROWSERBASE_REGIONS.find((known) => known === detail.region) ?? null;
+      return { activity: "browser", page: null, event, region };
+    }
     default:
       return null;
   }

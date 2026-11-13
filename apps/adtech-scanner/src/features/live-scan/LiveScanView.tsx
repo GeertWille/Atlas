@@ -5,6 +5,7 @@ import { useCancelScan } from "@/lib/query/hooks";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { ScanIdentity } from "@/shared/components/scan-identity";
 import { DeviceLabel, LiveDot, SEVERITY_ICON, SeverityCountPills } from "@/shared/components/status";
+import { regionPlace } from "@/shared/domain/browserbase";
 import { PIPELINE_NODE_META } from "@/shared/domain/pipeline";
 import { visitorOf } from "@/shared/domain/scan-options";
 import { SEVERITY_META } from "@/shared/domain/vocabulary";
@@ -133,6 +134,13 @@ export function LiveScanView({
   const capturing = current?.node === "capture";
   const visit = deriveVisit(capturing ? (logs ?? []) : []);
   const manualSession = capturing && visitorOf(detail.options) === "manual" && current.startedAt !== null;
+  const { browser } = detail.options;
+  const browserbase = browser?.kind === "browserbase" ? (browser.region ?? null) : null;
+  // Browserbase starts the browser at the beginning of the capture: until then there is no page to be on.
+  const startingRemote =
+    browserbase !== null && (current?.node === "launchBrowser" || (capturing && visit.remote === null));
+  let stepLabel = current ? PIPELINE_NODE_META[current.node].label : "";
+  if (startingRemote) stepLabel = `Starting a Browserbase browser (${regionPlace(browserbase)})…`;
   const cancelButton = <CancelScanButton scanId={summary.id} />;
 
   return (
@@ -150,7 +158,7 @@ export function LiveScanView({
             <DeviceLabel device={summary.device} />
             <span>
               Step {Math.min(progress.settled + 1, progress.total)} of {progress.total}
-              {current ? `: ${PIPELINE_NODE_META[current.node].label}` : ""}
+              {current ? `: ${stepLabel}` : ""}
             </span>
             <span className="tabular-nums">{formatDuration(Math.max(0, now - summary.startedAt))}</span>
             {tokens.input > 0 ? (
@@ -173,8 +181,12 @@ export function LiveScanView({
           startedAt={current.startedAt ?? now}
           now={now}
           pageCount={visit.pages.length}
-          // Without the audit trail there is no telling; the button must not stay locked then.
-          recording={logs === undefined || visit.current !== null}
+          // Without the audit trail there is no telling; the button must not stay locked then. A Browserbase
+          // browser is recording once it says a person can take it over.
+          recording={
+            logs === undefined || (browserbase ? visit.remote?.liveViewReady === true : visit.current !== null)
+          }
+          browserbase={browserbase !== null}
           cancel={cancelButton}
         />
       ) : null}
@@ -186,12 +198,14 @@ export function LiveScanView({
             tabIndex={0}
             className="min-h-0 shrink overflow-y-auto p-4"
           >
-            <PipelineStepper steps={steps} now={now} />
+            <PipelineStepper steps={steps} now={now} browserbase={browserbase} />
           </Panel>
           {/* Beside the feed, not above it: the feed follows its newest line and must not change height mid-scan. */}
-          <VisitPanel visit={visit} />
+          <VisitPanel visit={visit} browserbase={capturing ? browserbase : null} now={now} />
           {/* Checks only report once the capture is over; until then the visit has that room. */}
-          {visit.current && detail.findings.length === 0 ? null : <FindingsSoFar detail={detail} />}
+          {(visit.current || (capturing && browserbase)) && detail.findings.length === 0 ? null : (
+            <FindingsSoFar detail={detail} />
+          )}
         </div>
         <Panel className="flex min-h-0 flex-col overflow-hidden">
           <PanelHeader title="Activity" description="Live audit trail: progress, model calls, tool use and findings" />

@@ -18,11 +18,12 @@ test("configurations are one click from anywhere: sidebar, home and the command 
 
   await page.getByRole("link", { name: "Configurations", exact: true }).click();
   await expect(page).toHaveTitle("Configurations · Ad-Tech Scanner");
-  await expect(rows(page)).toHaveCount(4);
-  // Grouped by site, the site of the newest run first.
+  await expect(rows(page)).toHaveCount(5);
+  // Grouped by site, the site of the newest run first; one that never ran comes last.
   await expect(table(page).getByRole("rowheader")).toHaveText([
     "morningledger.example 1 configuration",
     "sportsdesk.example 3 configurations",
+    "gardenweekly.example 1 configuration",
   ]);
   await expect(row(page, "Sportsdesk from the Netherlands, mobile")).toContainText("Never run");
   await expect(row(page, "Sportsdesk from the Netherlands, mobile")).toContainText("Mobile");
@@ -137,7 +138,7 @@ test("save a scan's options as a configuration, edit it, update it and save a va
   // It all survives a reload.
   await page.goto("/#/configurations");
   await page.reload();
-  await expect(rows(page)).toHaveCount(6);
+  await expect(rows(page)).toHaveCount(7);
   await expect(table(page).getByRole("rowheader", { name: /^techpulse\.example/ })).toHaveText(
     "techpulse.example 2 configurations",
   );
@@ -202,7 +203,7 @@ test("a configuration whose proxy was deleted says so, cannot run, and is fixed 
   await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await palette.getByRole("combobox").fill("run configuration");
-  await expect(palette.getByRole("option", { name: /Run configuration/ })).toHaveCount(3);
+  await expect(palette.getByRole("option", { name: /Run configuration/ })).toHaveCount(4);
   await expect(palette.getByRole("option", { name: /Germany/ })).toHaveCount(0);
   await page.keyboard.press("Escape");
 
@@ -263,12 +264,12 @@ test("find a configuration in a long list, open it by name, switch with the pale
   const search = page.getByRole("searchbox", { name: "Search configurations" });
   await search.fill("netherlands mobile");
   await expect(rows(page)).toHaveCount(1);
-  await expect(page.getByText("1 of 4 configurations")).toBeVisible();
+  await expect(page.getByText("1 of 5 configurations")).toBeVisible();
   await search.fill("nowhere");
   await expect(page.getByText("No configurations match")).toBeVisible();
   await expectNoAxeViolations(page);
   await page.getByRole("button", { name: "Show all configurations" }).click();
-  await expect(rows(page)).toHaveCount(4);
+  await expect(rows(page)).toHaveCount(5);
 
   // By name, the sites and their rows are in alphabetical order.
   await page.getByRole("combobox", { name: "Sort by" }).click();
@@ -349,7 +350,7 @@ test("the palette lists only the most recently run configurations until somethin
   }
   await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
-  // Six can run; five are listed, and none is offered for opening yet.
+  // Seven can run; five are listed, and none is offered for opening yet.
   await expect(palette.getByRole("option", { name: /^Run configuration/ })).toHaveCount(5);
   await expect(palette.getByRole("option", { name: /^Open configuration/ })).toHaveCount(0);
   await palette.getByRole("combobox").fill("ledger");

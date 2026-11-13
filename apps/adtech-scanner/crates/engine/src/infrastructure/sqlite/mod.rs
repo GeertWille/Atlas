@@ -2,6 +2,7 @@
 //! threads so the async runtime's workers never wait on disk.
 
 mod archive;
+mod browserbase;
 mod configurations;
 mod logs;
 mod scans;
@@ -240,6 +241,7 @@ const MIGRATIONS: &[&str] = &[
     "
     UPDATE settings SET data = json_set(data, '$.checkSellersJson', json('true'));
     ",
+    browserbase::MIGRATION,
 ];
 
 /// Implements the scan, configuration, log and settings repositories on one

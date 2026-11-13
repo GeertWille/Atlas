@@ -1,6 +1,7 @@
 import type {
   AdSlot,
   Auction,
+  BrowserChoice,
   DeviceProfile,
   PageMetrics,
   PageReach,
@@ -11,6 +12,7 @@ import type {
   ScriptRecord,
   VisitorBehavior,
 } from "@/bindings";
+import { fakeBrowserbaseVisit } from "./browserbase";
 import { createRng, hashString } from "./rng";
 import { type CapturedSite, captureSite, computeMetrics } from "./site";
 
@@ -26,6 +28,7 @@ export type VisitPlan = {
   headless: boolean;
   persistentProfile: boolean;
   proxy: ProxyUse;
+  browser: BrowserChoice;
 };
 
 /** What went wrong on a later page view, for the rules that only a multi-page visit can trigger. */
@@ -160,17 +163,23 @@ function refreshWithStaleBid(site: CapturedSite): AdSlot | null {
 
 function environmentOf(plan: VisitPlan, entry: CapturedSite): ScanEnvironment {
   const mobile = plan.device === "mobile";
-  const realWindow = !plan.headless && !mobile && (plan.visitor === "browse" || plan.visitor === "manual");
+  const remote = plan.browser.kind === "browserbase";
+  const realWindow = !remote && !plan.headless && !mobile && (plan.visitor === "browse" || plan.visitor === "manual");
   return {
     visitor: plan.visitor,
     seed: plan.seed,
     headless: plan.headless,
     persistentProfile: plan.persistentProfile,
-    // A scripted visit never hides that it is automated; in a manual session a person drives the browser.
-    webdriver: plan.visitor !== "manual",
+    // A local scripted visit shows the page that it is automated. A Browserbase browser never does, and
+    // neither does a local one that a person drives.
+    webdriver: !remote && plan.visitor !== "manual",
     userAgentOverridden: mobile,
     viewportOverridden: !realWindow,
     emulatedMobile: mobile,
+    browser:
+      plan.browser.kind === "browserbase"
+        ? { kind: "browserbase", ...fakeBrowserbaseVisit(plan.browser, plan.proxy, plan.seed) }
+        : { kind: "local" },
     detectors:
       entry.archetype === "slow"
         ? [{ vendor: "DoubleVerify", kind: "invalidTrafficMeasurement", host: "cdn.doubleverify.com" }]

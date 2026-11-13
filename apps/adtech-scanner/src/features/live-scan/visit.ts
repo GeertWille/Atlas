@@ -1,4 +1,4 @@
-import type { LogEntry, PageReach } from "@/bindings";
+import type { BrowserbaseRegion, LogEntry, PageReach } from "@/bindings";
 import { describeSkipped, visitorActivity } from "@/shared/domain/visitor-log";
 
 type VisitPage = {
@@ -19,6 +19,20 @@ export type VisitState = {
   actions: { id: string; message: string; warning: boolean }[];
   /** What the last link choice would not follow, e.g. "Skipped 14 links: 9 off-site, 3 inside ads". */
   skipped: string | null;
+  /** The Browserbase browser of the visit, once Browserbase has started it. `null` on this Mac. */
+  remote: RemoteBrowser | null;
+  /** The capture is waiting for Browserbase or has lost it, in the backend's words. */
+  remoteNotice: string | null;
+};
+
+export type RemoteBrowser = {
+  region: BrowserbaseRegion | null;
+  /** When Browserbase started the browser: its billed time counts from here. */
+  startedAt: number;
+  /** When the browser ended or the connection to it was lost. */
+  endedAt: number | null;
+  /** A person can take the browser over in Browserbase's live view. */
+  liveViewReady: boolean;
 };
 
 const ACTIONS_SHOWN = 3;
@@ -28,6 +42,8 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
   const pages = new Map<number, VisitPage>();
   const actions: VisitState["actions"] = [];
   let skipped: string | null = null;
+  let remote: RemoteBrowser | null = null;
+  let remoteNotice: string | null = null;
 
   for (const entry of logs) {
     const activity = visitorActivity(entry);
@@ -45,6 +61,18 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
         break;
       case "environment":
         // Said once in the activity feed; the panel follows where the visit is, not what it is.
+        break;
+      case "browser":
+        if (activity.event === "sessionCreated") {
+          remote = { region: activity.region, startedAt: entry.ts, endedAt: null, liveViewReady: false };
+          remoteNotice = null;
+        } else if (activity.event === "rateLimited" || activity.event === "connectionLost") {
+          remoteNotice = entry.message;
+        }
+        if (remote && activity.event === "liveView") remote = { ...remote, liveViewReady: true };
+        if (remote && (activity.event === "released" || activity.event === "connectionLost")) {
+          remote = { ...remote, endedAt: entry.ts, liveViewReady: false };
+        }
         break;
       case "linkChoice": {
         const count = activity.skipped.reduce((sum, { count }) => sum + count, 0);
@@ -66,6 +94,8 @@ export function deriveVisit(logs: LogEntry[]): VisitState {
     current: ordered[ordered.length - 1] ?? null,
     actions: actions.slice(-ACTIONS_SHOWN),
     skipped,
+    remote,
+    remoteNotice,
   };
 }
 

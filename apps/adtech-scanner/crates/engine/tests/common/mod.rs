@@ -9,11 +9,13 @@ use std::time::Duration;
 use adscan_engine::application::archive::Archive;
 use adscan_engine::application::archive::network::NetworkView;
 use adscan_engine::application::archive::source::ScriptSources;
+use adscan_engine::application::browserbase::BrowserbaseService;
 use adscan_engine::application::configurations::ConfigurationService;
 use adscan_engine::application::pipeline::PipelineDeps;
 use adscan_engine::application::ports::{
-    CaptureError, CaptureSession, CaptureSource, EventSink, FetchError, FileVersion, PublicFile,
-    PublicFileFetcher, PublicFileRequest, SecretStore, SourceFormatter,
+    BrowserbaseApi, BrowserbaseError, CaptureError, CaptureSession, CaptureSource, EventSink,
+    FetchError, FileVersion, ProjectUsage, PublicFile, PublicFileFetcher, PublicFileRequest,
+    RemoteSessionUsage, SecretStore, SourceFormatter,
 };
 use adscan_engine::application::scans::ScanService;
 use adscan_engine::application::sellers_json::SellersJsonSource;
@@ -28,10 +30,11 @@ use adscan_engine::infrastructure::sqlite::SqliteStore;
 use adscan_engine::infrastructure::system::{SystemClock, UuidGenerator};
 use adscan_engine::infrastructure::typesafe::TypesafeClient;
 use adscan_model::{
-    BodyAdmission, BodyOffer, BrowserInfo, Capture, CaptureActivity, CaptureRequest, CapturedBody,
-    CapturedPage, CapturedScript, DeviceProfile, NetworkRecord, PageReach, ScanDetail, ScanEvent,
-    ScanOptions, ScanProfileInfo, ScanStatus, TrackedAdUnit, TrackerEvent, TrackerEventKind as Ev,
-    Viewport,
+    BodyAdmission, BodyOffer, BrowserInfo, BrowserbaseCredentials, BrowserbaseProbe,
+    BrowserbaseProject, BrowserbaseRegion, Capture, CaptureActivity, CaptureRequest, CapturedBody,
+    CapturedPage, CapturedScript, DeviceProfile, NetworkRecord, PageReach, RemoteSessionEvent,
+    ScanDetail, ScanEvent, ScanOptions, ScanProfileInfo, ScanStatus, TrackedAdUnit, TrackerEvent,
+    TrackerEventKind as Ev, Viewport, VisitorBehavior,
 };
 use async_trait::async_trait;
 use serde_json::json;
@@ -423,7 +426,16 @@ pub struct FakeCaptureSource {
     pub network: Mutex<Vec<NetworkRecord>>,
     /// Whether the last capture was given a sink at all.
     pub had_sink: Mutex<Option<bool>>,
+    /// The Browserbase credentials each capture was handed.
+    pub browserbase_credentials: Mutex<Vec<Option<BrowserbaseCredentials>>>,
+    /// What a capture at Browserbase reports when its browser has ended:
+    /// seconds and proxy bytes. `None`: the end could not be confirmed, so
+    /// nothing is reported.
+    pub remote_release: Mutex<Option<(Option<f64>, Option<f64>)>>,
 }
+
+/// The session id every capture of the fake reports.
+pub const REMOTE_SESSION_ID: &str = "session-1";
 
 impl FakeCaptureSource {
     pub fn new(behavior: CaptureBehavior) -> Self {
@@ -436,6 +448,8 @@ impl FakeCaptureSource {
             profile_clears: Mutex::new(0),
             network: Mutex::new(Vec::new()),
             had_sink: Mutex::new(None),
+            browserbase_credentials: Mutex::new(Vec::new()),
+            remote_release: Mutex::new(Some((Some(41.0), Some(0.0)))),
         }
     }
 }
@@ -455,7 +469,24 @@ impl CaptureSource for FakeCaptureSource {
         request: CaptureRequest,
         session: CaptureSession,
     ) -> Result<Capture, CaptureError> {
+        let manual = request.visitor == VisitorBehavior::Manual;
         self.requests.lock().unwrap().push(request);
+        self.browserbase_credentials.lock().unwrap().push(
+            session
+                .browserbase
+                .as_ref()
+                .map(|access| access.credentials.clone()),
+        );
+        if let Some(access) = &session.browserbase {
+            (access.on_session)(RemoteSessionEvent::Created {
+                session_id: REMOTE_SESSION_ID.into(),
+            });
+            if manual {
+                (access.on_session)(RemoteSessionEvent::LiveViewReady {
+                    session_id: REMOTE_SESSION_ID.into(),
+                });
+            }
+        }
         self.proxy_passwords
             .lock()
             .unwrap()
@@ -488,7 +519,7 @@ impl CaptureSource for FakeCaptureSource {
                 sink.record(record);
             }
         }
-        match &self.behavior {
+        let result = match &self.behavior {
             CaptureBehavior::Return(capture) => Ok((**capture).clone()),
             CaptureBehavior::Fail(error) => Err(error.clone()),
             CaptureBehavior::BlockUntilCancelled => {
@@ -500,7 +531,18 @@ impl CaptureSource for FakeCaptureSource {
                 () = session.cancel.cancelled() => Err(CaptureError::Cancelled),
             },
             CaptureBehavior::NoBrowser => Err(CaptureError::BrowserNotFound),
+        };
+        let released = *self.remote_release.lock().unwrap();
+        if let (Some(access), Some((session_seconds, proxy_bytes))) =
+            (&session.browserbase, released)
+        {
+            (access.on_session)(RemoteSessionEvent::Released {
+                session_id: REMOTE_SESSION_ID.into(),
+                session_seconds,
+                proxy_bytes,
+            });
         }
+        result
     }
 
     async fn scan_profile_info(&self) -> ScanProfileInfo {
@@ -519,6 +561,197 @@ impl CaptureSource for FakeCaptureSource {
         }
         *self.profile_clears.lock().unwrap() += 1;
         Ok(())
+    }
+}
+
+pub const BROWSERBASE_KEY: &str = "bb_live_test_key";
+
+pub fn browserbase_credentials() -> BrowserbaseCredentials {
+    BrowserbaseCredentials {
+        api_key: BROWSERBASE_KEY.into(),
+        project_id: "project-1".into(),
+    }
+}
+
+pub fn browserbase_project(id: &str, name: &str) -> BrowserbaseProject {
+    BrowserbaseProject {
+        id: id.into(),
+        name: name.into(),
+        concurrency: 3,
+    }
+}
+
+/// Browserbase's API as the engine sees it. Records every call that changes
+/// or costs something, by name.
+pub struct FakeBrowserbase {
+    /// What `projects` answers for [`BROWSERBASE_KEY`]; any other key is
+    /// refused.
+    pub projects: Mutex<Result<Vec<BrowserbaseProject>, BrowserbaseError>>,
+    /// The running sessions that carry this installation's id.
+    pub running: Mutex<Vec<String>>,
+    /// What `session_usage` says a session's proxy traffic is.
+    pub proxy_bytes: Mutex<Option<f64>>,
+    /// When set, every call but `projects` fails with it.
+    pub failure: Mutex<Option<BrowserbaseError>>,
+    pub calls: Mutex<Vec<String>>,
+}
+
+impl Default for FakeBrowserbase {
+    fn default() -> Self {
+        Self {
+            projects: Mutex::new(Ok(vec![browserbase_project("project-1", "Local")])),
+            running: Mutex::new(Vec::new()),
+            proxy_bytes: Mutex::new(Some(0.0)),
+            failure: Mutex::new(None),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl FakeBrowserbase {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn call(&self, name: String) -> Result<(), BrowserbaseError> {
+        if let Some(failure) = self.failure.lock().unwrap().clone() {
+            return Err(failure);
+        }
+        self.calls.lock().unwrap().push(name);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl BrowserbaseApi for FakeBrowserbase {
+    async fn projects(&self, api_key: &str) -> Result<Vec<BrowserbaseProject>, BrowserbaseError> {
+        if api_key != BROWSERBASE_KEY {
+            return Err(BrowserbaseError::Auth(
+                "Browserbase did not accept the API key. Check it in Settings.".into(),
+            ));
+        }
+        self.projects.lock().unwrap().clone()
+    }
+
+    async fn project(
+        &self,
+        credentials: &BrowserbaseCredentials,
+    ) -> Result<BrowserbaseProject, BrowserbaseError> {
+        self.call("project".into())?;
+        self.projects
+            .lock()
+            .unwrap()
+            .clone()?
+            .into_iter()
+            .find(|project| project.id == credentials.project_id)
+            .ok_or_else(|| {
+                BrowserbaseError::Auth(
+                    "This Browserbase project was not found for this key.".into(),
+                )
+            })
+    }
+
+    async fn project_usage(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+    ) -> Result<ProjectUsage, BrowserbaseError> {
+        self.call("projectUsage".into())?;
+        Ok(ProjectUsage {
+            browser_minutes: 483.0,
+            proxy_bytes: 1_998_349_077.0,
+        })
+    }
+
+    async fn running_session_count(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+    ) -> Result<u32, BrowserbaseError> {
+        self.call("runningSessionCount".into())?;
+        // One more than this installation's: the project is shared.
+        Ok(self.running.lock().unwrap().len() as u32 + 1)
+    }
+
+    async fn running_sessions_of(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        install_id: &str,
+    ) -> Result<Vec<String>, BrowserbaseError> {
+        self.call(format!("runningSessionsOf:{install_id}"))?;
+        Ok(self.running.lock().unwrap().clone())
+    }
+
+    async fn session_usage(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<RemoteSessionUsage, BrowserbaseError> {
+        self.call(format!("sessionUsage:{session_id}"))?;
+        Ok(RemoteSessionUsage {
+            ended: true,
+            session_seconds: Some(41.0),
+            proxy_bytes: *self.proxy_bytes.lock().unwrap(),
+        })
+    }
+
+    async fn release_session(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<(), BrowserbaseError> {
+        self.call(format!("release:{session_id}"))?;
+        self.running
+            .lock()
+            .unwrap()
+            .retain(|running| running != session_id);
+        Ok(())
+    }
+
+    async fn create_context(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+    ) -> Result<String, BrowserbaseError> {
+        self.call("createContext".into())?;
+        let made = self
+            .calls()
+            .iter()
+            .filter(|call| *call == "createContext")
+            .count();
+        Ok(format!("context-{made}"))
+    }
+
+    async fn delete_context(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        context_id: &str,
+    ) -> Result<(), BrowserbaseError> {
+        self.call(format!("deleteContext:{context_id}"))
+    }
+
+    async fn probe(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        region: BrowserbaseRegion,
+        install_id: &str,
+    ) -> Result<BrowserbaseProbe, BrowserbaseError> {
+        self.call(format!("probe:{}:{install_id}", region.as_str()))?;
+        Ok(BrowserbaseProbe {
+            region,
+            browser_version: Some("Chrome/157.0.8103.79".into()),
+            user_agent: Some("Mozilla/5.0 (X11; Linux x86_64) Chrome/157.0.0.0".into()),
+            webdriver: Some(false),
+            timezone: Some("America/Los_Angeles".into()),
+            language: Some("en-US".into()),
+            round_trip_ms: Some(118.6),
+            session_seconds: Some(4.0),
+        })
+    }
+
+    async fn open_live_view(
+        &self,
+        _credentials: &BrowserbaseCredentials,
+        session_id: &str,
+    ) -> Result<(), BrowserbaseError> {
+        self.call(format!("openLiveView:{session_id}"))
     }
 }
 
@@ -625,6 +858,8 @@ pub struct Harness {
     pub store: SqliteStore,
     pub events: Arc<RecordingSink>,
     pub capture: Arc<FakeCaptureSource>,
+    pub browserbase: Arc<BrowserbaseService>,
+    pub browserbase_api: Arc<FakeBrowserbase>,
     pub files: Arc<FakePublicFiles>,
     pub sellers_json: Arc<SellersJsonSource>,
     pub archive: Archive,
@@ -633,6 +868,10 @@ pub struct Harness {
     /// Where the pack files are; removed with the harness.
     pub data_dir: Arc<tempfile::TempDir>,
 }
+
+/// How long the tests wait before a Browserbase session's proxy traffic is
+/// read again; the app waits half a minute.
+pub const PROXY_COUNT_DELAY: Duration = Duration::from_millis(50);
 
 pub fn fast_retry() -> RetryPolicy {
     RetryPolicy {
@@ -791,12 +1030,22 @@ fn assemble_in(
         Arc::new(LocalSellersJsonCache::new(data_dir.path())),
         Arc::new(SystemClock),
     ));
+    let browserbase_api = Arc::new(FakeBrowserbase::default());
+    let browserbase = Arc::new(BrowserbaseService::new(
+        browserbase_api.clone(),
+        Arc::new(store.clone()),
+        settings.clone(),
+        Arc::new(SystemClock),
+    ));
     let deps = PipelineDeps {
         scans: Arc::new(store.clone()),
         logs: Arc::new(store.clone()),
         llm,
         judge,
         capture: capture.clone(),
+        browserbase: browserbase_api.clone(),
+        remote_sessions: Arc::new(store.clone()),
+        proxy_count_delay: PROXY_COUNT_DELAY,
         files: files.clone(),
         sellers_json: sellers_json.clone(),
         formatter: formatter.clone(),
@@ -806,12 +1055,19 @@ fn assemble_in(
         ids: Arc::new(UuidGenerator),
     };
     Harness {
-        scans: ScanService::new(deps, settings.clone(), Arc::new(store.clone())),
+        scans: ScanService::new(
+            deps,
+            settings.clone(),
+            Arc::new(store.clone()),
+            browserbase.profile_turn(),
+        ),
         settings,
         configurations,
         secrets,
         events,
         capture,
+        browserbase,
+        browserbase_api,
         files,
         sellers_json,
         network: NetworkView::new(archive.clone(), Arc::new(store.clone())),
