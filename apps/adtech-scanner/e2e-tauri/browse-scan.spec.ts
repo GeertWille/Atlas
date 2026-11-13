@@ -67,12 +67,12 @@ test("a browse visit of the demo site records page views and finds what one page
   expect(detail.slots.some((slot) => slot.page > 0)).toBe(true);
   expect(detail.options).toMatchObject({ visitor: "browse", extraPages: 2, headless: true, seed: 20261112 });
 
-  // The visit is reported as what it was: automated and headless.
+  // The visit is reported as what it was: headless, without the automation marker.
   expect(detail.environment).toMatchObject({
     visitor: "browse",
     seed: 20261112,
     headless: true,
-    webdriver: true,
+    webdriver: false,
     persistentProfile: false,
     proxy: { kind: "system" },
   });

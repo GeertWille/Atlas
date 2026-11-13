@@ -482,7 +482,8 @@ async fn a_browse_visit_of_the_demo_site_follows_links_and_reports_per_page_view
         "a later page view has slots"
     );
 
-    // The environment is reported as it was: an automated, headless visit.
+    // The environment is reported as it was: a headless visit, without the
+    // automation marker, which no visit carries.
     let environment = detail
         .environment
         .as_ref()
@@ -492,8 +493,8 @@ async fn a_browse_visit_of_the_demo_site_follows_links_and_reports_per_page_view
     assert!(environment.headless);
     assert_eq!(
         environment.webdriver,
-        Some(true),
-        "scripted visits do not hide"
+        Some(false),
+        "the scanner's window carries no automation marker"
     );
     assert_eq!(environment.proxy.kind, ProxyKind::System);
 
