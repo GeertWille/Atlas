@@ -234,6 +234,10 @@ without destroying the old ones.
 - A legacy keychain item whose deletion failed after its secret moved into the vault stays in the
   keychain; it is never read again while the vault exists, and clearing the key in the app does not
   remove it.
+- **The document of a cross-site iframe that is removed as it finishes loading has no body**
+  (`unavailable`, "the frame or worker that loaded it is gone"): about one per three visits of a
+  heavy news page. What frames and workers fetch themselves is covered since 2026-11-13; see
+  "Bodies of frames and workers that go away" under Scan archive for what was tried.
 - Very small scripts can fit entirely inside one stored excerpt.
 - The Prebid-age rule compares with a constant, not with the web: `CURRENT_PREBID_MAJOR` (11, from
   `npm view prebid.js version` = 11.49.0 on 2026-11-12) and `MAX_PREBID_MAJORS_BEHIND` (3) in
@@ -277,6 +281,52 @@ to the cap: answers of more than 64 MiB, or more of them at once than fit, are `
 itself keeps at most 32 MiB per response for the scanner (`maxResourceBufferSize`). "First party"
 is the registrable domain of the page view a request belongs to (the page the tab showed after
 redirects), not of the address the scan was started with.
+
+**Bodies of frames and workers that go away.** A body is read with `Network.getResponseBody` when
+its response has finished, on the session that reported it. A cross-site iframe or a worker that is
+removed in the task that read its last answer takes its session with it; no ordering on the
+scanner's side helps (measured: the command sent in the handler of `loadingFinished` is refused 85
+to 100% of the time when the target is removed at once). So every request a frame or worker
+*announces* that may carry a kept body (document, script, stylesheet, XHR, fetch, other; or a
+recognised bid request) is also asked to send its body along while it loads
+(`Network.streamResourceContent`, Chrome 122 and later; `capture/network/assembly.rs` holds the
+state, `capture/recorder.rs` asks). The copy is used only when the target refuses the normal read
+and the copy is whole (its length is the decoded length the browser reported); it then goes to the
+sink, the bid-response reader and the record like any body, cut to what the sink admitted and not
+at all when the sink skipped it. Copies of open requests are held up to 32 MiB together
+(`MAX_COPIED_BYTES`); one that does not fit is given up. A Chrome without the method says so once
+per capture and is read as before. Nothing is paused or delayed for this. Measured on the test
+Chromium (153), frames and workers removed in the task that read a fetch, 20 rounds per case:
+before, 41 of 60 bodies lost in cross-site frames and 60 of 60 in workers; after, 0 of 120 when
+the answer takes 30 ms, 2 of 120 at 5 ms, 7 of 120 when it comes at once from the same machine.
+Frames in the page's own process never lost a body. Cost on a heavy real page (theguardian.com,
+about 1,000 requests, half of them in frames and workers, 25 s): app CPU 0.94 to 1.08 s before,
+0.95 to 1.29 s after (the page varies more than that between runs), peak memory 54 MB both, no
+change in load or first-auction time.
+
+What this does **not** cover, and what was tried:
+
+- **The document of a cross-site iframe itself** (announced by its parent, finished in the
+  frame). This is the loss actually seen on real pages: about one in three visits of
+  theguardian.com loses one, a 7 kB SafeFrame container that is removed as it finishes loading.
+  The frame's target does not exist before the response is committed, so there is nothing to ask
+  beforehand; asked at attach or at the response, Chrome answers "Request with the provided ID does
+  not exists"; asked at the frame's first data event the copy was whole 5 times in 15.
+- **An answer that is complete within a few ms of the request** (disk cache, a server on the same
+  machine) in a target that then goes away at once: the question arrives too late and the body is
+  `unavailable`, as before.
+- `Network.configureDurableMessages` (Chrome 145 and later; keeps bodies in the network service)
+  does make all of these readable through the tab's session after the target is gone, the iframe
+  document included, but **must not be turned on**: once a session has it, Chrome 153 answers that
+  session's reads only from that store. Bodies of 4 MB and more that arrive at local speed come
+  back cut short without an error or not at all, answers served by a service worker or from the
+  memory cache are missing, and so are the fetches of a worker started by a same-process iframe.
+  Three existing tests fail with it. Worth another look when Chrome fixes it: with the store only
+  as a second source this gap would close.
+- Asking for the copy when the response headers arrive (the first moment the sink's admission
+  could be known) is too late 90% of the time; reading through the parent's or the browser's
+  session does not find the body; `Network.loadNetworkResource` makes a new request; nothing keeps
+  a session alive past its frame.
 
 **What is stored, replaced, and never stored.** The rules are `domain/archive/redact.rs`; they run
 before a byte reaches the pack, and the request rows in SQLite never hold a query string, a header or
