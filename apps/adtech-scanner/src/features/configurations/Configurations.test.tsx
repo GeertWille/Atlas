@@ -289,12 +289,18 @@ test("a configuration that runs on Browserbase carries its mark, and is broken o
   });
   const first = await renderWithApp(<Connected />);
   const row = within(await rowOf("Example via Frankfurt"));
-  expect(row.getByTitle("Runs in a Browserbase Frankfurt browser")).toHaveTextContent("Browserbase Frankfurt");
-  expect(row.getByText("Belgium (Browserbase proxy)")).toBeInTheDocument();
+  expect(row.getByTitle("Runs in a Browserbase browser in Frankfurt (eu-central-1)")).toHaveTextContent(
+    "Browserbase Frankfurt",
+  );
+  // The mark says Browserbase once: the proxy beside it is the country, with the whole of it as its title.
+  expect(row.getByTitle("Belgium (Browserbase proxy)")).toHaveTextContent(/^Belgium$/);
   expect(row.getByRole("button", { name: "Run Example via Frankfurt" })).toBeEnabled();
 
   // It is found by where it runs.
   await user.type(screen.getByRole("searchbox"), "browserbase frankfurt");
+  expect(await rowOf("Example via Frankfurt")).toBeInTheDocument();
+  await user.clear(screen.getByRole("searchbox"));
+  await user.type(screen.getByRole("searchbox"), "eu-central-1");
   expect(await rowOf("Example via Frankfurt")).toBeInTheDocument();
   first.unmount();
 

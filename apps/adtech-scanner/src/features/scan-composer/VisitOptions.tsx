@@ -41,7 +41,7 @@ function AutomationNote({
       "This visit is automated, but Browserbase's browser does not tell the page (navigator.webdriver is false). The report records it.";
   } else if (showBrowser) {
     note =
-      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), and with its window shown it is not headless either.";
+      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), and it is not hidden (headless) either.";
   }
   return <OptionHelp>{note}</OptionHelp>;
 }

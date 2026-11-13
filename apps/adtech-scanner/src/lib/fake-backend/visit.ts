@@ -170,9 +170,9 @@ function environmentOf(plan: VisitPlan, entry: CapturedSite): ScanEnvironment {
     seed: plan.seed,
     headless: plan.headless,
     persistentProfile: plan.persistentProfile,
-    // A local scripted visit shows the page that it is automated. A Browserbase browser never does, and
-    // neither does a local one that a person drives.
-    webdriver: !remote && plan.visitor !== "manual",
+    // No browser tells the page: Chrome on this Mac is started with the automation flag off in every mode,
+    // and Browserbase starts its own that way. A local visit is recognisable only when it runs headless.
+    webdriver: false,
     userAgentOverridden: mobile,
     viewportOverridden: !realWindow,
     emulatedMobile: mobile,

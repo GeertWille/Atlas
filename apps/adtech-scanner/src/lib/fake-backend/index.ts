@@ -325,7 +325,7 @@ class FakeBackend {
     return summary;
   }
 
-  private play(scan: StoredScan, { options, proxy }: ResolvedScan) {
+  private play(scan: StoredScan, { options, proxy, systemProxyDropped }: ResolvedScan) {
     const { id } = scan.detail.summary;
     const context: ScenarioContext = {
       scanId: id,
@@ -336,6 +336,7 @@ class FakeBackend {
       jevFails: this.config.jevFails,
       projectName: this.settings.browserbase.projectName,
       browserbaseFailure: this.config.browserbaseFailure,
+      systemProxyDropped,
     };
     let { beats, result } = buildScenario(context);
     let cursor = 0;

@@ -133,9 +133,10 @@ const metric = (label: string, body: string): EvidenceDraft => ({
  */
 function identifiableAsAutomated(visit: CapturedVisit): FindingDraft | null {
   const { environment } = visit;
+  // Headless counts on this computer only: nothing a page reads in a Browserbase browser shows it.
   const indicators = [
     environment.webdriver ? "navigator.webdriver was true" : null,
-    environment.headless ? "the browser ran headless" : null,
+    environment.headless && environment.browser.kind === "local" ? "the browser ran headless" : null,
   ].filter((indicator) => indicator !== null);
   const vendors = environment.detectors.map((detector) => detector.vendor);
   if (vendors.length === 0 || indicators.length === 0) return null;

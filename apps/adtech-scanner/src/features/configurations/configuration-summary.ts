@@ -1,5 +1,5 @@
 import type { ScanConfiguration, ScanSummary, Settings } from "@/bindings";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { locationLabel, regionName, regionPlace } from "@/shared/domain/browserbase";
 import { hasMissingProxy, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import { pluralize } from "@/shared/lib/format";
@@ -28,23 +28,32 @@ export function visitorSummary(configuration: ScanConfiguration): string {
 }
 
 /**
- * "Browserbase Frankfurt" for a configuration that runs there, and the same without the name for where a
- * mark already says it; `null` for one that runs on this Mac or follows the settings.
+ * Where a configuration that runs on Browserbase runs: the region by its name, "Frankfurt (eu-central-1)",
+ * and the place alone for a narrow cell where a mark already says Browserbase and a title carries the rest.
+ * `null` for one that runs on this Mac or follows the settings.
  */
 export function browserSummary(
   configuration: ScanConfiguration,
   settings: Pick<Settings, "browserbase">,
-): { full: string; place: string } | null {
+): { region: string; place: string } | null {
   const { browser } = configuration.options;
   if (browser?.kind !== "browserbase") return null;
-  const place = regionPlace(browser.region ?? settings.browserbase.region);
-  return { full: `Browserbase ${place}`, place };
+  const region = browser.region ?? settings.browserbase.region;
+  return { region: regionName(region), place: regionPlace(region) };
 }
 
-/** The proxy a run would use; a configuration that names none follows the settings at run time. */
-export function proxySummary(configuration: ScanConfiguration, settings: Pick<Settings, "proxies">): string {
+/**
+ * The proxy a run would use; a configuration that names none follows the settings at run time. `short`
+ * leaves "(Browserbase proxy)" off a Browserbase location, for a row that already carries the Browserbase mark.
+ */
+export function proxySummary(
+  configuration: ScanConfiguration,
+  settings: Pick<Settings, "proxies">,
+  short = false,
+): string {
   const { proxy } = configuration.options;
   if (!proxy) return "Settings default";
+  if (short && proxy.kind === "browserbaseLocation") return locationLabel(proxy);
   const label = proxyChoiceLabel(proxy, settings.proxies);
   return hasMissingProxy(configuration.options, settings) ? `${label} (deleted)` : label;
 }

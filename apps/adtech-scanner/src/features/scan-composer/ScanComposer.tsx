@@ -244,7 +244,9 @@ export function ScanComposer({
         </p>
       ) : null}
       <Collapsible open={optionsOpen} onOpenChange={setOptionsOpen} className="border-t">
-        <div className="flex min-h-11 items-center justify-between gap-4 py-2 pr-2 pl-4">
+        {/* Room for two lines where the window is narrow: a summary that wraps there (a cloud region is a long
+            name) must not push the options down when the browser, the visitor or the proxy changes. */}
+        <div className="flex min-h-14 items-center justify-between gap-4 py-2 pr-2 pl-4 xl:min-h-11">
           <ComposerSummary
             id={summaryId}
             parts={scanSummary({ form: effective, settings, ai, budgetUsd, proxyMissing, remote, browserMissing })}

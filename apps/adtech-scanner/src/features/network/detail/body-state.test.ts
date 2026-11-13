@@ -45,6 +45,21 @@ describe("bodyNotice", () => {
     expect(notices.slice(0, 4).every((notice) => notice?.storage === false)).toBe(true);
   });
 
+  it("says of a body a Browserbase browser could not hand over that it was not read, and why", () => {
+    const notice = bodyNotice(
+      makeBodyRef({ state: "tooLargeForRemote", bytes: 12_163_481, storedBytes: 0, mime: "application/json" }),
+      "response",
+    );
+    expect(notice).toEqual({
+      title: "Body not read (was 11.6 MB)",
+      detail:
+        "It was too large to bring over the connection to the Browserbase browser in one piece, so the scanner left it there.",
+      storage: false,
+    });
+    // Not the sentence of any other missing body.
+    expect(notice?.title).not.toBe(bodyNotice(makeBodyRef({ state: "dropped", bytes: 12_163_481 }), "response")?.title);
+  });
+
   it("leaves the size out when it is unknown", () => {
     expect(bodyNotice(makeBodyRef({ state: "dropped", bytes: 0, storedBytes: 0 }), "response")?.title).toBe(
       "Body not kept",

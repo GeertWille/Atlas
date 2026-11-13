@@ -181,7 +181,10 @@ describe("a browse visit of the reference-bug site", () => {
     expect(choice?.activity === "linkChoice" && choice.skipped[0]).toEqual({ reason: "off-site", count: 9 });
 
     const environment = logs.find((entry) => visitorActivity(entry)?.activity === "environment");
-    expect(environment?.message).toBe("This visit is identifiable as automated: navigator.webdriver is true");
+    // A browse visit is shown, and Chrome does not tell the page: nothing gives it away.
+    expect(environment?.message).toBe(
+      "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
+    );
     expect(logs.find((entry) => visitorActivity(entry)?.activity === "blocked")?.level).toBe("warn");
     // The visitor's entries belong to the capture step and nowhere else.
     expect(new Set(logs.filter((entry) => entry.kind === "visitor").map((entry) => entry.node))).toEqual(
@@ -189,7 +192,7 @@ describe("a browse visit of the reference-bug site", () => {
     );
     expect(detail.environment).toMatchObject({
       visitor: "browse",
-      webdriver: true,
+      webdriver: false,
       headless: false,
       viewportOverridden: false,
     });
@@ -220,7 +223,7 @@ describe("the automated-traffic finding", () => {
     const finding = detail.findings.find((candidate) => /automated/.test(candidate.title));
     expect(finding).toMatchObject({ severity: "info", category: "configuration", source: "heuristic", pages: [] });
     expect(finding?.description).toContain(
-      "the pages could tell: navigator.webdriver was true, the browser ran headless. DoubleVerify is on the page",
+      "the pages could tell: the browser ran headless. DoubleVerify is on the page",
     );
     expect(detail.environment?.detectors).toEqual([
       { vendor: "DoubleVerify", kind: "invalidTrafficMeasurement", host: "cdn.doubleverify.com" },
@@ -229,8 +232,24 @@ describe("the automated-traffic finding", () => {
 
   test("does not fire without such a vendor on the page", async () => {
     const { detail } = await run(fresh(), options);
-    expect(detail.environment).toMatchObject({ webdriver: true, detectors: [] });
+    expect(detail.environment).toMatchObject({ webdriver: false, detectors: [] });
     expect(detail.findings.some((candidate) => /automated/.test(candidate.title))).toBe(false);
+  });
+
+  test("local Chrome never reports navigator.webdriver true: only a hidden browser gives a scripted visit away", async () => {
+    const hidden = await run(fresh(), { ...options, url: SLOW, headless: true });
+    expect(hidden.detail.environment).toMatchObject({ webdriver: false, headless: true });
+    expect(hidden.logs.find((entry) => visitorActivity(entry)?.activity === "environment")?.message).toBe(
+      "This visit is identifiable as automated: headless",
+    );
+    // The same page with the window shown: nothing the page reads says automated, so the finding stays away.
+    const shown = await run(fresh(), { ...options, url: SLOW, headless: false });
+    expect(shown.detail.environment).toMatchObject({ webdriver: false, headless: false });
+    expect(shown.logs.find((entry) => visitorActivity(entry)?.activity === "environment")?.message).toBe(
+      "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
+    );
+    expect(shown.detail.findings.some((candidate) => /automated/.test(candidate.title))).toBe(false);
+    expect(JSON.stringify([hidden.logs, shown.logs, hidden.detail.findings])).not.toMatch(/webdriver (is|was) true/);
   });
 });
 

@@ -57,7 +57,13 @@ test("scan defaults: the visitor behaviour and the pages of a browse visit are s
   ]);
   await user.click(screen.getByRole("option", { name: "Browse like a visitor" }));
   await waitFor(async () => expect((await api.getSettings()).defaultVisitor).toBe("browse"));
-  expect(within(defaults).getByText(/Scripted visits are automated and say so to the page/)).toBeInTheDocument();
+  // Chrome reports navigator.webdriver false in every mode: only a hidden browser gives a scripted visit away.
+  expect(
+    within(defaults).getByText(
+      /Scripted visits are automated\. Chrome does not tell the page, but a hidden \(headless\) browser is recognisable\./,
+    ),
+  ).toBeInTheDocument();
+  expect(within(defaults).queryByText(/say so to the page/)).toBeNull();
 
   expect(within(defaults).getByText("3 pages")).toBeInTheDocument();
   await user.click(within(defaults).getByRole("button", { name: "More pages" }));

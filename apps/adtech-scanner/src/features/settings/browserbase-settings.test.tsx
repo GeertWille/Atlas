@@ -111,6 +111,28 @@ test("a key with several projects asks which one to use", async () => {
   expect(await browserbase.findByText(/Connected to the project “Staging”\./)).toBeInTheDocument();
 });
 
+test("a project chosen for one key is not sent with another key", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ConnectedSettings />);
+  const browserbase = await section();
+  await user.type(await keyInput(), "bb_live_multi_0123456789");
+  await user.click(browserbase.getByRole("button", { name: "Save Browserbase key" }));
+  await user.click(await browserbase.findByRole("combobox", { name: "Project" }));
+  await user.click(await screen.findByRole("option", { name: "Staging" }));
+
+  // Another key, with one project of its own: "Staging" is not among them.
+  await user.clear(await keyInput());
+  await user.type(await keyInput(), KEY);
+  await user.click(browserbase.getByRole("button", { name: "Save Browserbase key" }));
+  expect(await browserbase.findByRole("alert")).toHaveTextContent(
+    "This Browserbase project was not found for this key.",
+  );
+  // The choice that belonged to the other key is gone with its list, so the next save is not stuck on it.
+  expect(browserbase.queryByRole("combobox", { name: "Project" })).toBeNull();
+  await user.click(browserbase.getByRole("button", { name: "Save Browserbase key" }));
+  expect(await browserbase.findByText(/Connected to the project “Local”\./)).toBeInTheDocument();
+});
+
 test("test connection is free and shows the project, its limit and what is running", async () => {
   const user = userEvent.setup();
   await api.setBrowserbaseCredentials(KEY);
@@ -138,7 +160,7 @@ test("the page check states its cost on the button's description and shows what 
   const browserbase = await section();
   const button = await browserbase.findByRole("button", { name: "Check what a page sees" });
   expect(button).toHaveAccessibleDescription(
-    "Starts a Browserbase browser for under a minute in Frankfurt, the default region, and reads what a blank page can tell there. Browserbase bills it as one browser minute, about $0.002.",
+    "Starts a Browserbase browser for under a minute in Frankfurt (eu-central-1), the default region, and reads what a blank page can tell there. Browserbase bills it as one browser minute, about $0.002 at its list price.",
   );
   const probe = vi.spyOn(api, "probeBrowserbase");
   await user.click(button);
@@ -212,11 +234,16 @@ test("the default location: the region, one of your proxies, or a Browserbase lo
   await renderWithApp(<ConnectedSettings />);
   const browserbase = await section();
   const location = await browserbase.findByRole("combobox", { name: "Default location" });
-  expect(location).toHaveTextContent("Region only: leaves from Oregon");
+  expect(location).toHaveTextContent("Region only: leaves from Oregon (us-west-2)");
+  // The price is Browserbase's list price; no plan is named.
+  expect(browserbase.getByText(/^Where a Browserbase scan leaves from/)).toHaveTextContent(
+    "billed per megabyte: $12 per GB at Browserbase's list price.",
+  );
+  expect(browserbase.queryByText(/Developer|Startup|overage/)).toBeNull();
 
   await user.click(location);
   expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
-    "Region only: leaves from Oregon",
+    "Region only: leaves from Oregon (us-west-2)",
     "Belgium",
     "Browserbase location…",
   ]);
@@ -229,13 +256,24 @@ test("the default location: the region, one of your proxies, or a Browserbase lo
   await user.click(location);
   await user.click(await screen.findByRole("option", { name: "Browserbase location…" }));
   const save = browserbase.getByRole("button", { name: "Save location" });
+  // Choosing it stores nothing yet, and the form says so until it is saved.
+  expect(browserbase.getByRole("status")).toHaveTextContent("Not saved yet");
   await user.click(save);
-  expect(await browserbase.findByRole("alert")).toHaveTextContent(
-    "Enter the country as a two-letter code, for example BE.",
-  );
+  const alert = await browserbase.findByRole("alert");
+  expect(alert).toHaveTextContent("Enter the country as a two-letter code, for example BE.");
+  expect(browserbase.getByLabelText("Default country code")).toBeInvalid();
+  expect(browserbase.getByLabelText("Default country code")).toHaveAttribute("aria-describedby", alert.id);
   expect((await api.getSettings()).browserbase.defaultProxy.kind).toBe("profile");
   await user.type(browserbase.getByLabelText("Default country code"), "us");
-  await user.type(browserbase.getByLabelText("Default state code, optional"), "ny");
+  // The field that is wrong is the one marked, not always the first.
+  await user.type(browserbase.getByLabelText("Default state code, optional"), "n");
+  await user.click(save);
+  expect(await browserbase.findByRole("alert")).toHaveTextContent(
+    "Enter the state as a two-letter code, for example NY.",
+  );
+  expect(browserbase.getByLabelText("Default state code, optional")).toBeInvalid();
+  expect(browserbase.getByLabelText("Default country code")).toBeValid();
+  await user.type(browserbase.getByLabelText("Default state code, optional"), "y");
   await user.type(browserbase.getByLabelText("Default city, optional"), "new york");
   await user.click(save);
   await waitFor(async () =>
@@ -249,8 +287,10 @@ test("the default location: the region, one of your proxies, or a Browserbase lo
   await waitFor(() => expect(location).toHaveTextContent("Browserbase location: New York, NY, United States"));
   // What is typed is what is stored: there is nothing left to save until it is edited again.
   expect(save).toBeDisabled();
+  expect(browserbase.queryByRole("status")).toBeNull();
   await user.type(browserbase.getByLabelText("Default city, optional"), " city");
   expect(save).toBeEnabled();
+  expect(browserbase.getByRole("status")).toHaveTextContent("Not saved yet");
   expect(location).toHaveTextContent("Browserbase location…");
 
   await user.click(location);

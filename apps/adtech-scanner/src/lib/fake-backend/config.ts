@@ -15,7 +15,10 @@ export type FakeConfig = {
   instant?: boolean;
   /** A script source larger than this many bytes is "too large to show", instead of the backend's 8 MB. */
   sourceLimitBytes?: number;
-  /** Browserbase scans fail: the project is at its limit of browsers, or the connection to the browser drops. */
+  /**
+   * What goes wrong with Browserbase scans: the project is at its limit of browsers, the connection to the
+   * browser drops, or the scan succeeds without Browserbase confirming that the browser has ended.
+   */
   browserbaseFailure?: BrowserbaseFailure;
 };
 
@@ -28,6 +31,10 @@ const LATENCY_KEY = "adscan.fake.latency";
 const BROWSERBASE_KEY = "adscan.fake.browserbase";
 const DEFAULT_SPEED = 3;
 
+function isBrowserbaseFailure(value: string | null): value is BrowserbaseFailure {
+  return value === "limit" || value === "lost" || value === "unconfirmed";
+}
+
 function isProfile(value: string | null): value is FakeProfile {
   return value === "seeded" || value === "fresh" || value === "no-browser";
 }
@@ -36,8 +43,8 @@ function isProfile(value: string | null): value is FakeProfile {
  * `?fakeProfile=fresh&fakeSpeed=40&fakeJev=fail&fakeRows=3000&fakeSourceLimit=100000&fakeLatency=off&fakeBrowserbase=limit`
  * configures the fake backend; the values are remembered in localStorage so they survive reloads and hash
  * navigation. `fakeJev=ok` ends the outage, `fakeRows=0` the padding, `fakeSourceLimit=0` the lowered limit,
- * `fakeLatency=on` brings the simulated delays back, and `fakeBrowserbase=limit` or `lost` makes Browserbase
- * scans fail until `fakeBrowserbase=ok`.
+ * `fakeLatency=on` brings the simulated delays back, and `fakeBrowserbase=limit`, `lost` or `unconfirmed`
+ * makes Browserbase scans go wrong that way until `fakeBrowserbase=ok`.
  */
 export function readFakeConfig(): FakeConfig {
   const params = new URLSearchParams(window.location.search);
@@ -56,7 +63,7 @@ export function readFakeConfig(): FakeConfig {
     localStorage.setItem(SOURCE_LIMIT_KEY, sourceLimitParam);
   }
   if (latencyParam === "off" || latencyParam === "on") localStorage.setItem(LATENCY_KEY, latencyParam);
-  if (browserbaseParam === "limit" || browserbaseParam === "lost" || browserbaseParam === "ok") {
+  if (browserbaseParam === "ok" || isBrowserbaseFailure(browserbaseParam)) {
     localStorage.setItem(BROWSERBASE_KEY, browserbaseParam);
   }
   const switches = [profileParam, speedParam, jevParam, rowsParam, sourceLimitParam, latencyParam, browserbaseParam];
@@ -83,6 +90,6 @@ export function readFakeConfig(): FakeConfig {
     rows: Number(localStorage.getItem(ROWS_KEY)) || 0,
     sourceLimitBytes: Number(localStorage.getItem(SOURCE_LIMIT_KEY)) || undefined,
     instant: localStorage.getItem(LATENCY_KEY) === "off",
-    browserbaseFailure: storedBrowserbase === "limit" || storedBrowserbase === "lost" ? storedBrowserbase : undefined,
+    browserbaseFailure: isBrowserbaseFailure(storedBrowserbase) ? storedBrowserbase : undefined,
   };
 }

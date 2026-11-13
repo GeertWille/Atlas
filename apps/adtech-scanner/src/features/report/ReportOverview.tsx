@@ -1,15 +1,24 @@
 import { TriangleAlertIcon } from "lucide-react";
-import type { ScanDetail } from "@/bindings";
+import type { LogEntry, ScanDetail } from "@/bindings";
 import { Stat, StatGrid } from "@/shared/components/stat";
 import { Badge } from "@/shared/ui/badge";
 import { BrowserbaseVisitDetails } from "./BrowserbaseVisitDetails";
+import { browserbaseLogFacts } from "./browserbase-visit";
 import { EnvironmentNotice } from "./EnvironmentNotice";
 import { buildKeyMetrics, detectedStack } from "./key-metrics";
 import { splitOverview } from "./overview-caveats";
 import { isMultiPage } from "./pages/page-scope";
 import { visitFacts } from "./visit-summary";
 
-export function ReportOverview({ detail }: { detail: ScanDetail }) {
+export function ReportOverview({
+  detail,
+  logs,
+}: {
+  detail: ScanDetail;
+  /** The audit trail, once loaded: it says two things about a Browserbase browser that the scan itself does not. */
+  logs?: LogEntry[];
+}) {
+  const browserbaseLog = browserbaseLogFacts(logs);
   const stack = detectedStack(detail.metrics, detail.summary.prebidVersion);
   const { summary, caveats } = splitOverview(detail.overview ?? "");
   const visit = visitFacts(detail);
@@ -48,8 +57,8 @@ export function ReportOverview({ detail }: { detail: ScanDetail }) {
                   </Badge>
                 ))}
               </div>
-              <BrowserbaseVisitDetails detail={detail} />
-              <EnvironmentNotice detail={detail} />
+              <BrowserbaseVisitDetails detail={detail} log={browserbaseLog} />
+              <EnvironmentNotice detail={detail} serviceScripts={browserbaseLog.serviceScripts} />
             </div>
           ) : null}
         </div>

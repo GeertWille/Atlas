@@ -70,15 +70,18 @@ test("a configuration that runs on Browserbase says where, and cannot run once t
     makeConfiguration({ options: { ...makeConfiguration().options, browser: { kind: "browserbase", region } } });
   expect(browserSummary(makeConfiguration(), settings)).toBeNull();
   expect(browserSummary(cloud("eu-central-1"), settings)).toEqual({
-    full: "Browserbase Frankfurt",
+    region: "Frankfurt (eu-central-1)",
     place: "Frankfurt",
   });
   // Without a region of its own it runs in the settings' region.
-  expect(browserSummary(cloud(), settings)?.full).toBe("Browserbase Oregon");
+  expect(browserSummary(cloud(), settings)?.region).toBe("Oregon (us-west-2)");
   expect(configurationProblem(cloud("eu-central-1"), settings)).toBeNull();
   expect(configurationProblem(cloud("eu-central-1"), { ...settings, browserbase: settingsFixture.browserbase })).toBe(
     "Browserbase is not set up any more. Add its key in Settings, or edit the configuration to run on this Mac.",
   );
   const location = withProxy({ kind: "browserbaseLocation", country: "BE" });
   expect(proxySummary(location, settings)).toBe("Belgium (Browserbase proxy)");
+  // Beside the Browserbase mark of a row the country is enough; nothing else is ever shortened.
+  expect(proxySummary(location, settings, true)).toBe("Belgium");
+  expect(proxySummary(withProxy({ kind: "system" }), settings, true)).toBe("System proxy");
 });

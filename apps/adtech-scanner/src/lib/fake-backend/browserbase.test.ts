@@ -3,7 +3,7 @@ import type { LogEntry, ScanEvent, ScanOptions, ScanStatus } from "@/bindings";
 import { ApiError } from "@/lib/api/error";
 import type { ApiPort } from "@/lib/api/port";
 import { visitorActivity } from "@/shared/domain/visitor-log";
-import type { BrowserbaseFailure } from "./browserbase";
+import { type BrowserbaseFailure, sessionTimeoutSeconds } from "./browserbase";
 import { createFakeBackend } from "./index";
 
 const page: ScanOptions = {
@@ -298,9 +298,33 @@ describe("a Browserbase scan", () => {
     expect(launch?.summary).toBe("Browserbase, eu-central-1");
     expect(logs.map((entry) => entry.message)).toContain("Using Browserbase in eu-central-1 (project Local)");
     expect(logs.some((entry) => /remote debugging|headless\)/.test(entry.message))).toBe(false);
-    expect(remoteEvents(logs)).toEqual(["sessionCreated", "connected", "timezone", "released"]);
+    // Every capture says what Browserbase ran of its own in the pages, before the browser ends.
+    expect(remoteEvents(logs)).toEqual([
+      "sessionCreated",
+      "connected",
+      "timezone",
+      "bodiesTooLarge",
+      "serviceScripts",
+      "released",
+    ]);
+    const ownScripts = logs.find((entry) => {
+      const activity = visitorActivity(entry);
+      return activity?.activity === "browser" && activity.event === "serviceScripts";
+    });
+    expect(ownScripts).toMatchObject({
+      level: "info",
+      message:
+        "Browserbase ran 5 scripts of its own in the page (271667 characters); they are not among the scan's scripts",
+      data: { activity: "browser", page: null, detail: { event: "serviceScripts", count: 5, characters: 271_667 } },
+    });
+    // They are not among the scan's scripts.
+    expect(detail.scripts.some((script) => /browserbase|stealth/i.test(script.url))).toBe(false);
     expect(logs.map((entry) => entry.message)).toContain(
       "Timezone set to Europe/Berlin to match the region (the browser reported America/Los_Angeles)",
+    );
+    // The time limit is the browser crate's: two minutes to start, 45 s and twice the observation, two of margin.
+    expect(logs.map((entry) => entry.message)).toContainEqual(
+      expect.stringMatching(/^Browserbase started a browser in eu-central-1 \(session .+, time limit 325 s\)$/),
     );
     expect(logs.find((entry) => visitorActivity(entry)?.activity === "environment")?.message).toBe(
       "This visit is not flagged as automated: navigator.webdriver is false (Browserbase starts its browser that way); it runs headless, which its user agent does not show",
@@ -331,6 +355,70 @@ describe("a Browserbase scan", () => {
     expect(JSON.stringify({ detail, logs })).not.toMatch(
       /wss?:\/\/|connectUrl|signingKey|debuggerFullscreenUrl|bb_live_/,
     );
+  });
+
+  test("the time limit of a session follows the visit", () => {
+    expect(sessionTimeoutSeconds("scroll", 20)).toBe(325);
+    expect(sessionTimeoutSeconds("none", 5)).toBe(295);
+    expect(sessionTimeoutSeconds("browse", 20)).toBe(765);
+    expect(sessionTimeoutSeconds("manual", 20)).toBe(1140);
+  });
+
+  test("a body too large for the remote connection is listed without its text, and the capture says how many", async () => {
+    const api = await connected();
+    const { detail, logs, id } = await run(api, onBrowserbase);
+    const line = logs.find((entry) => {
+      const activity = visitorActivity(entry);
+      return activity?.activity === "browser" && activity.event === "bodiesTooLarge";
+    });
+    expect(line).toMatchObject({
+      message: "1 response body was too large for the connection to the remote browser and was not read",
+      data: { detail: { event: "bodiesTooLarge", count: 1, largestBytes: 12_163_481 } },
+    });
+    expect(visitorActivity(line as LogEntry)).toMatchObject({ event: "bodiesTooLarge", count: 1 });
+
+    const rows = (await api.listNetworkRequests(id, { limit: 500 })).rows;
+    const oversized = rows.filter((row) => row.url.endsWith("/feed/all-seasons.json"));
+    expect(oversized).toHaveLength(1);
+    const request = await api.getNetworkRequest(id, oversized[0]?.id ?? "");
+    // Over the 8 MiB a remote browser is asked for as text.
+    expect(request.responseBody).toMatchObject({ state: "tooLargeForRemote", bytes: 12_163_481, storedBytes: 0 });
+    expect(request.responseBody.bytes).toBeGreaterThan(8 * 1024 * 1024);
+    const body = await api.getNetworkBody(id, oversized[0]?.id ?? "", { side: "response", maxBytes: 64 });
+    expect(body).toMatchObject({ state: "tooLargeForRemote", text: null });
+    expect(detail.network?.availability).toBe("available");
+
+    // A browser on this Mac has no such limit, and no such request or line.
+    const local = await run(api, { ...page, browser: { kind: "local" } });
+    expect(remoteEvents(local.logs)).toEqual([]);
+    const localRows = (await api.listNetworkRequests(local.id, { limit: 500 })).rows;
+    expect(localRows.some((row) => row.url.endsWith("/feed/all-seasons.json"))).toBe(false);
+  });
+
+  test("this Mac's own proxy is dropped for a Browserbase browser, and the capture says so once", async () => {
+    const api = await connected();
+    const dropped =
+      "The system proxy of this Mac does not apply to a Browserbase browser: the visit leaves from Browserbase's us-west-2 region.";
+    const { detail, logs } = await run(api, { ...onBrowserbase, proxy: { kind: "system" } });
+    expect(detail.options.proxy).toEqual({ kind: "none" });
+    expect(logs.filter((entry) => entry.message === dropped)).toMatchObject([{ node: "capture", level: "info" }]);
+    // Asked for nothing, or for no proxy: there is nothing to say.
+    expect((await run(api, onBrowserbase)).logs.some((entry) => entry.message === dropped)).toBe(false);
+    expect(
+      (await run(api, { ...onBrowserbase, proxy: { kind: "none" } })).logs.some((entry) => entry.message === dropped),
+    ).toBe(false);
+  });
+
+  test("on a page with a detection vendor a Browserbase visit is not called identifiable: headless does not show there", async () => {
+    const api = await connected();
+    const slow = "https://www.techpulse.example/reviews";
+    const remote = await run(api, { ...onBrowserbase, url: slow });
+    expect(remote.detail.environment).toMatchObject({ headless: true, webdriver: false });
+    expect(remote.detail.environment?.detectors.map((detector) => detector.vendor)).toEqual(["DoubleVerify"]);
+    expect(remote.detail.findings.some((finding) => /identifiable as automated/.test(finding.title))).toBe(false);
+    // The same page from this Mac's hidden Chrome is.
+    const local = await run(api, { ...page, url: slow, browser: { kind: "local" } });
+    expect(local.detail.findings.some((finding) => /identifiable as automated/.test(finding.title))).toBe(true);
   });
 
   test("a Browserbase location leaves the timezone to Browserbase, and its traffic count arrives late", async () => {
@@ -446,6 +534,37 @@ describe("simulated failures", () => {
     expect(detail.summary.remote).toMatchObject({ region: "us-west-2" });
   });
 
+  test("an end that Browserbase never confirms: the scan completes, warns, and reports no usage", async () => {
+    const api = await connected(fresh("unconfirmed"));
+    const { detail, logs, events } = await run(api, {
+      ...onBrowserbase,
+      proxy: { kind: "browserbaseLocation", country: "BE" },
+    });
+    expect(remoteEvents(logs)).toEqual([
+      "sessionCreated",
+      "connected",
+      "timezone",
+      "bodiesTooLarge",
+      "serviceScripts",
+      "releaseUnconfirmed",
+    ]);
+    expect(
+      logs.find(
+        (entry) =>
+          entry.message ===
+          "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest",
+      ),
+    ).toMatchObject({ level: "warn", kind: "visitor", data: { detail: { event: "releaseUnconfirmed" } } });
+    // The scan itself is whole.
+    expect(detail.summary.status).toBe("completed");
+    expect(detail.findings.length).toBeGreaterThan(0);
+    // Nothing was read from a browser nobody saw end: neither figure is a zero, and none arrives later.
+    expect(detail.summary.remote).toEqual({ region: "us-west-2", sessionSeconds: null, proxyBytes: null });
+    expect(detail.environment?.browser).toMatchObject({ sessionSeconds: null, proxyBytes: null });
+    const summaries = events.flatMap((event) => (event.type === "scanUpdated" ? [event.summary] : []));
+    expect(summaries.at(-1)).toMatchObject({ status: "completed", remote: { proxyBytes: null } });
+  });
+
   test("scans on this Mac are not affected", async () => {
     const api = await connected(fresh("limit"));
     expect((await run(api, { ...page, browser: { kind: "local" } })).detail.summary.status).toBe("completed");
@@ -485,11 +604,28 @@ describe("seeded history", () => {
         proxy: { kind: "browserbaseLocation", country: "BE" },
       },
     });
+    // One scan was stored before the browser could run anywhere else: its options do not say where it ran,
+    // and its environment reads as this Mac.
+    const old = await api.getScan("seed-sportsdesk-mobile");
+    expect(old.options).not.toHaveProperty("browser");
+    expect(old.environment?.browser).toEqual({ kind: "local" });
     // Every other scan of the history ran on this Mac.
     const all = await api.listScans({ limit: 100 });
     expect(all.items.filter((summary) => summary.remote !== null).map((summary) => summary.id)).toEqual([
       "seed-morningledger-browserbase",
     ]);
+  });
+
+  test("the options of a scan stored without a browser, sent back as they are, follow today's default", async () => {
+    // What a re-scan must not do (it adds `browser: local` first, see `rescanOptions`).
+    const api = seeded();
+    await api.updateSettings({ defaultBrowser: "browserbase" });
+    const { options } = await api.getScan("seed-sportsdesk-mobile");
+    const { seed: _seed, ...again } = options;
+    const asStored = await run(api, again);
+    expect(asStored.detail.options.browser).toMatchObject({ kind: "browserbase" });
+    const pinned = await run(api, { ...again, browser: { kind: "local" } });
+    expect(pinned.detail.options.browser).toEqual({ kind: "local" });
   });
 
   test("a configuration that uses Browserbase runs, and cannot once the credentials are gone", async () => {

@@ -168,8 +168,9 @@ export function applyScanEvent(client: QueryClient, event: ScanEvent) {
       void client.invalidateQueries({ queryKey });
     }
     void refetchFresh(client, queryKeys.stats);
-    // The scan no longer holds the kept browser profile.
+    // The scan no longer holds the kept browser profile, on this Mac or at Browserbase.
     void client.invalidateQueries({ queryKey: queryKeys.scanProfile });
+    void client.invalidateQueries({ queryKey: queryKeys.browserbaseProfile });
   }
   // A scan no loaded list has seen yet is new.
   if (!listed || statusChanged) void refetchFresh(client, queryKeys.scanLists);

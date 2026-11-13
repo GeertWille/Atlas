@@ -90,7 +90,11 @@ function Report({ detail, notice }: { detail: ScanDetail; notice: ReactNode }) {
       <PageContent className="animate-enter">
         {notice}
         <ReportHeader detail={detail} />
-        {completed ? <ReportOverview detail={detail} /> : <ScanOutcomeNotice summary={detail.summary} />}
+        {completed ? (
+          <ReportOverview detail={detail} logs={logs.data} />
+        ) : (
+          <ScanOutcomeNotice summary={detail.summary} />
+        )}
         {completed ? (
           <PageSwitcher
             pages={detail.pages}

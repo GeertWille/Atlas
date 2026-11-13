@@ -1,11 +1,7 @@
 import { useId } from "react";
 import type { Settings } from "@/bindings";
 import type { AiAvailability } from "@/shared/domain/ai-availability";
-import {
-  BROWSERBASE_LIST_PRICE,
-  BROWSERBASE_PLAN_CAVEAT,
-  type BrowserbaseEstimate,
-} from "@/shared/domain/browserbase";
+import { BROWSERBASE_LIST_PRICE, BROWSERBASE_PLAN_CAVEAT, type BrowserbaseEstimate } from "@/shared/domain/browserbase";
 import { cn } from "@/shared/lib/cn";
 import { formatUsd } from "@/shared/lib/format";
 import { Input } from "@/shared/ui/input";

@@ -221,7 +221,7 @@ describe("where the browser runs", () => {
       errors: {
         url: undefined,
         budget: undefined,
-        location: "Enter the country as a two-letter code, for example BE.",
+        location: { field: "country", message: "Enter the country as a two-letter code, for example BE." },
       },
     });
   });
@@ -232,17 +232,25 @@ describe("where the browser runs", () => {
     expect(optionsOf({ ...cloud, proxy: "profile:proxy-be" }).proxy).toEqual({ kind: "profile", id: "proxy-be" });
   });
 
-  test("moving the browser takes the proxy along where it can go", () => {
-    expect(withBrowser(form({ proxy: "system" }), "browserbase")).toMatchObject({
-      browser: "browserbase",
-      proxy: "settings",
-    });
-    expect(withBrowser({ ...cloud, proxy: "browserbaseLocation", locationCountry: "BE" }, "local")).toMatchObject({
-      browser: "local",
-      proxy: "settings",
-      // What was typed is kept for when the browser moves back.
-      locationCountry: "BE",
-    });
+  test("moving the browser changes nothing else: a proxy that cannot go along is masked, not forgotten", () => {
+    const system = form({ proxy: "system" });
+    const moved = withBrowser(system, "browserbase");
+    expect(moved).toEqual({ ...system, browser: "browserbase" });
+    // On Browserbase the settings hold, and nothing of this Mac's proxy is sent.
+    expect(proxyFieldFor(moved, true)).toBe("settings");
+    expect(optionsOf(moved).proxy).toBeUndefined();
+    // Back on this Mac the choice is what it was.
+    const back = withBrowser(moved, "local");
+    expect(back).toEqual(system);
+    expect(optionsOf(back).proxy).toEqual({ kind: "system" });
+
+    const located = { ...cloud, proxy: "browserbaseLocation", locationCountry: "BE" } as const;
+    const local = withBrowser(located, "local");
+    expect(local).toEqual({ ...located, browser: "local" });
+    expect(proxyFieldFor(local, false)).toBe("settings");
+    expect(optionsOf(local).proxy).toBeUndefined();
+    expect(optionsOf(withBrowser(local, "browserbase")).proxy).toEqual({ kind: "browserbaseLocation", country: "BE" });
+
     expect(withBrowser(form({ proxy: "profile:proxy-be" }), "browserbase").proxy).toBe("profile:proxy-be");
   });
 

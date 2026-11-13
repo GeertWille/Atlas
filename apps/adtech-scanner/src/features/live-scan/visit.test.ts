@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import type { LogEntry } from "@/bindings";
 import { makeLog } from "@/test/fixtures";
-import { deriveVisit, formatTimer } from "./visit";
+import { deriveVisit, formatTimer, UNCONFIRMED_END_COST } from "./visit";
 
 let sequence = 0;
 const visitor = (activity: string, message: string, detail: unknown, page = 0): LogEntry => {
@@ -31,7 +31,7 @@ test("pages, the current page, the latest actions and the skip summary come from
   const visit = deriveVisit([
     makeLog({ message: "Navigating to the page" }),
     pageView(0, "/", "entry"),
-    visitor("environment", "This visit is identifiable as automated: navigator.webdriver is true", { webdriver: true }),
+    visitor("environment", "This visit is identifiable as automated: headless", { webdriver: false, headless: true }),
     visitor("action", "Clicked the consent banner", { action: "consent" }),
     visitor("action", "Moved the pointer over a heading", { action: "pointerMove" }),
     visitor("action", "Scrolled to 30%", { action: "scroll", scrollDepth: 0.3 }),
@@ -60,7 +60,7 @@ test("pages, the current page, the latest actions and the skip summary come from
   expect(visit.skipped).toBe("Skipped 14 links: 9 off-site, 3 inside ads, 2 sign-in, checkout and the like");
   // The environment entry is no action of the visitor: it is not listed among them.
   expect(visit.actions.map((action) => action.message)).not.toContain(
-    "This visit is identifiable as automated: navigator.webdriver is true",
+    "This visit is identifiable as automated: headless",
   );
 });
 
@@ -90,7 +90,7 @@ const remote = (event: string, message: string, detail: Record<string, unknown> 
     id: `l${sequence}`,
     ts,
     kind: "visitor",
-    level: event === "connectionLost" ? "warn" : "info",
+    level: event === "connectionLost" || event === "releaseUnconfirmed" ? "warn" : "info",
     message,
     data: { activity: "browser", page: null, detail: { event, ...detail } },
   });
@@ -102,7 +102,13 @@ test("a Browserbase browser is known from the moment Browserbase starts it, with
     remote("sessionCreated", "Browserbase started a browser in eu-central-1", { region: "eu-central-1" }, 5_000),
     remote("connected", "Connected to Chrome/157.0.8103.79, round trip 119 ms", {}, 5_400),
   ]);
-  expect(started.remote).toEqual({ region: "eu-central-1", startedAt: 5_000, endedAt: null, liveViewReady: false });
+  expect(started.remote).toEqual({
+    region: "eu-central-1",
+    startedAt: 5_000,
+    endedAt: null,
+    endUnconfirmed: false,
+    liveViewReady: false,
+  });
   // No page yet: the browser is there before the visit is anywhere.
   expect(started.current).toBeNull();
 });
@@ -116,16 +122,52 @@ test("the live view is ready once the capture says so, and not after the browser
     region: "us-west-2",
     startedAt: 5_000,
     endedAt: 46_000,
+    endUnconfirmed: false,
     liveViewReady: false,
   });
 });
 
+test("an end that Browserbase did not confirm stops the clock, closes the live view and warns about the bill", () => {
+  const session = remote("sessionCreated", "started", { region: "us-west-2" }, 5_000);
+  const ready = remote("liveView", "The browser is ready for you in Browserbase's live view", {}, 7_000);
+  const unconfirmed = remote(
+    "releaseUnconfirmed",
+    "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest",
+    {},
+    46_000,
+  );
+  const visit = deriveVisit([session, ready, unconfirmed]);
+  expect(visit.remote).toEqual({
+    region: "us-west-2",
+    startedAt: 5_000,
+    endedAt: 46_000,
+    endUnconfirmed: true,
+    liveViewReady: false,
+  });
+  expect(visit.remoteNotice).toBe(
+    `Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest. ${UNCONFIRMED_END_COST}`,
+  );
+  // After a lost connection the clock keeps the moment the connection went, and the newer warning replaces the older.
+  const lostFirst = deriveVisit([
+    session,
+    remote("connectionLost", "The connection to the Browserbase browser was lost", {}, 30_000),
+    unconfirmed,
+  ]);
+  expect(lostFirst.remote).toMatchObject({ endedAt: 30_000, endUnconfirmed: true });
+  expect(lostFirst.remoteNotice).toMatch(/^Browserbase did not confirm/);
+  // A confirmed end is not unconfirmed.
+  expect(deriveVisit([session, remote("released", "ended", {}, 46_000)]).remote?.endUnconfirmed).toBe(false);
+});
+
 test("waiting at the limit and a lost connection are passed on in the backend's words", () => {
-  const waiting = deriveVisit([remote("rateLimited", "Browserbase is at its limit; trying again in 5 s")]);
-  expect(waiting).toMatchObject({ remote: null, remoteNotice: "Browserbase is at its limit; trying again in 5 s" });
+  const waiting = deriveVisit([remote("rateLimited", "Browserbase is at its limit of browsers; trying again in 5 s")]);
+  expect(waiting).toMatchObject({
+    remote: null,
+    remoteNotice: "Browserbase is at its limit of browsers; trying again in 5 s",
+  });
   // Once the browser starts, the wait is over.
   const started = deriveVisit([
-    remote("rateLimited", "Browserbase is at its limit; trying again in 5 s"),
+    remote("rateLimited", "Browserbase is at its limit of browsers; trying again in 5 s"),
     remote("sessionCreated", "started", { region: "us-west-2" }, 9_000),
   ]);
   expect(started.remoteNotice).toBeNull();

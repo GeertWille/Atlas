@@ -21,8 +21,11 @@ type FakeOptions = {
   sourceLimit?: number;
   /** `off`: the fake answers at once, for the specs that time the interface itself. */
   latency?: "on" | "off";
-  /** Browserbase scans fail: the project is at its limit of browsers, or the connection to the browser drops. */
-  browserbase?: "ok" | "limit" | "lost";
+  /**
+   * What goes wrong with Browserbase scans: the project is at its limit of browsers, the connection to the
+   * browser drops, or the scan succeeds without Browserbase confirming that the browser has ended.
+   */
+  browserbase?: "ok" | "limit" | "lost" | "unconfirmed";
 };
 
 /** Opens the app at a hash route with the fake backend configured through its query parameters. */
@@ -102,6 +105,16 @@ export async function expectWindowDoesNotScroll(page: Page) {
 }
 
 export async function expectNoAxeViolations(page: Page, disabledRules: string[] = []) {
+  // A menu or dialog that is still fading in is measured with the contrast of that moment, not its own: wait
+  // for what is opening to have opened. Animations that never end (a pulse, a shimmer) are left running.
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((animation) => animation.effect?.getComputedTiming().iterations !== Number.POSITIVE_INFINITY)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    ),
+  );
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .disableRules(disabledRules)

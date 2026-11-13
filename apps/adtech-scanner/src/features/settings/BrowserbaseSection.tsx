@@ -1,38 +1,16 @@
 import { CheckCircle2Icon } from "lucide-react";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { useId, useState } from "react";
 import { toast } from "sonner";
-import type {
-  BrowserbaseProbe,
-  BrowserbaseProject,
-  BrowserbaseRegion,
-  BrowserbaseStatus,
-  Settings,
-  SettingsPatch,
-} from "@/bindings";
-import { toApiError } from "@/lib/api";
+import type { BrowserbaseProject, BrowserbaseRegion, Settings, SettingsPatch } from "@/bindings";
 import {
   useBrowserbaseProfile,
   useClearBrowserbaseCredentials,
   useClearBrowserbaseProfile,
-  useProbeBrowserbase,
   useSetBrowserbaseCredentials,
-  useTestBrowserbase,
 } from "@/lib/query/hooks";
 import { KeyForm, type KeySaveResult } from "@/shared/components/api-key-form";
-import {
-  BROWSERBASE_DISCLOSURE,
-  BROWSERBASE_RATES,
-  BROWSERBASE_REGION_META,
-  BROWSERBASE_REGIONS,
-  cityName,
-  formatTraffic,
-  locationLabel,
-  parseLocation,
-  regionOptionLabel,
-  regionPlace,
-} from "@/shared/domain/browserbase";
-import { proxyChoiceFromKey, proxyChoiceKey, type SavedProxyKey } from "@/shared/domain/proxy";
-import { formatInteger, formatRelativeTime, pluralize } from "@/shared/lib/format";
+import { BROWSERBASE_DISCLOSURE, BROWSERBASE_REGIONS, regionOptionLabel } from "@/shared/domain/browserbase";
+import { formatRelativeTime } from "@/shared/lib/format";
 import { notifyError } from "@/shared/lib/notify-error";
 import {
   AlertDialog,
@@ -47,9 +25,10 @@ import {
 } from "@/shared/ui/alert-dialog";
 import { Button } from "@/shared/ui/button";
 import { Field } from "@/shared/ui/field";
-import { Input } from "@/shared/ui/input";
 import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue } from "@/shared/ui/select";
 import { Switch } from "@/shared/ui/switch";
+import { PageProbe, TestConnection } from "./BrowserbaseChecks";
+import { BrowserbaseDefaultLocation } from "./BrowserbaseDefaultLocation";
 
 type Save = (patch: SettingsPatch) => void;
 
@@ -67,7 +46,9 @@ function Connect() {
         toast.success("Browserbase key validated and saved to your keychain");
         return { saved: true };
       }
+      // The answer is about this key: its projects replace the list, and a project of another key is forgotten.
       setProjects(status.projects);
+      if (!status.projects.some((project) => project.id === projectId)) setProjectId(undefined);
       return { saved: false, reason: status.message ?? "Browserbase did not accept the API key." };
     } catch (reason) {
       notifyError("Could not save the Browserbase key", reason);
@@ -209,14 +190,13 @@ function ProfileState() {
  * credentials, two checks of the account, and what a Browserbase scan starts from.
  */
 export function BrowserbaseSection({ settings, save }: { settings: Settings; save: Save }) {
-  const ids = { disclosure: useId(), keep: useId(), keepNote: useId() };
+  const ids = { keep: useId(), keepNote: useId() };
   const { browserbase } = settings;
   return (
     <>
       <Field stacked label="Browserbase account">
         <div className="flex w-full flex-col gap-3">
           <p
-            id={ids.disclosure}
             role="note"
             aria-label="What using Browserbase means"
             className="selectable rounded-lg border bg-muted/40 px-3.5 py-3 text-[13px] text-pretty text-muted-foreground"
@@ -252,7 +232,7 @@ export function BrowserbaseSection({ settings, save }: { settings: Settings; sav
               </SelectContent>
             </Select>
           </Field>
-          <DefaultLocation settings={settings} save={save} />
+          <BrowserbaseDefaultLocation settings={settings} save={save} />
           <Field
             label="Keep a browser profile on Browserbase"
             htmlFor={ids.keep}

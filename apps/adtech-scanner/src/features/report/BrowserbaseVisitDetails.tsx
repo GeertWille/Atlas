@@ -1,20 +1,27 @@
-import { ChevronDownIcon, CloudIcon } from "lucide-react";
+import { ChevronDownIcon, CloudIcon, TriangleAlertIcon } from "lucide-react";
 import { Fragment, useState } from "react";
 import type { ScanDetail } from "@/bindings";
-import { useNow } from "@/shared/hooks/use-now";
+import { useNowUntil } from "@/shared/hooks/use-now";
 import { cn } from "@/shared/lib/cn";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/shared/ui/collapsible";
-import { browserbaseVisitFacts } from "./browserbase-visit";
+import { type BrowserbaseLogFacts, browserbaseUsageSettlesAt, browserbaseVisitFacts } from "./browserbase-visit";
 
 /**
  * A visit that ran in a Browserbase browser: one line with where, how long and how much, and behind it
  * everything recorded about that browser and what the pages could read in it.
  */
-export function BrowserbaseVisitDetails({ detail }: { detail: ScanDetail }) {
+export function BrowserbaseVisitDetails({
+  detail,
+  log,
+}: {
+  detail: ScanDetail;
+  /** What the audit trail adds, once it is loaded. */
+  log?: BrowserbaseLogFacts;
+}) {
   const [open, setOpen] = useState(false);
   // Time only matters here while the proxy traffic is still being counted: the clock runs until it is not.
-  const stillCounting = browserbaseVisitFacts(detail, Date.now())?.pending ?? false;
-  const facts = browserbaseVisitFacts(detail, useNow(stillCounting, 1000));
+  const now = useNowUntil(browserbaseUsageSettlesAt(detail));
+  const facts = browserbaseVisitFacts(detail, now, log);
   if (!facts) return null;
   return (
     <Collapsible
@@ -41,6 +48,12 @@ export function BrowserbaseVisitDetails({ detail }: { detail: ScanDetail }) {
           <ChevronDownIcon className={cn("size-4 transition-transform", open && "rotate-180")} />
         </CollapsibleTrigger>
       </div>
+      {facts.warning ? (
+        <p className="selectable flex items-start gap-2 border-t px-3 py-2 text-[13px] text-pretty text-amber-fg">
+          <TriangleAlertIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+          {facts.warning}
+        </p>
+      ) : null}
       <CollapsibleContent>
         <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-5 gap-y-1.5 border-t px-3 py-2.5 text-[13px]">
           {facts.rows.map((row) => (

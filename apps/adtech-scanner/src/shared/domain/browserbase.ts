@@ -24,6 +24,14 @@ export function regionName(region: BrowserbaseRegion): string {
   return `${BROWSERBASE_REGION_META[region].place} (${region})`;
 }
 
+/**
+ * "Frankfurt": the place alone, for the two narrow spots that have the whole name right beside them (a menu
+ * whose items carry it, a table cell whose title does). Everywhere else it is `regionName`.
+ */
+export function regionPlace(region: BrowserbaseRegion): string {
+  return BROWSERBASE_REGION_META[region].place;
+}
+
 /** "Frankfurt, Germany (eu-central-1)", for a menu. */
 export function regionOptionLabel(region: BrowserbaseRegion): string {
   const { place, country } = BROWSERBASE_REGION_META[region];
@@ -50,7 +58,7 @@ export function reachableFromCloud(url: string): boolean {
   if (isLocalOrPrivateUrl(url)) return false;
   const isAddress = hostname.startsWith("[") || /^[\d.]+$/.test(hostname);
   if (!isAddress && !hostname.includes(".")) return false;
-  return hostname !== "255.255.255.255" && !hostname.endsWith(".internal") && !hostname.endsWith(".home.arpa");
+  return !hostname.endsWith(".internal") && !hostname.endsWith(".home.arpa");
 }
 
 /**
@@ -127,7 +135,10 @@ export function parseLocation(fields: LocationDraft): LocationResult {
   const state = fields.state.trim().toUpperCase();
   const city = fields.city.trim().replace(/\s+/g, " ");
   if (!/^[A-Z]{2}$/.test(country)) {
-    return { ok: false, error: { field: "country", message: "Enter the country as a two-letter code, for example BE." } };
+    return {
+      ok: false,
+      error: { field: "country", message: "Enter the country as a two-letter code, for example BE." },
+    };
   }
   if (state !== "" && !/^[A-Z]{2}$/.test(state)) {
     return { ok: false, error: { field: "state", message: "Enter the state as a two-letter code, for example NY." } };

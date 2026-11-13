@@ -24,13 +24,14 @@ export function searchConfigurations(
   const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
   if (terms.length === 0) return configurations;
   return configurations.filter((configuration) => {
+    const cloud = browserSummary(configuration, settings);
     const haystack = [
       configuration.name,
       configuration.options.url,
       DEVICE_LABEL[configuration.options.device],
       proxySummary(configuration, settings),
       visitorSummary(configuration),
-      browserSummary(configuration, settings)?.full ?? "",
+      cloud ? `Browserbase ${cloud.region}` : "",
     ]
       .join(" ")
       .toLowerCase();

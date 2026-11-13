@@ -159,6 +159,20 @@ describe("applyScanEvent", () => {
     for (const stop of unwatch) stop();
   });
 
+  test("a finished scan lets go of the kept browser profile, here and at Browserbase: both are asked about again", () => {
+    const client = seededClient();
+    const inUse = { exists: true, lastUsedAt: 1, inUse: true };
+    client.setQueryData(queryKeys.scanProfile, { ...inUse, sizeBytes: 1 });
+    client.setQueryData(queryKeys.browserbaseProfile, inUse);
+    // A running update says nothing about the profile.
+    applyScanEvent(client, { type: "scanUpdated", summary: makeSummary({ id: "scan-1", status: "running" }) });
+    expect(isStale(client, queryKeys.browserbaseProfile)).toBe(false);
+    applyScanEvent(client, { type: "scanUpdated", summary: makeSummary({ id: "scan-1", status: "completed" }) });
+    expect(isStale(client, queryKeys.scanProfile)).toBe(true);
+    // Settings left open during a Browserbase scan must not keep saying "A running scan is using it".
+    expect(isStale(client, queryKeys.browserbaseProfile)).toBe(true);
+  });
+
   test("a finished scan nobody is watching drops its live detail and log instead of keeping them", () => {
     const client = seededClient();
     applyScanEvent(client, { type: "scanUpdated", summary: makeSummary({ id: "scan-1", status: "failed" }) });

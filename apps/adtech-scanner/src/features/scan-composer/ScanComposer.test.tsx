@@ -204,10 +204,14 @@ test("the visitor choice replaces auto-scroll: four behaviours, scroll by defaul
   expect(
     screen.getByText("Scrolls to the bottom in steps, so lazy-loaded slots get their chance."),
   ).toBeInTheDocument();
-  // A scripted visit never claims to be a person.
+  // A scripted visit never claims to be a person, and says what the page can tell: Chrome reports
+  // navigator.webdriver false in every mode, so only a hidden browser is recognisable.
   expect(
-    screen.getByText(/This visit is automated and says so to the page \(navigator\.webdriver is true\)/),
+    screen.getByText(
+      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), but a hidden (headless) browser is recognisable.",
+    ),
   ).toBeInTheDocument();
+  expect(screen.queryByText(/webdriver is true|says so to the page/)).toBeNull();
   // Scroll and observe have no page count, and say where one is; the settings run them headless.
   expect(screen.queryByRole("button", { name: "More pages" })).toBeNull();
   expect(visit().getByText("1 page")).toBeInTheDocument();
@@ -706,8 +710,8 @@ test("without Browserbase set up, the choice is there but disabled, with the rea
   expect(browserbase).toBeDisabled();
   expect(browserbase).toHaveAccessibleDescription("Browserbase, a cloud browser, is not set up. Set it up in Settings");
   expect(origin().getByRole("link", { name: "Set it up in Settings" })).toHaveAttribute("href", "/settings");
-  // What only a Browserbase browser has states its fixed value instead of disappearing.
-  expect(origin().getByText("Only a Browserbase browser has a region to choose.")).toBeInTheDocument();
+  // What only a Browserbase browser has is not there on this Mac, not even as a placeholder.
+  expect(origin().queryByText("Region")).toBeNull();
   expect(origin().queryByRole("combobox", { name: "Region" })).toBeNull();
   // Nothing about browser cost for someone who has no Browserbase.
   expect(analysis().queryByRole("note", { name: "Browser cost" })).toBeNull();
@@ -718,14 +722,14 @@ test("on Browserbase the options that depend on it change in place: region, loca
   await renderWithApp(<ScanComposer settings={{ ...browserbaseSettingsFixture, proxies: [makeProxy()] }} />);
   await user.type(urlInput(), "example.com");
   await user.click(screen.getByRole("button", { name: "Options" }));
-  expect(analysis().getByRole("note", { name: "Browser cost" })).toHaveTextContent(
-    "The browser runs on this Mac and costs nothing.",
-  );
+  // On this Mac there is no region and no browser cost to speak of.
+  expect(origin().queryByText("Region")).toBeNull();
+  expect(analysis().queryByRole("note", { name: "Browser cost" })).toBeNull();
   expect(visit().getByRole("switch", { name: "Show the browser" })).toBeInTheDocument();
 
   await user.click(origin().getByRole("radio", { name: "Browserbase" }));
   expect(origin().getByRole("radio", { name: "Browserbase" })).toBeChecked();
-  expect(summaryText()).toBe("Scroll · Browserbase Oregon · no proxy · AI on, about $0.36");
+  expect(summaryText()).toBe("Scroll · Browserbase, Oregon (us-west-2) · no proxy · AI on, about $0.36");
 
   // A cloud browser has no window: the option keeps its place and says so.
   expect(visit().queryByRole("switch", { name: "Show the browser" })).toBeNull();
@@ -746,7 +750,7 @@ test("on Browserbase the options that depend on it change in place: region, loca
   await user.click(origin().getByRole("combobox", { name: "Location" }));
   expect((await screen.findAllByRole("option")).map((option) => option.textContent)).toEqual([
     "Settings default (No proxy)",
-    "No proxy: leaves from Frankfurt",
+    "No proxy: leaves from Frankfurt (eu-central-1)",
     "Belgium",
     "Browserbase location…",
   ]);
@@ -756,7 +760,7 @@ test("on Browserbase the options that depend on it change in place: region, loca
       "Browserbase connects through your proxy. Its address and password are sent to Browserbase for that.",
     ),
   ).toBeInTheDocument();
-  expect(summaryText()).toBe("Scroll · Browserbase Frankfurt · Belgium proxy · AI on, about $0.36");
+  expect(summaryText()).toBe("Scroll · Browserbase, Frankfurt (eu-central-1) · Belgium proxy · AI on, about $0.36");
 
   // Keeping a profile at Browserbase is its own switch, and it is off.
   await user.click(origin().getByRole("combobox", { name: "Browser profile" }));
@@ -766,8 +770,9 @@ test("on Browserbase the options that depend on it change in place: region, loca
 
   // Browserbase is estimated apart from the models, and the model estimate is what it was.
   expect(analysis().getByRole("note", { name: "Browser cost" })).toHaveTextContent(
-    "Browserbase bills apart from the LLM budget: about 1 browser minute, no proxy traffic, an estimated $0.002 at its Developer plan's overage prices (2026-11-12).",
+    "Browserbase bills apart from the LLM budget: about 1 browser minute, no proxy traffic. An estimated $0.002 at Browserbase's list price of $0.12 per browser hour and $12 per GB (2026-11-12); your plan's included usage is not counted.",
   );
+  expect(analysis().getByRole("note", { name: "Browser cost" })).not.toHaveTextContent(/Developer|Startup|overage/);
   expect(analysis().getByText(/hard cap/)).toHaveTextContent(
     "Estimated $0.36 with claude-sonnet-5-5, hard cap $0.50 per scan.",
   );
@@ -777,6 +782,65 @@ test("on Browserbase the options that depend on it change in place: region, loca
   expect(visit().getByRole("switch", { name: "Show the browser" })).toBeInTheDocument();
   expect(origin().getByRole("combobox", { name: "Proxy" })).toHaveTextContent("Belgium");
   expect(summaryText()).toBe("Scroll · browser hidden · Belgium proxy · AI on, about $0.36");
+  expect(origin().queryByText("Region")).toBeNull();
+  expect(analysis().queryByRole("note", { name: "Browser cost" })).toBeNull();
+});
+
+test("the note about automation follows the browser window: only a hidden local browser is recognisable", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={settingsFixture} />);
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  expect(visit().getByRole("switch", { name: "Show the browser" })).not.toBeChecked();
+  expect(visit().getByText(/but a hidden \(headless\) browser is recognisable\./)).toBeInTheDocument();
+
+  await user.click(visit().getByRole("switch", { name: "Show the browser" }));
+  expect(
+    visit().getByText(
+      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), and it is not hidden (headless) either.",
+    ),
+  ).toBeInTheDocument();
+  expect(visit().queryByText(/recognisable/)).toBeNull();
+
+  // A browse visit is shown by default, and says the same.
+  await user.click(visit().getByRole("radio", { name: "Browse like a visitor" }));
+  expect(visit().getByRole("switch", { name: "Show the browser" })).toBeChecked();
+  expect(visit().getByText(/and it is not hidden \(headless\) either\./)).toBeInTheDocument();
+});
+
+test("looking at Browserbase and coming back leaves the proxy choice as it was", async () => {
+  const user = userEvent.setup();
+  await api.setBrowserbaseCredentials("bb_live_0123456789abcdef");
+  await renderWithApp(<ScanComposer settings={{ ...browserbaseSettingsFixture, defaultProxy: { kind: "none" } }} />);
+  await user.type(urlInput(), "example.com");
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  await chooseOption(user, "Proxy", "System proxy");
+
+  // This Mac's own proxy means nothing to a cloud browser: there the settings hold.
+  await user.click(origin().getByRole("radio", { name: "Browserbase" }));
+  expect(origin().getByRole("combobox", { name: "Location" })).toHaveTextContent("Settings default (No proxy)");
+  await user.click(origin().getByRole("radio", { name: "This Mac" }));
+  expect(origin().getByRole("combobox", { name: "Proxy" })).toHaveTextContent("System proxy");
+  expect(summaryText()).toBe("Scroll · browser hidden · system proxy · AI on, about $0.36");
+
+  // The same the other way: a location typed for Browserbase is still there after a look at this Mac.
+  await user.click(origin().getByRole("radio", { name: "Browserbase" }));
+  await chooseOption(user, "Location", "Browserbase location…");
+  await user.type(origin().getByLabelText("Country code"), "be");
+  await user.click(origin().getByRole("radio", { name: "This Mac" }));
+  expect(origin().getByRole("combobox", { name: "Proxy" })).toHaveTextContent("Settings default (No proxy)");
+  await user.click(origin().getByRole("radio", { name: "Browserbase" }));
+  expect(origin().getByRole("combobox", { name: "Location" })).toHaveTextContent("Browserbase location…");
+  expect(origin().getByLabelText("Country code")).toHaveValue("be");
+
+  await user.click(origin().getByRole("radio", { name: "This Mac" }));
+  await chooseOption(user, "Proxy", "System proxy");
+  await user.click(scanButton());
+  expect(await screen.findByText("scan screen")).toBeInTheDocument();
+  const [scan] = (await api.listScans({})).items;
+  expect((await api.getScan(scan?.id ?? "")).options).toMatchObject({
+    browser: { kind: "local" },
+    proxy: { kind: "system" },
+  });
 });
 
 test("a Browserbase location needs its country, is labelled for what it is, and shows what the proxy will cost", async () => {
@@ -795,22 +859,40 @@ test("a Browserbase location needs its country, is labelled for what it is, and 
   expect(await origin().findByRole("alert")).toHaveTextContent(
     "Enter the country as a two-letter code, for example BE.",
   );
+  // The field that is wrong is the one marked and described, not the select above it.
+  const alert = origin().getByRole("alert");
   expect(origin().getByLabelText("Country code")).toBeInvalid();
+  expect(origin().getByLabelText("Country code")).toHaveAttribute("aria-describedby", alert.id);
+  expect(origin().getByLabelText("State code, optional")).toBeValid();
+  expect(origin().getByRole("combobox", { name: "Location" })).not.toHaveAttribute("aria-describedby");
   expect((await api.listScans({})).total).toBe(0);
+
+  await user.type(origin().getByLabelText("Country code"), "us");
+  await user.type(origin().getByLabelText("State code, optional"), "n");
+  await user.click(scanButton());
+  expect(await origin().findByRole("alert")).toHaveTextContent("Enter the state as a two-letter code, for example NY.");
+  expect(origin().getByLabelText("State code, optional")).toBeInvalid();
+  expect(origin().getByLabelText("State code, optional")).toHaveAttribute(
+    "aria-describedby",
+    origin().getByRole("alert").id,
+  );
+  expect(origin().getByLabelText("Country code")).toBeValid();
+  await user.clear(origin().getByLabelText("Country code"));
+  await user.clear(origin().getByLabelText("State code, optional"));
 
   await user.type(origin().getByLabelText("Country code"), "be");
   expect(origin().queryByRole("alert")).toBeNull();
   // Three pages of 18 MB each at $12 per GB.
   expect(
     origin().getByText(
-      "A residential connection; the country is best effort. About 54 MB go through it, an estimated $0.65.",
+      "A residential connection; the country is best effort. About 54 MB go through it, an estimated $0.65 at list price.",
     ),
   ).toBeInTheDocument();
   expect(summaryText()).toBe(
-    "Browse like a visitor · 3 pages · Browserbase Frankfurt · Belgium (Browserbase proxy) · AI on, about $0.37",
+    "Browse like a visitor · 3 pages · Browserbase, Frankfurt (eu-central-1) · Belgium (Browserbase proxy) · AI on, about $0.37",
   );
   expect(analysis().getByRole("note", { name: "Browser cost" })).toHaveTextContent(
-    "about 2 browser minutes and 54 MB of proxy traffic, an estimated $0.65 at its Developer plan's overage prices (2026-11-12).",
+    "about 2 browser minutes and 54 MB of proxy traffic. An estimated $0.65 at Browserbase's list price of $0.12 per browser hour and $12 per GB (2026-11-12); your plan's included usage is not counted.",
   );
   // The LLM figure is the one a three-page visit has on this Mac: no Browserbase amount is ever added into it.
   expect(analysis().getByText(/hard cap/)).toHaveTextContent(
@@ -886,9 +968,9 @@ test("“I'll browse myself” stays available on Browserbase and says how: the 
   expect(visit().getByText("In the live view")).toBeInTheDocument();
   expect(visit().getByText("Browserbase bills the session for as long as it is open.")).toBeInTheDocument();
   expect(analysis().getByRole("note", { name: "Browser cost" })).toHaveTextContent(
-    "up to 15 browser minutes, no proxy traffic, an estimated $0.03",
+    "up to 15 browser minutes, no proxy traffic. An estimated $0.03",
   );
-  expect(summaryText()).toBe("I'll browse myself · Browserbase Oregon · no proxy · AI on, about $0.36");
+  expect(summaryText()).toBe("I'll browse myself · Browserbase, Oregon (us-west-2) · no proxy · AI on, about $0.36");
 });
 
 test("the profile control follows the Browserbase switch, not the one for this Mac", async () => {
@@ -910,6 +992,24 @@ test("the profile control follows the Browserbase switch, not the one for this M
   );
   expect(origin().getByText(/Cookies and consent carry over, in a profile kept at Browserbase\./)).toBeInTheDocument();
   expect(summaryText()).toMatch(/· kept browser profile ·/);
+});
+
+test("a kept profile that Browserbase does not allow reads as what happens instead, and comes back on this Mac", async () => {
+  const user = userEvent.setup();
+  await renderWithApp(<ScanComposer settings={browserbaseSettingsFixture} />);
+  await user.type(urlInput(), "example.com");
+  await user.click(screen.getByRole("button", { name: "Options" }));
+  await chooseOption(user, "Browser profile", "Kept between scans");
+  expect(summaryText()).toMatch(/· kept browser profile ·/);
+
+  // The Browserbase switch is off: the control must not say "Kept" above help that says "Starts fresh".
+  await user.click(origin().getByRole("radio", { name: "Browserbase" }));
+  expect(origin().getByRole("combobox", { name: "Browser profile" })).toHaveTextContent("Fresh each scan");
+  expect(origin().getByText(/Starts fresh: keeping a profile at Browserbase is off\./)).toBeInTheDocument();
+  expect(summaryText()).not.toMatch(/kept browser profile/);
+
+  await user.click(origin().getByRole("radio", { name: "This Mac" }));
+  expect(origin().getByRole("combobox", { name: "Browser profile" })).toHaveTextContent("Kept between scans");
 });
 
 test("a configuration that names Browserbase after its key was removed cannot run until it is changed", async () => {

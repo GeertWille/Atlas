@@ -153,11 +153,16 @@ export function ConfigurationRow({
         <div className="flex flex-col gap-0.5 text-xs">
           <span className="flex items-center gap-2 whitespace-nowrap">
             <DeviceLabel device={options.device} />
-            <span className="truncate text-muted-foreground">{proxySummary(configuration, settings)}</span>
+            <span className="truncate text-muted-foreground" title={proxySummary(configuration, settings)}>
+              {proxySummary(configuration, settings, cloud !== null)}
+            </span>
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-subtle-foreground">
             {cloud ? (
-              <span className="inline-flex shrink-0 items-center gap-1" title={`Runs in a ${cloud.full} browser`}>
+              <span
+                className="inline-flex shrink-0 items-center gap-1"
+                title={`Runs in a Browserbase browser in ${cloud.region}`}
+              >
                 <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
                 <span className="sr-only">Browserbase </span>
                 {cloud.place}

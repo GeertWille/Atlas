@@ -6,11 +6,16 @@ import type {
   BrowserbaseVisit,
   BrowserChoice,
   ProxyUse,
+  VisitorBehavior,
 } from "@/bindings";
-import { BROWSERBASE_REGION_META } from "@/shared/domain/browserbase";
+import { BROWSERBASE_REGION_META, PROXY_BYTES_PER_PAGE } from "@/shared/domain/browserbase";
 
-/** What goes wrong with the next Browserbase scans, for the specs that show a failure. */
-export type BrowserbaseFailure = "limit" | "lost";
+/**
+ * What goes wrong with the next Browserbase scans, for the specs that show a failure: the project is at its
+ * limit of browsers, the connection drops during the visit, or the scan succeeds but Browserbase never
+ * confirms that its browser has ended.
+ */
+export type BrowserbaseFailure = "limit" | "lost" | "unconfirmed";
 
 /** The account of the measurements: one project, three browsers at once, shared with another application. */
 export const FAKE_PROJECT: BrowserbaseProject = { id: "prj-7f3a91c2", name: "Local", concurrency: 3 };
@@ -51,12 +56,32 @@ const PROXY_TIMEZONE: Record<string, string> = {
   GB: "Europe/London",
   US: "America/Chicago",
 };
-/** Traffic of one page view through a Browserbase proxy. */
-const PROXY_BYTES_PER_PAGE = 18_486_000;
+/** What Browserbase runs of its own in each document, as measured: five scripts, 271,667 characters. */
+export const SERVICE_SCRIPTS_PER_DOCUMENT = { count: 5, characters: 271_667 };
+/**
+ * Every simulated site has one feed that a remote browser cannot hand over: text is only asked for up to
+ * 8 MiB (images, media and fonts up to 32 MiB), because the reply can take six times the body's size.
+ */
+export const OVERSIZED_FEED_BYTES = 12_163_481;
 
 export const LIMIT_MESSAGE = `Browserbase is at its limit of browsers running at once (${FAKE_PROJECT.concurrency} of ${FAKE_PROJECT.concurrency}, shared by everything that uses this project). Try again when one has finished.`;
 export const CONNECTION_LOST_MESSAGE =
   "The connection to the Browserbase browser was lost. The browser has ended. Nothing was kept.";
+export const RELEASE_UNCONFIRMED_MESSAGE =
+  "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest";
+export const systemProxyDroppedMessage = (region: BrowserbaseRegion) =>
+  `The system proxy of this Mac does not apply to a Browserbase browser: the visit leaves from Browserbase's ${region} region.`;
+
+/**
+ * The time limit a session is started with, like the browser crate's: two minutes to start, the visit, and
+ * two minutes of margin. 325 s for a 20 s scroll visit, 765 s for a browse visit, 1140 s for a manual one.
+ */
+export function sessionTimeoutSeconds(visitor: VisitorBehavior, observeSeconds: number): number {
+  let visit = 45 + 2 * observeSeconds;
+  if (visitor === "browse") visit = 45 + 480;
+  if (visitor === "manual") visit = 900;
+  return Math.min(21_600, Math.max(60, 120 + visit + 120));
+}
 
 export function fakeProbe(region: BrowserbaseRegion): BrowserbaseProbe {
   return {

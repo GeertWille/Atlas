@@ -1,13 +1,16 @@
-import type { BrowserUse, RemoteUsage, ScanDetail } from "@/bindings";
+import type { BrowserUse, LogEntry, RemoteUsage, ScanDetail } from "@/bindings";
 import {
-  BROWSERBASE_RATES,
+  BROWSERBASE_LIST_PRICE,
+  BROWSERBASE_PLAN_CAVEAT,
   browserbaseUsd,
   countryName,
   formatTraffic,
+  regionName,
   regionOptionLabel,
-  regionPlace,
+  webdriverReading,
 } from "@/shared/domain/browserbase";
-import { formatDuration, formatUsd } from "@/shared/lib/format";
+import { visitorActivity } from "@/shared/domain/visitor-log";
+import { formatDuration, formatUsd, pluralize } from "@/shared/lib/format";
 
 type BrowserbaseVisit = Extract<BrowserUse, { kind: "browserbase" }>;
 
@@ -15,29 +18,81 @@ type BrowserbaseVisit = Extract<BrowserUse, { kind: "browserbase" }>;
 const USAGE_SETTLES_AFTER_MS = 60_000;
 
 const UNREAD = "Not read";
+const UNREPORTED = "Not reported by Browserbase";
 
 /**
- * Whether the proxy traffic of a finished Browserbase visit is still being counted: nothing was read yet, or
- * the first read came back empty and the second is still due.
+ * Until when the proxy traffic of a Browserbase visit is still being counted: nothing was read yet, or the
+ * first read came back empty and the second is due. `null` when there is nothing to wait for. The wait ends
+ * a minute after the scan whatever was read: a count that never comes is "not reported", not "being counted".
  */
+export function proxyUsageSettlesAt(
+  visit: Pick<BrowserbaseVisit, "proxyKind">,
+  usage: Pick<RemoteUsage, "proxyBytes"> | null,
+  finishedAt: number | null,
+): number | null {
+  if (visit.proxyKind !== "browserbase") return null;
+  if (usage?.proxyBytes) return null;
+  return finishedAt === null ? Number.POSITIVE_INFINITY : finishedAt + USAGE_SETTLES_AFTER_MS;
+}
+
+/** Whether the proxy traffic of a finished Browserbase visit is still being counted at `now`. */
 export function proxyUsagePending(
   visit: Pick<BrowserbaseVisit, "proxyKind">,
   usage: Pick<RemoteUsage, "proxyBytes"> | null,
   finishedAt: number | null,
   now: number,
 ): boolean {
-  if (visit.proxyKind !== "browserbase") return false;
-  if (usage === null || usage.proxyBytes === null) return true;
-  return usage.proxyBytes === 0 && finishedAt !== null && now - finishedAt < USAGE_SETTLES_AFTER_MS;
+  const settlesAt = proxyUsageSettlesAt(visit, usage, finishedAt);
+  return settlesAt !== null && now < settlesAt;
+}
+
+/** The usage of a scan's Browserbase browser as it stands: the summary's, which the late second read updates. */
+function usageOf(detail: Pick<ScanDetail, "summary">, visit: BrowserbaseVisit): RemoteUsage {
+  return detail.summary.remote ?? visit;
+}
+
+/**
+ * Until when a report has to keep looking at the clock for its Browserbase usage; `null` for a visit on this
+ * computer and once the usage is final.
+ */
+export function browserbaseUsageSettlesAt(detail: Pick<ScanDetail, "environment" | "summary">): number | null {
+  const browser = detail.environment?.browser;
+  if (browser?.kind !== "browserbase") return null;
+  return proxyUsageSettlesAt(browser, usageOf(detail, browser), detail.summary.finishedAt);
+}
+
+/** What only the audit trail knows about a scan's Browserbase browser. */
+export type BrowserbaseLogFacts = {
+  /** How many scripts of its own Browserbase ran in the pages; `null` when the capture did not say. */
+  serviceScripts: number | null;
+  /** Browserbase did not confirm that the browser ended. */
+  releaseUnconfirmed: boolean;
+};
+
+const NO_LOG_FACTS: BrowserbaseLogFacts = { serviceScripts: null, releaseUnconfirmed: false };
+
+export function browserbaseLogFacts(logs: LogEntry[] | undefined): BrowserbaseLogFacts {
+  const facts = { ...NO_LOG_FACTS };
+  for (const entry of logs ?? []) {
+    const activity = visitorActivity(entry);
+    if (activity?.activity !== "browser") continue;
+    if (activity.event === "serviceScripts") facts.serviceScripts = activity.count;
+    if (activity.event === "releaseUnconfirmed") facts.releaseUnconfirmed = true;
+    // A later line that the browser has ended settles it.
+    if (activity.event === "released") facts.releaseUnconfirmed = false;
+  }
+  return facts;
 }
 
 export type BrowserbaseVisitFacts = {
-  /** The line that is always shown: region, time, traffic and what that costs. */
+  /** The line that is always shown: time, traffic and what that costs. */
   summary: string[];
   /** Everything recorded about the browser, as name and value. */
   rows: { name: string; value: string; mono?: boolean }[];
   /** The proxy traffic is not final yet. */
   pending: boolean;
+  /** What may still be costing money: the browser's end was never confirmed. */
+  warning: string | null;
 };
 
 function leftFrom(visit: BrowserbaseVisit, proxyName: string | null): string {
@@ -46,7 +101,7 @@ function leftFrom(visit: BrowserbaseVisit, proxyName: string | null): string {
     const country = visit.proxyCountry ? countryName(visit.proxyCountry) : "a country";
     return `Browserbase proxy: a residential connection, ${country} requested (best effort)`;
   }
-  return `Browserbase's ${regionPlace(visit.region)} region, a data centre address (no proxy)`;
+  return `Browserbase's ${regionName(visit.region)} region, a data centre address (no proxy)`;
 }
 
 function timezone(visit: BrowserbaseVisit): string {
@@ -58,13 +113,6 @@ function timezone(visit: BrowserbaseVisit): string {
   return visit.proxyKind === "browserbase" ? `${original}, set by Browserbase for its proxy` : original;
 }
 
-function webdriver(value: boolean | null): string {
-  if (value === null) return UNREAD;
-  return value
-    ? "true: the pages were told the visit is automated"
-    : "false: the pages were not told the visit is automated";
-}
-
 /**
  * What a report says about a visit that ran in a Browserbase browser: where it ran and left from, what it
  * used, and what the pages could read. `null` for a visit on this computer and for scans without a recorded
@@ -73,11 +121,12 @@ function webdriver(value: boolean | null): string {
 export function browserbaseVisitFacts(
   detail: Pick<ScanDetail, "environment" | "summary">,
   now: number,
+  log: BrowserbaseLogFacts = NO_LOG_FACTS,
 ): BrowserbaseVisitFacts | null {
   const { environment, summary } = detail;
   if (environment?.browser.kind !== "browserbase") return null;
   const visit = environment.browser;
-  const usage: RemoteUsage = summary.remote ?? visit;
+  const usage = usageOf(detail, visit);
   const pending = proxyUsagePending(visit, usage, summary.finishedAt, now);
   const proxied = visit.proxyKind === "browserbase";
   const kept = [visit.settings.recordSession ? "a video" : null, visit.settings.logSession ? "a log" : null]
@@ -86,44 +135,71 @@ export function browserbaseVisitFacts(
 
   const time = usage.sessionSeconds === null ? null : formatDuration(usage.sessionSeconds * 1000);
   const minutes = usage.sessionSeconds === null ? null : Math.max(1, Math.ceil(usage.sessionSeconds / 60));
+  // Final and known: `null` while it is being counted, and when Browserbase never said.
+  const proxyBytes = proxied ? (pending ? null : usage.proxyBytes) : 0;
   let traffic = "None: the visit used no Browserbase proxy";
-  if (proxied) traffic = pending ? "Still being counted by Browserbase" : formatTraffic(usage.proxyBytes ?? 0);
+  if (proxied && pending) traffic = "Still being counted by Browserbase";
+  else if (proxied) traffic = proxyBytes === null ? UNREPORTED : formatTraffic(proxyBytes);
+
   const cost =
-    usage.sessionSeconds === null || pending
+    usage.sessionSeconds === null || proxyBytes === null
       ? null
-      : formatUsd(browserbaseUsd(usage.sessionSeconds, usage.proxyBytes ?? 0));
+      : formatUsd(browserbaseUsd(usage.sessionSeconds, proxyBytes));
+  let costRow = `${cost}, an estimate at ${BROWSERBASE_LIST_PRICE}; ${BROWSERBASE_PLAN_CAVEAT}. Not part of the LLM cost`;
+  if (pending) costRow = "Known once the proxy traffic is counted";
+  else if (cost === null) {
+    costRow = `Not known: Browserbase did not report the ${usage.sessionSeconds === null ? "browser time" : "proxy traffic"}`;
+  }
+
+  const ownScripts =
+    log.serviceScripts === null ? "Ran in every page" : `${pluralize(log.serviceScripts, "script")} ran in the pages`;
+
+  let proxySummary: string[] = [];
+  if (proxied && pending) proxySummary = ["proxy traffic still being counted"];
+  else if (proxied) {
+    proxySummary = [
+      proxyBytes === null ? "proxy traffic not reported" : `${formatTraffic(proxyBytes)} through the proxy`,
+    ];
+  }
 
   return {
     pending,
+    warning: log.releaseUnconfirmed
+      ? "Browserbase did not confirm that this browser ended. It may have kept running, and been billed, until its time limit."
+      : null,
     summary: [
-      `Browserbase ${regionPlace(visit.region)}`,
+      "Browserbase",
       ...(time ? [`${time} of browser time`] : []),
-      ...(proxied
-        ? [pending ? "proxy traffic still being counted" : `${formatTraffic(usage.proxyBytes ?? 0)} through the proxy`]
-        : []),
-      ...(cost ? [`about ${cost} at Browserbase`] : []),
+      ...proxySummary,
+      ...(cost ? [`about ${cost} at list price`] : []),
     ],
     rows: [
       { name: "Browser ran in", value: `Browserbase, ${regionOptionLabel(visit.region)}` },
       { name: "Left from", value: leftFrom(visit, environment.proxy.name) },
       {
         name: "Browser time",
-        value: time ? `${time}, billed as ${minutes} ${minutes === 1 ? "minute" : "minutes"}` : "Not reported",
+        value: time ? `${time}, billed as ${minutes} ${minutes === 1 ? "minute" : "minutes"}` : UNREPORTED,
       },
       { name: "Proxy traffic", value: traffic },
-      {
-        name: "Estimated cost",
-        value: cost
-          ? `${cost} at Browserbase's ${BROWSERBASE_RATES.plan} plan overage prices of ${BROWSERBASE_RATES.asOf}; not part of the LLM cost`
-          : "Known once the proxy traffic is counted",
-      },
+      { name: "Estimated cost", value: costRow },
       { name: "Timezone the pages saw", value: timezone(visit) },
       { name: "Language", value: visit.language ? `${visit.language}, as the browser reported it` : UNREAD },
-      { name: "navigator.webdriver", value: webdriver(environment.webdriver) },
+      {
+        name: "navigator.webdriver",
+        value: environment.webdriver === null ? UNREAD : webdriverReading(environment.webdriver, "the pages were"),
+      },
       { name: "User agent", value: visit.userAgent ?? "Not recorded", mono: true },
       {
         name: "Browser",
         value: `${visit.browserVersion ?? "Version not reported"}, headless, which the user agent does not show`,
+      },
+      {
+        name: "Browserbase's own scripts",
+        value: `${ownScripts}; left out of this scan's scripts and results`,
+      },
+      {
+        name: "CAPTCHAs",
+        value: visit.settings.solveCaptchas ? "Solved by Browserbase automatically" : "Left unsolved",
       },
       ...(visit.roundTripMs === null
         ? []

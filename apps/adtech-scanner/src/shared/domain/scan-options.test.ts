@@ -50,10 +50,23 @@ test("a re-scan drops the seed; repeating the visit keeps it, and only a scripte
   const scripted: ScanOptions = { ...stored, visitor: "browse", extraPages: 2, seed: 4711 };
   expect(rescanOptions(scripted)).not.toHaveProperty("seed");
   expect(rescanOptions(scripted)).toMatchObject({ visitor: "browse", extraPages: 2 });
-  expect(repeatVisitOptions({ options: scripted })).toEqual(scripted);
+  expect(repeatVisitOptions({ options: scripted })).toEqual({ ...scripted, browser: { kind: "local" } });
   expect(repeatVisitOptions({ options: { ...scripted, visitor: "scroll" } })?.seed).toBe(4711);
   expect(repeatVisitOptions({ options: { ...scripted, visitor: "manual" } })).toBeNull();
   expect(repeatVisitOptions({ options: { ...scripted, visitor: "none" } })).toBeNull();
   // A scan stored before seeds existed has nothing to replay.
   expect(repeatVisitOptions({ options: stored })).toBeNull();
+});
+
+test("a scan that does not say where its browser ran is repeated on this Mac, whatever the settings say today", () => {
+  // Stored before Browserbase existed: no `browser`. Sent as it is, the backend would follow `defaultBrowser`.
+  const old: ScanOptions = { ...stored, visitor: "scroll", seed: 7 };
+  expect(old).not.toHaveProperty("browser");
+  expect(rescanOptions(old).browser).toEqual({ kind: "local" });
+  expect(repeatVisitOptions({ options: old })?.browser).toEqual({ kind: "local" });
+  // A scan that does say keeps what it says.
+  const cloud: ScanOptions = { ...old, browser: { kind: "browserbase", region: "eu-central-1" } };
+  expect(rescanOptions(cloud).browser).toEqual({ kind: "browserbase", region: "eu-central-1" });
+  expect(rescanOptions({ ...old, browser: { kind: "local" } }).browser).toEqual({ kind: "local" });
+  expect(repeatVisitOptions({ options: cloud })?.browser).toEqual({ kind: "browserbase", region: "eu-central-1" });
 });

@@ -71,9 +71,7 @@ export function HomeRoute() {
           <div className="flex flex-col gap-1">
             <h2 className="text-xl font-semibold tracking-tight">Scan a page for revenue leaks</h2>
             <p className="text-[13px] text-muted-foreground">
-              Captures Prebid auctions, GPT slots and every script in{" "}
-              {settings.data.defaultBrowser === "browserbase" ? "a Browserbase browser" : "your local browser"}, then
-              checks the wrapper logic.
+              Captures Prebid auctions, GPT slots and every script in the browser, then checks the wrapper logic.
             </p>
           </div>
           {browser.data === null ? (

@@ -1,4 +1,4 @@
-import type { AutomationDetector, BrowserbaseRegion, ScanDetail } from "@/bindings";
+import type { AutomationDetector, ScanDetail } from "@/bindings";
 import { isScripted } from "@/shared/domain/scan-options";
 
 export type EnvironmentNoticeContent =
@@ -11,13 +11,15 @@ export type EnvironmentNoticeContent =
       canShowBrowser: boolean;
     }
   | {
-      /** The visit ran in a Browserbase browser, which gave the pages no sign of automation. */
+      /**
+       * The visit ran in a Browserbase browser, which gave the pages no sign of automation. What was recorded
+       * of that browser is listed once, under the report's Browser details.
+       */
       kind: "browserbase";
-      region: BrowserbaseRegion;
       /** A person drove the browser through the live view. */
       manual: boolean;
-      /** What the pages could and could not read, and what Browserbase did, as recorded. */
-      facts: string[];
+      /** Services on the pages that tell automated visits apart: "DoubleVerify (…) was on the page". */
+      detectors: string[];
     };
 
 function detectorSignals(detectors: AutomationDetector[]): string[] {
@@ -30,31 +32,20 @@ function detectorSignals(detectors: AutomationDetector[]): string[] {
 /**
  * What a report has to say about how its visit looked to the pages, from the recorded environment alone.
  * A visit on this computer is reported when the pages could tell it was automated, by the same two signs
- * the backend's own rule goes by. A Browserbase visit is always reported, with what was recorded: its
- * browser does not show the pages that it is automated or headless, and saying they could tell would be
- * wrong. `null` for a visit that gave no sign on this computer, and for scans stored before the environment
- * was recorded.
+ * the backend's own rule goes by. A Browserbase visit is always reported: its browser does not show the
+ * pages that it is automated or headless, so saying they could tell would be wrong, but it is not the
+ * browser of a person either. `null` for a visit that gave no sign on this computer, and for scans stored
+ * before the environment was recorded.
  */
 export function environmentNotice(detail: Pick<ScanDetail, "environment">): EnvironmentNoticeContent | null {
   const { environment } = detail;
   if (!environment) return null;
   const { browser } = environment;
   if (browser.kind === "browserbase" && environment.webdriver !== true) {
-    const { solveCaptchas, recordSession, logSession } = browser.settings;
-    const kept = [recordSession ? "a video" : null, logSession ? "a log" : null].filter((part) => part !== null);
     return {
       kind: "browserbase",
-      region: browser.region,
       manual: !isScripted(environment.visitor),
-      facts: [
-        environment.webdriver === false
-          ? "navigator.webdriver read false, so the pages were not told the visit is automated"
-          : "navigator.webdriver could not be read",
-        "the browser ran headless, which its user agent does not show",
-        ...detectorSignals(environment.detectors),
-        ...(solveCaptchas ? ["Browserbase solves CAPTCHAs on the pages automatically"] : []),
-        ...(kept.length > 0 ? [`Browserbase kept ${kept.join(" and ")} of the session`] : []),
-      ],
+      detectors: detectorSignals(environment.detectors),
     };
   }
   // A Browserbase browser that did show the flag is automated in the pages' eyes; its headless mode still does not show.

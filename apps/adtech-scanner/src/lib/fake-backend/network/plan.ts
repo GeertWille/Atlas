@@ -17,6 +17,7 @@ import type {
   ServedFrom,
   SlotRequest,
 } from "@/bindings";
+import { OVERSIZED_FEED_BYTES } from "../browserbase";
 import { createRng, hashString, hexId, type Rng } from "../rng";
 import {
   BID_ENDPOINTS,
@@ -461,6 +462,20 @@ class Planner {
         stack: app,
         response: { state: "dropped", bytes: 212_480, mime: "application/json" },
       });
+      if (this.detail.environment?.browser.kind === "browserbase") {
+        // Over the 8 MiB that a remote browser is asked for as text: the scanner left it where it was.
+        this.add({
+          page: 0,
+          at: 3_700,
+          duration: 2_240,
+          url: `${api}/feed/all-seasons.json`,
+          kind: "fetch",
+          category: "site",
+          size: OVERSIZED_FEED_BYTES,
+          stack: app,
+          response: { state: "tooLargeForRemote", bytes: OVERSIZED_FEED_BYTES, mime: "application/json" },
+        });
+      }
       this.add({
         page: 0,
         at: 1_400,

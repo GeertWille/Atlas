@@ -299,7 +299,8 @@ export function makeEnvironment(overrides: Partial<ScanEnvironment> = {}): ScanE
     seed: 4711,
     headless: true,
     persistentProfile: false,
-    webdriver: true,
+    // What Chrome reports in every mode: a local scripted visit shows only by running headless.
+    webdriver: false,
     userAgentOverridden: false,
     viewportOverridden: true,
     emulatedMobile: false,

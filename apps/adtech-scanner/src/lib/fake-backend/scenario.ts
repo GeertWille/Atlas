@@ -17,13 +17,18 @@ import { aiAvailability } from "@/shared/domain/ai-availability";
 import { costOf, isJevModel, JEV_MODEL } from "@/shared/domain/model-pricing";
 import { PAGE_REACH_LABEL, pagePath } from "@/shared/domain/page-views";
 import { proxyUseLabel } from "@/shared/domain/proxy";
-import { MANUAL_SESSION_LIMIT_MS, VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
+import { VISITOR_META, visitorOf } from "@/shared/domain/scan-options";
 import {
   type BrowserbaseFailure,
   CONNECTION_LOST_MESSAGE,
   fakeBrowserbaseVisit,
   fakeProxyBytes,
   LIMIT_MESSAGE,
+  OVERSIZED_FEED_BYTES,
+  RELEASE_UNCONFIRMED_MESSAGE,
+  SERVICE_SCRIPTS_PER_DOCUMENT,
+  sessionTimeoutSeconds,
+  systemProxyDroppedMessage,
 } from "./browserbase";
 import { buildDiagnostics, isOnThisMachine } from "./diagnostics";
 import {
@@ -147,7 +152,7 @@ class Timeline {
     this.log(message, {
       after,
       kind: "visitor",
-      level: event === "connectionLost" ? "warn" : "info",
+      level: event === "connectionLost" || event === "releaseUnconfirmed" ? "warn" : "info",
       data: { activity: "browser", page: null, detail: { event, ...detail } },
     });
   }
@@ -277,8 +282,10 @@ export type ScenarioContext = {
   manualPages?: number;
   /** The Browserbase project's name, for a scan that runs there. */
   projectName?: string | null;
-  /** The Browserbase browser cannot be started, or goes away during the visit. */
+  /** The Browserbase browser cannot be started, goes away during the visit, or is never confirmed to have ended. */
   browserbaseFailure?: BrowserbaseFailure;
+  /** The scan asked for this computer's own proxy, which a Browserbase browser does not use. */
+  systemProxyDropped?: boolean;
 };
 
 export function buildScenario({
@@ -291,6 +298,7 @@ export function buildScenario({
   manualPages = MANUAL_SESSION_PAGES,
   projectName = null,
   browserbaseFailure,
+  systemProxyDropped = false,
 }: ScenarioContext): Scenario {
   const hostname = new URL(options.url).hostname;
   const timeline = new Timeline();
@@ -336,6 +344,7 @@ export function buildScenario({
   }
 
   timeline.start("capture");
+  if (remote && systemProxyDropped) timeline.log(systemProxyDroppedMessage(region), { after: 0 });
   timeline.log(visitLine(remote ? `Browserbase ${region}` : headless ? "headless" : "browser shown"), { after: 40 });
   let sessionStartedAt = 0;
   if (remote) {
@@ -343,7 +352,7 @@ export function buildScenario({
       for (let attempt = 1; attempt <= RATE_LIMIT_ATTEMPTS; attempt += 1) {
         timeline.remoteBrowser(
           "rateLimited",
-          `Browserbase is at its limit; trying again in ${RATE_LIMIT_WAIT_SECONDS} s`,
+          `Browserbase is at its limit of browsers; trying again in ${RATE_LIMIT_WAIT_SECONDS} s`,
           { waitSeconds: RATE_LIMIT_WAIT_SECONDS, attempt },
           attempt === 1 ? 400 : RATE_LIMIT_WAIT_SECONDS * 1000,
         );
@@ -353,8 +362,7 @@ export function buildScenario({
       return { beats: timeline.beats, result: null };
     }
     const session = fakeBrowserbaseVisit(remote, proxy, options.seed ?? 0);
-    const timeoutSeconds =
-      visitor === "manual" ? MANUAL_SESSION_LIMIT_MS / 1000 + 60 : 60 + pageCount * (30 + options.observeSeconds);
+    const timeoutSeconds = sessionTimeoutSeconds(visitor, options.observeSeconds);
     timeline.remoteBrowser(
       "sessionCreated",
       `Browserbase started a browser in ${region} (session ${session.sessionId}, time limit ${timeoutSeconds} s)`,
@@ -433,13 +441,33 @@ export function buildScenario({
   }
   const { browser } = visit.environment;
   if (browser.kind === "browserbase") {
-    browser.sessionSeconds = Math.round((timeline.elapsed - sessionStartedAt) / 1000);
-    browser.proxyBytes = fakeProxyBytes(browser, visit.pages.length);
-    timeline.remoteBrowser("released", `Browserbase ended the browser after ${browser.sessionSeconds} s`, {
-      sessionSeconds: browser.sessionSeconds,
-      // The count lags: the first read after the end says nothing has gone through the proxy yet.
-      proxyBytes: 0,
-    });
+    // The feed that the network record lists as too large for the remote connection.
+    timeline.remoteBrowser(
+      "bodiesTooLarge",
+      "1 response body was too large for the connection to the remote browser and was not read",
+      { count: 1, largestBytes: OVERSIZED_FEED_BYTES },
+    );
+    const ownScripts = {
+      count: SERVICE_SCRIPTS_PER_DOCUMENT.count * documentPages.length,
+      characters: SERVICE_SCRIPTS_PER_DOCUMENT.characters * documentPages.length,
+    };
+    timeline.remoteBrowser(
+      "serviceScripts",
+      `Browserbase ran ${ownScripts.count} scripts of its own in the page (${ownScripts.characters} characters); they are not among the scan's scripts`,
+      ownScripts,
+    );
+    if (browserbaseFailure === "unconfirmed") {
+      // No usage is read from a browser whose end was never confirmed: both figures stay unknown.
+      timeline.remoteBrowser("releaseUnconfirmed", RELEASE_UNCONFIRMED_MESSAGE);
+    } else {
+      browser.sessionSeconds = Math.round((timeline.elapsed - sessionStartedAt) / 1000);
+      browser.proxyBytes = fakeProxyBytes(browser, visit.pages.length);
+      timeline.remoteBrowser("released", `Browserbase ended the browser after ${browser.sessionSeconds} s`, {
+        sessionSeconds: browser.sessionSeconds,
+        // The count lags: the first read after the end says nothing has gone through the proxy yet.
+        proxyBytes: 0,
+      });
+    }
   }
   const auctionCount = `${visit.auctions.length} auction${visit.auctions.length === 1 ? "" : "s"}`;
   timeline.log(

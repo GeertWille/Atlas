@@ -1,5 +1,5 @@
 import type { ScanDetail } from "@/bindings";
-import { regionPlace } from "@/shared/domain/browserbase";
+import { regionName } from "@/shared/domain/browserbase";
 import { proxyUseLabel } from "@/shared/domain/proxy";
 import { VISITOR_META } from "@/shared/domain/scan-options";
 import { pluralize } from "@/shared/lib/format";
@@ -17,7 +17,7 @@ export function visitFacts(detail: Pick<ScanDetail, "environment" | "pages">): s
     VISITOR_META[environment.visitor].label,
     pluralize(Math.max(1, pages.length), "page"),
     browser.kind === "browserbase"
-      ? `Browserbase ${regionPlace(browser.region)}`
+      ? `Browserbase, ${regionName(browser.region)}`
       : environment.headless
         ? "Headless"
         : "Browser shown",

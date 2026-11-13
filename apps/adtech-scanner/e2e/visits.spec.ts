@@ -21,7 +21,13 @@ test("the composer offers four visitor behaviours and only the options each one 
   ]);
   await expect(visitor.getByRole("radio", { name: "Scroll" })).toBeChecked();
   await expect(page.getByRole("switch", { name: "Auto-scroll" })).toHaveCount(0);
-  await expect(page.getByText(/This visit is automated and says so to the page/)).toBeVisible();
+  // Chrome does not tell the page in any mode: hidden, as the settings have it, is what is recognisable.
+  await expect(
+    page.getByText(
+      "This visit is automated. Chrome does not tell the page (navigator.webdriver is false), but a hidden (headless) browser is recognisable.",
+    ),
+  ).toBeVisible();
+  await expect(page.getByText(/says so to the page|webdriver is true/)).toHaveCount(0);
   await expect(page.getByRole("button", { name: "More pages" })).toHaveCount(0);
   await expect(visit.getByText("Only “Browse like a visitor” follows links to further pages.")).toBeVisible();
 
@@ -234,7 +240,7 @@ test("the environment notice is one quiet line of the visit summary, with how to
   await expect(notice).toHaveCount(1);
   await expect(overview.getByRole("note", { name: "Scan environment" })).toBeVisible();
   await expect(notice).toContainText(
-    "This visit was automated and the pages could tell: navigator.webdriver was true, Chrome ran headless, DoubleVerify (invalid-traffic measurement) was on the page.",
+    "This visit was automated and the pages could tell: Chrome ran headless, DoubleVerify (invalid-traffic measurement) was on the page.",
   );
   await expect(notice).not.toContainText(/undetect|indistinguishable/i);
   // The backend's own finding about it is in the list like any other; nothing else repeats it.
@@ -249,12 +255,11 @@ test("the environment notice is one quiet line of the visit summary, with how to
   await expect(page).toHaveURL(/#\/scans\/scan-/);
   await expect(reportHealth(page)).toBeVisible({ timeout: 30_000 });
   await expect(overview.getByText("Browser shown", { exact: true })).toBeVisible();
-  await expect(page.getByRole("note", { name: "Scan environment" })).toContainText(
-    "navigator.webdriver was true, DoubleVerify",
-  );
-  await expect(page.getByRole("note", { name: "Scan environment" }).getByRole("button")).toHaveText([
-    "as “I'll browse myself”",
-  ]);
+  // With its window shown, Chrome gives the pages no sign of automation (navigator.webdriver is false in
+  // every mode): there is nothing left to remark on, and the backend's finding about it is gone too.
+  await expect(page.getByRole("note", { name: "Scan environment" })).toHaveCount(0);
+  await expect(page.getByRole("article", { name: "This scan was identifiable as automated traffic" })).toHaveCount(0);
+  await expect(page.getByText(/webdriver was true/)).toHaveCount(0);
 });
 
 test("a scan stored before page views has no switcher, no page chips, no visit line and no notice", async ({
@@ -304,7 +309,13 @@ test("the audit trail explains each link the visitor followed", async ({ page })
   await page.getByRole("button", { name: "Filter by kind" }).click();
   await page.getByRole("menuitemcheckbox", { name: /^Visitor/ }).click();
   await page.keyboard.press("Escape");
-  await expect(entries.getByText("This visit is identifiable as automated: navigator.webdriver is true")).toBeVisible();
+  // A browse visit is shown, and Chrome does not tell the page: the capture says what the page could see.
+  await expect(
+    entries.getByText(
+      "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible",
+    ),
+  ).toBeVisible();
+  await expect(entries.getByText(/navigator\.webdriver is true/)).toHaveCount(0);
   await expect(entries.getByText("Closed a pop-up window (partner-offers.example): not recorded")).toBeVisible();
 
   await entries.getByRole("button", { name: /Following link: \/2026\/11\/council-approves-harbour-plan/ }).click();

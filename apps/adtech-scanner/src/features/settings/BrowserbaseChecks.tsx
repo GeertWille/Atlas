@@ -64,10 +64,7 @@ function ProbeResult({ probe }: { probe: BrowserbaseProbe }) {
     ["Region", regionOptionLabel(probe.region)],
     ["Browser", probe.browserVersion ?? UNREAD],
     ["User agent", probe.userAgent ?? UNREAD],
-    [
-      "navigator.webdriver",
-      probe.webdriver === null ? UNREAD : webdriverReading(probe.webdriver, "the page is"),
-    ],
+    ["navigator.webdriver", probe.webdriver === null ? UNREAD : webdriverReading(probe.webdriver, "the page is")],
     [
       "Timezone",
       probe.timezone === null
@@ -134,4 +131,3 @@ export function PageProbe({ region }: { region: BrowserbaseRegion }) {
     </Field>
   );
 }
-

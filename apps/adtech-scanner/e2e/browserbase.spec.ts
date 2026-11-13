@@ -6,10 +6,11 @@ import {
   MOD,
   openApp,
   reportHealth,
+  reportTab,
 } from "./app";
 
 const DISCLOSURE =
-  "With Browserbase, the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party. Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets. CAPTCHAs on scanned pages are solved automatically, and the browser does not tell the page it is automated. Results are also stored on this Mac. Browserbase bills browser time per minute, and proxy traffic per megabyte.";
+  "With Browserbase, the browser runs in Browserbase's cloud, not on this Mac. The pages you scan, their cookies, and everything the scanner reads from them (scripts, requests, bid data) travel through Browserbase, a third party. Browserbase keeps a video of each session and a log that includes the content the scanner reads and the cookies it reads or sets. CAPTCHAs on scanned pages are solved automatically, and the browser does not tell the page it is automated. To do this, Browserbase runs its own scripts inside every page you scan; the scanner leaves them out of its results, but they can change how a page behaves. Results are also stored on this Mac. Browserbase bills browser time per minute, and proxy traffic per megabyte.";
 const SEEDED_REPORT = "/scans/seed-morningledger-browserbase";
 const SEEDED_CONFIGURATION = "Garden Weekly from Belgium, Browserbase";
 
@@ -86,7 +87,9 @@ test("Browserbase is set up in Settings: the disclosure first, then the key, the
   await page.getByRole("link", { name: "Home", exact: true }).click();
   await page.getByRole("button", { name: /Continue/ }).click();
   await page.getByRole("textbox", { name: "Page URL" }).fill("morningledger.example");
-  await expect(scanButton(page)).toHaveAccessibleDescription(/^Scroll · Browserbase Frankfurt · no proxy · /);
+  await expect(scanButton(page)).toHaveAccessibleDescription(
+    /^Scroll · Browserbase, Frankfurt \(eu-central-1\) · no proxy · /,
+  );
 });
 
 test("a scan on Browserbase with a region and a Browserbase location: composed, run, and reported with its late usage", async ({
@@ -100,37 +103,46 @@ test("a scan on Browserbase with a region and a Browserbase location: composed, 
   await origin.getByLabel("Country code").fill("be");
   await expect(
     origin.getByText(
-      "A residential connection; the country is best effort. About 18 MB go through it, an estimated $0.22.",
+      "A residential connection; the country is best effort. About 18 MB go through it, an estimated $0.22 at list price.",
     ),
   ).toBeVisible();
   // The browser's cost stands apart from the model's.
   const analysis = region(page, "Analysis");
   await analysis.getByRole("switch", { name: "AI logic analysis" }).click();
   await expect(analysis.getByRole("note", { name: "Browser cost" })).toHaveText(
-    "Browserbase bills apart from the LLM budget: about 1 browser minute and 18 MB of proxy traffic, an estimated $0.22 at its Developer plan's overage prices (2026-11-12).",
+    "Browserbase bills apart from the LLM budget: about 1 browser minute and 18 MB of proxy traffic. An estimated $0.22 at Browserbase's list price of $0.12 per browser hour and $12 per GB (2026-11-12); your plan's included usage is not counted.",
   );
+  // The heading above the composer does not say where the browser runs: the composer does.
+  await expect(page.getByText(/every script in the browser, then checks the wrapper logic\./)).toBeVisible();
+  await expect(page.getByText(/your local browser/)).toHaveCount(0);
   await expect(scanButton(page)).toHaveAccessibleDescription(
-    "Scroll · Browserbase Frankfurt · Belgium (Browserbase proxy) · AI off",
+    "Scroll · Browserbase, Frankfurt (eu-central-1) · Belgium (Browserbase proxy) · AI off",
   );
   await expect(region(page, "Visit").getByText("No window", { exact: true })).toBeVisible();
   await scanButton(page).click();
 
   // No Chrome is started on this Mac, and the visit panel follows the cloud browser.
   const visit = region(page, "Visit");
-  await expect(visit.getByText("Browserbase Frankfurt")).toBeVisible({ timeout: 15_000 });
+  await expect(visit.getByText("Browserbase, Frankfurt (eu-central-1)")).toBeVisible({ timeout: 15_000 });
   await expect(visit.getByText(/· running 00:\d\d/)).toBeVisible();
   await expect(page.getByRole("list", { name: "Pipeline" })).toContainText("Browserbase, eu-central-1");
 
   await expect(reportHealth(page)).toBeVisible({ timeout: 45_000 });
   const overview = region(page, "Overview");
-  for (const fact of ["Browserbase Frankfurt", "Belgium (Browserbase proxy)", "Fresh browser profile"]) {
+  for (const fact of [
+    "Browserbase, Frankfurt (eu-central-1)",
+    "Belgium (Browserbase proxy)",
+    "Fresh browser profile",
+  ]) {
     await expect(overview.getByText(fact, { exact: true }).first()).toBeVisible();
   }
+  // The region is said once in the overview, on the visit line.
+  await expect(overview.getByText(/Frankfurt/)).toHaveCount(1);
   // The proxy traffic is read again half a minute after the end; until then it is still being counted.
   const usage = overview.getByRole("group", { name: "Browserbase visit" });
   await expect(usage).toContainText("proxy traffic still being counted");
   await expect(usage).toContainText("18 MB through the proxy", { timeout: 15_000 });
-  await expect(usage).toContainText(/about \$0\.2\d at Browserbase/);
+  await expect(usage).toContainText(/about \$0\.2\d at list price/);
   // The LLM cost is its own figure and has nothing of it.
   await expect(page.getByText("$0.00 LLM cost")).toBeVisible();
 
@@ -141,18 +153,42 @@ test("a scan on Browserbase with a region and a Browserbase location: composed, 
     "Europe/Brussels, set by Browserbase for its proxy",
     "false: the pages were not told the visit is automated",
     "Chrome/157.0.8103.79, headless, which the user agent does not show",
+    "5 scripts ran in the pages; left out of this scan's scripts and results",
+    "Solved by Browserbase automatically",
     "A video and a log",
   ]) {
     await expect(usage.getByText(fact, { exact: true })).toBeVisible();
   }
+  await expect(usage.getByText(/an estimate at Browserbase's list price of \$0\.12 per browser hour/)).toContainText(
+    "your plan's included usage is not counted",
+  );
+  await expect(overview.getByText(/Developer|Startup|overage/)).toHaveCount(0);
+  // The note says where it ran and the one thing that can change the result; the facts are in the details.
   const note = overview.getByRole("note", { name: "Scan environment" });
-  await expect(note).toContainText("This visit ran in a Browserbase browser in Frankfurt.");
+  await expect(note).toHaveText(
+    "This visit ran in a Browserbase browser; what the pages could read there is under Browser details. Browserbase ran its own scripts inside every page (5 scripts in this visit); the scanner leaves them out of its results, but they can change how a page behaves. To compare, repeat the scan on this Mac.",
+  );
   await expect(note).not.toContainText("the pages could tell");
+
+  // The capture's own line about those scripts is in the audit trail, and none of them among the scripts.
+  await reportTab(page, "Audit trail").click();
+  await expect(
+    region(page, "Log entries")
+      .getByText(
+        "Browserbase ran 5 scripts of its own in the page (271667 characters); they are not among the scan's scripts",
+      )
+      .first(),
+  ).toBeVisible();
+  await expect(
+    region(page, "Log entries")
+      .getByText("1 response body was too large for the connection to the remote browser and was not read")
+      .first(),
+  ).toBeVisible();
 
   // History marks the scan, and nothing else in it.
   await page.getByRole("link", { name: "History", exact: true }).click();
   const rows = region(page, "Scans").locator("tbody tr");
-  await expect(rows.first().getByTitle("Ran in a Browserbase browser in Frankfurt")).toBeVisible();
+  await expect(rows.first().getByTitle("Ran in a Browserbase browser in Frankfurt (eu-central-1)")).toBeVisible();
   await expect(region(page, "Scans").getByTitle(/Ran in a Browserbase browser/)).toHaveCount(2);
 });
 
@@ -182,7 +218,7 @@ test("“I'll browse myself” on Browserbase: the live view is opened by scan, 
   await session.getByRole("button", { name: "Finish capture" }).click();
   await expect(reportHealth(page)).toBeVisible({ timeout: 45_000 });
   await expect(region(page, "Overview").getByRole("note", { name: "Scan environment" })).toContainText(
-    "This visit ran in a Browserbase browser in Oregon, which you drove through its live view.",
+    "This visit ran in a Browserbase browser, which you drove through its live view; what the pages could read there is under Browser details.",
   );
 });
 
@@ -204,14 +240,19 @@ test("a configuration with Browserbase is saved, shown, run, and broken once the
   await page.getByRole("link", { name: "Configurations", exact: true }).click();
   const list = region(page, "Configurations");
   const row = list.getByRole("row", { name: /^Techpulse from Singapore/ });
-  await expect(row.getByTitle("Runs in a Browserbase Singapore browser")).toBeVisible();
-  await expect(list.getByRole("row", { name: new RegExp(`^${SEEDED_CONFIGURATION}`) })).toContainText(
-    "Belgium (Browserbase proxy)",
+  await expect(row.getByTitle("Runs in a Browserbase browser in Singapore (ap-southeast-1)")).toBeVisible();
+  // Beside the Browserbase mark the proxy is the country alone; its title has the whole of it.
+  const seeded = list.getByRole("row", { name: new RegExp(`^${SEEDED_CONFIGURATION}`) });
+  await expect(seeded.getByTitle("Belgium (Browserbase proxy)")).toHaveText("Belgium");
+  await expect(seeded.getByTitle("Runs in a Browserbase browser in Frankfurt (eu-central-1)")).toContainText(
+    "Frankfurt",
   );
   await row.getByRole("button", { name: "Run Techpulse from Singapore" }).click();
   await expect(page.getByRole("list", { name: "Pipeline" })).toContainText("Browserbase, ap-southeast-1");
   await expect(reportHealth(page)).toBeVisible({ timeout: 45_000 });
-  await expect(region(page, "Overview").getByText("Browserbase Singapore", { exact: true }).first()).toBeVisible();
+  await expect(
+    region(page, "Overview").getByText("Browserbase, Singapore (ap-southeast-1)", { exact: true }).first(),
+  ).toBeVisible();
 
   await page.getByRole("link", { name: "Settings", exact: true }).click();
   await removeBrowserbaseKey(page);
@@ -289,10 +330,12 @@ test("at Browserbase's limit of browsers the scan waits, then fails with the bac
   await composeOnBrowserbase(page);
   await scanButton(page).click();
   const visit = region(page, "Visit");
-  await expect(visit.getByText("Browserbase is at its limit; trying again in 5 s")).toBeVisible({ timeout: 15_000 });
+  await expect(visit.getByText("Browserbase is at its limit of browsers; trying again in 5 s")).toBeVisible({
+    timeout: 15_000,
+  });
   // Until Browserbase has a browser for it, the scan says what it is waiting for.
-  await expect(visit.getByText("Starting a Browserbase browser (Oregon)…")).toBeVisible();
-  await expect(page.getByText("Step 2 of 9: Starting a Browserbase browser (Oregon)…")).toBeVisible();
+  await expect(visit.getByText("Starting a Browserbase browser in Oregon (us-west-2)…")).toBeVisible();
+  await expect(page.getByText("Step 2 of 9: Starting a Browserbase browser…")).toBeVisible();
 
   await expect(page.getByText("This scan failed")).toBeVisible({ timeout: 30_000 });
   await expect(
@@ -323,6 +366,89 @@ test("a lost connection ends the scan with the backend's message", async ({ page
   await expect(
     page.getByText("The connection to the Browserbase browser was lost", { exact: true }).first(),
   ).toBeVisible();
+});
+
+test("an end that Browserbase does not confirm: the scan completes, and its report warns about the bill instead of a cost", async ({
+  page,
+}) => {
+  await openApp(page, "/", { speed: 30, browserbase: "unconfirmed" });
+  await composeOnBrowserbase(page);
+  const origin = region(page, "Origin");
+  await choose(page, origin, "Location", "Browserbase location…");
+  await origin.getByLabel("Country code").fill("be");
+  await scanButton(page).click();
+  await expect(reportHealth(page)).toBeVisible({ timeout: 45_000 });
+
+  const usage = region(page, "Overview").getByRole("group", { name: "Browserbase visit" });
+  await expect(usage).toContainText(
+    "Browserbase did not confirm that this browser ended. It may have kept running, and been billed, until its time limit.",
+  );
+  // Nothing was reported, so no time and no dollar figure is shown as if it had been.
+  await expect(usage).not.toContainText(/of browser time|about \$/);
+  await usage.getByRole("button", { name: "Browser details" }).click();
+  await expect(usage.getByText("Not reported by Browserbase", { exact: true }).first()).toBeVisible();
+  await expect(usage.getByText("Known once the proxy traffic is counted", { exact: true })).toBeVisible();
+
+  // A count that never comes is not "still being counted" for ever: a minute after the scan it is "not reported".
+  await expect(usage).toContainText("proxy traffic still being counted");
+  await page.clock.install();
+  await page.clock.fastForward(61_000);
+  await expect(usage).toContainText("proxy traffic not reported", { timeout: 10_000 });
+  await expect(usage).not.toContainText("still being counted");
+  await expect(usage.getByText("Not reported by Browserbase", { exact: true })).toHaveCount(2);
+  await expect(
+    usage.getByText("Not known: Browserbase did not report the browser time", { exact: true }),
+  ).toBeVisible();
+
+  // The capture's own warning is in the audit trail, as a warning.
+  await reportTab(page, "Audit trail").click();
+  await expect(
+    region(page, "Log entries")
+      .getByText(
+        "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest",
+      )
+      .first(),
+  ).toBeVisible();
+});
+
+test("a body too large for the connection to a Browserbase browser is listed, and says why it was not read", async ({
+  page,
+}) => {
+  await openApp(page, `${SEEDED_REPORT}/network?q=path%3A%2Ffeed%2F`);
+  await page
+    .getByRole("treegrid", { name: "Requests" })
+    .getByRole("row", { name: /all-seasons\.json/ })
+    .click();
+  const details = page.getByRole("region", { name: "Request details" });
+  await details.getByRole("tab", { name: "Response" }).click();
+  await expect(details.getByRole("note")).toContainText("Body not read (was 11.6 MB)");
+  await expect(details.getByRole("note")).toContainText(
+    "It was too large to bring over the connection to the Browserbase browser in one piece, so the scanner left it there.",
+  );
+});
+
+test("a scan stored before the browser could run elsewhere is scanned again on this Mac, also with Browserbase as the default", async ({
+  page,
+}) => {
+  await openApp(page, "/settings");
+  await region(page, "Scan defaults").getByRole("radio", { name: "Browserbase" }).click();
+  await expect(page.getByText("Settings saved")).toBeVisible();
+
+  // This scan's options do not say where its browser ran: it ran here, and that is where it runs again.
+  await page.goto("/#/scans/seed-sportsdesk-mobile");
+  await page.getByRole("button", { name: "Re-scan" }).click();
+  await expect(page).toHaveURL(/#\/scans\/scan-/);
+  const pipeline = page.getByRole("list", { name: "Pipeline" });
+  await expect(pipeline).toContainText("Browser ready", { timeout: 15_000 });
+  await expect(pipeline).not.toContainText("Browserbase");
+  await expect(page.getByText(/Starting a Browserbase browser/)).toHaveCount(0);
+  await expect(reportHealth(page)).toBeVisible({ timeout: 45_000 });
+  await expect(region(page, "Overview").getByText(/Browserbase/)).toHaveCount(0);
+
+  // A new scan from the composer does follow the default.
+  await page.getByRole("link", { name: "Home", exact: true }).click();
+  await page.getByRole("textbox", { name: "Page URL" }).fill("morningledger.example");
+  await expect(scanButton(page)).toHaveAccessibleDescription(/^Scroll · Browserbase, Oregon \(us-west-2\) · /);
 });
 
 test("without a local Chrome, Browserbase is offered as another way to run scans", async ({ page }) => {
@@ -473,14 +599,14 @@ const STATES: { name: string; arrive: (page: Page) => Promise<void> }[] = [
     name: "configurations with one on Browserbase",
     arrive: async (page) => {
       await openApp(page, "/configurations");
-      await expect(page.getByTitle("Runs in a Browserbase Frankfurt browser")).toBeVisible();
+      await expect(page.getByTitle("Runs in a Browserbase browser in Frankfurt (eu-central-1)")).toBeVisible();
     },
   },
   {
     name: "history with a Browserbase scan",
     arrive: async (page) => {
       await openApp(page, "/history");
-      await expect(page.getByTitle("Ran in a Browserbase browser in Frankfurt")).toBeVisible();
+      await expect(page.getByTitle("Ran in a Browserbase browser in Frankfurt (eu-central-1)")).toBeVisible();
     },
   },
   {
@@ -552,7 +678,9 @@ for (const viewport of [
   test.describe(`${viewport.width}×${viewport.height}`, () => {
     test.use({ viewport });
 
-    test("switching between This Mac and Browserbase does not move anything in the composer", async ({ page }) => {
+    test("switching between This Mac and Browserbase moves nothing in the composer: the region takes its empty cell, and the browser's cost is added below everything else", async ({
+      page,
+    }) => {
       await openApp(page, "/");
       await page.getByRole("textbox", { name: "Page URL" }).fill("morningledger.example");
       await page.getByRole("button", { name: "Options" }).click();
@@ -563,23 +691,47 @@ for (const viewport of [
         region(page, "Analysis"),
         region(page, "Analysis").getByRole("textbox", { name: "LLM budget" }),
       ];
+      // Each top is read against the composer's in one step: the page may be scrolling as the composer grows.
       const layout = async () => ({
-        tops: await Promise.all(parts.map(async (part) => (await part.boundingBox())?.y)),
+        tops: await Promise.all(
+          parts.map((part) =>
+            part.evaluate(
+              (element) =>
+                element.getBoundingClientRect().top - (element.closest("form")?.getBoundingClientRect().top ?? 0),
+            ),
+          ),
+        ),
         height: (await composer.boundingBox())?.height,
       });
       const browser = (name: string) => region(page, "Origin").getByRole("radio", { name });
       const visitor = (name: string) => region(page, "Visit").getByRole("radio", { name });
+      const cost = region(page, "Analysis").getByRole("note", { name: "Browser cost" });
+      /** The space between two things in the Analysis section. */
+      const GAP = 16;
 
       for (const behaviour of ["Scroll", "Browse like a visitor", "I'll browse myself"]) {
         await visitor(behaviour).click();
         await browser("This Mac").click();
-        await expect(
-          region(page, "Origin").getByText("Only a Browserbase browser has a region to choose."),
-        ).toBeVisible();
+        // No placeholder stands in for what only a Browserbase browser has.
+        await expect(region(page, "Origin").getByText("Region")).toHaveCount(0);
+        await expect(cost).toHaveCount(0);
         const onThisMac = await layout();
         await browser("Browserbase").click();
         await expect(region(page, "Origin").getByRole("combobox", { name: "Region" })).toBeVisible();
-        expect(await layout(), behaviour).toEqual(onThisMac);
+        await expect(cost).toBeVisible();
+        const onBrowserbase = await layout();
+        // Nothing that was there has moved.
+        expect(onBrowserbase.tops, behaviour).toEqual(onThisMac.tops);
+        // The composer is taller by the line about Browserbase's cost, its last, and by nothing else.
+        const line = await cost.boundingBox();
+        expect((onBrowserbase.height ?? 0) - (onThisMac.height ?? 0), behaviour).toBeCloseTo(
+          (line?.height ?? 0) + GAP,
+          0,
+        );
+        const composerBox = await composer.boundingBox();
+        expect((line?.y ?? 0) + (line?.height ?? 0), behaviour).toBeGreaterThan(
+          (composerBox?.y ?? 0) + (composerBox?.height ?? 0) - 2 * GAP - 1,
+        );
       }
     });
   });

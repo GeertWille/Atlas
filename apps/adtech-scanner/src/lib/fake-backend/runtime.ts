@@ -221,7 +221,8 @@ export function completeScan(
   if (archive) recordNetwork(scan.detail, archive);
   Object.assign(scan.detail.summary, { healthScore, prebidVersion, aiUsed, remote: remote && { ...remote } });
   const { summary, environment } = scan.detail;
-  if (usageLags && summary.remote && environment?.browser.kind === "browserbase") {
+  // A count that Browserbase never gave stays unknown: only one that was read can have been read too early.
+  if (usageLags && summary.remote?.proxyBytes != null && environment?.browser.kind === "browserbase") {
     summary.remote.proxyBytes = 0;
     environment.browser.proxyBytes = 0;
   }

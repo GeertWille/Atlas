@@ -100,6 +100,8 @@ export type ResolvedScan = {
   /** The options as a backend stores them: nothing is left to the settings any more. */
   options: ScanOptions;
   proxy: ProxyUse;
+  /** The scan asked for this computer's own proxy and runs on Browserbase, where that means nothing. */
+  systemProxyDropped: boolean;
 };
 
 /**
@@ -124,8 +126,11 @@ export function resolveScanOptions(options: ScanOptions, settings: Settings, sca
   const browser = resolveBrowser(options, settings);
   const remote = browser.kind === "browserbase";
   let choice: ProxyChoice;
+  let systemProxyDropped = false;
   if (remote) {
-    choice = resolveBrowserbaseProxy(options.proxy ?? settings.browserbase.defaultProxy, settings);
+    const asked = options.proxy ?? settings.browserbase.defaultProxy;
+    systemProxyDropped = asked.kind === "system";
+    choice = resolveBrowserbaseProxy(asked, settings);
   } else {
     choice = options.proxy ?? settings.defaultProxy;
     if (choice.kind === "browserbaseLocation") throw new ApiError("invalidInput", LOCATION_NEEDS_BROWSERBASE);
@@ -145,6 +150,7 @@ export function resolveScanOptions(options: ScanOptions, settings: Settings, sca
 
   return {
     proxy: proxyUseOf(choice),
+    systemProxyDropped,
     options: {
       ...options,
       visitor,

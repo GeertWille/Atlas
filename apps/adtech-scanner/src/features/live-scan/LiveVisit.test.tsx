@@ -196,7 +196,7 @@ const remoteEvent = (event: string, message: string, detail: Record<string, unkn
     id: `r${sequence}`,
     ts,
     kind: "visitor",
-    level: event === "connectionLost" ? "warn" : "info",
+    level: event === "connectionLost" || event === "releaseUnconfirmed" ? "warn" : "info",
     message,
     data: { activity: "browser", page: null, detail: { event, ...detail } },
   });
@@ -204,13 +204,13 @@ const remoteEvent = (event: string, message: string, detail: Record<string, unkn
 
 test("a Browserbase scan says that it is starting a browser there, until that browser exists", async () => {
   await renderWithApp(view(running(frankfurt), [makeLog({ message: "Using Browserbase in eu-central-1" })]));
-  expect(screen.getByText("Step 2 of 3: Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  expect(screen.getByText("Step 2 of 3: Starting a Browserbase browser…")).toBeInTheDocument();
   const visit = screen.getByRole("region", { name: "Visit" });
-  expect(within(visit).getByText("Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  expect(within(visit).getByText("Starting a Browserbase browser in Frankfurt (eu-central-1)…")).toBeInTheDocument();
   expect(within(visit).queryByText(/Now on page/)).toBeNull();
   // The one step that differs from a scan on this Mac.
   const pipeline = screen.getByRole("list", { name: "Pipeline" });
-  expect(pipeline).toHaveTextContent("Start a Browserbase browser in Frankfurt");
+  expect(pipeline).toHaveTextContent("Start a Browserbase browser in Frankfurt (eu-central-1)");
   expect(pipeline).not.toHaveTextContent("Start local Chrome over CDP");
 });
 
@@ -229,7 +229,7 @@ test("once the browser runs, the visit panel names the region and counts its bil
   );
   expect(screen.getByText("Step 2 of 3: Capture page")).toBeInTheDocument();
   const visit = screen.getByRole("region", { name: "Visit" });
-  expect(within(visit).getByText("Browserbase Frankfurt")).toBeInTheDocument();
+  expect(within(visit).getByText("Browserbase, Frankfurt (eu-central-1)")).toBeInTheDocument();
   expect(within(visit).getByText(/· running 01:1[2-4]/)).toBeInTheDocument();
   expect(within(visit).getByText("Now on page 2: /sport/final")).toBeInTheDocument();
 });
@@ -237,12 +237,15 @@ test("once the browser runs, the visit panel names the region and counts its bil
 test("waiting at Browserbase's limit and a lost connection show the backend's own message", async () => {
   const waiting = await renderWithApp(
     view(running(frankfurt), [
-      remoteEvent("rateLimited", "Browserbase is at its limit; trying again in 5 s", { waitSeconds: 5, attempt: 1 }),
+      remoteEvent("rateLimited", "Browserbase is at its limit of browsers; trying again in 5 s", {
+        waitSeconds: 5,
+        attempt: 1,
+      }),
     ]),
   );
   const visit = screen.getByRole("region", { name: "Visit" });
-  expect(within(visit).getByText("Browserbase is at its limit; trying again in 5 s")).toBeInTheDocument();
-  expect(within(visit).getByText("Starting a Browserbase browser (Frankfurt)…")).toBeInTheDocument();
+  expect(within(visit).getByText("Browserbase is at its limit of browsers; trying again in 5 s")).toBeInTheDocument();
+  expect(within(visit).getByText("Starting a Browserbase browser in Frankfurt (eu-central-1)…")).toBeInTheDocument();
   waiting.unmount();
 
   await renderWithApp(
@@ -254,6 +257,31 @@ test("waiting at Browserbase's limit and a lost connection show the backend's ow
   const lost = screen.getByRole("region", { name: "Visit" });
   expect(within(lost).getByText("The connection to the Browserbase browser was lost")).toBeInTheDocument();
   expect(within(lost).getByText(/· ran 00:2[5-7]/)).toBeInTheDocument();
+});
+
+test("an end that Browserbase did not confirm is a warning, and the clock stops without saying the browser ran out", async () => {
+  await renderWithApp(
+    view(running(frankfurt), [
+      remoteEvent("sessionCreated", "started", { region: "eu-central-1" }, Date.now() - 50_000),
+      ...browseLogs,
+      remoteEvent(
+        "releaseUnconfirmed",
+        "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest",
+        {},
+        Date.now() - 9_000,
+      ),
+    ]),
+  );
+  const visit = screen.getByRole("region", { name: "Visit" });
+  // The backend's line, and what it means for the bill.
+  expect(
+    within(visit).getByText(
+      "Browserbase did not confirm that the browser has ended; it ends by itself at its time limit at the latest. Until then it may still be running, and Browserbase bills it.",
+    ),
+  ).toHaveClass("text-amber-fg");
+  // The scanner's own count has stopped where it let go: 41 s, not the 50 s since the start.
+  expect(within(visit).getByText(/· end not confirmed after 00:4[0-2]/)).toBeInTheDocument();
+  expect(within(visit).queryByText(/· (running|ran) /)).toBeNull();
 });
 
 test("a scan on this Mac shows none of it", async () => {

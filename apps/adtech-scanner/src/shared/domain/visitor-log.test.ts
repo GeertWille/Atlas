@@ -105,18 +105,36 @@ test("what the capture says about its Browserbase browser is read by event, the 
     visitorActivity(
       browser({ event: "sessionCreated", sessionId: "s-1", region: "eu-central-1", timeoutSeconds: 180 }),
     ),
-  ).toEqual({ activity: "browser", page: null, event: "sessionCreated", region: "eu-central-1" });
+  ).toEqual({ activity: "browser", page: null, event: "sessionCreated", region: "eu-central-1", count: null });
   for (const event of [
     "rateLimited",
     "connected",
     "timezone",
     "liveView",
     "bodiesTooLarge",
+    "serviceScripts",
     "connectionLost",
     "released",
+    "releaseUnconfirmed",
   ]) {
-    expect(visitorActivity(browser({ event }))).toEqual({ activity: "browser", page: null, event, region: null });
+    expect(visitorActivity(browser({ event }))).toEqual({
+      activity: "browser",
+      page: null,
+      event,
+      region: null,
+      count: null,
+    });
   }
+  // The two lines that count something carry their count.
+  expect(visitorActivity(browser({ event: "serviceScripts", count: 5, characters: 271_667 }))).toMatchObject({
+    event: "serviceScripts",
+    count: 5,
+  });
+  expect(visitorActivity(browser({ event: "bodiesTooLarge", count: 2, largestBytes: 40_000_000 }))).toMatchObject({
+    event: "bodiesTooLarge",
+    count: 2,
+  });
+  expect(visitorActivity(browser({ event: "serviceScripts", count: "five" }))).toMatchObject({ count: null });
   // A region or an event this version does not know is not guessed at.
   expect(visitorActivity(browser({ event: "sessionCreated", region: "mars-north-1" }))).toMatchObject({ region: null });
   expect(visitorActivity(browser({ event: "somethingNew" }))).toBeNull();

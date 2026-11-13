@@ -59,6 +59,8 @@ type SeedSpec = {
   configuration?: { id: string; name: string };
   /** Stored before visits had pages: no page views, no environment, no network data, only the options of that time. */
   legacy?: boolean;
+  /** Stored before the browser could run anywhere but on this Mac: the options do not say where it ran. */
+  beforeBrowserChoice?: boolean;
   /** What became of the scan's network data. Kept unless said otherwise. */
   archive?: "disabled" | "evicted";
   /** Stop the scan this many ms in, as if the user cancelled it. */
@@ -69,7 +71,7 @@ const MINUTES_PER_DAY = 1440;
 
 const FEATURED: SeedSpec[] = [
   { id: "seed-sportsdesk-desktop", url: SPORTSDESK_URL, device: "desktop", minutesAgo: 34 },
-  { id: "seed-sportsdesk-mobile", url: SPORTSDESK_URL, device: "mobile", minutesAgo: 29 },
+  { id: "seed-sportsdesk-mobile", url: SPORTSDESK_URL, device: "mobile", minutesAgo: 29, beforeBrowserChoice: true },
   {
     id: "seed-morningledger-browserbase",
     url: LEDGER_URL,
@@ -213,6 +215,7 @@ function runSeed(spec: SeedSpec, settings: Settings, now: number, padTo: number)
       : { keep: spec.archive !== "disabled", evicted: spec.archive === "evicted", redactHeaders: true, padTo };
     completeScan(scan, scenario.result, startedAt + elapsed + 80, archive);
   }
+  if (spec.beforeBrowserChoice) delete scan.detail.options.browser;
   return spec.legacy ? asLegacy(scan) : scan;
 }
 

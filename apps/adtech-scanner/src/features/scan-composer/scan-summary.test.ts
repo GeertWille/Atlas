@@ -81,7 +81,7 @@ test("a deleted proxy is named as such and flagged", () => {
 test("on Browserbase the region stands where the browser window would, and the location is named", () => {
   const cloud = { remote: true };
   expect(line({ browser: "browserbase" }, browserbaseSettingsFixture, cloud)).toBe(
-    "Scroll · Browserbase Oregon · no proxy · AI on, about $0.36",
+    "Scroll · Browserbase, Oregon (us-west-2) · no proxy · AI on, about $0.36",
   );
   expect(
     line(
@@ -89,7 +89,7 @@ test("on Browserbase the region stands where the browser window would, and the l
       browserbaseSettingsFixture,
       cloud,
     ),
-  ).toBe("Scroll · Browserbase Frankfurt · Belgium (Browserbase proxy) · AI on, about $0.36");
+  ).toBe("Scroll · Browserbase, Frankfurt (eu-central-1) · Belgium (Browserbase proxy) · AI on, about $0.36");
   expect(
     line(
       {
@@ -115,7 +115,7 @@ test("on Browserbase the region stands where the browser window would, and the l
     },
   };
   expect(line({ browser: "browserbase" }, withDefault, cloud)).toBe(
-    "Scroll · Browserbase Singapore · Belgium proxy · kept browser profile · AI on, about $0.36",
+    "Scroll · Browserbase, Singapore (ap-southeast-1) · Belgium proxy · kept browser profile · AI on, about $0.36",
   );
   // The profile setting of this Mac's browser plays no part there.
   expect(

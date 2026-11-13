@@ -31,8 +31,15 @@ test("no notice for a scan without a recorded environment, or for a visit a pers
 });
 
 test("a scripted visit is reported with the facts the page could see", () => {
+  // Chrome reports navigator.webdriver false in every mode: a hidden browser is the one sign a local visit gives.
   const headless = environmentNotice(makeDetail({ environment: makeEnvironment() }));
-  expect(headless).toEqual({
+  expect(headless).toEqual({ kind: "identifiable", signals: ["Chrome ran headless"], canShowBrowser: true });
+  // With its window shown there is no sign at all, whatever else is on the page.
+  expect(
+    environmentNotice(makeDetail({ environment: makeEnvironment({ visitor: "browse", headless: false }) })),
+  ).toBeNull();
+  // A scan stored while Chrome still showed the flag is reported with what was recorded then.
+  expect(environmentNotice(makeDetail({ environment: makeEnvironment({ webdriver: true }) }))).toEqual({
     kind: "identifiable",
     signals: ["navigator.webdriver was true", "Chrome ran headless"],
     canShowBrowser: true,
@@ -41,6 +48,7 @@ test("a scripted visit is reported with the facts the page could see", () => {
     makeDetail({
       environment: makeEnvironment({
         visitor: "browse",
+        webdriver: true,
         headless: false,
         detectors: [
           { vendor: "DoubleVerify", kind: "invalidTrafficMeasurement", host: "cdn.doubleverify.com" },
@@ -88,7 +96,7 @@ test("the notice states the facts, what they mean and what to try, without promi
   await renderWithApp(<EnvironmentNotice detail={makeDetail({ environment: makeEnvironment() })} />);
   const notice = screen.getByRole("note", { name: "Scan environment" });
   expect(notice).toHaveTextContent(
-    "This visit was automated and the pages could tell: navigator.webdriver was true, Chrome ran headless. Ad partners can bid less, or not at all, for automated visits. To compare, repeat the scan as “I'll browse myself” or with the browser shown.",
+    "This visit was automated and the pages could tell: Chrome ran headless. Ad partners can bid less, or not at all, for automated visits. To compare, repeat the scan as “I'll browse myself” or with the browser shown.",
   );
   expect(notice).not.toHaveTextContent(/undetect|indistinguishable|like a (real|human)/i);
   expect(

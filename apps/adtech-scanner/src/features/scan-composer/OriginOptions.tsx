@@ -9,6 +9,7 @@ import {
   type LocationError,
   regionName,
   regionOptionLabel,
+  regionPlace,
 } from "@/shared/domain/browserbase";
 import { type ProxyChoiceKey, proxyChoiceLabel } from "@/shared/domain/proxy";
 import { cn } from "@/shared/lib/cn";
@@ -106,7 +107,8 @@ function RegionChoice({ form, settings, update }: { form: ScanForm; settings: Se
         </SelectTrigger>
         <SelectContent>
           <SelectGroup>
-            <SelectItem value="settings">Settings default: {regionName(settings.browserbase.region)}</SelectItem>
+            {/* The place alone, so that the closed control is not cut short; every item below has its id. */}
+            <SelectItem value="settings">Settings default ({regionPlace(settings.browserbase.region)})</SelectItem>
             {BROWSERBASE_REGIONS.map((region) => (
               <SelectItem key={region} value={region}>
                 {regionOptionLabel(region)}

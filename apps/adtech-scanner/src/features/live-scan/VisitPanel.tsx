@@ -58,12 +58,13 @@ export function VisitPanel({
         ) : null}
       </div>
       {browserbase ? (
-        <p className="flex items-center gap-1.5 text-[13px] whitespace-nowrap text-muted-foreground">
-          <CloudIcon aria-hidden="true" className="size-3.5 shrink-0" />
+        // Running text, not a row: the region's name is long for this column, and wraps before anything is cut short.
+        <p className="text-[13px] text-pretty text-muted-foreground">
+          <CloudIcon aria-hidden="true" className="mr-1.5 inline size-3.5 align-[-2px]" />
           {remote ? (
             <>
-              <span className="truncate text-foreground">Browserbase, {regionName(remote.region ?? browserbase)}</span>
-              <span className="tabular-nums">
+              <span className="text-foreground">Browserbase, {regionName(remote.region ?? browserbase)}</span>{" "}
+              <span className="whitespace-nowrap tabular-nums">
                 · {browserClock(remote)} {formatTimer((remote.endedAt ?? now) - remote.startedAt)}
               </span>
             </>
