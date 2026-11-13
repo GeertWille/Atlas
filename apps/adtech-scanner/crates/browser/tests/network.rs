@@ -1011,14 +1011,17 @@ async fn without_a_sink_nothing_is_read_for_one_and_the_capture_is_as_before() {
     );
 }
 
-/// The tab moves to another site's process while the scanner is settling on
-/// the page it opened. Chrome then runs a command twice that was on its way,
-/// and the second run of removing the tracker finds nothing to remove; the
-/// scan used to fail with that answer. Several visits at once, because the
-/// moment is only hit now and then.
+/// The page leaves its site while the scanner is settling on it: after the
+/// load event, before the tracker is confined to the site. The navigation
+/// waits for the confinement, so the tracker does nothing on the other site.
+/// Without the wait the tab could move to the other site's process with the
+/// unconfined tracker, and Chrome then ran a command twice that was on its
+/// way: the second run of removing the tracker found nothing to remove and
+/// the scan failed with that answer. Several visits at once, because the
+/// moment was only hit now and then.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scanned() {
-    let visits: Vec<_> = [30, 40, 50, 60, 70, 80, 90, 100]
+    let visits: Vec<_> = [0, 0, 5, 10, 20, 40, 80, 150]
         .into_iter()
         .map(|after| {
             tokio::spawn(async move {
@@ -1040,6 +1043,16 @@ async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scann
                         .any(|line| line.starts_with("Left the scanned site")),
                     "{:#?}",
                     outcome.progress
+                );
+                let told_by_the_other_site: Vec<_> = fixtures
+                    .requested()
+                    .into_iter()
+                    .filter(|path| path.starts_with("/status/200?tracker="))
+                    .collect();
+                assert_eq!(
+                    told_by_the_other_site,
+                    ["/status/200?tracker=silent"],
+                    "leaving after {after} ms"
                 );
             })
         })

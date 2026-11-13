@@ -1,9 +1,11 @@
 <!doctype html>
 <title>A page that leaves its site as soon as it has loaded</title>
 <script>
-  // `?after=<ms>`: how long after it started the page goes elsewhere.
+  // `?after=<ms>`: how long after its load event the page goes elsewhere.
   var after = Number(new URLSearchParams(location.search).get('after') || 0);
-  setTimeout(function () {
-    location.href = 'http://localhost:' + location.port + '/network-elsewhere.html';
-  }, after);
+  addEventListener('load', function () {
+    setTimeout(function () {
+      location.href = 'http://localhost:' + location.port + '/network-elsewhere-probe.html';
+    }, after);
+  });
 </script>
