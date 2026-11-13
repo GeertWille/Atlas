@@ -58,9 +58,9 @@ Rules that came from you and must keep holding:
 | Part | Path | State |
 |---|---|---|
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
-| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 226 unit tests; the integration tests drive real Chromium. |
+| Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 237 unit tests; the integration tests drive real Chromium. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1081 tests, 5 ignored (2026-11-13). |
+| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1096 tests, 5 ignored (2026-11-13). |
 | React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 788 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-13). |
 | Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: 41 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
 
