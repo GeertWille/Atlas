@@ -71,7 +71,13 @@ struct Session {
     ended_at: Option<f64>,
     signing_key: String,
     live_view_token: String,
-    browser: Option<StandIn>,
+    /// The session's browser, until it has ended. Whoever ends it holds
+    /// this until the browser is gone, so that nobody takes the session for
+    /// over while its browser still writes its profile.
+    browser: Arc<tokio::sync::Mutex<Option<StandIn>>>,
+    /// The browser's DevTools port and address.
+    port: u16,
+    socket: String,
     /// The service's own client on the session's page. What it installed
     /// there lasts as long as it is connected.
     own_client: Option<PageClient>,
@@ -256,7 +262,7 @@ impl Cloud {
                 .iter()
                 .find(|session| session.id == session_id)
                 .expect("a session with that id");
-            session.browser.as_ref().expect("a running browser").port
+            session.port
         };
         page_socket_of(port).await
     }
@@ -431,8 +437,12 @@ impl StandIn {
                 "--disable-features=IsolateOrigins,site-per-process,Translate,MediaRouter,\
                  OptimizationHints,DialMediaRouteProvider,NetworkTimeServiceQuerying",
                 "--window-size=2560,1440",
-                // Names that look public and lead to this machine.
-                "--host-resolver-rules=MAP *.adscan-fixture.example 127.0.0.1",
+                // Names that look public and lead to this machine; every
+                // other name leads nowhere, and no proxy of the machine is
+                // used: the stand-in reaches this machine only.
+                "--host-resolver-rules=MAP *.adscan-fixture.example 127.0.0.1, \
+                 MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1",
+                "--no-proxy-server",
             ]);
         if nix::unistd::Uid::effective().is_root() {
             command.arg("--no-sandbox");
@@ -585,16 +595,10 @@ async fn relay(connection: TcpStream, service: Arc<Service>) {
             .find(|session| session.id == session_id)
             .unwrap();
         (
-            session
-                .browser
-                .as_ref()
-                .map(|browser| browser.socket.clone()),
+            session.socket.clone(),
             session.commands.clone(),
             session.cut.clone(),
         )
-    };
-    let Some(browser_socket) = browser_socket else {
-        return;
     };
     let port = browser_socket
         .strip_prefix("ws://")
@@ -680,11 +684,24 @@ async fn end(service: &Service, session_id: &str) {
             session.ended_at = Some(epoch_seconds());
         }
         session.own_client = None;
-        session.browser.take()
+        session.browser.clone()
     };
-    if let Some(mut browser) = browser {
-        let _ = tokio::time::timeout(EXIT_PATIENCE, browser.child.wait()).await;
+    exit(&browser).await;
+}
+
+/// Ends the browser of a session, unless it has ended: asks it to exit,
+/// as the service does with a browser whose profile it keeps, gives it a
+/// moment to write that profile, and kills what is left of it.
+async fn exit(browser: &tokio::sync::Mutex<Option<StandIn>>) {
+    let mut browser = browser.lock().await;
+    let Some(mut ending) = browser.take() else {
+        return;
+    };
+    if let Some(pid) = ending.child.id() {
+        let pid = nix::unistd::Pid::from_raw(pid as i32);
+        let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
     }
+    let _ = tokio::time::timeout(EXIT_PATIENCE, ending.child.wait()).await;
 }
 
 // ----------------------------------------------------------------- the API
@@ -981,6 +998,7 @@ impl Service {
                 contexts.get(id).map(|profile| profile.path().to_path_buf())
             });
         let browser = StandIn::start(kept_profile.as_deref()).await;
+        let (port, socket) = (browser.port, browser.socket.clone());
         let own_client =
             PageClient::attach_as(&page_socket_of(browser.port).await, Role::TheService).await;
         let mut session = Session {
@@ -991,7 +1009,9 @@ impl Service {
             ended_at: None,
             signing_key: format!("{SIGNING_KEY_PREFIX}{number}"),
             live_view_token: format!("{LIVE_VIEW_TOKEN_PREFIX}{number}"),
-            browser: Some(browser),
+            browser: Arc::new(tokio::sync::Mutex::new(Some(browser))),
+            port,
+            socket,
             own_client: Some(own_client),
             commands: Arc::default(),
             release_requests: 0,
@@ -1015,12 +1035,13 @@ impl Service {
         }
     }
 
-    fn update_session(&self, id: &str, body: &Value) -> Response {
+    async fn update_session(&self, id: &str, body: &Value) -> Response {
         if body["status"] != "REQUEST_RELEASE" {
             return validation_failure("body/status must be equal to one of the allowed values");
         }
         let failing = self.failing_releases.load(Ordering::Relaxed);
-        self.with_session(id, |session| {
+        let mut ending = None;
+        let released = self.with_session(id, |session| {
             session.release_requests += 1;
             if failing > 0 {
                 self.failing_releases.store(failing - 1, Ordering::Relaxed);
@@ -1031,10 +1052,15 @@ impl Service {
                 session.ended_at = Some(epoch_seconds());
                 session.cut.cancel();
                 session.own_client = None;
-                session.browser = None;
             }
+            ending = Some(session.browser.clone());
             reply(StatusCode::OK, &self.session_json(session))
-        })
+        });
+        // The answer says the session has ended: its browser is gone by then.
+        if let Some(browser) = ending {
+            exit(&browser).await;
+        }
+        released
     }
 
     fn list_sessions(&self, query: &str) -> Response {
@@ -1195,7 +1221,7 @@ async fn answer(
         ("GET", ["v1", "sessions", id]) => service.with_session(id, |session| {
             reply(StatusCode::OK, &service.session_json(session))
         }),
-        ("POST", ["v1", "sessions", id]) => service.update_session(id, &body),
+        ("POST", ["v1", "sessions", id]) => service.update_session(id, &body).await,
         ("GET", ["v1", "sessions", id, "debug"]) => service.live_view(id),
         (_, ["v1", "contexts"]) => service.contexts(&method, None, &body),
         (_, ["v1", "contexts", id]) => service.contexts(&method, Some(id), &body),

@@ -26,10 +26,11 @@ const SERVICE_DOMAIN: &str = "browserbase.com";
 pub(crate) const ADDRESS_NOT_ACCEPTED: &str =
     "Browserbase answered with an address the scanner does not connect to.";
 
-/// The address of a session's browser. A credential: it has no `Debug`
-/// and no `Display`, and never leaves this module but to be connected to.
+/// The address of a session's browser, when the service gave one that
+/// reads as an address. A credential: it has no `Debug` and no `Display`,
+/// and never leaves this module but to be connected to.
 #[derive(Clone)]
-pub(crate) struct BrowserAddress(Url);
+pub(crate) struct BrowserAddress(Option<Url>);
 
 /// A session as the service describes it, without its credentials.
 #[derive(Debug, Clone, PartialEq)]
@@ -248,22 +249,19 @@ impl Api {
         let given = session["connectUrl"]
             .as_str()
             .and_then(|address| Url::parse(address).ok());
-        BrowserAddress(
-            self.browser_override
-                .clone()
-                .or(given)
-                .unwrap_or_else(|| self.base.clone()),
-        )
+        BrowserAddress(self.browser_override.clone().or(given))
     }
 
-    /// Whether the scanner connects to `address`: the service's own hosts
-    /// over TLS, or this machine when the API is on this machine too (a
-    /// stand-in for tests). The override was checked when it was given.
-    fn accepts(&self, address: &BrowserAddress) -> bool {
-        let url = &address.0;
-        self.browser_override.as_ref() == Some(url)
+    /// The address, when it is one the scanner connects to: the service's
+    /// own hosts over TLS, or this machine when the API is on this machine
+    /// too (a stand-in for tests). The override was checked when it was
+    /// given.
+    fn accepted<'a>(&self, address: &'a BrowserAddress) -> Option<&'a Url> {
+        let url = address.0.as_ref()?;
+        let is_accepted = self.browser_override.as_ref() == Some(url)
             || (url.scheme() == "wss" && is_at_the_service(url))
-            || (url.scheme() == "ws" && is_loopback(url) && is_loopback(&self.base))
+            || (url.scheme() == "ws" && is_loopback(url) && is_loopback(&self.base));
+        is_accepted.then_some(url)
     }
 
     /// Opens the one DevTools connection to a session's browser.
@@ -271,12 +269,12 @@ impl Api {
         &self,
         address: &BrowserAddress,
     ) -> Result<(WebSocketSource, WebSocketSink), ApiFailure> {
-        if !self.accepts(address) {
+        let Some(address) = self.accepted(address) else {
             return Err(ApiFailure::Failed(ADDRESS_NOT_ACCEPTED.into()));
-        }
+        };
         websocket::connect(
             &self.http,
-            &address.0,
+            address,
             Keepalive::REMOTE_BROWSER,
             SOCKET_PATIENCE,
         )
@@ -555,7 +553,10 @@ mod tests {
             "wss://connect.usw2.browserbase.com/?signingKey=k",
             "wss://browserbase.com/s",
         ] {
-            assert!(real.accepts(&address_of(&real, accepted)), "{accepted}");
+            assert!(
+                real.accepted(&address_of(&real, accepted)).is_some(),
+                "{accepted}"
+            );
         }
         for refused in [
             "ws://connect.browserbase.com/?signingKey=k",
@@ -565,22 +566,41 @@ mod tests {
             "https://connect.browserbase.com/",
             "not an address",
         ] {
-            assert!(!real.accepts(&address_of(&real, refused)), "{refused}");
+            assert!(
+                real.accepted(&address_of(&real, refused)).is_none(),
+                "{refused}"
+            );
         }
         // A session that came without an address at all.
-        assert!(!real.accepts(&real.browser_address(&json!({}))));
+        assert!(real.accepted(&real.browser_address(&json!({}))).is_none());
     }
 
     #[test]
     fn a_stand_in_on_this_machine_may_hand_out_browsers_on_this_machine() {
         let stand_in = Api::new("http://127.0.0.1:4010", None).unwrap();
-        assert!(stand_in.accepts(&address_of(
-            &stand_in,
-            "ws://127.0.0.1:9222/devtools/browser/1"
-        )));
-        assert!(stand_in.accepts(&address_of(&stand_in, "ws://localhost:9222/x")));
-        assert!(!stand_in.accepts(&address_of(&stand_in, "ws://10.0.0.7:9222/x")));
-        assert!(!stand_in.accepts(&address_of(&stand_in, "ws://example.com/x")));
+        assert!(
+            stand_in
+                .accepted(&address_of(
+                    &stand_in,
+                    "ws://127.0.0.1:9222/devtools/browser/1"
+                ))
+                .is_some()
+        );
+        assert!(
+            stand_in
+                .accepted(&address_of(&stand_in, "ws://localhost:9222/x"))
+                .is_some()
+        );
+        assert!(
+            stand_in
+                .accepted(&address_of(&stand_in, "ws://10.0.0.7:9222/x"))
+                .is_none()
+        );
+        assert!(
+            stand_in
+                .accepted(&address_of(&stand_in, "ws://example.com/x"))
+                .is_none()
+        );
     }
 
     #[test]
@@ -592,8 +612,10 @@ mod tests {
         .unwrap();
         let address = address_of(&overridden, "wss://connect.browserbase.com/?signingKey=k");
 
-        assert_eq!(address.0.as_str(), "ws://127.0.0.1:9222/devtools/browser/1");
-        assert!(overridden.accepts(&address));
+        assert_eq!(
+            overridden.accepted(&address).map(Url::as_str),
+            Some("ws://127.0.0.1:9222/devtools/browser/1")
+        );
     }
 
     #[tokio::test]
