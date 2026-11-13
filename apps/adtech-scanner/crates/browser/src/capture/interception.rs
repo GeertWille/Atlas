@@ -1,7 +1,11 @@
 //! Requests the browser pauses for the scanner (the `Fetch` domain), and what
-//! is answered. Two things need it, and only document requests are paused
+//! is answered. Three things need it, and only document requests are paused
 //! for them, so a page's scripts, images and bid requests never wait:
 //!
+//! - until the tracker is confined to the scanned site, a page that leaves
+//!   the site must not take the unconfined tracker along: its navigation
+//!   waits for the confinement (see `Page::confine_to_site`). Without the two
+//!   needs below, pausing ends there;
 //! - a visit that follows links must stay on the scanned site and must not
 //!   load an address the link policy would never have chosen, whatever the
 //!   page does with a click: rewrite the link as the pointer goes down,
@@ -102,14 +106,18 @@ impl Interception {
         }
     }
 
-    /// Parameters of `Fetch.enable`, or `None` when nothing needs pausing.
-    pub(crate) fn fetch_enable(&self) -> Option<Value> {
-        (self.proxy.is_some() || self.follows_links).then(|| {
-            json!({
-                "patterns": [{ "resourceType": "Document" }],
-                "handleAuthRequests": self.proxy.is_some(),
-            })
+    /// Parameters of `Fetch.enable`.
+    pub(crate) fn fetch_enable(&self) -> Value {
+        json!({
+            "patterns": [{ "resourceType": "Document" }],
+            "handleAuthRequests": self.proxy.is_some(),
         })
+    }
+
+    /// Whether documents are still paused once the tracker is confined to
+    /// the scanned site.
+    pub(crate) fn pauses_after_confinement(&self) -> bool {
+        self.proxy.is_some() || self.follows_links
     }
 
     /// The visit is on its first page. From now on, for a visitor that
@@ -214,20 +222,20 @@ mod tests {
     }
 
     #[test]
-    fn only_documents_are_paused_and_only_when_something_needs_it() {
-        assert_eq!(Interception::new(None, false).fetch_enable(), None);
+    fn only_documents_are_paused_and_past_the_confinement_only_when_something_needs_it() {
+        let watching = Interception::new(None, false);
         assert_eq!(
-            Interception::new(None, true).fetch_enable(),
-            Some(
-                json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": false })
-            )
+            watching.fetch_enable(),
+            json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": false })
         );
+        assert!(!watching.pauses_after_confinement());
+        assert!(Interception::new(None, true).pauses_after_confinement());
+        let behind_a_proxy = Interception::new(proxy(None, None), false);
         assert_eq!(
-            Interception::new(proxy(None, None), false).fetch_enable(),
-            Some(
-                json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": true })
-            )
+            behind_a_proxy.fetch_enable(),
+            json!({ "patterns": [{ "resourceType": "Document" }], "handleAuthRequests": true })
         );
+        assert!(behind_a_proxy.pauses_after_confinement());
     }
 
     fn site() -> Site {

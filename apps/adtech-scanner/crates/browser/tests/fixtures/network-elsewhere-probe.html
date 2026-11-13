@@ -1,0 +1,7 @@
+<!doctype html>
+<title>Another site that tells whether the tracker ran on it</title>
+<script>
+  // The tracker watches for `googletag` by defining it on the window.
+  var tracker = Object.getOwnPropertyDescriptor(window, 'googletag') ? 'ran' : 'silent';
+  fetch('/status/200?tracker=' + tracker).then(function (answer) { return answer.text(); });
+</script>
