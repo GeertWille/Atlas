@@ -1,5 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
-import { expectNoAxeViolations, expectNoHorizontalOverflow, expectWindowDoesNotScroll, openApp } from "./app";
+import { expectNoAxeViolations, expectNoHorizontalOverflow, expectWindowDoesNotScroll, MOD, openApp } from "./app";
 
 const REPORT = "/scans/seed-sportsdesk-desktop";
 const MULTI_PAGE_REPORT = "/scans/seed-sportsdesk-browse";
@@ -192,7 +192,7 @@ for (const colorScheme of ["light", "dark"] as const) {
 
     test("overlays have no axe violations: palette, menus, dialogs, expanded finding", async ({ page }) => {
       await openApp(page, REPORT);
-      await page.keyboard.press("Control+k");
+      await page.keyboard.press(`${MOD}+k`);
       await expect(page.getByRole("dialog", { name: "Command palette" })).toBeVisible();
       await expectNoAxeViolations(page);
       await page.keyboard.press("Escape");

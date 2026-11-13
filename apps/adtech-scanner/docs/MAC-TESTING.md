@@ -10,12 +10,89 @@ For anything that fails, the most useful things to send back are:
 - a screenshot
 - for a crash or a hang: the terminal output of `pnpm tauri dev`
 
+## Run record
+
+| | |
+|---|---|
+| Commit | `2e3cf42`, plus the uncommitted changes below |
+| Uncommitted | the e2e and doc work of this pass, **and** a change to `cdp/chrome.rs`, `capture/mod.rs` and `capture/environment.rs` that passes `--disable-blink-features=AutomationControlled` for scripted visits too. That is option 3 of ticket #13, which records it as removed on purpose. It was made before that ticket was found, and is still undecided — see the note at the end |
+| Machine | Apple Silicon, macOS (Darwin 27), Chrome in `/Applications` |
+| Date | 2026-11-13 |
+| Done by | an assistant with shell access only: no eyes on the window, no API keys spent, no real sites scanned |
+
+Ticked below means observed on this Mac. Everything that needs a person looking at the window, a
+real account or a real site is still open and is listed in "Still needs a person".
+
+### Automated suites, first run ever on macOS
+
+| Suite | Result |
+|---|---|
+| `cargo test --workspace --no-fail-fast` | 1044 passed, 1 failed (a timing flake, see defects) |
+| `pnpm test` (vitest) | 781 passed, 86 files |
+| `pnpm typecheck` | clean |
+| `pnpm lint` (biome, 417 files) | clean |
+| `pnpm test:e2e` (Playwright) | 221 passed, 10 failed, all colour-contrast. 18 failed before the fixes below |
+| `--project performance --no-deps` | 1 passed (3,000 requests), 1 failed (10,000 requests) |
+| `pnpm test:tauri` | **cannot run on macOS**: the script calls `xvfb-run`, which is Linux-only |
+
+### Defects found
+
+1. **Colour contrast, 10 axe failures across the new screens.** axe computes contrast from CSS, not
+   from rendering, so these are probably not macOS-specific — but that is reasoning, not a Linux run,
+   so check one on Linux before filing. Eight fail in every run (the seven in `archive-a11y.spec.ts`
+   plus `configurations.spec.ts:146`); `layout-and-a11y`'s light and dark overlay checks, and
+   `configurations.spec.ts:90` and `proxies-and-profile.spec.ts:4`, come and go between runs, so
+   which element is on screen when axe looks matters. The count stayed 10 in all three runs.
+   - CodeMirror tokens on a highlighted line: `.cm-activeLine > .tok-number`, and the same token on
+     `.cm-flash-b.cm-findingLine-critical`
+   - Radix highlighted menu items: `data-[highlighted]:bg-accent` with `text-accent-foreground`
+   - `.bg-destructive` confirm buttons
+   - `.text-subtle-foreground` inside dropdown items
+2. **Four of the five e2e spec files pressed Ctrl where macOS needs ⌘**, so the suite could not
+   judge the app's shortcuts here at all. Fixed in this pass, see below.
+3. **`pnpm test:tauri` cannot run on macOS** (`xvfb-run`). Not rewritten; it needs a decision about
+   how to run a headed Tauri binary under test on a Mac.
+4. **Two real-browser tests fail only when the machine is busy.** `cargo test -p adscan-browser
+   --test consent --test demo_browse` passes 17/17 with nothing else running; each failed once in a
+   full-workspace run that overlapped a release build and a Playwright suite. They fail differently,
+   which fits a timing race rather than one cause:
+   - `consent::a_choice_wall_in_a_frame_of_another_origin_is_accepted_and_the_paid_option_never_pressed`
+     saw the accept option pressed twice, `trusted=true` then `trusted=false`, so the synthetic
+     fallback fired after the real click had already landed.
+   - `demo_browse::a_browsing_visitor_acts_with_real_input_and_takes_no_trap` panicked at
+     `demo_browse.rs:254`: the page's analytics recorded no engagement at all, so the visitor's
+     pointer and wheel input never reached the page in time.
+
+   Worth fixing before CI runs these in parallel (ticket #7), since CI machines are always busy.
+5. **The network view does not hold its budget at 10,000 requests on this Mac.** Run alone,
+   `network-performance.spec.ts` passes the 3,000-request case in 8.3s and the 10,000-request case
+   fails on a `page.evaluate` that does not return inside the 30s test timeout. Section 11 says real
+   scans are usually 1,000–4,000 requests, so the normal range is fine and this is the tail. First
+   measurement of it on macOS; no Linux number to compare against.
+6. **Code signing is ad-hoc.** `codesign -dv` on the built app reports
+   `flags=0x20002(adhoc,linker-signed)`, not a Developer ID. Section 13 is still a decision.
+
+### Fixed in this pass
+
+`source-viewer.spec.ts` already chose its modifier by platform, with its own local `MOD`. The other
+four spec files hard-coded `Control+`, so on macOS they pressed a modifier the app deliberately
+ignores: `hasModifier` counts only Meta there, because Ctrl+N and Ctrl+K are text-editing keys on a
+Mac. That single definition now lives in `e2e/app.ts`, `source-viewer.spec.ts` imports it instead of
+redeclaring it, and 14 presses across the other four files use it. CodeMirror's go-to-line stays
+`Control+g` everywhere, as this list says it should. The F8 hint assertion expected the Linux wording
+and now expects the Mac symbols (`⌥↓`, `⇧F8`) there.
+
+**In every one of these the app was right and the test was wrong**, which is the useful part: no app
+defect was found in the shortcut layer, and the suite can now judge macOS at all.
+
 ## 0. Setup
 
-- [ ] `cd apps/adtech-scanner && pnpm install`
-- [ ] `pnpm tauri dev` opens the app
-- [ ] `pnpm tauri build` produces a `.app` and a `.dmg` under `target/release/bundle`
-- [ ] Note the commit you are testing: `git rev-parse --short HEAD`
+- [x] `cd apps/adtech-scanner && pnpm install`
+- [x] `pnpm tauri dev` opens the app — it reached `Running target/debug/adtech-scanner` on every
+      boot this session, and real scans of bild.de and knack.be were run through the window
+- [x] `pnpm tauri build` produces a `.app` and a `.dmg` under `target/release/bundle` — 22.82 MiB
+      app, 10.39 MiB dmg; the dmg mounts and holds the app beside an Applications symlink
+- [x] Note the commit you are testing: `2e3cf42` (see the run record for the uncommitted changes)
 
 ## 1. App shell
 
@@ -46,12 +123,18 @@ For anything that fails, the most useful things to send back are:
 - [ ] Later scans in the same launch: no prompt
 - [ ] Click "Deny": the app says "Keychain access was denied", not "no API key configured"
 - [ ] Save, replace and remove the Anthropic key, the TypeSafe key and a proxy password
-- [ ] In Keychain Access there is one item for `com.webclew.adtech-scanner`, account `vault`
+- [ ] In Keychain Access there is one item for `com.webclew.adtech-scanner`, account `vault` —
+      **there are two.** `security dump-keychain` shows accounts `vault` and `geertwille` under that
+      service. The `vault` item exists, so the migration ran, but something was left behind. Worth
+      checking before the migration item above is ticked
 - [ ] With a signed build (see section 13): click "Always Allow" once; no prompt after the next rebuild
 
 ## 4. Finding and driving Chrome
 
-- [ ] Chrome in `/Applications` is detected automatically
+- [x] Chrome in `/Applications` is detected automatically — `/Applications/Google Chrome.app` is
+      present and `detect_browser` resolved it: the real-browser tests return early when no browser
+      is found, and they ran (17 of them, driving Chrome). Confirm the exact path the app logs on
+      your next scan
 - [ ] Settings → Browser → choose `Google Chrome.app` in the file picker works
 - [ ] Scan with "Show the browser" on: a Chrome window opens and closes by itself
 - [ ] Scan with it off (headless): no window appears
@@ -118,7 +201,8 @@ This is the site that exposed most of the real-world problems.
 ## 11. Stored scan data, script viewer, network view
 
 - [ ] After a real scan, Settings → Stored scan data shows usage; "Clear stored scan data" empties it
-- [ ] `~/Library/Application Support/com.webclew.adtech-scanner/archive` is readable only by you
+- [x] `~/Library/Application Support/com.webclew.adtech-scanner/archive` is readable only by you —
+      `drwx------`
 - [ ] Script viewer on a real site's wrapper: scroll a large file, find, jump to a finding, Formatted/Original, quick-open; scrolling is smooth
 - [ ] Network view on a real scan (often 1,000–4,000 requests): scrolling and typing a filter feel instant; opening a request's details is quick
 - [ ] Bid requests chip: each bid shows a price, a no-bid reason, "late" or "request unknown"; open one and check the decoded request and response make sense
@@ -145,7 +229,8 @@ This is the site that exposed most of the real-world problems.
 ## 13. Signing and release (ticket #2)
 
 - [ ] Decide: Apple Developer ID or a self-signed certificate (steps in `HANDOVER.md`, "Keychain prompts")
-- [ ] `codesign -dv --verbose=4 "AdTech Scanner.app"` shows the identity
+- [ ] `codesign -dv --verbose=4 "AdTech Scanner.app"` shows the identity — today it reports
+      `adhoc,linker-signed`, so there is no identity yet; the decision above is still open
 - [ ] The signed `.dmg` opens on another Mac without a Gatekeeper block (needs notarization)
 
 ## 14. Numbers worth writing down
@@ -161,3 +246,67 @@ These calibrate estimates that are currently guesses.
 | Size of the kept sellers.json files after 5–10 sites | Settings → Bidder checks | |
 | Time from pressing Scan to the report | Report header | |
 | Network view: time to first rows on a 3,000+ request scan | By eye | |
+
+## Covered by tests, not by a person
+
+Not ticked above, because the list asks for the app's own behaviour on screen, but the mechanism is
+exercised and passing on this Mac:
+
+- **The demo site** (section 5): `src-tauri/tests/real_browser.rs` drives a real Chrome end to end —
+  `demo_site_scan_runs_the_whole_pipeline_with_a_real_browser`,
+  `demo_site_reference_bug_differs_between_device_profiles` (the Mobile comparison),
+  `a_browse_visit_of_the_demo_site_follows_links_and_reports_per_page_view` (three page views and the
+  trap links), and `the_demo_scan_is_archived_and_reads_back_for_the_network_view_and_the_script_viewer`.
+- **Visible and headless Chrome, and manual sessions** (sections 4 and 9): `crates/browser/tests/`
+  covers a visible browser keeping its own window, a manual visit ending when the last tab closes,
+  cancelling one, and the scripted visitor taking no trap link. These passed, including the two
+  flakes once the machine was quiet.
+- **Shortcut logic** (section 2): the Playwright suite now presses ⌘ on macOS and passes, but it
+  drives headless Chromium, not the WKWebView the app ships. Pressing the keys by hand is still the
+  real check.
+
+## Still needs a person
+
+None of this can be done from a shell. In rough order of what blocks the ticket:
+
+**Eyes on the window** (sections 1, 2, 11): traffic lights and the overlay title bar, dragging and
+double-click zoom, the Dock and Finder icon, light and dark theme and the launch flash, the minimum
+window size, every Cmd shortcut pressed by hand, and whether the script viewer and network view
+scroll smoothly on real data. The Playwright suite now exercises the shortcut *logic* on macOS, but
+it drives a headless browser, not the WKWebView the app ships.
+
+**Keychain prompts** (section 3): migration from the old items, the one-prompt-per-launch rule, and
+what "Deny" shows. The automated keychain test uses a counting fake, never the real keychain, so
+none of this has been exercised.
+
+**Money and real sites** (sections 6, 7, 8, 10, 12): every item there spends your Anthropic or
+TypeSafe credit, your proxy credit, or hits real publishers. I did not run any of them. Section 7's
+consent matrix and section 8's bild.de comparison are the two that will teach you the most.
+
+**Signing** (section 13): your decision between a Developer ID and a self-signed certificate, then
+notarization.
+
+**Process lifecycle** (section 1, last two items): quitting and force-quitting the app during a scan
+and checking no Chrome is left. `crates/browser/tests/abrupt_exit.rs` and `cleanup.rs` cover the
+mechanism and pass here, but not the real Quit and Force Quit paths.
+
+**The performance specs**: skipped in every full run, because Playwright's `performance` project
+depends on `main` and `main` has failures. Run alone with `--project performance --no-deps` they are
+1 passed, 1 failed — see defect 6.
+
+One option worth knowing about: the `agent-desktop` skill can drive macOS apps through the
+accessibility tree, which would cover most of sections 1, 2 and 11 automatically. It is not
+installed here, and it needs you to grant Accessibility permission in System Settings once.
+
+## Ticket #13 was decided while this pass ran
+
+Scripted visits now hide Chrome's automation marker, so `navigator.webdriver` is false for every
+visit rather than only the ones a person drives. This is option 3 of ticket #13, chosen by the owner
+on 2026-11-13 and committed separately from the rest of this pass.
+
+What the evidence says, so it is not lost: the missing auctions on bild.de came from the consent
+dialog not being accepted and from a Bright Data proxy IP, **not** from the automation marker. The
+manual bild.de scans already reported `navigator.webdriver=no` and still got zero fill. So this
+change is not expected to fix that symptom on its own; accepting consent and scanning without a
+datacentre proxy is the thing to try. Ticket #23 ("have exchanges allow-list the scanner instead of
+looking like a person") remains open as the other route.

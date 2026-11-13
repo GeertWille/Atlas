@@ -1,9 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
-import { expectNoHorizontalOverflow, expectWindowDoesNotScroll, openApp, reportTab } from "./app";
+import { expectNoHorizontalOverflow, expectWindowDoesNotScroll, MOD, openApp, reportTab } from "./app";
 
 const SCAN = "/scans/seed-sportsdesk-desktop";
 const WRAPPER = `${SCAN}/source/s7`;
-const MOD = process.platform === "darwin" ? "Meta" : "Control";
 
 const code = (page: Page) => page.getByTestId("code");
 const caret = (page: Page) => page.getByTestId("caret-position");
@@ -81,7 +80,9 @@ test("F8 and Shift+F8 step through the findings of a file and wrap round", async
   await expect(page).toHaveURL(/line=208&to=215$/);
   await expect(code(page).getByRole("button", { name: "Next (F8)" }).first()).toHaveAttribute(
     "title",
-    "Next finding: F8 or Alt+↓. Previous: Shift+F8 or Alt+↑",
+    process.platform === "darwin"
+      ? "Next finding: F8 or ⌥↓. Previous: ⇧F8 or ⌥↑"
+      : "Next finding: F8 or Alt+↓. Previous: Shift+F8 or Alt+↑",
   );
   // With the caret in the find field the arrows are the field's.
   await page.keyboard.press(`${MOD}+f`);
