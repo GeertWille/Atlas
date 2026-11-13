@@ -814,8 +814,8 @@ impl Page {
             }
         }
         if !self.interception.pauses_after_confinement() {
-            // Ends the pausing; the browser lets go of what is paused.
-            self.call("Fetch.disable", json!({})).await?;
+            self.call("Fetch.enable", Interception::fetch_pause_nothing())
+                .await?;
         }
         Ok(())
     }

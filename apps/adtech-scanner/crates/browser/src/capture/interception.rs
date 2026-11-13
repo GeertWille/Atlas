@@ -114,6 +114,16 @@ impl Interception {
         })
     }
 
+    /// Parameters of `Fetch.enable` that end the pausing. Not
+    /// `Fetch.disable`: Chrome 153 never loads a document whose request it
+    /// was about to pause when the disable arrived, and holds back every
+    /// later command on the tab for it. With no pattern left nothing new is
+    /// paused, and a request that was on its way to being paused is still
+    /// announced and continued.
+    pub(crate) fn fetch_pause_nothing() -> Value {
+        json!({ "patterns": [] })
+    }
+
     /// Whether documents are still paused once the tracker is confined to
     /// the scanned site.
     pub(crate) fn pauses_after_confinement(&self) -> bool {
