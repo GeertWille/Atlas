@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { expectNoAxeViolations, openApp, reportHealth, startScan } from "./app";
+import { expectNoAxeViolations, MOD, openApp, reportHealth, startScan } from "./app";
 
 const table = (page: import("@playwright/test").Page) => page.getByRole("region", { name: "Configurations" });
 /** The configurations listed, without the site headings between them. */
@@ -31,7 +31,7 @@ test("configurations are one click from anywhere: sidebar, home and the command 
   ).toHaveAttribute("href", /#\/scans\/seed-sportsdesk-browse$/);
 
   // The palette runs one by name.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await palette.getByRole("combobox").fill("run ledger");
   await expect(palette.getByRole("option").first()).toHaveText(/Run configuration: Morning Ledger, no proxy/);
@@ -199,7 +199,7 @@ test("a configuration whose proxy was deleted says so, cannot run, and is fixed 
   );
   await expect(broken.getByRole("button", { name: /^Run / })).toBeDisabled();
   // The palette does not offer what cannot run.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await palette.getByRole("combobox").fill("run configuration");
   await expect(palette.getByRole("option", { name: /Run configuration/ })).toHaveCount(3);
@@ -297,7 +297,7 @@ test("find a configuration in a long list, open it by name, switch with the pale
   );
 
   // The palette switches to another one, also to one that cannot run until it is fixed.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
   await palette.getByRole("combobox").fill("open germany");
   // Offered for opening, to fix it; still not for running.
@@ -312,7 +312,7 @@ test("find a configuration in a long list, open it by name, switch with the pale
   );
 
   // Ctrl+N leaves the configuration for an empty scan, ready to type.
-  await page.keyboard.press("Control+n");
+  await page.keyboard.press(`${MOD}+n`);
   await expect(page).toHaveURL(/#\/$/);
   await expect(composer.getByRole("textbox", { name: "Page URL" })).toHaveValue("");
   await expect(composer.getByRole("textbox", { name: "Page URL" })).toBeFocused();
@@ -332,7 +332,7 @@ test("edits to an open configuration are reverted, or saved from the keyboard", 
   await expect(composer.getByRole("radio", { name: "Desktop" })).toBeChecked();
 
   await composer.getByRole("button", { name: "More pages" }).click();
-  await page.keyboard.press("Control+s");
+  await page.keyboard.press(`${MOD}+s`);
   await expect(page.getByText("Updated “Sportsdesk from Belgium”")).toBeVisible();
   await expect(composer.getByText("Edited", { exact: true })).toHaveCount(0);
   await expect(row(page, "Sportsdesk from Belgium")).toContainText("Browse like a visitor, 4 pages");
@@ -347,7 +347,7 @@ test("the palette lists only the most recently run configurations until somethin
     await page.getByRole("menuitem", { name: "Duplicate" }).click();
     await expect(row(page, `Morning Ledger, no proxy ${copy}`)).toBeVisible();
   }
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   const palette = page.getByRole("dialog", { name: "Command palette" });
   // Six can run; five are listed, and none is offered for opening yet.
   await expect(palette.getByRole("option", { name: /^Run configuration/ })).toHaveCount(5);

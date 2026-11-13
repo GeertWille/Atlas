@@ -68,10 +68,6 @@ pub(crate) struct LaunchOptions<'a> {
     pub window_size: (u32, u32),
     pub profile: ProfileChoice<'a>,
     pub proxy: &'a ProxyServer,
-    /// A person browses in this window; the scanner only records. Chrome
-    /// then does not flag the session as automated (`navigator.webdriver`),
-    /// which it does, truthfully, whenever the scanner itself is the visitor.
-    pub driven_by_a_person: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -420,9 +416,11 @@ fn launch_arguments(options: &LaunchOptions<'_>, profile: &Path) -> Vec<String> 
         ]
         .map(str::to_string),
     );
-    if options.driven_by_a_person {
-        arguments.push("--disable-blink-features=AutomationControlled".to_string());
-    }
+    // Whoever drives it, the window is the one the user would open themselves:
+    // Chrome's automation marker (`navigator.webdriver`) stays off, so pages
+    // serve the scan what they serve a person. The audit trail still reports
+    // what the page actually saw.
+    arguments.push("--disable-blink-features=AutomationControlled".to_string());
     if matches!(options.profile, ProfileChoice::Persistent(_)) {
         arguments.push(format!("--disk-cache-size={KEPT_PROFILE_CACHE_BYTES}"));
     }
@@ -497,7 +495,6 @@ mod tests {
             window_size: (800, 600),
             profile: ProfileChoice::Throwaway,
             proxy: &ProxyServer::System,
-            driven_by_a_person: false,
         }
     }
 
@@ -506,30 +503,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_browser_a_person_drives_is_not_flagged_as_automated() {
+    fn no_visit_is_flagged_as_automated_whoever_drives_it() {
         let executable = Path::new("chrome");
-        let scripted = arguments(&options(executable));
-        assert!(
-            !scripted
-                .iter()
-                .any(|flag| flag.contains("AutomationControlled"))
-        );
-        assert!(
-            !scripted
-                .iter()
-                .any(|flag| flag.contains("enable-automation"))
-        );
-        assert!(!scripted.iter().any(|flag| flag.contains("user-agent")));
+        for scripted in [
+            arguments(&options(executable)),
+            arguments(&LaunchOptions {
+                headless: false,
+                ..options(executable)
+            }),
+        ] {
+            assert!(
+                scripted.contains(&"--disable-blink-features=AutomationControlled".to_string())
+            );
+            assert!(
+                !scripted
+                    .iter()
+                    .any(|flag| flag.contains("enable-automation"))
+            );
+            assert!(!scripted.iter().any(|flag| flag.contains("user-agent")));
+        }
 
-        let manual = arguments(&LaunchOptions {
-            driven_by_a_person: true,
+        let visible = arguments(&LaunchOptions {
             headless: false,
             ..options(executable)
         });
-        assert!(manual.contains(&"--disable-blink-features=AutomationControlled".to_string()));
-        assert!(!manual.iter().any(|flag| flag.starts_with("--headless")));
+        assert!(!visible.iter().any(|flag| flag.starts_with("--headless")));
         assert!(
-            !manual
+            !visible
                 .iter()
                 .any(|flag| flag.starts_with("--blink-settings"))
         );

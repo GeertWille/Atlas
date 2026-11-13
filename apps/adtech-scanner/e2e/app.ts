@@ -1,6 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page } from "@playwright/test";
 
+/**
+ * The app's command modifier, as Playwright writes it. The app reads it through `hasModifier`,
+ * which counts only Meta on macOS because Ctrl+N and Ctrl+K are text-editing keys there.
+ * CodeMirror's go-to-line stays "Control+g" on every platform, so it is not written with this.
+ */
+export const MOD = process.platform === "darwin" ? "Meta" : "Control";
+
 type FakeOptions = {
   /** Starting state of the in-browser fake backend. */
   profile?: "seeded" | "fresh" | "no-browser";

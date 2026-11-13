@@ -121,7 +121,6 @@ pub(crate) async fn run(
             .as_deref()
             .map_or(ProfileChoice::Throwaway, ProfileChoice::Persistent),
         proxy: &proxy,
-        driven_by_a_person: request.visitor == VisitorBehavior::Manual,
     })
     .map_err(CaptureError::from)?;
     let connected = tokio::select! {
@@ -471,7 +470,6 @@ mod tests {
             window_size: window_size(DeviceProfile::Desktop),
             profile: ProfileChoice::Throwaway,
             proxy: &ProxyServer::System,
-            driven_by_a_person: true,
         })
         .unwrap();
         let (cdp, events) = crate::cdp::connect(&mut chrome).await.unwrap();

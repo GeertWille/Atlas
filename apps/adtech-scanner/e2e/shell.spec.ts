@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openApp } from "./app";
+import { MOD, openApp } from "./app";
 
 test("keyboard shortcuts: palette, new scan, settings", async ({ page }) => {
   await openApp(page, "/history");
@@ -7,27 +7,27 @@ test("keyboard shortcuts: palette, new scan, settings", async ({ page }) => {
 
   const search = page.getByRole("searchbox", { name: "Search scans" });
   await search.focus();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   await expect(palette).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(palette).toBeHidden();
   // Closing the palette puts the keyboard back where it was.
   await expect(search).toBeFocused();
 
-  await page.keyboard.press("Control+Comma");
+  await page.keyboard.press(`${MOD}+Comma`);
   await expect(page).toHaveURL(/#\/settings/);
 
-  await page.keyboard.press("Control+n");
+  await page.keyboard.press(`${MOD}+n`);
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.getByRole("textbox", { name: "Page URL" })).toBeFocused();
 
   // The palette toggles with the same shortcut, and every opening starts empty.
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   await expect(palette).toBeVisible();
   await page.keyboard.type("hist");
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   await expect(palette).toBeHidden();
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   await expect(palette.getByRole("combobox")).toHaveValue("");
 });
 
@@ -46,7 +46,7 @@ test("searching the audit trails from the palette replaces the query already on 
   const input = page.getByRole("searchbox", { name: "Search all audit trails" });
   await expect(input).toHaveValue("failsafe");
 
-  await page.keyboard.press("Control+k");
+  await page.keyboard.press(`${MOD}+k`);
   await page.keyboard.type("IS_MOBILE");
   await page.getByRole("option", { name: "Search audit trails for “IS_MOBILE”" }).click();
 

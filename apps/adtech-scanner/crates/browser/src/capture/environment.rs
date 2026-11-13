@@ -1,7 +1,9 @@
 //! What the scanned pages can tell about the browser that visits them. The
-//! values are read from the browser and reported as they are: a visit the
-//! scanner drives is automated and shows as such, and a rule of the analysis
-//! takes that into account. Nothing here, or anywhere, changes them.
+//! values are read from the browser and reported as they are: nothing here
+//! changes what the page sees, and a rule of the analysis takes the report
+//! into account. The browser is launched without Chrome's automation marker,
+//! whoever drives it, so these values normally say the visit is not flagged;
+//! a headless run still shows as one.
 
 use adscan_model::{ActivityKind, CaptureActivity, CaptureEnvironment, Viewport};
 use serde_json::json;

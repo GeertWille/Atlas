@@ -560,12 +560,12 @@ async fn the_environment_is_reported_once_and_as_the_page_itself_reads_it() {
     assert_eq!(reports.len(), 1, "{:#?}", outcome.progress);
     assert_eq!(
         reports[0].message,
-        "This visit is identifiable as automated: navigator.webdriver is true, headless"
+        "This visit is identifiable as automated: headless"
     );
     assert_eq!(
         reports[0].data,
         Some(json!({
-            "webdriver": true,
+            "webdriver": false,
             "headless": true,
             "persistentProfile": false,
             "userAgentOverridden": false,

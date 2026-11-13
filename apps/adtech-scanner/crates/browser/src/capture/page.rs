@@ -110,8 +110,10 @@ impl TabSetup {
         if let Some(identity) = self.emulation.user_agent_override() {
             commands.push(("Emulation.setUserAgentOverride", identity));
         }
-        if let Some(pausing) = interception.fetch_enable() {
-            commands.push(("Fetch.enable", pausing));
+        // A tab set up before the site is known carries the unconfined
+        // tracker: its documents are paused whatever the visit needs.
+        if site.is_none() || interception.pauses_after_confinement() {
+            commands.push(("Fetch.enable", interception.fetch_enable()));
         }
         commands.push((
             "Page.addScriptToEvaluateOnNewDocument",
@@ -163,6 +165,11 @@ pub(crate) struct Page {
     pub interception: Interception,
     /// Identifier of the tracker script installed in the first tab.
     tracker_script_id: Option<String>,
+    /// Network id of a navigation of the recorded tab that was let through
+    /// while the tracker was unconfined and has neither committed nor failed.
+    entry_navigation: Option<String>,
+    /// The tracker of the first tab runs on the scanned site only.
+    tracker_is_confined: bool,
     /// Where the pointer was last moved to, in viewport coordinates.
     pub(super) pointer: Point,
     expecting_tab_until: Option<Instant>,
@@ -205,6 +212,8 @@ impl Page {
             setup,
             interception,
             tracker_script_id: None,
+            entry_navigation: None,
+            tracker_is_confined: false,
             pointer: Point {
                 x: f64::from(viewport.width) * 0.5,
                 y: f64::from(viewport.height) * 0.4,
@@ -376,10 +385,21 @@ impl Page {
         match event.method.as_str() {
             "Inspector.targetCrashed" => self.crashed = true,
             "Fetch.requestPaused" => {
+                if self.would_carry_the_unconfined_tracker(session_id, &event.params) {
+                    self.confine_tracker(session_id);
+                }
                 let verdict = self.decide_paused(session_id, &event.params);
                 self.answer_paused(session_id, &event.params, verdict);
             }
+            "Network.loadingFailed" | "Network.loadingFinished"
+                if self.entry_navigation.is_some()
+                    && event.params["requestId"].as_str() == self.entry_navigation.as_deref() =>
+            {
+                self.entry_navigation = None;
+                self.recorder.observe(event, &self.cdp, session_id);
+            }
             "Page.frameNavigated" if event.params["frame"]["parentId"].is_null() => {
+                self.entry_navigation = None;
                 self.note_tab_address(session_id, &event.params);
                 self.recorder.observe(event, &self.cdp, session_id);
             }
@@ -473,6 +493,54 @@ impl Page {
                 .by_session(session_id)
                 .is_some_and(|tab| request["frameId"] == tab.main_frame_id.as_str()),
         }
+    }
+
+    /// Whether a paused document request of the recorded tab could put the
+    /// unconfined tracker on another site. Until the entry page has settled,
+    /// a navigation is a redirect that decides which site the visit is on,
+    /// and takes the unconfined tracker along. From then on the site is
+    /// fixed.
+    fn would_carry_the_unconfined_tracker(&mut self, session_id: &str, request: &Value) -> bool {
+        let replaces_the_page = self.document_request(session_id, request).replaces_the_page;
+        if self.tracker_is_confined || !replaces_the_page {
+            return false;
+        }
+        let site_is_fixed = self.recorder.site().is_some() && !self.recorder.pages.is_opening();
+        if !site_is_fixed {
+            self.entry_navigation = request["networkId"].as_str().map(str::to_string);
+        }
+        site_is_fixed
+    }
+
+    /// A navigation that was let through before the entry page settled is
+    /// still on its way: where it ends decides which site the visit is on.
+    pub(crate) fn entry_navigation_is_pending(&self) -> bool {
+        self.entry_navigation.is_some()
+    }
+
+    /// Confines the tracker while a navigation is paused, without waiting
+    /// for the answers: Chrome keeps commands back while a tab moves to
+    /// another site's process and runs them there before the new document's
+    /// first script, so the answers come only once the navigation is let go.
+    fn confine_tracker(&mut self, session_id: &str) {
+        let Some(site) = self.recorder.site() else {
+            return;
+        };
+        let confined = json!({ "source": tracker_script(Some(site)) });
+        self.interception.confine_to_site();
+        if let Some(identifier) = self.tracker_script_id.take() {
+            self.cdp.notify(
+                Some(session_id),
+                "Page.removeScriptToEvaluateOnNewDocument",
+                json!({ "identifier": identifier }),
+            );
+        }
+        self.cdp.notify(
+            Some(session_id),
+            "Page.addScriptToEvaluateOnNewDocument",
+            confined,
+        );
+        self.tracker_is_confined = true;
     }
 
     /// Decides a paused document request of the recorded tab and puts a
@@ -714,30 +782,42 @@ impl Page {
 
     /// The visit has reached its first page: from here on the tracker runs
     /// on that page's site only, and a visitor that follows links cannot
-    /// leave it.
+    /// leave it. A page that navigated since it settled had its tracker
+    /// confined as that navigation was paused.
     pub(crate) async fn confine_to_site(&mut self) -> Result<(), CaptureError> {
         let Some(site) = self.recorder.site().cloned() else {
             return Ok(());
         };
         self.interception.confine_to_site();
-        if let Some(identifier) = self.tracker_script_id.take() {
-            let removed = self
-                .call(
-                    "Page.removeScriptToEvaluateOnNewDocument",
-                    json!({ "identifier": identifier }),
+        if !self.tracker_is_confined {
+            if let Some(identifier) = self.tracker_script_id.take() {
+                let removed = self
+                    .call(
+                        "Page.removeScriptToEvaluateOnNewDocument",
+                        json!({ "identifier": identifier }),
+                    )
+                    .await;
+                match removed {
+                    Err(CaptureError::Protocol(error)) if was_replayed_removal(&error) => {}
+                    other => drop(other?),
+                }
+            }
+            // A navigation paused while the removal was awaited confined
+            // the tracker already.
+            if !self.tracker_is_confined {
+                self.call(
+                    "Page.addScriptToEvaluateOnNewDocument",
+                    json!({ "source": tracker_script(Some(&site)) }),
                 )
-                .await;
-            match removed {
-                Err(CaptureError::Protocol(error)) if was_replayed_removal(&error) => { eprintln!("TEMPDBG REPLAYED"); }
-                other => drop(other?),
+                .await?;
+                self.tracker_is_confined = true;
             }
         }
-        self.call(
-            "Page.addScriptToEvaluateOnNewDocument",
-            json!({ "source": tracker_script(Some(&site)) }),
-        )
-        .await
-        .map(drop)
+        if !self.interception.pauses_after_confinement() {
+            // Ends the pausing; the browser lets go of what is paused.
+            self.call("Fetch.disable", json!({})).await?;
+        }
+        Ok(())
     }
 
     /// Evaluates in the scanner's isolated world of the main frame. `None` when

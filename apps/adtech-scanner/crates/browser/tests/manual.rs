@@ -318,11 +318,11 @@ async fn a_visible_browser_browsed_by_the_script_keeps_its_own_window_and_says_w
     });
 
     assert!(
-        console_has(capture, "WEBDRIVER true ua="),
-        "the scanner is the visitor, and the browser says so: {:#?}",
+        console_has(capture, "WEBDRIVER false ua="),
+        "the scripted visitor's window carries no automation marker: {:#?}",
         capture.console
     );
-    assert_eq!(capture.environment.webdriver, Some(true));
+    assert_eq!(capture.environment.webdriver, Some(false));
     assert!(!capture.environment.headless && !capture.environment.viewport_overridden);
     assert!(!capture.user_agent.contains("Headless"));
     let window = format!(
@@ -341,6 +341,6 @@ async fn a_visible_browser_browsed_by_the_script_keeps_its_own_window_and_says_w
     let environment = outcome.activities_of(ActivityKind::Environment);
     assert_eq!(
         environment[0].message,
-        "This visit is identifiable as automated: navigator.webdriver is true"
+        "This visit is not flagged as automated: navigator.webdriver is false and the browser is visible"
     );
 }

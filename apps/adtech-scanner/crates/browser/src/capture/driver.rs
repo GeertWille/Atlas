@@ -131,10 +131,14 @@ pub(crate) async fn open(
 }
 
 /// Waits for the current document's load event and takes the page view for
-/// opened either way. Returns whether the event came.
+/// opened either way. Returns whether the event came. A redirect of the
+/// entry page that is on its way is waited for too: the page it leads to is
+/// the one that opens.
 async fn wait_for_load(page: &mut Page, deadline: Instant) -> Result<bool, CaptureError> {
     let loaded = page
-        .record_until_or(deadline, |page| page.recorder.load_fired)
+        .record_until_or(deadline, |page| {
+            page.recorder.load_fired && !page.entry_navigation_is_pending()
+        })
         .await?;
     page.recorder.pages.settled();
     page.note_title().await?;

@@ -85,15 +85,15 @@ async fn mobile_scan_is_a_phone_to_every_check_a_wrapper_can_make() {
     assert_eq!(seen["portrait"], true);
     assert_eq!(seen["hasFocus"], true);
     assert_eq!(
-        seen["webdriver"], true,
-        "a visit the scanner drives is flagged as automated"
+        seen["webdriver"], false,
+        "the scanner's window carries no automation marker either"
     );
     assert_eq!(
         capture.environment,
         CaptureEnvironment {
             headless: true,
             persistent_profile: false,
-            webdriver: Some(true),
+            webdriver: Some(false),
             user_agent_overridden: true,
             viewport_overridden: true,
             request_hosts: Vec::new(),
@@ -158,15 +158,15 @@ async fn desktop_scan_is_a_desktop_and_the_browser_it_really_is() {
     assert_eq!(seen["orientation"], "landscape-primary");
     assert_eq!(seen["hasFocus"], true);
     assert_eq!(
-        seen["webdriver"], true,
-        "a visit the scanner drives is flagged as automated"
+        seen["webdriver"], false,
+        "the scanner's window carries no automation marker either"
     );
     assert_eq!(
         capture.environment,
         CaptureEnvironment {
             headless: true,
             persistent_profile: false,
-            webdriver: Some(true),
+            webdriver: Some(false),
             user_agent_overridden: false,
             viewport_overridden: true,
             request_hosts: Vec::new(),
