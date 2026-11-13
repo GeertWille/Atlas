@@ -728,7 +728,7 @@ impl Page {
                 )
                 .await;
             match removed {
-                Err(CaptureError::Protocol(error)) if was_replayed_removal(&error) => {}
+                Err(CaptureError::Protocol(error)) if was_replayed_removal(&error) => { eprintln!("TEMPDBG REPLAYED"); }
                 other => drop(other?),
             }
         }
