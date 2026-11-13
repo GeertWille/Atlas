@@ -4,6 +4,7 @@ import { lazy, Suspense, useState } from "react";
 import type { BodyRef, BodySide } from "@/bindings";
 import { MAX_BODY_VIEW_BYTES, useNetworkBody } from "@/lib/query/hooks";
 import { QueryError } from "@/shared/components/query-error";
+import { RetryNotice } from "@/shared/components/retry-notice";
 import { languageForMime } from "@/shared/editor/mime";
 import { cn } from "@/shared/lib/cn";
 import { formatBytes } from "@/shared/lib/format";
@@ -102,7 +103,17 @@ export function BodyView({
           </Hint>
         </span>
       </div>
-      {query.isError ? (
+      {chunks.length > 0 && query.isError ? (
+        // The stretch that failed is the next one: what was read before it stays in the editor.
+        <RetryNotice
+          className="m-2"
+          title="Could not read more of this body"
+          detail={`The first ${formatBytes(loaded)} of ${formatBytes(total)} are shown.`}
+          error={query.error}
+          onRetry={() => void (query.isFetchNextPageError ? query.fetchNextPage() : query.refetch())}
+        />
+      ) : null}
+      {chunks.length === 0 && query.isError ? (
         <QueryError title="Could not read this body" error={query.error} onRetry={() => void query.refetch()} />
       ) : query.isPending ? (
         <div className="flex flex-col gap-2 p-3">

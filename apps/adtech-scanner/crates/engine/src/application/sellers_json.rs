@@ -24,6 +24,7 @@ use super::ports::{
 use crate::domain::diagnostics::sellers_cache::{
     MAX_FILE_BYTES, Standing, is_passing_trouble, standing,
 };
+use crate::domain::diagnostics::sellers_json::check_readable;
 use crate::domain::diagnostics::site::sellers_json_url;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -48,6 +49,14 @@ pub struct SellersJsonFile {
     /// The file, or why there is none to read.
     pub content: Result<Vec<u8>, String>,
     pub origin: Origin,
+}
+
+/// `file` if it is a sellers.json, or why it is not. Megabytes of JSON:
+/// parsed off the async workers.
+async fn readable(file: Vec<u8>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || check_readable(&file).map(|()| file))
+        .await
+        .unwrap_or_else(|error| Err(format!("the file could not be parsed ({error})")))
 }
 
 /// The scan that asked was cancelled while it waited.
@@ -102,7 +111,19 @@ impl SellersJsonSource {
             () = cancel.cancelled() => return Err(Cancelled),
         };
 
-        let kept = self.cache.load(domain).await;
+        let kept = match self.cache.load(domain).await {
+            // A kept file is as little trusted as a download. One that is
+            // not a sellers.json (kept before files were checked) counts as
+            // no entry: the exchange is asked, and its answer replaces it.
+            Some(kept) => match kept.content {
+                Ok(file) => readable(file).await.ok().map(|file| CachedSellersJson {
+                    content: Ok(file),
+                    ..kept
+                }),
+                Err(_) => Some(kept),
+            },
+            None => None,
+        };
         let kept_standing = kept
             .as_ref()
             .map(|kept| standing(kept.content.is_ok(), kept.fetched_at, self.clock.now_ms()));
@@ -149,8 +170,17 @@ impl SellersJsonSource {
                     origin: Origin::Confirmed,
                 });
             }
-            (Ok(answer), _) if (200..300).contains(&answer.status) => {
-                return Ok(self.keep(domain, answer, now).await);
+            (Ok(answer), kept_file) if (200..300).contains(&answer.status) => {
+                match readable(answer.body).await {
+                    Ok(body) => {
+                        let file = PublicFile { body, ..answer };
+                        return Ok(self.keep(domain, file, now).await);
+                    }
+                    // A web page, a soft 404 or half a file says nothing
+                    // about the sellers. Like an exchange that cannot be
+                    // reached, it does not replace a copy that still serves.
+                    Err(reason) => ((reason, true), kept_file),
+                }
             }
             (Ok(answer), kept_file) => (
                 (

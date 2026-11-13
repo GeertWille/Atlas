@@ -5,6 +5,7 @@ import type { NetworkRow, ScanDetail } from "@/bindings";
 import { useNetworkSummary } from "@/lib/query/hooks";
 import { Panel, PanelHeader } from "@/shared/components/panel";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { formatBytes, formatDuration, formatInteger, pluralize } from "@/shared/lib/format";
 import { Button } from "@/shared/ui/button";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -141,15 +142,10 @@ export function NetworkDigest({ detail, page }: { detail: ScanDetail; page: numb
   const available = state === "available" || state === "listOnly";
   const summary = useNetworkSummary(scanId, available);
   if (!available) return <NetworkUnavailable detail={detail} availability={state} />;
-  if (summary.isError)
-    return (
-      <QueryError
-        title="Could not load the network summary"
-        error={summary.error}
-        onRetry={() => void summary.refetch()}
-      />
-    );
+  const retry = () => void summary.refetch();
   if (!summary.data) {
+    if (summary.isError)
+      return <QueryError title="Could not load the network summary" error={summary.error} onRetry={retry} />;
     return (
       <div className="flex flex-col gap-3">
         <Skeleton className="h-20 rounded-xl" />
@@ -169,6 +165,14 @@ export function NetworkDigest({ detail, page }: { detail: ScanDetail; page: numb
 
   return (
     <div className="flex flex-col gap-4">
+      {summary.isError ? (
+        <RetryNotice
+          title="Could not refresh the network summary"
+          detail={LOADED_EARLIER}
+          error={summary.error}
+          onRetry={retry}
+        />
+      ) : null}
       <Panel className="overflow-hidden">
         <PanelHeader
           title="Network"

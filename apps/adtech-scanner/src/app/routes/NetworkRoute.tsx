@@ -5,6 +5,7 @@ import { toApiError } from "@/lib/api";
 import { useScan } from "@/lib/query/hooks";
 import { Page } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { isActive } from "@/shared/domain/vocabulary";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
@@ -18,29 +19,31 @@ export function NetworkRoute() {
   const scan = useScan(scanId);
   const hostname = scan.data?.summary.hostname;
 
+  const scanGone = scan.isError && toApiError(scan.error).code === "notFound";
+  const retry = () => void scan.refetch();
+
   let body: React.ReactNode;
-  if (scan.isPending) {
+  if (scanGone) {
     body = (
+      <Empty
+        icon={FileQuestionIcon}
+        title="This scan no longer exists"
+        description="It may have been deleted from history."
+      >
+        <Button asChild variant="outline" size="sm">
+          <Link to="/history">Go to history</Link>
+        </Button>
+      </Empty>
+    );
+  } else if (scan.data === undefined) {
+    body = scan.isError ? (
+      <QueryError title="Could not load this scan" error={scan.error} onRetry={retry} />
+    ) : (
       <div className="flex h-full flex-col gap-3 p-4">
         <Skeleton className="h-16" />
         <Skeleton className="min-h-0 flex-1 rounded-lg" />
       </div>
     );
-  } else if (scan.isError) {
-    body =
-      toApiError(scan.error).code === "notFound" ? (
-        <Empty
-          icon={FileQuestionIcon}
-          title="This scan no longer exists"
-          description="It may have been deleted from history."
-        >
-          <Button asChild variant="outline" size="sm">
-            <Link to="/history">Go to history</Link>
-          </Button>
-        </Empty>
-      ) : (
-        <QueryError title="Could not load this scan" error={scan.error} onRetry={() => void scan.refetch()} />
-      );
   } else if (isActive(scan.data.summary.status)) {
     body = (
       <Empty
@@ -93,7 +96,19 @@ export function NetworkRoute() {
         </>
       }
     >
-      {body}
+      <div className="flex h-full flex-col">
+        {/* A scan that is on screen stays there when fetching it again fails. */}
+        {scan.data !== undefined && scan.isError && !scanGone ? (
+          <RetryNotice
+            className="mx-3 mt-3"
+            title="Could not refresh this scan"
+            detail={LOADED_EARLIER}
+            error={scan.error}
+            onRetry={retry}
+          />
+        ) : null}
+        <div className="min-h-0 flex-1">{body}</div>
+      </div>
     </Page>
   );
 }

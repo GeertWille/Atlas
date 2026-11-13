@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ChevronRightIcon, FileQuestionIcon, RotateCwIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronRightIcon, FileQuestionIcon } from "lucide-react";
 import type { ReactNode } from "react";
 import type { ScanDetail } from "@/bindings";
 import { AuditTrail } from "@/features/audit-trail";
@@ -24,8 +24,8 @@ import { toApiError } from "@/lib/api";
 import { useScan, useScanLogs, useSettings } from "@/lib/query/hooks";
 import { Page, PageContent } from "@/shared/components/page";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { isActive } from "@/shared/domain/vocabulary";
-import { Alert, AlertDescription, AlertTitle } from "@/shared/ui/alert";
 import { Button } from "@/shared/ui/button";
 import { Empty } from "@/shared/ui/empty";
 import { Skeleton } from "@/shared/ui/skeleton";
@@ -46,26 +46,6 @@ function TabCount({ value }: { value: number }) {
     <span className="rounded-full bg-muted px-1.5 text-[11px] leading-4 font-medium text-muted-foreground tabular-nums">
       {value}
     </span>
-  );
-}
-
-/** A scan that is on screen stays there when fetching it again fails. */
-function RefreshFailedNotice({ error, onRetry }: { error: unknown; onRetry: () => void }) {
-  return (
-    <Alert tone="warning">
-      <TriangleAlertIcon />
-      <AlertTitle>Could not refresh this scan</AlertTitle>
-      <AlertDescription className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <span className="flex flex-col">
-          <span>{toApiError(error).message}</span>
-          <span>What you see was loaded earlier.</span>
-        </span>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          <RotateCwIcon />
-          Try again
-        </Button>
-      </AlertDescription>
-    </Alert>
   );
 }
 
@@ -240,7 +220,10 @@ function ScanBody({ scan }: { scan: ReturnType<typeof useScan> }) {
     if (scan.isError) return <QueryError title="Could not load this scan" error={scan.error} onRetry={retry} />;
     return <ReportSkeleton />;
   }
-  const notice = scan.isError ? <RefreshFailedNotice error={scan.error} onRetry={retry} /> : null;
+  // A scan that is on screen stays there when fetching it again fails.
+  const notice = scan.isError ? (
+    <RetryNotice title="Could not refresh this scan" detail={LOADED_EARLIER} error={scan.error} onRetry={retry} />
+  ) : null;
   if (isActive(scan.data.summary.status)) return <LiveScan detail={scan.data} notice={notice} />;
   return <Report key={scan.data.summary.id} detail={scan.data} notice={notice} />;
 }

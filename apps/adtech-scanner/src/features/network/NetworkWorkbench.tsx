@@ -2,6 +2,7 @@ import { InboxIcon, InfoIcon, SearchXIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ScanDetail } from "@/bindings";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { pagePath } from "@/shared/domain/page-views";
 import { useCopy } from "@/shared/hooks/use-copy";
 import { useElementSize } from "@/shared/hooks/use-element-size";
@@ -293,7 +294,7 @@ export function NetworkWorkbench({
         ))}
       </div>
     );
-  } else if (loaded.error) {
+  } else if (loaded.failure === "load") {
     list = <QueryError title="Could not load the requests" error={loaded.error} onRetry={loaded.retry} />;
   } else if (view === "bids") {
     list = (
@@ -475,6 +476,24 @@ export function NetworkWorkbench({
           This visit made {formatInteger(loaded.total)} requests. The first {formatInteger(loaded.rows.length)} are
           shown.
         </p>
+      ) : null}
+      {loaded.failure === "nextChunk" ? (
+        <RetryNotice
+          className="mx-3 mt-2"
+          title="The request list is incomplete"
+          detail={`The first ${formatInteger(loaded.rows.length)} of ${formatInteger(loaded.total)} requests are shown.`}
+          error={loaded.error}
+          onRetry={loaded.retry}
+        />
+      ) : null}
+      {loaded.failure === "refresh" ? (
+        <RetryNotice
+          className="mx-3 mt-2"
+          title="Could not refresh the requests"
+          detail={LOADED_EARLIER}
+          error={loaded.error}
+          onRetry={loaded.retry}
+        />
       ) : null}
       {view === "requests" && !loaded.isPending ? (
         <OverviewStrip

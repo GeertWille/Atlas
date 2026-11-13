@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import type { BodySide, NetworkRow, ScanDetail } from "@/bindings";
 import { readNetworkBody, useNetworkRequest } from "@/lib/query/hooks";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { useCopy } from "@/shared/hooks/use-copy";
 import { cn } from "@/shared/lib/cn";
 import { notifyError } from "@/shared/lib/notify-error";
@@ -82,6 +83,17 @@ export function DetailPanel({
   const scanId = scan.summary.id;
   const request = useNetworkRequest(scanId, row.id);
   const detail = request.data;
+  const retry = () => void request.refetch();
+  // The list entry stays whatever happens to the fetch of the rest, and so does a record that was loaded before.
+  const notice = request.isError ? (
+    <RetryNotice
+      className="m-3"
+      title={detail ? "Could not refresh this request" : "Could not load this request"}
+      detail={detail ? LOADED_EARLIER : "What the request list holds is shown."}
+      error={request.error}
+      onRetry={retry}
+    />
+  ) : null;
   const { copy } = useCopy();
   const [pendingCopy, setPendingCopy] = useState<(() => void) | null>(null);
 
@@ -200,22 +212,22 @@ export function DetailPanel({
         </TabsList>
         <div className="min-h-0 flex-1 overflow-y-auto">
           <TabsContent value="summary">
+            {notice}
             <SummaryTab scan={scan} row={row} detail={detail} onOpenRequest={onOpenRequest} />
           </TabsContent>
           {DETAIL_TABS.filter((value) => value !== "summary").map((value) => (
             <TabsContent key={value} value={value} className={cn(tab === value && "flex min-h-full flex-col")}>
-              {request.isError ? (
-                <QueryError
-                  title="Could not load this request"
-                  error={request.error}
-                  onRetry={() => void request.refetch()}
-                />
-              ) : !detail ? (
-                <div className="flex flex-col gap-2 p-3">
-                  <Skeleton className="h-3 w-2/3" />
-                  <Skeleton className="h-3 w-1/2" />
-                  <Skeleton className="h-3 w-3/5" />
-                </div>
+              {detail ? notice : null}
+              {!detail ? (
+                request.isError ? (
+                  <QueryError title="Could not load this request" error={request.error} onRetry={retry} />
+                ) : (
+                  <div className="flex flex-col gap-2 p-3">
+                    <Skeleton className="h-3 w-2/3" />
+                    <Skeleton className="h-3 w-1/2" />
+                    <Skeleton className="h-3 w-3/5" />
+                  </div>
+                )
               ) : !detail.available ? (
                 <p className="p-3 text-xs text-pretty text-muted-foreground">
                   Not stored any more: the network data of this scan was removed to stay under the storage limit.

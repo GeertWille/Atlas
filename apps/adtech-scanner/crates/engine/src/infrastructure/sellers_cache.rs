@@ -242,9 +242,11 @@ impl LocalSellersJsonCache {
 
     fn confirm_now(&self, domain: &str, fetched_at: f64) -> std::io::Result<()> {
         let key = Self::key(domain);
+        // A note that there was no file has nothing an exchange could confirm.
         let meta = self
             .read_meta(&key)
             .filter(|meta| meta.domain == domain)
+            .filter(|meta| matches!(meta.content, StoredContent::File { .. }))
             .ok_or_else(|| std::io::Error::other(format!("no kept sellers.json of {domain}")))?;
         let meta = Meta { fetched_at, ..meta };
         self.write(&self.meta_path(&key), &serde_json::to_vec(&meta)?)
@@ -474,6 +476,16 @@ mod tests {
             Some(file(9_000.0, "{}"))
         );
         assert!(cache.confirm("unknown.example", 9_000.0).await.is_err());
+
+        // A failed lookup is not a file: there is nothing to confirm, and
+        // the note keeps the date it was made.
+        let failed = CachedSellersJson {
+            content: Err("the exchange answered HTTP 404".into()),
+            ..file(1_000.0, "")
+        };
+        cache.store("gone.example", failed.clone()).await.unwrap();
+        assert!(cache.confirm("gone.example", 9_000.0).await.is_err());
+        assert_eq!(cache.load("gone.example").await, Some(failed));
     }
 
     #[cfg(unix)]

@@ -49,3 +49,30 @@ test("a refresh that fails keeps the loaded report on screen; only a first load 
   await user.click(main.getByRole("button", { name: "Try again" }));
   expect(await main.findByRole("tab", { name: /^Findings/ }, { timeout: 5_000 })).toBeInTheDocument();
 });
+
+test("a network summary that cannot be refreshed stays on the report's Network tab", async () => {
+  const user = userEvent.setup();
+  const client = createQueryClient();
+  void router.navigate({ to: "/scans/$scanId", params: { scanId: SCAN }, search: { tab: "network" } });
+  render(
+    <QueryClientProvider client={client}>
+      <TooltipProvider>
+        <RouterProvider router={router} />
+      </TooltipProvider>
+    </QueryClientProvider>,
+  );
+  const main = within(await screen.findByRole("main", {}, { timeout: 5_000 }));
+  expect(await main.findByText("Worth opening", {}, { timeout: 5_000 })).toBeInTheDocument();
+
+  vi.spyOn(api, "getNetworkSummary").mockRejectedValueOnce(new ApiError("storage", "The database is locked"));
+  await client.invalidateQueries({ queryKey: queryKeys.networkSummary(SCAN) });
+
+  const notice = within(await main.findByRole("alert"));
+  expect(notice.getByText("Could not refresh the network summary")).toBeInTheDocument();
+  expect(main.getByText("Worth opening")).toBeInTheDocument();
+  expect(main.queryByText("Could not load the network summary")).toBeNull();
+
+  await user.click(notice.getByRole("button", { name: "Try again" }));
+  await waitFor(() => expect(main.queryByRole("alert")).toBeNull());
+  expect(main.getByText("Worth opening")).toBeInTheDocument();
+});

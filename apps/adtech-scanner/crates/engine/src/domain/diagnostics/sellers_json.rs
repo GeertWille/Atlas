@@ -47,6 +47,13 @@ pub fn find_sellers(json: &[u8], wanted: &[String]) -> Result<Vec<Seller>, Strin
         .map_err(|error| format!("the file is not valid sellers.json ({error})"))
 }
 
+/// Whether `json` is a sellers.json at all: what `find_sellers` can read,
+/// whichever ids are asked for. A web page, a soft 404, JSON without a
+/// `sellers` array and a file that was cut short are not.
+pub fn check_readable(json: &[u8]) -> Result<(), String> {
+    find_sellers(json, &[]).map(drop)
+}
+
 struct FileVisitor<'a> {
     wanted: &'a [String],
 }
@@ -347,6 +354,40 @@ mod tests {
             assert!(
                 error.starts_with("the file is not valid sellers.json"),
                 "{body}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_is_readable_exactly_when_a_lookup_can_read_it() {
+        for sellers_json in [
+            r#"{"sellers":[]}"#,
+            r#"{"version":"1.0","sellers":[{"seller_id":"958"},{"seller_id":7,"domain":null}]}"#,
+            "\u{feff}{\"sellers\":[]}",
+        ] {
+            assert_eq!(
+                check_readable(sellers_json.as_bytes()),
+                Ok(()),
+                "{sellers_json}"
+            );
+        }
+        for other in [
+            "<!DOCTYPE html><html><body>Just a moment...</body></html>",
+            "Not Found",
+            "",
+            r#"{"error":"not found"}"#,
+            r#"{"sellers":{"958":{}}}"#,
+            r#"{"sellers":[{"seller_id":"958"},{"seller_"#,
+        ] {
+            let reason = check_readable(other.as_bytes()).unwrap_err();
+            assert!(
+                reason.starts_with("the file is not valid sellers.json ("),
+                "{other}: {reason}"
+            );
+            // The same verdict, in the same words, as the lookup itself.
+            assert_eq!(
+                find_sellers(other.as_bytes(), &wanted(&["958"])),
+                Err(reason)
             );
         }
     }

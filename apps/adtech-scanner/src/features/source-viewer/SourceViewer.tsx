@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ScanDetail, ScriptRecord, SourceView } from "@/bindings";
 import { useScriptSource } from "@/lib/query/hooks";
 import { QueryError } from "@/shared/components/query-error";
+import { LOADED_EARLIER, RetryNotice } from "@/shared/components/retry-notice";
 import { isJevModel, modelLabel } from "@/shared/domain/model-pricing";
 import { FINDING_SOURCE_LABEL, SCRIPT_CATEGORY_META, scriptCategoryLabel } from "@/shared/domain/vocabulary";
 import { describeMatches, jumpToLine, type SearchSummary, searchSummaryField } from "@/shared/editor";
@@ -531,15 +532,30 @@ export function SourceViewer({
               The script as it was captured. Findings cite lines of the formatted view and are not marked here.
             </p>
           ) : null}
-          {source.isPending ? (
-            <CodeSkeleton />
-          ) : source.isError ? (
-            <QueryError title="Could not load this script" error={source.error} onRetry={() => void source.refetch()} />
+          {data && source.isError ? (
+            <RetryNotice
+              className="m-2"
+              title="Could not refresh this script"
+              detail={LOADED_EARLIER}
+              error={source.error}
+              onRetry={() => void source.refetch()}
+            />
+          ) : null}
+          {!data ? (
+            source.isError ? (
+              <QueryError
+                title="Could not load this script"
+                error={source.error}
+                onRetry={() => void source.refetch()}
+              />
+            ) : (
+              <CodeSkeleton />
+            )
           ) : text === null || text === undefined ? (
             <SourceUnavailable
               detail={detail}
               script={script}
-              availability={data && data.availability !== "available" ? data.availability : "notRetained"}
+              availability={data.availability !== "available" ? data.availability : "notRetained"}
             />
           ) : (
             <CodePane

@@ -337,7 +337,8 @@ pub trait SellersJsonCache: Send + Sync {
     async fn load(&self, domain: &str) -> Option<CachedSellersJson>;
     /// Replaces the entry of `domain`, all of it or nothing.
     async fn store(&self, domain: &str, entry: CachedSellersJson) -> Result<(), String>;
-    /// The exchange confirmed that the stored file is still current.
+    /// The exchange confirmed that the stored file is still current. An
+    /// error when the entry of `domain` holds no file.
     async fn confirm(&self, domain: &str, fetched_at: f64) -> Result<(), String>;
     async fn info(&self) -> SellersJsonCacheInfo;
     async fn clear(&self) -> Result<(), String>;

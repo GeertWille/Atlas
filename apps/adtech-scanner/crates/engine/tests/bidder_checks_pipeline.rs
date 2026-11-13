@@ -379,6 +379,68 @@ async fn an_exchange_that_is_down_is_judged_from_the_kept_copy_and_the_check_say
     );
 }
 
+/// A page served with status 200 where the file should be says nothing about
+/// the site's seller id: the check is "could not be read", never "not listed".
+#[tokio::test]
+async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_seller_not_listed() {
+    const PAGE: &str = "<!DOCTYPE html><html><body>Checking your browser</body></html>";
+    const TRUNCATED: &str = r#"{"sellers":[{"seller_id":"1001","seller_type":"PUBL"#;
+    let harness = harness_for(healthy());
+    harness
+        .files
+        .answer("https://appnexus.com/sellers.json", text_file(200, PAGE));
+    harness.files.answer(
+        "https://rubiconproject.com/sellers.json",
+        text_file(200, TRUNCATED),
+    );
+
+    let detail = run_scan(&harness, scan_options(false)).await;
+
+    let checks: Vec<(DiagnosticStatus, &str)> = detail
+        .bidder_diagnostics
+        .as_ref()
+        .unwrap()
+        .bidders
+        .iter()
+        .flat_map(|bidder| &bidder.checks)
+        .filter(|check| check.area == DiagnosticArea::SellersJson)
+        .map(|check| (check.status, check.summary.as_str()))
+        .collect();
+    assert_eq!(
+        checks,
+        [
+            (
+                DiagnosticStatus::NotChecked,
+                "The sellers.json of appnexus.com could not be read: the file is not valid sellers.json (expected value at line 1 column 1)"
+            ),
+            (
+                DiagnosticStatus::NotChecked,
+                "The sellers.json of rubiconproject.com could not be read: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)"
+            ),
+        ]
+    );
+    assert_eq!(
+        lookup_lines(&harness, &detail).await,
+        [
+            "sellers.json of appnexus.com could not be read: the file is not valid sellers.json (expected value at line 1 column 1)",
+            "sellers.json of rubiconproject.com could not be read: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
+        ]
+    );
+    assert_eq!(rules(&detail), Vec::<&str>::new());
+
+    // The next scan within the hour does not ask again, and says the same.
+    harness.files.requests.lock().unwrap().clear();
+    let again = run_scan(&harness, scan_options(false)).await;
+    assert_eq!(harness.files.requested_urls(), [SITE_ADS_TXT_URL]);
+    assert_eq!(
+        lookup_lines(&harness, &again).await,
+        [
+            "sellers.json of appnexus.com could not be read less than a minute ago: the file is not valid sellers.json (expected value at line 1 column 1)",
+            "sellers.json of rubiconproject.com could not be read less than a minute ago: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
+        ]
+    );
+}
+
 /// What the audit trail says about each exchange's file, in order of exchange.
 async fn lookup_lines(harness: &Harness, detail: &ScanDetail) -> Vec<String> {
     let mut lines: Vec<String> = harness

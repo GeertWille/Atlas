@@ -1,6 +1,6 @@
 # AdTech Scanner — handover
 
-Status on 2026-11-12. Branch `ccr-a6f7da93-wz5uos` in the Atlas repo, everything under `apps/adtech-scanner`.
+Status on 2026-11-13. Branch `ccr-a6f7da93-wz5uos` in the Atlas repo, everything under `apps/adtech-scanner`.
 No PR, nothing merged.
 
 ## What this is
@@ -60,8 +60,8 @@ Rules that came from you and must keep holding:
 | Data contract | `crates/model` | Done. Generates `src/bindings/*.ts` (never hand-edit). |
 | Browser capture and demo site | `crates/browser` | Done, reviewed, fixes applied. 226 unit tests; the integration tests drive real Chromium. |
 | Engine (domain, pipeline, SQLite, Anthropic and TypeSafe clients) | `crates/engine` | Done, reviewed, fixes applied. Tests pass, all against mock servers. |
-| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1073 tests, 5 ignored (2026-11-12, after the release defect list). |
-| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 781 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-12). |
+| Tauri shell (35 commands, composition root) | `src-tauri` | Done, reviewed. Command tests pass; 4 real-browser pipeline tests on Linux. `cargo test --workspace`: 1081 tests, 5 ignored (2026-11-13). |
+| React frontend | `src/` | Done, reviewed. `pnpm typecheck` and `pnpm lint` are clean; 788 Vitest tests and 233 Playwright tests against the fake backend pass (2026-11-13). |
 | Integration of frontend with the real backend | `e2e-tauri/` | Done on Linux. The built app (production CSP) is driven through WebKitGTK by `pnpm test:tauri`: onboarding, demo-site scan, every report tab, history, log search, settings, export and the Chrome picker through the native dialogs, delete, an AI scan against a mock of the Anthropic API, a Jev scan and its fallback against a mock of the TypeSafe API, the scan archive (network record, decoded bid exchange, bid inspector, script viewer with the finding's line marked, storage off), and every command's contract: 41 tests (2 more only run with `TAURI_E2E_SCREENSHOTS`). Not run on macOS. |
 
 ## Run it on a Mac
@@ -221,8 +221,6 @@ without destroying the old ones.
   price within a currency only. Which bid won is Prebid's own decision (`bidWon`) and is shown as
   recorded: a page without Prebid's currency module compares raw numbers across currencies, which
   loses money, and the scanner does not report that as a finding yet.
-- The network view and the script viewer still show the error page when fetching the scan again
-  fails in the background. Only the report keeps what it had loaded and shows a notice with a retry.
 - A keychain vault that is not valid JSON is never overwritten: every read and every change of a
   secret fails with "the stored secrets are not in the expected format" until the item `vault` is
   removed in Keychain Access. There is no button for that.
@@ -378,6 +376,31 @@ formats it on demand with the same oxc formatter the analysis uses (cached in me
 disk), finds each finding's code evidence again by its text (`domain/source.rs::locate`, shared with
 the citation check, which now also stores `Evidence.scriptId` and `endLine`), and reads the "read by
 the AI" ranges from the stored audit trail. Phase 2 itself still reads the in-memory sources.
+
+**When a fetch fails.** The report, the network view and the script viewer follow one rule, with one
+component (`src/shared/components/retry-notice.tsx`, `RetryNotice`): what is on screen stays when
+fetching it again fails, under a warning with the backend's message and "Try again"; only a first
+load that fails takes the place of the content (`QueryError`). Each query is judged by itself:
+
+- The scan (`get_scan`), on all three routes: the report, the workbench or the editor stay, with
+  their state (filter, selection, scroll position). A scan that was deleted is still "This scan no
+  longer exists".
+- The request list (`use-network-rows.ts`, `failure`): a first chunk that fails is an error in the
+  list's place. A later chunk that fails keeps the rows before it; the notice says how many of how
+  many are shown, the footer stops saying "loading more", the chunk is not asked for again until
+  "Try again", and the retry goes on from that chunk. A refresh that fails keeps the list as it was.
+- The details of a request: a newly selected request whose record cannot be fetched shows the
+  error inside the panel (on the Summary tab above the facts the list holds), the list stays. A
+  record that was loaded stays when refreshing it fails.
+- A body: a first stretch that fails is an error in the body's place; a later one ("Load more")
+  keeps the text read so far.
+- The network summary on the report's Network tab and the source text of a script: loaded content
+  stays. Another script, or the other view of the same script, is a first load.
+
+The states that are data and not failures are untouched: not recorded, storage off, evicted, list
+only, not retained. Tested at route level in `src/app/routes/{Scan,Network,Source}Route.test.tsx`
+and `src/features/network/detail/BodyView.test.tsx`. Not in the Playwright suite: the fake backend
+has no way to make a read fail, and none was added.
 
 Known limits: the host and path tables of `domain/network/classify.rs`, the timing windows of the
 exchange matching and the 10 ms verdict tolerance have only seen the demo site and test fixtures;
@@ -753,18 +776,29 @@ new default; tested against test doubles and a mock server only, never against a
   check read from it ends with "(from a copy fetched <date>: the exchange could not be reached during
   this scan)". Nothing older than 7 days is ever used. Any other answer (404, 403) is believed and
   replaces the kept file.
+- **Only a sellers.json is kept as one.** A 2xx answer is kept as a file only when the lookup's own
+  parser can read it (`domain/diagnostics/sellers_json.rs::check_readable`, which is `find_sellers`
+  asked for no id). A web page, a challenge page, a soft 404, JSON without a `sellers` array or a
+  file that was cut short is handled like an exchange that could not be reached
+  (`application/sellers_json.rs`): a kept file of at most 7 days is used and left exactly as it was,
+  with the same note on its checks, and the exchange is asked again by the next scan; without such a
+  file the answer is remembered as a failed lookup for 1 hour and the check reads "The sellers.json
+  of <exchange> could not be read: the file is not valid sellers.json (...)", never "seller id not
+  listed". A kept file is checked the same way every time it is read: one that is not a sellers.json
+  (kept by a build from before 2026-11-13) counts as no entry, its version is not asked about, it
+  is never used in place of an unreachable exchange, and the exchange's answer replaces it. A 304
+  only renews a kept file: the cache refuses to move the date of a failed lookup
+  (`LocalSellersJsonCache::confirm`), and a 304 to a request that named no version is a failed
+  lookup ("the exchange answered HTTP 304").
 - **Sharing.** Two scans that need the same exchange at the same time make one download
   (`application/sellers_json.rs`, one lookup per exchange at a time); the second reads the kept
   copy. A cancelled scan keeps nothing and the next one in line downloads the file itself.
 - **Limits.** The 24 MiB cap per file applies to the download and again when a kept file is
   unpacked. All files together stay under 500 MiB; the entries read longest ago go first.
-- **Trust.** A kept file is parsed by the same parser as a download, per scan, for the seller ids
-  that scan needs. A file whose size or hash differs from its meta, or whose meta names another
+- **Trust.** A kept file is parsed by the same parser as a download, per scan: once to see that it
+  is a sellers.json, once for the seller ids that scan needs. A file whose size or hash differs from its meta, or whose meta names another
   domain, is deleted and downloaded again. Every download and every revalidation goes through the
   fetcher above with all its address checks.
-- **Not checked before keeping:** whether a 2xx answer is a sellers.json at all. An exchange that
-  serves a web page with status 200 is asked again only after 24 hours; until then every scan
-  reports "the file is not valid sellers.json" for it. "Clear kept files" is the way out.
 - **In the app.** Settings, "Bidder checks": size and number of exchanges, and "Clear kept files"
   (commands `get_sellers_json_cache`, `clear_sellers_json_cache`). "Delete all scans" and "Clear
   stored scan data" leave these files alone: they are not scan data. The audit trail of the Bidder
