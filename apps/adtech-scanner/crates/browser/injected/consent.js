@@ -3,8 +3,9 @@
 // platforms put their dialog in an iframe of another origin as often as not.
 //
 // One function expression, called with `{ click, watchMs }`. It evaluates to
-//   { name, x, y }  the control was found; `x`/`y` are a point on it in this
-//                   frame's viewport, or null when the point is covered;
+//   { name, label, x, y }  the control was found: `label` is what it says,
+//                   `x`/`y` are a point on it in this frame's viewport, or
+//                   null when the point is covered;
 //   { dialog }      a consent dialog is here but nothing in it plainly means
 //                   "accept all";
 //   null            nothing of the kind.
@@ -40,7 +41,10 @@
     {
       name: 'Usercentrics',
       accept: '[data-testid="uc-accept-all-button"], button[data-action-type="accept"]',
-      dialog: '#usercentrics-root, #usercentrics-cmp-ui, [data-testid="uc-default-wall"]',
+      // Inside the shadow tree of `#usercentrics-root` (v2) or
+      // `#usercentrics-cmp-ui` (v3). Those hosts are on the page whether or
+      // not the dialog shows, and hold the privacy button after a choice.
+      dialog: '#uc-center-container, [data-testid="uc-default-wall"], #uc-main-dialog',
     },
     {
       name: 'TrustArc',
@@ -65,7 +69,7 @@
   ];
 
   // Unambiguous "accept everything" labels: English, Dutch, German, French,
-  // Spanish, Italian, Portuguese.
+  // Spanish, Italian, Portuguese, Danish.
   var ACCEPT_ALL = [
     'accept all', 'accept all cookies', 'allow all', 'allow all cookies', 'agree to all', 'accept & continue',
     'accept and continue', 'accept all and continue', 'accept all & continue', 'agree and proceed',
@@ -81,6 +85,8 @@
     'aceptar y cerrar',
     'accetta tutto', 'accetta tutti', 'accetta tutti i cookie', 'accetta e continua', 'accetta e chiudi',
     'aceitar tudo', 'aceitar todos', 'aceitar todos os cookies', 'aceitar e continuar', 'aceitar e fechar',
+    'tillad alle', 'tillad alle cookies', 'accepter alle', 'accepter alle cookies', 'godkend alle',
+    'accepter og luk', 'accepter og fortsæt',
   ];
   // Short labels that only mean consent when they sit inside a consent dialog.
   var ACCEPT_IN_CONTEXT = [
@@ -90,6 +96,7 @@
     'accepter', "j'accepte", "d'accord", 'autoriser',
     'aceptar', 'acepto', 'de acuerdo', 'permitir',
     'accetta', 'accetto', 'acconsento',
+    'tillad', 'godkend', 'jeg accepterer',
   ];
   // A consent wall may offer a paid way out next to the consent option
   // ("read with ads" or "subscribe"). Whatever a control is otherwise, one
@@ -195,12 +202,20 @@
     return inContext;
   }
 
+  // A container that is laid out but empty, or hidden, is no dialog to
+  // report: a consent platform keeps its container on pages where it shows
+  // nothing.
+  function isShowing(element) {
+    var box = element.getBoundingClientRect();
+    return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden';
+  }
+
   function findDialog(roots) {
     for (var p = 0; p < PLATFORMS.length; p++) {
       for (var r = 0; r < roots.length; r++) {
         var matches = roots[r].querySelectorAll(PLATFORMS[p].dialog);
         for (var m = 0; m < matches.length; m++) {
-          if (matches[m].getClientRects().length) return PLATFORMS[p].name;
+          if (isShowing(matches[m])) return PLATFORMS[p].name;
         }
       }
     }
@@ -242,12 +257,13 @@
         );
       });
     }
+    var label = (labelsOf(found.element)[0] || '').slice(0, 60);
     if (request.click) {
       found.element.click();
-      return { name: found.name, x: null, y: null };
+      return { name: found.name, label: label, x: null, y: null };
     }
     var point = pointOn(found.element);
-    return { name: found.name, x: point && point.x, y: point && point.y };
+    return { name: found.name, label: label, x: point && point.x, y: point && point.y };
   } catch (error) {
     return null;
   }

@@ -89,6 +89,15 @@ fn report(url: &str, capture: &Capture, records: &[NetworkRecord], progress: &[S
         "  title: {:?}, final url: {}",
         capture.page_title, capture.final_url
     );
+    if let Some(remote) = &capture.environment.browserbase {
+        eprintln!("  round trip to the browser: {:?} ms", remote.round_trip_ms);
+    }
+    for (index, page) in capture.pages.iter().enumerate() {
+        eprintln!(
+            "  page view {index}: {:?} from {:.0} ms, {}",
+            page.reached_by, page.started_at_ms, page.url
+        );
+    }
     for line in progress.iter().filter(|line| {
         let line = line.to_lowercase();
         line.contains("consent") || line.contains("blocked")

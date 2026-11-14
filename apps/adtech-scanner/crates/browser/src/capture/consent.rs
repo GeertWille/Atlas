@@ -8,16 +8,22 @@
 //! its place on the screen, once the browser confirms that the control's
 //! frame is what is at that place. Where that cannot be established the
 //! control is clicked from script instead.
+//!
+//! Every frame is asked at once: a browser in another country answers each
+//! command a round trip later, and an ad-heavy page has dozens of frames.
 
 use std::time::Duration;
 
 use adscan_model::ConsentNoteKind;
+use futures_util::future::join_all;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::cdp::CdpError;
+
 use super::error::CaptureError;
 use super::injected::{ConsentAsk, consent_expression};
-use super::page::{Page, tolerate_rejection};
+use super::page::{Page, SCANNER_WORLD, tolerate_rejection};
 use super::visitor::Point;
 use super::visitor::motion::Waypoint;
 
@@ -33,10 +39,12 @@ const LOOKS_BEFORE_GIVING_UP: u32 = 3;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(untagged)]
 enum Sighting {
-    /// The accept-all control, and a point on it in its frame's viewport
-    /// when nothing is in front of it there.
+    /// The accept-all control, what it says, and a point on it in its
+    /// frame's viewport when nothing is in front of it there.
     Accept {
         name: String,
+        #[serde(default)]
+        label: String,
         x: Option<f64>,
         y: Option<f64>,
     },
@@ -54,6 +62,31 @@ struct Frame {
     /// The frame id of the out-of-process iframe the frame lives in, when it
     /// is not part of the tab's own process.
     isolated_in: Option<String>,
+}
+
+/// What was accepted: the consent platform or the control's label as
+/// `injected/consent.js` names it, and what the control says.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Accepted {
+    pub banner: String,
+    pub label: String,
+}
+
+/// The answers to commands sent together, in the order they were sent. An
+/// answer the browser refused, or did not give in time, is `null`: the frame
+/// went away meanwhile.
+async fn all_answered(
+    commands: Vec<impl Future<Output = Result<Value, CdpError>>>,
+) -> Result<Value, CdpError> {
+    let mut answers = Vec::new();
+    for answer in join_all(commands).await {
+        match answer {
+            Ok(value) => answers.push(value),
+            Err(CdpError::Rejected { .. } | CdpError::Timeout(_)) => answers.push(Value::Null),
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(Value::Array(answers))
 }
 
 /// The frames of one session, the main frame first. `frame_tree` is the
@@ -82,19 +115,24 @@ fn frames_of(session_id: &str, frame_tree: &Value, in_tab: bool) -> Vec<Frame> {
 }
 
 impl Page {
-    /// Looks for a consent dialog in every frame and accepts it. Returns the
-    /// name of what was accepted.
-    pub(crate) async fn accept_consent(&mut self) -> Result<Option<String>, CaptureError> {
+    /// Looks for a consent dialog in every frame and accepts it. Returns
+    /// what was accepted.
+    pub(crate) async fn accept_consent(&mut self) -> Result<Option<Accepted>, CaptureError> {
+        let frames = self.frames().await?;
+        let sightings = self.look_for_consent(&frames).await?;
         let mut dialog_without_accept = None;
-        for frame in self.frames().await? {
-            match self.look_for_consent(&frame).await? {
-                Some(Sighting::Accept { name, x, y }) => {
+        for (frame, sighting) in frames.iter().zip(sightings) {
+            match sighting {
+                Some(Sighting::Accept { name, label, x, y }) => {
                     let point = x.zip(y).map(|(x, y)| Point { x, y });
-                    self.press(&frame, point).await?;
+                    self.press(frame, point).await?;
                     self.recorder.dialog_without_accept_seen = 0;
                     self.recorder
                         .note_consent(ConsentNoteKind::Accepted, name.clone());
-                    return Ok(Some(name));
+                    return Ok(Some(Accepted {
+                        banner: name,
+                        label,
+                    }));
                 }
                 // The page may hold the dialog's container and a frame
                 // further on its accept control.
@@ -111,8 +149,8 @@ impl Page {
         self.recorder.dialog_without_accept_seen += 1;
         if self.recorder.dialog_without_accept_seen >= LOOKS_BEFORE_GIVING_UP {
             let message = format!(
-                "A consent dialog ({dialog}) is showing and nothing in it plainly means \"accept all\"; \
-                 it was left alone"
+                "Consent banner detected ({dialog}), automatic accept failed: nothing in it plainly \
+                 means \"accept all\", so it was left alone"
             );
             if self
                 .recorder
@@ -152,9 +190,49 @@ impl Page {
         Ok(frames)
     }
 
-    async fn look_for_consent(&mut self, frame: &Frame) -> Result<Option<Sighting>, CaptureError> {
-        let seen = self.ask_consent_script(frame, ConsentAsk::Look).await?;
-        Ok(seen.and_then(|seen| serde_json::from_value(seen).ok()))
+    /// What each frame shows of a consent dialog, in the order of `frames`.
+    /// All frames are asked together: two round trips to the browser, however
+    /// many frames there are.
+    async fn look_for_consent(
+        &mut self,
+        frames: &[Frame],
+    ) -> Result<Vec<Option<Sighting>>, CaptureError> {
+        let worlds = frames
+            .iter()
+            .map(|frame| {
+                self.cdp.send(
+                    Some(&frame.session_id),
+                    "Page.createIsolatedWorld",
+                    json!({ "frameId": frame.frame_id, "worldName": SCANNER_WORLD }),
+                )
+            })
+            .collect();
+        let worlds = self.record_until_answered(all_answered(worlds)).await?;
+        let expression = consent_expression(ConsentAsk::Look);
+        let mut asked = Vec::new();
+        let mut looks = Vec::new();
+        for (index, (frame, world)) in frames.iter().zip(worlds.as_array().into_iter().flatten()).enumerate() {
+            let Some(context) = world["executionContextId"].as_u64() else {
+                continue;
+            };
+            asked.push(index);
+            looks.push(self.cdp.send(
+                Some(&frame.session_id),
+                "Runtime.evaluate",
+                json!({
+                    "expression": expression,
+                    "returnByValue": true,
+                    "awaitPromise": true,
+                    "contextId": context,
+                }),
+            ));
+        }
+        let looks = self.record_until_answered(all_answered(looks)).await?;
+        let mut sightings = vec![None; frames.len()];
+        for (index, look) in asked.into_iter().zip(looks.as_array().into_iter().flatten()) {
+            sightings[index] = serde_json::from_value(look["result"]["value"].clone()).ok();
+        }
+        Ok(sightings)
     }
 
     async fn ask_consent_script(

@@ -30,7 +30,7 @@ use super::visitor::{Point, Size};
 const TAB_PATIENCE: Duration = Duration::from_secs(10);
 
 /// Isolated world for the scanner's own evaluations, invisible to page scripts.
-const SCANNER_WORLD: &str = "adscan";
+pub(super) const SCANNER_WORLD: &str = "adscan";
 
 /// How much of what a tab loaded the browser keeps for the scanner to read.
 const TAB_BODY_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
