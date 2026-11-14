@@ -246,7 +246,7 @@ async fn an_unreadable_answer_never_replaces_an_older_copy_that_still_serves() {
             .await;
         assert_eq!(
             fixture.read().await,
-            file(Origin::KeptWhileUnreachable { fetched_at: START }),
+            file(Origin::KeptOverUnreadableAnswer { fetched_at: START }),
             "{what}"
         );
         assert_eq!(fixture.kept().await, copy, "{what}: the copy is untouched");
@@ -282,7 +282,7 @@ async fn a_copy_outlives_an_unreadable_answer_and_is_confirmed_when_the_exchange
         .await;
     assert_eq!(
         fixture.read().await,
-        file(Origin::KeptWhileUnreachable { fetched_at: START })
+        file(Origin::KeptOverUnreadableAnswer { fetched_at: START })
     );
 
     fixture.server.reset().await;

@@ -42,6 +42,17 @@ pub enum Origin {
     /// The kept copy of `fetched_at`, used because the exchange could not
     /// be reached.
     KeptWhileUnreachable { fetched_at: f64 },
+    /// The kept copy of `fetched_at`, used because the exchange answered
+    /// with something that is not a sellers.json (a web page, a challenge
+    /// page, half a file).
+    KeptOverUnreadableAnswer { fetched_at: f64 },
+}
+
+/// Why the exchange's answer may leave a kept copy in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PassingTrouble {
+    Unreachable,
+    UnreadableAnswer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,7 +171,7 @@ impl SellersJsonSource {
             answer => answer,
         };
         let now = self.clock.now_ms();
-        let ((reason, passing_trouble), kept_file) = match (answer, kept_file) {
+        let ((reason, trouble), kept_file) = match (answer, kept_file) {
             (Ok(answer), Some((file, _, _))) if answer.status == 304 => {
                 // Should the date not be written, the copy is asked about
                 // again next time; it is current all the same.
@@ -179,24 +190,31 @@ impl SellersJsonSource {
                     // A web page, a soft 404 or half a file says nothing
                     // about the sellers. Like an exchange that cannot be
                     // reached, it does not replace a copy that still serves.
-                    Err(reason) => ((reason, true), kept_file),
+                    Err(reason) => ((reason, Some(PassingTrouble::UnreadableAnswer)), kept_file),
                 }
             }
             (Ok(answer), kept_file) => (
                 (
                     format!("the exchange answered HTTP {}", answer.status),
-                    is_passing_trouble(answer.status),
+                    is_passing_trouble(answer.status).then_some(PassingTrouble::Unreachable),
                 ),
                 kept_file,
             ),
-            (Err(error), kept_file) => ((error.to_string(), true), kept_file),
+            (Err(error), kept_file) => (
+                (error.to_string(), Some(PassingTrouble::Unreachable)),
+                kept_file,
+            ),
         };
-        if let (Some((file, fetched_at, _)), Some(Standing::AskAgainOrUse), true) =
-            (kept_file, kept_standing, passing_trouble)
+        if let (Some((file, fetched_at, _)), Some(Standing::AskAgainOrUse), Some(trouble)) =
+            (kept_file, kept_standing, trouble)
         {
+            let origin = match trouble {
+                PassingTrouble::Unreachable => Origin::KeptWhileUnreachable { fetched_at },
+                PassingTrouble::UnreadableAnswer => Origin::KeptOverUnreadableAnswer { fetched_at },
+            };
             return Ok(SellersJsonFile {
                 content: Ok(file),
-                origin: Origin::KeptWhileUnreachable { fetched_at },
+                origin,
             });
         }
         let unavailable = CachedSellersJson {

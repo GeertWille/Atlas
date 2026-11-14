@@ -85,9 +85,41 @@ pub struct SiteFiles {
     /// By ad system domain. `None` when the sellers.json lookup is switched off.
     pub sellers: Option<BTreeMap<String, SellersOutcome>>,
     /// Ad system domains whose sellers.json was read from a copy kept from
-    /// an earlier scan because the exchange could not be reached, with the
-    /// day that copy was fetched (`2026-11-12`).
-    pub sellers_copies: BTreeMap<String, String>,
+    /// an earlier scan instead of the exchange's answer.
+    pub sellers_copies: BTreeMap<String, KeptCopy>,
+}
+
+/// A copy of a sellers.json kept from an earlier scan that stood in for
+/// what the exchange gave this scan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeptCopy {
+    /// The day the copy was fetched (`2026-11-12`).
+    pub fetched_on: String,
+    pub because: CopyStoodIn,
+}
+
+/// Why a kept copy was read instead of the exchange's answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyStoodIn {
+    /// No answer: a network error, a timeout, HTTP 429 or a 5xx.
+    ExchangeUnreachable,
+    /// The exchange answered, with something that is not a sellers.json.
+    AnswerNotSellersJson,
+}
+
+impl KeptCopy {
+    /// What a check read from this copy adds to its summary.
+    fn note(&self) -> String {
+        let why = match self.because {
+            CopyStoodIn::ExchangeUnreachable => {
+                "the exchange could not be reached during this scan"
+            }
+            CopyStoodIn::AnswerNotSellersJson => {
+                "the exchange answered during this scan, but not with a valid sellers.json"
+            }
+        };
+        format!("from a copy fetched {}: {why}", self.fetched_on)
+    }
 }
 
 /// The seller ids to look up in one ad system's sellers.json.
@@ -874,11 +906,8 @@ fn sellers_checks(bidder: &BidderFacts, files: &SiteFiles, site: &str) -> Vec<Di
                     .find(|seller| seller.seller_id.eq_ignore_ascii_case(&record.account_id));
                 let compared = sellers_json::compare(record, seller, &identity);
                 match files.sellers_copies.get(&record.domain) {
-                    Some(fetched_on) => from_copies.extend(compared.into_iter().map(|mut check| {
-                        check.summary = format!(
-                            "{} (from a copy fetched {fetched_on}: the exchange could not be reached during this scan)",
-                            check.summary
-                        );
+                    Some(copy) => from_copies.extend(compared.into_iter().map(|mut check| {
+                        check.summary = format!("{} ({})", check.summary, copy.note());
                         check
                     })),
                     None => checks.extend(compared),

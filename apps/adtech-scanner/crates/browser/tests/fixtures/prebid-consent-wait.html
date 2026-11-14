@@ -1,0 +1,72 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Prebid: bids requested while consent management waits</title><link rel="icon" href="data:,"></head>
+<body>
+<script>
+// A stand-in for Prebid whose `requestBids` hooks run as fun-hooks runs them:
+// highest priority first, 10 when none is given. Its consent management hooks
+// the call at 50, as Prebid's consentManagement module does, and holds every
+// call until consent is given: at 1.5 s, or never with `?consent=never`.
+(function () {
+  var handlers = {};
+  var history = [];
+  function emit(eventType, args) {
+    history.push({ eventType: eventType, args: args, elapsedTime: performance.now() });
+    (handlers[eventType] || []).forEach(function (handler) { handler(args); });
+  }
+  var pbjs = (window.pbjs = {
+    version: '10.25.0',
+    installedModules: ['consentManagementTcf'],
+    adUnits: [],
+    onEvent: function (eventType, handler) { (handlers[eventType] = handlers[eventType] || []).push(handler); },
+    getEvents: function () { return history.slice(); },
+    setConfig: function () {},
+    getConfig: function () { return {}; },
+  });
+  pbjs.addAdUnits = function (units) {
+    [].concat(units || []).forEach(function (unit) { pbjs.adUnits.push(unit); });
+    emit('addAdUnits');
+  };
+  var auctions = 0;
+  function requestBids(options) {
+    emit('requestBids');
+    var units = options.adUnits || pbjs.adUnits;
+    var auctionId = 'auction-' + ++auctions;
+    emit('auctionInit', { auctionId: auctionId, timeout: options.timeout, adUnits: units });
+    emit('auctionEnd', { auctionId: auctionId });
+  }
+  var befores = [];
+  pbjs.requestBids = function () {
+    var self = this;
+    var next = 0;
+    (function run() {
+      var args = [].slice.call(arguments);
+      if (next < befores.length) befores[next++].hook.apply(self, [run].concat(args));
+      else requestBids.apply(self, args);
+    }).apply(null, arguments);
+  };
+  pbjs.requestBids.before = function (hook, priority) {
+    befores.push({ hook: hook, priority: typeof priority === 'number' ? priority : 10 });
+    befores.sort(function (a, b) { return b.priority - a.priority; });
+  };
+
+  var consentGiven = false;
+  var waiting = [];
+  pbjs.requestBids.before(function (next, options) {
+    if (consentGiven) return next.call(this, options);
+    var self = this;
+    waiting.push(function () { next.call(self, options); });
+  }, 50);
+  if (location.search.indexOf('consent=never') < 0) {
+    setTimeout(function () {
+      consentGiven = true;
+      waiting.splice(0).forEach(function (release) { release(); });
+    }, 1500);
+  }
+})();
+
+// The wrapper asks for bids before consent is given, and again after.
+pbjs.addAdUnits([{ code: 'top', mediaTypes: { banner: { sizes: [[728, 90]] } }, bids: [] }]);
+setTimeout(function () { pbjs.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 400);
+setTimeout(function () { pbjs.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 2500);
+</script>
+</body></html>

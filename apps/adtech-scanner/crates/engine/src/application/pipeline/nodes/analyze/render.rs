@@ -12,6 +12,9 @@ use serde_json::json;
 
 /// The page table shows at most this many page views.
 const MAX_PAGE_ROWS: usize = 8;
+/// A `requestBids` call that Prebid went on with this much later was held
+/// by a hook of its own; less is the time the call itself takes.
+const HELD_CALL_MS: f64 = 50.0;
 
 /// Says which records the views below cover and how they are labelled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,11 +370,23 @@ pub fn page_events(capture: &Capture, page: u32) -> String {
                 ad_unit_codes,
                 ad_unit_count,
                 timeout,
+                released_at,
             } => format!(
-                "pbjs.requestBids called: adUnitCodes=[{}] adUnitsToAuction={} timeout={}",
+                "pbjs.requestBids called: adUnitCodes=[{}] adUnitsToAuction={} timeout={}{}",
                 ad_unit_codes.join(", "),
                 ad_unit_count.map_or("unknown".to_string(), |count| count.to_string()),
                 ms(*timeout),
+                match released_at {
+                    Some(at) if *at - event.t >= HELD_CALL_MS => format!(
+                        "; Prebid's own hooks (consent management, currency) held it until t={} ({} later)",
+                        ms(Some(*at)),
+                        ms(Some(*at - event.t)),
+                    ),
+                    Some(_) => String::new(),
+                    None => "; still held by Prebid's own hooks (consent management, currency) when the \
+                             page view ended"
+                        .to_string(),
+                },
             ),
             Ev::AdUnitsAdded { registered } => format!(
                 "pbjs.addAdUnits called: adUnitsRegisteredAfter={}",
@@ -493,6 +508,46 @@ fn short_id(id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use adscan_model::TrackerEvent;
+
+    #[test]
+    fn the_page_timeline_times_a_bid_request_by_its_call_and_says_how_long_prebid_held_it() {
+        let asked = |t: f64, released_at: Option<f64>| TrackerEvent {
+            page: 0,
+            t,
+            kind: Ev::BidsRequested {
+                ad_unit_codes: vec!["top".into()],
+                ad_unit_count: Some(1),
+                timeout: Some(900.0),
+                released_at,
+            },
+        };
+        let capture = Capture::single_page(
+            "https://news.example/",
+            vec![
+                asked(400.0, Some(1_500.0)),
+                asked(2_500.0, Some(2_500.4)),
+                asked(3_000.0, None),
+            ],
+        );
+        let timeline = page_events(&capture, 0);
+        let lines: Vec<&str> = timeline.lines().skip(1).collect();
+        let call = "pbjs.requestBids called: adUnitCodes=[top] adUnitsToAuction=1 timeout=900ms";
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "t=400ms {call}; Prebid's own hooks (consent management, currency) held it until \
+                     t=1500ms (1100ms later)"
+                ),
+                format!("t=2500ms {call}"),
+                format!(
+                    "t=3000ms {call}; still held by Prebid's own hooks (consent management, currency) when \
+                     the page view ended"
+                ),
+            ]
+        );
+    }
 
     #[test]
     fn the_visit_block_states_what_is_known_about_consent_as_fact() {

@@ -80,6 +80,14 @@ impl TrackerLog {
                 continue;
             }
             self.per_page[index] += 1;
+            if let TrackerEventKind::BidsRequested {
+                released_at: Some(released_at),
+                ..
+            } = &mut event.kind
+            {
+                // On the clock of the page view the call was made on.
+                *released_at = (*released_at + t - event.t).max(t);
+            }
             event.page = page;
             event.t = t;
             self.events.push(event);
@@ -313,6 +321,41 @@ mod tests {
             [(0, 7_000.0), (1, 0.0), (1, 120.5), (0, 7_950.0), (1, 200.0)]
         );
         assert_eq!(pages.len(), 2);
+    }
+
+    #[test]
+    fn a_bid_request_is_placed_by_its_call_and_its_release_counts_on_that_page_view() {
+        let (mut log, mut pages) = (TrackerLog::default(), visit());
+        log.ingest(
+            &batch(
+                ORIGIN,
+                r#"{"t":8000,"type":"routeChange","url":"https://news.example/kelp","navigationType":"push"},
+                   {"t":7900,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":8300},
+                   {"t":8100,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":9600.5},
+                   {"t":8200,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":null}"#,
+            ),
+            &mut pages,
+        );
+
+        let placed: Vec<(u32, f64, Option<f64>)> = log
+            .events()
+            .iter()
+            .filter_map(|event| match event.kind {
+                TrackerEventKind::BidsRequested { released_at, .. } => {
+                    Some((event.page, event.t, released_at))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            placed,
+            [
+                // Made before the route change, let through after it.
+                (0, 7_900.0, Some(8_300.0)),
+                (1, 100.0, Some(1_600.5)),
+                (1, 200.0, None),
+            ]
+        );
     }
 
     #[test]

@@ -78,7 +78,10 @@ pub(crate) struct CallFrame {
 }
 
 /// The call frames of a CDP `Runtime.StackTrace`, innermost first, followed
-/// by those of its async parents, at most [`MAX_INITIATOR_FRAMES`].
+/// by those of its async parents where the trace has any, at most
+/// [`MAX_INITIATOR_FRAMES`]. Chrome reports parents only with
+/// `Debugger.setAsyncCallStackDepth` set, which the scanner does not send
+/// (ticket #29), so captured stacks have none today.
 pub(crate) fn call_frames(stack: &Value) -> Vec<CallFrame> {
     let mut frames = Vec::new();
     let mut stack = stack;

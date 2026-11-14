@@ -94,6 +94,16 @@ fn kinds<'a>(capture: &'a Capture, name: &str) -> Vec<&'a Kind> {
         .collect()
 }
 
+/// The `bidsRequested` events with their times.
+fn bids_requested(capture: &Capture) -> Vec<(f64, &Kind)> {
+    capture
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, Kind::BidsRequested { .. }))
+        .map(|event| (event.t, &event.kind))
+        .collect()
+}
+
 fn strings(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| value.to_string()).collect()
 }
@@ -812,23 +822,37 @@ async fn what_the_page_asks_prebid_for_is_reported_and_the_call_goes_on_as_made(
     request.observe_seconds = 3;
     let capture = support::capture_ok(request).await;
 
-    let asked: Vec<&Kind> = kinds(&capture, "bidsRequested");
+    let asked: Vec<(f64, &Kind)> = bids_requested(&capture);
+    let released: Vec<Option<f64>> = asked
+        .iter()
+        .map(|(_, kind)| match kind {
+            Kind::BidsRequested { released_at, .. } => *released_at,
+            _ => unreachable!(),
+        })
+        .collect();
     assert_eq!(
-        asked,
+        asked.iter().map(|(_, kind)| *kind).collect::<Vec<_>>(),
         [
             // From Prebid's history: that it happened, not with what.
             &Kind::BidsRequested {
                 ad_unit_codes: vec![],
                 ad_unit_count: None,
                 timeout: None,
+                released_at: released[0],
             },
             &Kind::BidsRequested {
                 ad_unit_codes: strings(&["top", "side"]),
                 ad_unit_count: Some(0),
                 timeout: Some(900.0),
+                released_at: released[1],
             },
         ]
     );
+    // The replayed call is known from the moment Prebid went on with it; no
+    // hook of this page holds a call back.
+    assert_eq!(released[0], Some(asked[0].0));
+    let held_ms = released[1].expect("let through") - asked[1].0;
+    assert!((0.0..50.0).contains(&held_ms), "{held_ms}");
     assert_eq!(
         kinds(&capture, "adUnitsAdded"),
         [
@@ -840,12 +864,7 @@ async fn what_the_page_asks_prebid_for_is_reported_and_the_call_goes_on_as_made(
     );
     assert!(kinds(&capture, "auctionInit").is_empty());
     // The first request is timed when it happened, not when it was replayed.
-    let times: Vec<f64> = capture
-        .events
-        .iter()
-        .filter(|event| matches!(event.kind, Kind::BidsRequested { .. }))
-        .map(|event| event.t)
-        .collect();
+    let times: Vec<f64> = asked.iter().map(|(t, _)| *t).collect();
     assert!(times[0] < 300.0 && times[1] >= 600.0, "{times:?}");
 
     // Both calls reached Prebid once each, with the arguments and the
@@ -857,4 +876,96 @@ async fn what_the_page_asks_prebid_for_is_reported_and_the_call_goes_on_as_made(
         .collect();
     let as_made = r#"this=true {"adUnitCodes":["top","side"],"adUnits":[],"timeout":900}"#;
     assert_eq!(made, [as_made, as_made]);
+}
+
+/// Prebid's consent management holds `requestBids` until consent is given
+/// (here at 1.5 s). The call is still timed when the page made it, and the
+/// moment Prebid went on with it is recorded beside it.
+#[tokio::test]
+async fn a_bid_request_held_for_consent_is_timed_by_the_call_and_by_its_release() {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(
+        &fixtures.url("prebid-consent-wait.html"),
+        DeviceProfile::Desktop,
+    );
+    request.visitor = VisitorBehavior::None;
+    request.observe_seconds = 4;
+    let capture = support::capture_ok(request).await;
+
+    let asked: Vec<(f64, Option<f64>)> = bids_requested(&capture)
+        .into_iter()
+        .map(|(t, kind)| match kind {
+            Kind::BidsRequested {
+                ad_unit_codes,
+                ad_unit_count,
+                timeout,
+                released_at,
+            } => {
+                assert_eq!(
+                    (ad_unit_codes, *ad_unit_count, *timeout),
+                    (&strings(&["top"]), Some(1), Some(900.0))
+                );
+                (t, *released_at)
+            }
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    let auctions: Vec<f64> = capture
+        .events
+        .iter()
+        .filter(|event| matches!(event.kind, Kind::AuctionInit { .. }))
+        .map(|event| event.t)
+        .collect();
+    assert_eq!(auctions.len(), 2, "{auctions:?}");
+
+    // Made at 0.4 s, before consent; let through with consent at 1.5 s, and
+    // the auction starts then.
+    let (called, released) = (asked[0].0, asked[0].1.expect("let through"));
+    assert!((400.0..1_000.0).contains(&called), "{asked:?}");
+    assert!(
+        released >= 1_500.0 && released - called >= 1_000.0,
+        "{asked:?}"
+    );
+    assert!(
+        (auctions[0] - released).abs() < 50.0,
+        "{auctions:?} {asked:?}"
+    );
+    // Made at 2.5 s, after consent: let through at once.
+    let (called, released) = (asked[1].0, asked[1].1.expect("let through"));
+    assert!(called >= 2_500.0 && released - called < 50.0, "{asked:?}");
+    assert!(
+        (auctions[1] - released).abs() < 50.0,
+        "{auctions:?} {asked:?}"
+    );
+}
+
+/// Consent that never comes: the call is reported at the end of the visit,
+/// timed when it was made, as not let through.
+#[tokio::test]
+async fn a_bid_request_still_held_when_the_visit_ends_is_reported_as_held() {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(
+        &format!("{}?consent=never", fixtures.url("prebid-consent-wait.html")),
+        DeviceProfile::Desktop,
+    );
+    request.visitor = VisitorBehavior::None;
+    request.observe_seconds = 4;
+    let capture = support::capture_ok(request).await;
+
+    let asked: Vec<(f64, Option<f64>)> = bids_requested(&capture)
+        .into_iter()
+        .map(|(t, kind)| match kind {
+            Kind::BidsRequested { released_at, .. } => (t, *released_at),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!((400.0..1_000.0).contains(&asked[0].0), "{asked:?}");
+    assert!(asked[1].0 >= 2_500.0, "{asked:?}");
+    assert!(
+        asked.iter().all(|(_, released)| released.is_none()),
+        "{asked:?}"
+    );
+    assert!(kinds(&capture, "auctionInit").is_empty());
 }

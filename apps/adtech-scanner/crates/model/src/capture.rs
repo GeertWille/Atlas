@@ -479,6 +479,11 @@ pub enum TrackerEventKind {
     /// auction followed. Reported from Prebid's own hook on that call, or
     /// from its event history for calls made before the tracker subscribed
     /// (then without the details).
+    ///
+    /// `t` is when the page made the call: the tracker's hook runs ahead of
+    /// every hook of Prebid's modules. For a call taken from Prebid's event
+    /// history, or one made before the tracker hooked in, the moment of the
+    /// call is not known and `t` is `released_at`.
     BidsRequested {
         /// The ad unit codes the call named; empty when it named none or
         /// they are not known.
@@ -490,6 +495,13 @@ pub enum TrackerEventKind {
         ad_unit_count: Option<u32>,
         #[serde(default)]
         timeout: Option<f64>,
+        /// When Prebid went on with the call, after the hooks of its modules
+        /// (consent management and currency hold it until consent or the
+        /// rates are there), in ms into the page view like `t`. Any auction
+        /// starts from here. `None` when the call was still held when the
+        /// page view's recording ended.
+        #[serde(default)]
+        released_at: Option<f64>,
     },
     /// `addAdUnits` was called; `registered` is how many ad units Prebid
     /// holds afterwards (`None` when read from the event history).
@@ -877,8 +889,12 @@ pub struct NetworkInitiator {
     /// 0-based, as CDP reports it (parser initiators).
     pub line: Option<u32>,
     pub column: Option<u32>,
-    /// Innermost first, async parents appended, at most
-    /// [`MAX_INITIATOR_FRAMES`].
+    /// The synchronous call stack that made the request, innermost first,
+    /// at most [`MAX_INITIATOR_FRAMES`]. Async parents (the code that
+    /// scheduled a timer, promise or event handler) would follow it, but
+    /// Chrome only reports them once `Debugger.setAsyncCallStackDepth` is
+    /// set, and the scanner does not set it (planned in ticket #29). So a
+    /// request made from a callback ends at the callback.
     pub stack: Vec<InitiatorFrame>,
 }
 

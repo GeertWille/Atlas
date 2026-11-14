@@ -82,10 +82,14 @@
     } catch (ignored) {}
   }
 
+  function tenths(ms) {
+    return Math.round(ms * 10) / 10;
+  }
+
   function emit(type, fields, at) {
     if (emitted >= MAX_EVENTS) return;
     emitted += 1;
-    var event = { t: Math.round((num(at) === null ? now() : at) * 10) / 10, type: type };
+    var event = { t: tenths(num(at) === null ? now() : at), type: type };
     for (var key in fields) event[key] = fields[key];
     queue.push(event);
     if (queue.length >= MAX_BATCH) {
@@ -96,8 +100,16 @@
     }
   }
 
-  win.addEventListener('__adscan_flush', flush);
-  win.addEventListener('pagehide', flush);
+  // What is held back until it is complete goes out as it stands when the
+  // scanner asks for everything, or the page goes away.
+  var beforeFinalFlush = [];
+  function flushEverything() {
+    for (var i = 0; i < beforeFinalFlush.length; i++) guard(beforeFinalFlush[i])();
+    flush();
+  }
+
+  win.addEventListener('__adscan_flush', flushEverything);
+  win.addEventListener('pagehide', flushEverything);
 
   // ------------------------------------------------------------------ values
 
@@ -362,6 +374,16 @@
     guard(watchBidRequests)(instance);
   }
 
+  // Prebid's hooks (fun-hooks) run the highest priority first; its default
+  // is 10, consentManagement and currency hook `requestBids` at 50, debugging
+  // at 99 and percentInView at 100. A hook ahead of all of them sees the call
+  // when the page makes it; one behind all of them sees when Prebid goes on
+  // with it, after whatever its modules waited for (consent, currency rates).
+  var FIRST_HOOK_PRIORITY = 1e6;
+  var LAST_HOOK_PRIORITY = -1e6;
+  // Calls seen by the first hook and not yet by the last, oldest first.
+  var heldBidRequests = [];
+
   // What the page asks Prebid for is only in the arguments of `requestBids`;
   // the event Prebid emits for the call carries none. Prebid's own hook on
   // the function (the one its modules use) shows them. The call goes on
@@ -370,9 +392,13 @@
     var request = instance.requestBids;
     if (typeof request !== 'function' || typeof request.before !== 'function') return;
     request.before(function (next, options) {
-      guard(reportBidsRequested)(instance, options);
+      guard(holdBidsRequested)(instance, options);
       return next.apply(this, Array.prototype.slice.call(arguments, 1));
-    });
+    }, FIRST_HOOK_PRIORITY);
+    request.before(function (next, options) {
+      guard(releaseBidsRequested)(instance, options);
+      return next.apply(this, Array.prototype.slice.call(arguments, 1));
+    }, LAST_HOOK_PRIORITY);
     watchedRequests.add(instance);
   }
 
@@ -380,19 +406,68 @@
     return isArray(instance.adUnits) ? instance.adUnits.length : null;
   }
 
-  function reportBidsRequested(instance, options) {
+  function bidsRequestedFields(instance, options) {
     var asked = options || {};
     var codes = [];
     for (var i = 0; isArray(asked.adUnitCodes) && i < asked.adUnitCodes.length && i < MAX_LIST; i++) {
       pushUnique(codes, str(asked.adUnitCodes[i]));
     }
-    emit('bidsRequested', {
+    return {
       adUnitCodes: codes,
       // Ad units passed with the call replace the registered ones.
       adUnitCount: isArray(asked.adUnits) ? asked.adUnits.length : registeredAdUnits(instance),
       timeout: num(asked.timeout),
+      releasedAt: null,
+    };
+  }
+
+  function holdBidsRequested(instance, options) {
+    heldBidRequests.push({
+      instance: instance,
+      options: options,
+      at: now(),
+      fields: bidsRequestedFields(instance, options),
+      reported: false,
     });
   }
+
+  // Hooks pass the call's options object on, so it names the call; a hook
+  // that passed another one on still releases the instance's oldest call.
+  function releaseBidsRequested(instance, options) {
+    var found = -1;
+    for (var i = 0; i < heldBidRequests.length; i++) {
+      var candidate = heldBidRequests[i];
+      if (candidate.instance !== instance) continue;
+      if (candidate.options === options) {
+        found = i;
+        break;
+      }
+      if (found < 0 && !candidate.reported) found = i;
+    }
+    var releasedAt = now();
+    if (found < 0) {
+      // The call was made before the tracker hooked in.
+      var fields = bidsRequestedFields(instance, options);
+      fields.releasedAt = tenths(releasedAt);
+      emit('bidsRequested', fields, releasedAt);
+      return;
+    }
+    var held = heldBidRequests.splice(found, 1)[0];
+    // Reported as still held when the page went away: once is enough.
+    if (held.reported) return;
+    held.fields.releasedAt = tenths(releasedAt);
+    emit('bidsRequested', held.fields, held.at);
+  }
+
+  function reportHeldBidRequests() {
+    for (var i = 0; i < heldBidRequests.length; i++) {
+      var held = heldBidRequests[i];
+      if (held.reported) continue;
+      held.reported = true;
+      emit('bidsRequested', held.fields, held.at);
+    }
+  }
+  beforeFinalFlush.push(reportHeldBidRequests);
 
   function moduleNames(modules) {
     var names = [];
@@ -414,10 +489,17 @@
     switch (eventType) {
       case 'requestBids':
         if (live && watchedRequests.has(instance)) break;
+        // Prebid emits this as it goes on with the call, after its hooks.
+        var releasedAt = live ? now() : at;
         emit(
           'bidsRequested',
-          { adUnitCodes: [], adUnitCount: live ? registeredAdUnits(instance) : null, timeout: null },
-          at
+          {
+            adUnitCodes: [],
+            adUnitCount: live ? registeredAdUnits(instance) : null,
+            timeout: null,
+            releasedAt: tenths(releasedAt),
+          },
+          releasedAt
         );
         break;
       case 'addAdUnits':

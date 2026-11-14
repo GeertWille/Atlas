@@ -379,6 +379,84 @@ async fn an_exchange_that_is_down_is_judged_from_the_kept_copy_and_the_check_say
     );
 }
 
+/// An exchange that answers, with something that is not a sellers.json,
+/// was reached: the check read from the kept copy says it answered.
+#[tokio::test]
+async fn an_exchange_that_answers_with_a_web_page_is_judged_from_the_kept_copy_and_the_check_says_it_answered()
+ {
+    const PAGE: &str = "<!DOCTYPE html><html><body>Checking your browser</body></html>";
+    let harness = harness_for(healthy());
+    for exchange in ["appnexus.com", "rubiconproject.com"] {
+        harness.files.answer(
+            &format!("https://{exchange}/sellers.json"),
+            sellers_of_the_site(),
+        );
+    }
+    run_scan(&harness, scan_options(false)).await;
+
+    // Two days pass, and appnexus answers with a challenge page.
+    let cache = harness.data_dir.path().join("cache/sellers-json");
+    let two_days_ago = 1_000.0
+        * (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - 2.0 * 24.0 * 3_600.0);
+    for entry in std::fs::read_dir(&cache).unwrap() {
+        let path = entry.unwrap().path();
+        if path.to_str().unwrap().ends_with(".meta.json") {
+            let mut meta: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            meta["fetchedAt"] = json!(two_days_ago);
+            std::fs::write(&path, meta.to_string()).unwrap();
+        }
+    }
+    harness
+        .files
+        .answer("https://appnexus.com/sellers.json", text_file(200, PAGE));
+    let fetched_on = adscan_engine::domain::diagnostics::sellers_cache::utc_day(two_days_ago);
+
+    let detail = run_scan(&harness, scan_options(false)).await;
+
+    let appnexus: Vec<(DiagnosticStatus, &str)> = detail
+        .bidder_diagnostics
+        .as_ref()
+        .unwrap()
+        .bidders
+        .iter()
+        .find(|bidder| bidder.bidder == "appnexus")
+        .unwrap()
+        .checks
+        .iter()
+        .filter(|check| check.area == DiagnosticArea::SellersJson)
+        .map(|check| (check.status, check.summary.as_str()))
+        .collect();
+    assert_eq!(
+        appnexus,
+        [(
+            DiagnosticStatus::Pass,
+            format!(
+                "Seller id 958 is listed in the sellers.json of appnexus.com (from a copy fetched {fetched_on}: the exchange answered during this scan, but not with a valid sellers.json)"
+            )
+            .as_str()
+        )]
+    );
+    assert!(
+        !appnexus[0].1.contains("could not be reached"),
+        "{appnexus:?}"
+    );
+    assert_eq!(
+        lookup_lines(&harness, &detail).await,
+        [
+            format!(
+                "sellers.json of appnexus.com: 1 of the seller ids found (the exchange's answer was not a valid sellers.json: kept copy, fetched {fetched_on})"
+            ),
+            "sellers.json of rubiconproject.com: 1 of the seller ids found (downloaded)"
+                .to_string(),
+        ]
+    );
+}
+
 /// A page served with status 200 where the file should be says nothing about
 /// the site's seller id: the check is "could not be read", never "not listed".
 #[tokio::test]

@@ -21,7 +21,7 @@ use crate::domain::diagnostics::ads_txt::{self, AdsTxt, AdsTxtOutcome};
 use crate::domain::diagnostics::sellers_cache::utc_day;
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
 use crate::domain::diagnostics::site::{AdsTxtLocation, ads_txt_location, subdomain_ads_txt_url};
-use crate::domain::diagnostics::{self, SellersLookup, SiteFiles};
+use crate::domain::diagnostics::{self, CopyStoodIn, KeptCopy, SellersLookup, SiteFiles};
 use crate::domain::scan::ResolvedBrowser;
 
 /// Far above any real ads.txt; the largest in the wild are a few hundred KB.
@@ -195,9 +195,8 @@ async fn fetch_ads_txt(
 #[derive(Default)]
 struct SellersRead {
     outcomes: BTreeMap<String, SellersOutcome>,
-    /// The day the copy was fetched, where a kept one stood in for an
-    /// exchange that could not be reached.
-    copies: BTreeMap<String, String>,
+    /// Where a kept copy stood in for the exchange's answer.
+    copies: BTreeMap<String, KeptCopy>,
 }
 
 /// Reads the sellers.json of every ad system whose seller ids need a lookup,
@@ -243,6 +242,10 @@ async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<Selle
                 "the exchange could not be reached: kept copy, fetched {}",
                 utc_day(fetched_at)
             ),
+            Origin::KeptOverUnreadableAnswer { fetched_at } => format!(
+                "the exchange's answer was not a valid sellers.json: kept copy, fetched {}",
+                utc_day(fetched_at)
+            ),
         };
         let message = match (&outcome, origin) {
             (SellersOutcome::Read(sellers), _) => format!(
@@ -259,8 +262,23 @@ async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<Selle
             }
         };
         run.info(message).await?;
-        if let Origin::KeptWhileUnreachable { fetched_at } = origin {
-            read.copies.insert(domain.clone(), utc_day(fetched_at));
+        let stood_in = match origin {
+            Origin::KeptWhileUnreachable { fetched_at } => {
+                Some((fetched_at, CopyStoodIn::ExchangeUnreachable))
+            }
+            Origin::KeptOverUnreadableAnswer { fetched_at } => {
+                Some((fetched_at, CopyStoodIn::AnswerNotSellersJson))
+            }
+            Origin::Downloaded | Origin::Confirmed | Origin::Kept { .. } => None,
+        };
+        if let Some((fetched_at, because)) = stood_in {
+            read.copies.insert(
+                domain.clone(),
+                KeptCopy {
+                    fetched_on: utc_day(fetched_at),
+                    because,
+                },
+            );
         }
         read.outcomes.insert(domain, outcome);
     }
