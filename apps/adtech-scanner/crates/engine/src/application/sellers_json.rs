@@ -21,10 +21,11 @@ use super::ports::{
     CachedSellersJson, Clock, FetchError, FetchProxy, PublicFile, PublicFileFetcher,
     PublicFileRequest, SellersJsonCache,
 };
+use crate::domain::diagnostics::identity::BrowserIdentity;
 use crate::domain::diagnostics::sellers_cache::{
     MAX_FILE_BYTES, Standing, is_passing_trouble, standing,
 };
-use crate::domain::diagnostics::sellers_json::check_readable;
+use crate::domain::diagnostics::sellers_json::{check_readable, is_web_page};
 use crate::domain::diagnostics::site::sellers_json_url;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -98,10 +99,12 @@ impl SellersJsonSource {
         }
     }
 
-    /// The sellers.json of the exchange with this ad system domain.
+    /// The sellers.json of the exchange with this ad system domain, asked
+    /// for as `identity` would ask.
     pub async fn read(
         &self,
         domain: &str,
+        identity: &BrowserIdentity,
         cancel: &CancellationToken,
     ) -> Result<SellersJsonFile, Cancelled> {
         let Some(url) = sellers_json_url(domain) else {
@@ -164,6 +167,7 @@ impl SellersJsonSource {
                 .as_ref()
                 .map(|(_, _, version)| version.clone())
                 .filter(|version| version.is_stated()),
+            identity: identity.clone(),
         };
         let answer = match self.files.fetch(&request, cancel).await {
             // Nothing is kept of a lookup that was called off.
@@ -181,6 +185,19 @@ impl SellersJsonSource {
                     origin: Origin::Confirmed,
                 });
             }
+            (Ok(answer), kept_file)
+                if (200..300).contains(&answer.status)
+                    && is_web_page(answer.content_type.as_deref(), &answer.body) =>
+            {
+                (
+                    (
+                        "the site refused the request: it answered with a web page instead of the file"
+                            .to_string(),
+                        Some(PassingTrouble::UnreadableAnswer),
+                    ),
+                    kept_file,
+                )
+            }
             (Ok(answer), kept_file) if (200..300).contains(&answer.status) => {
                 match readable(answer.body).await {
                     Ok(body) => {
@@ -195,7 +212,11 @@ impl SellersJsonSource {
             }
             (Ok(answer), kept_file) => (
                 (
-                    format!("the exchange answered HTTP {}", answer.status),
+                    if matches!(answer.status, 401 | 403) {
+                        format!("the site refused the request (HTTP {})", answer.status)
+                    } else {
+                        format!("the exchange answered HTTP {}", answer.status)
+                    },
                     is_passing_trouble(answer.status).then_some(PassingTrouble::Unreachable),
                 ),
                 kept_file,

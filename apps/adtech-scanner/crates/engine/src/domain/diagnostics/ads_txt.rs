@@ -75,6 +75,11 @@ pub fn read_response(status: u16, content_type: Option<&str>, body: &[u8]) -> Ad
     match status {
         404 | 410 => return AdsTxtOutcome::Missing,
         200..=299 => {}
+        401 | 403 => {
+            return AdsTxtOutcome::Unreadable(format!(
+                "the site refused the request (HTTP {status})"
+            ));
+        }
         other => return AdsTxtOutcome::Unreadable(format!("the site answered HTTP {other}")),
     }
     // Compressed or otherwise binary data would parse as nothing but invalid lines.
@@ -532,10 +537,16 @@ placeholder.example.com, placeholder, DIRECT, placeholder\r\n";
             AdsTxtOutcome::Missing
         );
         assert_eq!(read_response(410, None, b""), AdsTxtOutcome::Missing);
-        for status in [401, 403, 429, 500, 503] {
+        for status in [429, 500, 503] {
             assert_eq!(
                 read_response(status, Some("text/plain"), file),
                 AdsTxtOutcome::Unreadable(format!("the site answered HTTP {status}")),
+            );
+        }
+        for status in [401, 403] {
+            assert_eq!(
+                read_response(status, Some("text/html"), b"<html>Blocked"),
+                AdsTxtOutcome::Unreadable(format!("the site refused the request (HTTP {status})")),
             );
         }
         let web_page = AdsTxtOutcome::Unreadable(

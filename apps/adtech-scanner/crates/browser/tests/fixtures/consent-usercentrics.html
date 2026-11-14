@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: Usercentrics, as its two generations draw it</title><link rel="icon" href="data:,"></head>
+<body>
+<p>Ein Baumarkt.</p>
+<script>
+// `version=3` is the structure seen on obi.de, `version=2` the one seen on
+// o2online.de: the dialog is drawn in an open shadow tree, positioned fixed,
+// while the host element itself has no height. `version=empty` is the host
+// as usercentrics.com serves it where it asks nothing (from the US): laid
+// out, with nothing in it.
+var version = new URLSearchParams(location.search).get('version');
+var markup = {
+  '3': '<div id="uc-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,.4)"></div>' +
+    '<div class="cmp-wrapper cmp first center desktop wall" style="position:fixed;left:400px;top:90px;width:625px;height:520px;background:#fff">' +
+    '<div id="uc-main-dialog" role="dialog" style="height:100%"><p>Wir verwenden Cookies.</p>' +
+    '<button id="more" class="more uc-more-button" data-action-type="more">Einstellungen</button>' +
+    '<button id="deny" class="deny uc-deny-button" data-action-type="deny">Optionale ablehnen</button>' +
+    '<button id="accept" class="accept uc-accept-button" data-action-type="accept">Alle akzeptieren</button>' +
+    '</div></div>',
+  '2': '<div data-testid="uc-app-container">' +
+    '<div id="uc-center-container" data-testid="uc-default-wall" style="position:fixed;left:400px;top:90px;width:625px;height:560px;background:#fff">' +
+    '<p>Wir verwenden Cookies.</p>' +
+    '<button data-testid="uc-deny-all-button" data-does="deny">Verweigern</button>' +
+    '<button data-testid="uc-accept-all-button" data-does="accept">Akzeptieren</button>' +
+    '</div></div>',
+  'empty': '',
+}[version];
+var host = document.createElement(version === '2' ? 'div' : 'aside');
+host.id = version === '2' ? 'usercentrics-root' : 'usercentrics-cmp-ui';
+var root = host.attachShadow({ mode: 'open' });
+root.innerHTML = markup;
+setTimeout(function () {
+  document.body.appendChild(host);
+  root.querySelectorAll('button').forEach(function (button) {
+    button.addEventListener('click', function (event) {
+      var accepted = button.id === 'accept' || button.getAttribute('data-does') === 'accept';
+      if (!accepted) return console.log('WRONG ' + button.textContent);
+      root.innerHTML = '';
+      console.log('CONSENT accepted trusted=' + event.isTrusted);
+    });
+  });
+}, 300);
+</script>
+</body></html>

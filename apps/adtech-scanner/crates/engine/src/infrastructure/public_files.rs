@@ -28,8 +28,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use reqwest::StatusCode;
 use reqwest::header::{
-    ACCEPT, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, IF_MODIFIED_SINCE, IF_NONE_MATCH,
-    LAST_MODIFIED, LOCATION, USER_AGENT,
+    ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, ETAG, HeaderMap, HeaderName, IF_MODIFIED_SINCE,
+    IF_NONE_MATCH, LAST_MODIFIED, LOCATION, USER_AGENT,
 };
 use reqwest::redirect::Policy;
 use tokio_util::sync::CancellationToken;
@@ -41,9 +41,9 @@ use adscan_model::{CaptureProxy, ProxyScheme};
 use crate::application::ports::{
     FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
+use crate::domain::diagnostics::identity::BROWSER_ACCEPT;
 use crate::domain::diagnostics::site::{RedirectScope, is_loopback};
 
-const CLIENT_NAME: &str = concat!("adtech-scanner/", env!("CARGO_PKG_VERSION"));
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 const HTTPS_PORT: u16 = 443;
 
@@ -73,8 +73,11 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
         let route = admit(&url, request.loopback_origin.as_deref()).await?;
         let mut asked = client(&url, &route, &request.proxy)?
             .get(url.clone())
-            .header(USER_AGENT, CLIENT_NAME)
-            .header(ACCEPT, "text/plain, application/json;q=0.9, */*;q=0.1");
+            // As the scan's browser would ask, opening the address in a tab:
+            // sites refuse clients they do not know.
+            .header(USER_AGENT, &request.identity.user_agent)
+            .header(ACCEPT, BROWSER_ACCEPT)
+            .header(ACCEPT_LANGUAGE, &request.identity.accept_language);
         // Sent on every hop: the version was stated by whichever address
         // answered in the end, and a server ignores one it does not know.
         let known = request.known_version.as_ref();

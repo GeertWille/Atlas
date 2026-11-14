@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 use tokio::time::Instant;
 use url::Url;
 
+use super::consent::Accepted;
 use super::error::CaptureError;
 use super::injected::{hit_test_expression, page_facts_expression};
 use super::navigation::{NavigationFailure, host_of, http_failure, network_failure};
@@ -178,7 +179,7 @@ impl Consent {
             return Ok(false);
         }
         self.attempts += 1;
-        let Some(banner) = page.accept_consent().await? else {
+        let Some(Accepted { banner, label }) = page.accept_consent().await? else {
             return Ok(false);
         };
         self.wanted = false;
@@ -186,8 +187,8 @@ impl Consent {
         page.recorder.pages.consent_clicked(clicked_at);
         report_action(
             page,
-            format!("Accepted the consent banner ({banner})"),
-            json!({ "action": "consent", "target": banner }),
+            format!("Accepted the consent banner ({banner}): pressed \"{label}\""),
+            json!({ "action": "consent", "target": banner, "label": label }),
         );
         Ok(true)
     }

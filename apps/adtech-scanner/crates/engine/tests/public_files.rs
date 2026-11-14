@@ -8,6 +8,7 @@ use adscan_engine::application::ports::{
     FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
 use adscan_engine::domain::diagnostics::ads_txt::{self, AdsTxtOutcome};
+use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_model::{CaptureProxy, ProxyScheme};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,6 +33,7 @@ fn request(server: &MockServer, file: &str) -> PublicFileRequest {
         loopback_origin: Some(server.uri()),
         proxy: system_proxy(),
         known_version: None,
+        identity: BrowserIdentity::default(),
     }
 }
 
@@ -89,8 +91,13 @@ async fn a_file_is_read_with_its_status_and_content_type() {
             .get(name)
             .map(|value| value.to_str().unwrap().to_string())
     };
-    assert!(header("user-agent").unwrap().starts_with("adtech-scanner/"));
-    assert!(header("accept").unwrap().starts_with("text/plain"));
+    // It asks as a person's browser would: sites refuse clients they do
+    // not know.
+    let agent = header("user-agent").unwrap();
+    assert!(agent.starts_with("Mozilla/5.0 ("), "{agent}");
+    assert!(!agent.contains("adtech-scanner"), "{agent}");
+    assert!(header("accept").unwrap().starts_with("text/html,"));
+    assert_eq!(header("accept-language").as_deref(), Some("en-US,en;q=0.9"));
     assert_eq!(header("cookie"), None);
     assert_eq!(header("authorization"), None);
     assert_eq!(header("referer"), None);
@@ -251,6 +258,107 @@ async fn a_web_page_served_as_the_file_is_fetched_but_not_read_as_ads_txt() {
         ads_txt::read_response(typeless.status, typeless.content_type.as_deref(), &typeless.body),
         AdsTxtOutcome::Found(file) if file.records.len() == 2
     ));
+}
+
+/// A firewall that sends clients it does not know to a block page, as
+/// `www.mediaimpact.de` does with its sellers.json: the request presents
+/// itself as the scan's browser, or as a desktop Chrome when there is none.
+#[tokio::test]
+async fn files_are_asked_for_as_a_browser_and_a_block_page_is_never_a_file() {
+    const BLOCKED: &str = "/RUNCLOUD-8G-WAF-BLOCKED";
+    const SELLERS: &str = r#"{"sellers":[{"seller_id":"958","seller_type":"PUBLISHER"}]}"#;
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/sellers.json"))
+        .and(|asked: &wiremock::Request| {
+            let sent = |name: &str| {
+                asked
+                    .headers
+                    .get(name)
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let agent = sent("user-agent");
+            agent.starts_with("Mozilla/5.0 (")
+                && agent.contains(" Chrome/")
+                && !agent.contains("adtech-scanner")
+                && sent("accept-language") == "nl-BE,nl;q=0.9"
+        })
+        .respond_with(ResponseTemplate::new(200).set_body_raw(SELLERS, "application/json"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/sellers.json"))
+        .respond_with(redirect(302, BLOCKED))
+        .mount(&server)
+        .await;
+    serve(
+        &server,
+        BLOCKED,
+        ResponseTemplate::new(200).set_body_raw(
+            "<!DOCTYPE html><html><body>Blocked by the firewall</body></html>",
+            "text/html; charset=UTF-8",
+        ),
+    )
+    .await;
+
+    let as_the_scan = PublicFileRequest {
+        identity: BrowserIdentity::of_scan(
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
+            Some("nl-BE"),
+        ),
+        ..request(&server, "/sellers.json")
+    };
+    let file = fetch(&as_the_scan).await.unwrap();
+    assert_eq!(
+        (file.status, file.body.as_slice()),
+        (200, SELLERS.as_bytes())
+    );
+    let asked = &server.received_requests().await.unwrap()[0];
+    let sent = |name: &str| {
+        asked
+            .headers
+            .get(name)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(
+        !sent("user-agent").contains("Headless"),
+        "{}",
+        sent("user-agent")
+    );
+    assert!(
+        sent("accept").starts_with("text/html,"),
+        "{}",
+        sent("accept")
+    );
+
+    // The fallback is a browser too, in another language: this firewall
+    // wants Dutch, and sends it to the block page, which is no file.
+    let page = fetch(&request(&server, "/sellers.json")).await.unwrap();
+    let asked = server.received_requests().await.unwrap();
+    let fallback = asked[1]
+        .headers
+        .get("user-agent")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        fallback.starts_with("Mozilla/5.0 (Macintosh;"),
+        "{fallback}"
+    );
+    assert!(!fallback.contains("adtech-scanner"), "{fallback}");
+    assert_eq!(page.final_url, format!("{}{BLOCKED}", server.uri()));
+    assert!(
+        adscan_engine::domain::diagnostics::sellers_json::is_web_page(
+            page.content_type.as_deref(),
+            &page.body
+        )
+    );
+    assert!(adscan_engine::domain::diagnostics::sellers_json::check_readable(&page.body).is_err());
 }
 
 #[tokio::test]
@@ -520,6 +628,7 @@ async fn an_unreachable_server_is_a_network_error_in_plain_words() {
         loopback_origin: Some(origin),
         proxy: system_proxy(),
         known_version: None,
+        identity: BrowserIdentity::default(),
     };
     assert_eq!(
         fetch(&gone).await,
@@ -573,6 +682,7 @@ async fn a_public_file_is_requested_through_the_scans_proxy_with_its_credentials
         loopback_origin: None,
         proxy: through_proxy(port, Some("scanner"), Some("s3cret")),
         known_version: None,
+        identity: BrowserIdentity::default(),
     };
     // The proxy refuses the tunnel; what matters is what it was asked.
     assert!(matches!(fetch(&request).await, Err(FetchError::Network(_))));
@@ -637,6 +747,7 @@ async fn the_address_checks_hold_whatever_the_proxy() {
                 loopback_origin: None,
                 proxy: proxy.clone(),
                 known_version: None,
+                identity: BrowserIdentity::default(),
             };
             assert_eq!(
                 refusal(fetch(&request).await),

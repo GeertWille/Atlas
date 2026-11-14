@@ -211,7 +211,11 @@ impl Page {
         let expression = consent_expression(ConsentAsk::Look);
         let mut asked = Vec::new();
         let mut looks = Vec::new();
-        for (index, (frame, world)) in frames.iter().zip(worlds.as_array().into_iter().flatten()).enumerate() {
+        for (index, (frame, world)) in frames
+            .iter()
+            .zip(worlds.as_array().into_iter().flatten())
+            .enumerate()
+        {
             let Some(context) = world["executionContextId"].as_u64() else {
                 continue;
             };
@@ -229,7 +233,10 @@ impl Page {
         }
         let looks = self.record_until_answered(all_answered(looks)).await?;
         let mut sightings = vec![None; frames.len()];
-        for (index, look) in asked.into_iter().zip(looks.as_array().into_iter().flatten()) {
+        for (index, look) in asked
+            .into_iter()
+            .zip(looks.as_array().into_iter().flatten())
+        {
             sightings[index] = serde_json::from_value(look["result"]["value"].clone()).ok();
         }
         Ok(sightings)
@@ -419,9 +426,12 @@ mod tests {
     fn what_a_frame_reports_is_an_accept_control_a_bare_dialog_or_nothing() {
         let parse = |reported: Value| serde_json::from_value::<Sighting>(reported).ok();
         assert_eq!(
-            parse(json!({ "name": "Sourcepoint", "x": 120.5, "y": 80 })),
+            parse(
+                json!({ "name": "Sourcepoint", "label": "alle akzeptieren", "x": 120.5, "y": 80 })
+            ),
             Some(Sighting::Accept {
                 name: "Sourcepoint".into(),
+                label: "alle akzeptieren".into(),
                 x: Some(120.5),
                 y: Some(80.0)
             })
@@ -430,6 +440,7 @@ mod tests {
             parse(json!({ "name": "OneTrust", "x": null, "y": null })),
             Some(Sighting::Accept {
                 name: "OneTrust".into(),
+                label: String::new(),
                 x: None,
                 y: None
             })

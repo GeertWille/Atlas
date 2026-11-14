@@ -1322,7 +1322,13 @@ async fn a_page_that_leaves_its_site_while_the_scan_settles_on_it_is_still_scann
                     &fixtures.url(&format!("network-leaves-at-once.html?after={after}")),
                     DeviceProfile::Desktop,
                 );
-                request.observe_seconds = 2;
+                // What the other site saw is told by its page, which the
+                // scan neither records nor waits for: the visit must last
+                // until that page has run its first script. 2 s after the
+                // load event were too short with eight visits beside the
+                // rest of the suite (the leave was recorded, the other
+                // page's report never came, about 1 run in 30).
+                request.observe_seconds = 5;
                 let outcome = support::run(request).await;
                 let capture = outcome.result.unwrap_or_else(|error| {
                     panic!("leaving after {after} ms: {error}\n{:#?}", outcome.progress)

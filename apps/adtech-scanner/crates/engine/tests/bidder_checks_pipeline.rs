@@ -103,6 +103,14 @@ async fn a_scan_reads_the_sites_ads_txt_and_stores_what_it_concluded() {
         ),
         (SITE_ADS_TXT_URL, 1024 * 1024, Duration::from_secs(10), None)
     );
+    // Asked for as the scan's browser, not under the app's own name.
+    assert_eq!(
+        (
+            requests[0].identity.user_agent.as_str(),
+            requests[0].identity.accept_language.as_str()
+        ),
+        ("Mozilla/5.0 (Macintosh)", "en-US,en;q=0.9")
+    );
 
     let diagnostics = detail.bidder_diagnostics.as_ref().expect("the checks ran");
     assert_eq!(
@@ -489,7 +497,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
         [
             (
                 DiagnosticStatus::NotChecked,
-                "The sellers.json of appnexus.com could not be read: the file is not valid sellers.json (expected value at line 1 column 1)"
+                "The sellers.json of appnexus.com could not be read: the site refused the request: it answered with a web page instead of the file"
             ),
             (
                 DiagnosticStatus::NotChecked,
@@ -500,7 +508,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
     assert_eq!(
         lookup_lines(&harness, &detail).await,
         [
-            "sellers.json of appnexus.com could not be read: the file is not valid sellers.json (expected value at line 1 column 1)",
+            "sellers.json of appnexus.com could not be read: the site refused the request: it answered with a web page instead of the file",
             "sellers.json of rubiconproject.com could not be read: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
         ]
     );
@@ -513,7 +521,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
     assert_eq!(
         lookup_lines(&harness, &again).await,
         [
-            "sellers.json of appnexus.com could not be read less than a minute ago: the file is not valid sellers.json (expected value at line 1 column 1)",
+            "sellers.json of appnexus.com could not be read less than a minute ago: the site refused the request: it answered with a web page instead of the file",
             "sellers.json of rubiconproject.com could not be read less than a minute ago: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
         ]
     );
@@ -562,7 +570,10 @@ async fn an_ads_txt_that_cannot_be_read_is_reported_as_such_and_proves_nothing()
             )),
             "the address was not contacted: only https addresses are read",
         ),
-        (text_file(403, "Forbidden"), "the site answered HTTP 403"),
+        (
+            text_file(403, "Forbidden"),
+            "the site refused the request (HTTP 403)",
+        ),
         (
             text_file(200, "<!doctype html><html>Checking your browser"),
             "the site answered with a web page instead of a text file",

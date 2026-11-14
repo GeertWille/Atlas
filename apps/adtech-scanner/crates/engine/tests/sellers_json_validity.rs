@@ -11,6 +11,7 @@ use adscan_engine::application::ports::{
     PublicFileRequest, SellersJsonCache,
 };
 use adscan_engine::application::sellers_json::{Origin, SellersJsonFile, SellersJsonSource};
+use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use async_trait::async_trait;
@@ -133,7 +134,11 @@ impl Fixture {
 
     async fn read(&self) -> SellersJsonFile {
         self.source
-            .read(EXCHANGE, &CancellationToken::new())
+            .read(
+                EXCHANGE,
+                &BrowserIdentity::default(),
+                &CancellationToken::new(),
+            )
             .await
             .unwrap()
     }
@@ -181,12 +186,21 @@ fn file(origin: Origin) -> SellersJsonFile {
     }
 }
 
-fn not_sellers_json(read: &SellersJsonFile) -> &str {
+/// The reason a lookup of `what` gives: a web page is the site refusing the
+/// request (a firewall's or challenge page), anything else a broken file.
+fn not_sellers_json<'a>(read: &'a SellersJsonFile, what: &str) -> &'a str {
     let reason = read.content.as_ref().unwrap_err();
-    assert!(
-        reason.starts_with("the file is not valid sellers.json ("),
-        "{reason}"
-    );
+    if what == "a web page" {
+        assert_eq!(
+            reason,
+            "the site refused the request: it answered with a web page instead of the file"
+        );
+    } else {
+        assert!(
+            reason.starts_with("the file is not valid sellers.json ("),
+            "{what}: {reason}"
+        );
+    }
     reason
 }
 
@@ -200,7 +214,7 @@ async fn an_unreadable_answer_is_a_failed_lookup_that_is_asked_again_after_an_ho
 
         let read = fixture.read().await;
         assert_eq!(read.origin, Origin::Downloaded, "{what}");
-        let reason = not_sellers_json(&read).to_string();
+        let reason = not_sellers_json(&read, what).to_string();
         // Kept as the note of a failed lookup, never as a file.
         let kept = fixture.kept().await;
         assert_eq!(kept.content, Err(reason.clone()), "{what}");
@@ -264,7 +278,7 @@ async fn an_unreadable_answer_never_replaces_an_older_copy_that_still_serves() {
         fixture.clock.advance(HOUR);
         let late = fixture.read().await;
         assert_eq!(late.origin, Origin::Downloaded, "{what}");
-        not_sellers_json(&late);
+        not_sellers_json(&late, what);
         assert_eq!(fixture.kept().await.content, late.content, "{what}");
     }
 }

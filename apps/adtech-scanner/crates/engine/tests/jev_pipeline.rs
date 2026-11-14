@@ -1178,6 +1178,68 @@ fn distinct_marks(text: &str, prefix: &str) -> usize {
         .len()
 }
 
+/// A script that does not parse keeps lines far longer than a reading-guide
+/// chunk may be. Jev is shown the first part of such a chunk, and the audit
+/// trail and the request say so: the cut is never silent.
+#[tokio::test]
+async fn a_chunk_cut_for_the_reading_guide_is_named_in_the_audit_trail_and_the_request() {
+    // Unbalanced, and without one `;`, `{` or `}`: one line of about 30,000
+    // characters after the fallback reflow.
+    let broken = format!(
+        "if ((window.adSlotReady && el.dataset.adunit {}",
+        " || window.lazyMark".repeat(1_500)
+    );
+    let length = broken.chars().count();
+    let claude = anthropic(None).await;
+    let jev = typesafe(|request| {
+        judged(request, |_, question| match question {
+            "publisher_specific" => 0.9,
+            _ => 0.3,
+        })
+    })
+    .await;
+    let page = page_with(&[("https://pub.example/js/broken.js", broken.as_str())]);
+    let harness = jev_harness(page, Some(&claude), &jev).await;
+
+    let detail = run_scan(&harness, scan_options(true)).await;
+    assert_eq!(detail.summary.status, ScanStatus::Completed);
+    assert!(script_record(&detail, "s6").analyzed);
+
+    let guide: Vec<Value> = judged_requests(&jev)
+        .await
+        .into_iter()
+        .filter(|request| question_count(request) == 8)
+        .filter(|request| request["state"]["script"]["url"] == "https://pub.example/js/broken.js")
+        .collect();
+    assert_eq!(guide.len(), 1, "one chunk: the one long line");
+    assert_eq!(
+        guide[0]["state"]["code"].as_str().unwrap().chars().count(),
+        8_000
+    );
+    assert_eq!(
+        guide[0]["state"]["script"]["cut"],
+        format!("the first 8000 of {length} characters")
+    );
+
+    let logs = harness.scans.logs(&detail.summary.id, None).await.unwrap();
+    let warning = logs
+        .iter()
+        .find(|entry| entry.message.contains("longer than 8000 characters"))
+        .expect("the cut is in the audit trail");
+    assert_eq!(warning.level, LogLevel::Warn);
+    assert!(
+        warning
+            .message
+            .starts_with("s6 https://pub.example/js/broken.js: 1 of its chunks"),
+        "{}",
+        warning.message
+    );
+    assert_eq!(
+        warning.data.as_ref().unwrap()["longestChars"],
+        json!(length)
+    );
+}
+
 #[tokio::test]
 async fn persisted_audit_trail_of_a_jev_scan_holds_bounded_excerpts_never_script_bodies() {
     const MARKS: usize = 2000;

@@ -47,6 +47,17 @@ pub fn find_sellers(json: &[u8], wanted: &[String]) -> Result<Vec<Seller>, Strin
         .map_err(|error| format!("the file is not valid sellers.json ({error})"))
 }
 
+/// Whether an answer is a web page (a firewall's block page, a challenge or
+/// an error page) rather than a file: announced as HTML, or markup however it
+/// is announced. No sellers.json starts with a tag.
+pub fn is_web_page(content_type: Option<&str>, body: &[u8]) -> bool {
+    let html = content_type
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/html"));
+    let body = body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body);
+    html || body.trim_ascii_start().starts_with(b"<")
+}
+
 /// Whether `json` is a sellers.json at all: what `find_sellers` can read,
 /// whichever ids are asked for. A web page, a soft 404, JSON without a
 /// `sellers` array and a file that was cut short are not.

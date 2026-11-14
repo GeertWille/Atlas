@@ -1,0 +1,30 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: the wall comes after the ad slots' frames</title><link rel="icon" href="data:,"></head>
+<body style="margin:0">
+<script>
+// An ad-heavy page: many frames come before the consent message's frame in
+// the frame tree, each holding a control the scanner must leave alone.
+var query = new URLSearchParams(location.search);
+for (var i = 0; i < 24; i++) {
+  var slot = document.createElement('iframe');
+  slot.srcdoc = '<button onclick="parent.postMessage(\'ad\', \'*\')">OK</button>';
+  slot.style.cssText = 'width:120px;height:40px;border:0';
+  document.body.appendChild(slot);
+}
+var container = document.createElement('div');
+container.id = 'sp_message_container_1127';
+container.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:2147483647';
+var frame = document.createElement('iframe');
+frame.id = 'sp_message_iframe_1127';
+frame.src = query.get('cmp') + 'consent-sourcepoint-message.html?shape=bild';
+frame.style.cssText = 'position:absolute;left:180px;top:90px;width:640px;height:420px;border:0;background:#fff';
+container.appendChild(frame);
+document.body.appendChild(container);
+addEventListener('message', function (event) {
+  if (event.data === 'ad') return console.log('WRONG ad');
+  if (!event.data || event.data.sp !== 'choice') return;
+  console.log('CHOICE ' + event.data.choice + ' trusted=' + event.data.trusted);
+  if (event.data.choice === 'accept-all') container.remove();
+});
+</script>
+</body></html>

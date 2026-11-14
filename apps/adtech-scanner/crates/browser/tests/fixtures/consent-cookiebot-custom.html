@@ -1,0 +1,33 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: a Cookiebot dialog in the publisher's own design</title><link rel="icon" href="data:,"></head>
+<body>
+<p>Nyheder.</p>
+<script>
+// The structure of a Danish broadcaster's dialog (seen on dr.dk): Cookiebot
+// runs it, but the dialog is the publisher's own markup, so none of
+// Cookiebot's control ids are there. Only the Danish labels say which
+// control accepts everything, and the one next to it accepts a selection.
+setTimeout(function () {
+  var cybot = document.createElement('div');
+  cybot.id = 'CybotCookiebotDialog';
+  cybot.style.cssText = 'position:fixed;left:0;right:0;bottom:0;height:4px';
+  document.body.appendChild(cybot);
+  var banner = document.createElement('div');
+  banner.id = 'drCookieDialogBanner';
+  banner.innerHTML =
+    '<div class="drCookieDialog"><div id="drCookieDialogBody"><div class="consentDialog__wrapper">' +
+    '<main class="consentDialog__text"><p>Vi bruger cookies.</p></main>' +
+    '<div class="submitButtons" style="text-transform:uppercase">' +
+    '<button class="drcc-button submitChosen" aria-label="Tillad udvalgte">Tillad udvalgte</button> ' +
+    '<button class="drcc-button submitAll" aria-label="Tillad alle">Tillad alle</button>' +
+    '</div></div></div></div>';
+  document.body.appendChild(banner);
+  banner.querySelector('.submitChosen').onclick = function () { console.log('WRONG selection'); };
+  banner.querySelector('.submitAll').onclick = function () {
+    banner.remove();
+    cybot.remove();
+    console.log('CONSENT accepted');
+  };
+}, 400);
+</script>
+</body></html>

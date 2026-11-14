@@ -139,6 +139,16 @@
     return [text, element.getAttribute('aria-label'), element.getAttribute('title')].map(normalized).filter(Boolean);
   }
 
+  // What the control says, for the scan's record: the first of its names
+  // with a letter in it, so an icon's tooltip rather than the icon.
+  function readableLabel(element) {
+    var labels = labelsOf(element);
+    var worded = labels.filter(function (label) {
+      return /[a-z\u00c0-\u024f]/i.test(label);
+    });
+    return (worded[0] || labels[0] || '').slice(0, 60);
+  }
+
   function namesAPurchase(element) {
     return labelsOf(element).some(function (label) {
       return PURCHASE.test(label);
@@ -173,7 +183,7 @@
         var matches = roots[r].querySelectorAll(PLATFORMS[p].accept);
         for (var m = 0; m < matches.length; m++) {
           if (isClickable(matches[m]) && !namesAPurchase(matches[m])) {
-            return { name: PLATFORMS[p].name, element: matches[m] };
+            return { name: PLATFORMS[p].name, element: matches[m], label: readableLabel(matches[m]) };
           }
         }
       }
@@ -192,9 +202,9 @@
         for (var l = 0; l < labels.length; l++) {
           var label = labels[l];
           if (label.length > 40) continue;
-          if (ACCEPT_ALL.indexOf(label) >= 0) return { name: 'button "' + label + '"', element: element };
+          if (ACCEPT_ALL.indexOf(label) >= 0) return { name: 'button "' + label + '"', element: element, label: label };
           if (!inContext && ACCEPT_IN_CONTEXT.indexOf(label) >= 0 && isInsideConsentDialog(element)) {
-            inContext = { name: 'button "' + label + '"', element: element };
+            inContext = { name: 'button "' + label + '"', element: element, label: label };
           }
         }
       }
@@ -257,13 +267,12 @@
         );
       });
     }
-    var label = (labelsOf(found.element)[0] || '').slice(0, 60);
     if (request.click) {
       found.element.click();
-      return { name: found.name, label: label, x: null, y: null };
+      return { name: found.name, label: found.label, x: null, y: null };
     }
     var point = pointOn(found.element);
-    return { name: found.name, label: label, x: point && point.x, y: point && point.y };
+    return { name: found.name, label: found.label, x: point && point.x, y: point && point.y };
   } catch (error) {
     return null;
   }

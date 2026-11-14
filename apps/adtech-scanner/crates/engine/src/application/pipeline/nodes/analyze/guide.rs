@@ -24,6 +24,15 @@ struct Chunk {
     state: Value,
 }
 
+/// Chunks of one script that were longer than Jev is shown: a line of more
+/// than [`LINE_CHUNK_MAX_CHARS`] characters, as a script that could not be
+/// parsed (and was reflowed or left as it came) can hold.
+struct CutChunks {
+    source: usize,
+    count: usize,
+    longest_chars: usize,
+}
+
 struct GuideWork {
     chunks: Vec<Chunk>,
     scored: Vec<ScoredChunk>,
@@ -54,12 +63,30 @@ pub(super) async fn build(
     run: &mut StepRun<'_>,
     api_key: &str,
 ) -> Result<Vec<GuideEntry>, NodeError> {
+    let (chunks, cut) = plan(run)?;
     let mut work = GuideWork {
-        chunks: plan(run)?,
+        chunks,
         scored: Vec::new(),
     };
     if work.chunks.is_empty() {
         return Ok(Vec::new());
+    }
+    for cut in cut {
+        let record = &run.state.scripts[run.state.sources[cut.source].script_index].record;
+        let message = format!(
+            "{} {}: {} of its chunks are longer than {LINE_CHUNK_MAX_CHARS} characters (the longest has {}): \
+             lines that long are left by a script that could not be parsed. Jev System One is shown only \
+             the first {LINE_CHUNK_MAX_CHARS} characters of each, so the reading guide ranks them on that part",
+            record.id, record.url, cut.count, cut.longest_chars,
+        );
+        let data = json!({
+            "scriptId": record.id,
+            "cutChunks": cut.count,
+            "longestChars": cut.longest_chars,
+            "shownChars": LINE_CHUNK_MAX_CHARS,
+        });
+        run.log(LogLevel::Warn, LogKind::Message, message, Some(data))
+            .await?;
     }
     run.log(
         LogLevel::Debug,
@@ -102,40 +129,53 @@ pub(super) async fn build(
     Ok(entries)
 }
 
-/// The chunks worth asking about, publisher scripts first, up to the cap.
-fn plan(run: &StepRun<'_>) -> Result<Vec<Chunk>, NodeError> {
+/// The chunks worth asking about, publisher scripts first, up to the cap,
+/// and the scripts some of whose chunks had to be cut.
+fn plan(run: &StepRun<'_>) -> Result<(Vec<Chunk>, Vec<CutChunks>), NodeError> {
     let placements = telemetry_literals(&run.state.telemetry()?.total);
     let mut chunks = Vec::new();
-    for (source, file) in run.state.sources.iter().enumerate() {
+    let mut cut: Vec<CutChunks> = Vec::new();
+    'scripts: for (source, file) in run.state.sources.iter().enumerate() {
         let record = &run.state.scripts[file.script_index].record;
         let ranges = split_lines(&file.lines);
         let vendor_library = file.default_search.is_some();
         for index in chunks_to_screen(&file.lines, &ranges, vendor_library, &placements) {
             if chunks.len() == MAX_SCREENED_CHUNKS {
-                return Ok(chunks);
+                break 'scripts;
             }
             let lines = ranges[index];
-            let code: String = lines
-                .of(&file.lines)
-                .join("\n")
-                .chars()
-                .take(LINE_CHUNK_MAX_CHARS)
-                .collect();
+            let whole = lines.of(&file.lines).join("\n");
+            let whole_chars = whole.chars().count();
+            let code: String = whole.chars().take(LINE_CHUNK_MAX_CHARS).collect();
+            let mut script = json!({
+                "url": record.url,
+                "firstParty": record.first_party,
+                "lines": format!("{}-{} of {}", lines.start, lines.end, file.lines.len()),
+            });
+            if whole_chars > LINE_CHUNK_MAX_CHARS {
+                script["cut"] = json!(format!(
+                    "the first {LINE_CHUNK_MAX_CHARS} of {whole_chars} characters"
+                ));
+                match cut.last_mut().filter(|last| last.source == source) {
+                    Some(last) => {
+                        last.count += 1;
+                        last.longest_chars = last.longest_chars.max(whole_chars);
+                    }
+                    None => cut.push(CutChunks {
+                        source,
+                        count: 1,
+                        longest_chars: whole_chars,
+                    }),
+                }
+            }
             chunks.push(Chunk {
                 source,
                 lines,
-                state: json!({
-                    "script": {
-                        "url": record.url,
-                        "firstParty": record.first_party,
-                        "lines": format!("{}-{} of {}", lines.start, lines.end, file.lines.len()),
-                    },
-                    "code": code,
-                }),
+                state: json!({ "script": script, "code": code }),
             });
         }
     }
-    Ok(chunks)
+    Ok((chunks, cut))
 }
 
 /// A stretch of a vendor library that Jev takes for the publisher's own ad

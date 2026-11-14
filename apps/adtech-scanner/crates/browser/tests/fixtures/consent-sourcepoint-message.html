@@ -9,15 +9,19 @@
 // `shape` is how the accept control can be told apart: by the platform's
 // class for "accept all", by its title alone, by its text alone, or (`none`)
 // not at all: a wall that only sells. The paid option comes first and looks
-// the same.
+// the same. `bild` is the markup of bild.de's wall as served on 2026-11-14.
 var shape = new URLSearchParams(location.search).get('shape');
 var accept = {
+  bild: '<button class="message-component message-button no-children focusable accept-all sp_choice_type_11" title="Alle akzeptieren" aria-label="Alle akzeptieren">Alle akzeptieren</button>',
   class: '<button class="message-component message-button no-children focusable sp_choice_type_11" title="Zustimmen">Weiter</button>',
   title: '<button class="message-component message-button no-children focusable" title="Alle akzeptieren" aria-label="Alle akzeptieren"><span aria-hidden="true">&#10003;</span></button>',
   text: '<button class="message-component message-button no-children focusable">Akzeptieren und weiter</button>',
 }[shape] || '';
+var pay = shape === 'bild'
+  ? '<button id="pay" class="message-component message-button no-children focusable pur-subscribe-cta sp_choice_type_9" title="Jetzt BILD PUR abonnieren" aria-label="Jetzt BILD PUR abonnieren">Jetzt BILD PUR abonnieren</button> '
+  : '<button id="pay" class="message-component message-button no-children focusable sp_choice_type_9" title="Jetzt PUR-Abo abschließen">PUR abonnieren</button> ';
 document.getElementById('choices').innerHTML =
-  '<button id="pay" class="message-component message-button no-children focusable sp_choice_type_9" title="Jetzt PUR-Abo abschließen">PUR abonnieren</button> ' +
+  pay +
   '<button id="settings" class="message-component message-button no-children focusable sp_choice_type_12" title="Einstellungen">Einstellungen</button> ' +
   '<span id="accept">' + accept + '</span>';
 function tell(choice) {

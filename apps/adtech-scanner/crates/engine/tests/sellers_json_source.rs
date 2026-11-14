@@ -15,12 +15,21 @@ use adscan_engine::application::ports::{
 use adscan_engine::application::sellers_json::{
     Cancelled, Origin, SellersJsonFile, SellersJsonSource,
 };
+use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
 use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use adscan_model::CaptureProxy;
 use async_trait::async_trait;
 use common::{FakePublicFiles, text_file};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
+
+/// The browser of the scan that asks.
+fn scan_identity() -> BrowserIdentity {
+    BrowserIdentity::of_scan(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+        Some("nl-BE"),
+    )
+}
 
 const EXCHANGE: &str = "appnexus.com";
 const URL: &str = "https://appnexus.com/sellers.json";
@@ -81,7 +90,7 @@ fn sellers_json(body: &str, etag: Option<&str>) -> Result<PublicFile, FetchError
 impl Fixture {
     async fn read(&self) -> SellersJsonFile {
         self.source
-            .read(EXCHANGE, &CancellationToken::new())
+            .read(EXCHANGE, &scan_identity(), &CancellationToken::new())
             .await
             .unwrap()
     }
@@ -127,6 +136,8 @@ async fn a_file_is_downloaded_once_and_then_read_from_the_kept_copy() {
                 password: None
             },
             known_version: None,
+            // As the scan's browser would ask.
+            identity: scan_identity(),
         }]
     );
 
@@ -144,7 +155,7 @@ async fn a_file_is_downloaded_once_and_then_read_from_the_kept_copy() {
     );
     assert_eq!(
         restarted
-            .read(EXCHANGE, &CancellationToken::new())
+            .read(EXCHANGE, &scan_identity(), &CancellationToken::new())
             .await
             .unwrap(),
         file(SELLERS, Origin::Kept { fetched_at: START })
@@ -309,7 +320,7 @@ async fn a_name_that_is_no_public_domain_is_never_asked_and_never_kept() {
     for name in ["localhost", "10.0.0.1", "../../etc", "exchange", ""] {
         let read = fixture
             .source
-            .read(name, &CancellationToken::new())
+            .read(name, &scan_identity(), &CancellationToken::new())
             .await
             .unwrap();
         assert_eq!(
@@ -373,7 +384,11 @@ async fn scans_that_need_the_same_exchange_at_once_share_one_download() {
     let readers: Vec<_> = (0..6)
         .map(|_| {
             let source = Arc::clone(&source);
-            tokio::spawn(async move { source.read(EXCHANGE, &CancellationToken::new()).await })
+            tokio::spawn(async move {
+                source
+                    .read(EXCHANGE, &scan_identity(), &CancellationToken::new())
+                    .await
+            })
         })
         .collect();
     // A different exchange is not held up by them.
@@ -381,7 +396,11 @@ async fn scans_that_need_the_same_exchange_at_once_share_one_download() {
         let source = Arc::clone(&source);
         tokio::spawn(async move {
             source
-                .read("rubiconproject.com", &CancellationToken::new())
+                .read(
+                    "rubiconproject.com",
+                    &scan_identity(),
+                    &CancellationToken::new(),
+                )
                 .await
         })
     };
@@ -424,7 +443,7 @@ async fn a_cancelled_scan_keeps_nothing_and_holds_nobody_up() {
     let cancelled = CancellationToken::new();
     let first = {
         let (source, cancel) = (Arc::clone(&source), cancelled.clone());
-        tokio::spawn(async move { source.read(EXCHANGE, &cancel).await })
+        tokio::spawn(async move { source.read(EXCHANGE, &scan_identity(), &cancel).await })
     };
     until_started(&files, 1).await;
 
@@ -432,11 +451,15 @@ async fn a_cancelled_scan_keeps_nothing_and_holds_nobody_up() {
     let impatient = CancellationToken::new();
     let waiting = {
         let (source, cancel) = (Arc::clone(&source), impatient.clone());
-        tokio::spawn(async move { source.read(EXCHANGE, &cancel).await })
+        tokio::spawn(async move { source.read(EXCHANGE, &scan_identity(), &cancel).await })
     };
     let patient = {
         let source = Arc::clone(&source);
-        tokio::spawn(async move { source.read(EXCHANGE, &CancellationToken::new()).await })
+        tokio::spawn(async move {
+            source
+                .read(EXCHANGE, &scan_identity(), &CancellationToken::new())
+                .await
+        })
     };
     tokio::time::sleep(Duration::from_millis(30)).await;
     impatient.cancel();

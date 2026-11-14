@@ -27,7 +27,7 @@ async fn scan(fixture: &str, accept_consent: bool) -> Clicked {
     }
 }
 
-fn assert_accepted(clicked: &Clicked, banner: &str) {
+fn assert_accepted(clicked: &Clicked, banner: &str, label: &str) {
     assert!(
         clicked.accepted,
         "consent_accepted should be set; progress: {:#?}",
@@ -38,7 +38,7 @@ fn assert_accepted(clicked: &Clicked, banner: &str) {
         ["CONSENT accepted"],
         "exactly the accept button is clicked, once"
     );
-    let line = format!("Accepted the consent banner ({banner})");
+    let line = format!("Accepted the consent banner ({banner}): pressed \"{label}\"");
     assert!(
         clicked.progress.contains(&line),
         "missing {line:?} in {:#?}",
@@ -48,17 +48,29 @@ fn assert_accepted(clicked: &Clicked, banner: &str) {
 
 #[tokio::test]
 async fn accepts_a_known_cmp_banner_that_appears_late() {
-    assert_accepted(&scan("consent-onetrust.html", true).await, "OneTrust");
+    assert_accepted(
+        &scan("consent-onetrust.html", true).await,
+        "OneTrust",
+        "allow",
+    );
 }
 
 #[tokio::test]
 async fn accepts_a_banner_inside_shadow_dom() {
-    assert_accepted(&scan("consent-shadow.html", true).await, "Usercentrics");
+    assert_accepted(
+        &scan("consent-shadow.html", true).await,
+        "Usercentrics",
+        "yes",
+    );
 }
 
 #[tokio::test]
 async fn accepts_a_banner_inside_a_cross_site_iframe() {
-    assert_accepted(&scan("consent-iframe.html", true).await, "Sourcepoint");
+    assert_accepted(
+        &scan("consent-iframe.html", true).await,
+        "Sourcepoint",
+        "continue",
+    );
 }
 
 #[tokio::test]
@@ -66,12 +78,17 @@ async fn accepts_an_unknown_banner_by_its_dutch_accept_all_label() {
     assert_accepted(
         &scan("consent-generic.html", true).await,
         "button \"alles accepteren\"",
+        "alles accepteren",
     );
 }
 
 #[tokio::test]
 async fn short_labels_only_count_inside_a_consent_dialog() {
-    assert_accepted(&scan("consent-context.html", true).await, "button \"ok\"");
+    assert_accepted(
+        &scan("consent-context.html", true).await,
+        "button \"ok\"",
+        "ok",
+    );
 }
 
 #[tokio::test]
@@ -79,6 +96,7 @@ async fn accepts_a_google_funding_choices_dialog() {
     assert_accepted(
         &scan("consent-funding-choices.html", true).await,
         "Google Funding Choices",
+        "consent",
     );
 }
 
@@ -204,11 +222,18 @@ async fn a_choice_wall_in_a_frame_of_another_origin_is_accepted_and_the_paid_opt
 {
     let fixtures = Fixtures::start().await;
     let cmp = Fixtures::start().await;
-    for (shape, banner) in [
-        ("class", "Sourcepoint"),
-        // Sourcepoint's own message button, known by its title.
-        ("title", "Sourcepoint"),
-        ("text", "button \"akzeptieren und weiter\""),
+    for (shape, banner, label) in [
+        ("class", "Sourcepoint", "weiter"),
+        // Sourcepoint's own message button, known by its title; the label
+        // recorded is the title, not the icon.
+        ("title", "Sourcepoint", "alle akzeptieren"),
+        (
+            "text",
+            "button \"akzeptieren und weiter\"",
+            "akzeptieren und weiter",
+        ),
+        // bild.de's wall as it was served, with its PUR subscription.
+        ("bild", "Sourcepoint", "alle akzeptieren"),
     ] {
         let outcome = support::run(accepting(&choice_wall(&fixtures, &cmp, shape, 300))).await;
         let capture = captured(&outcome);
@@ -219,7 +244,7 @@ async fn a_choice_wall_in_a_frame_of_another_origin_is_accepted_and_the_paid_opt
             ["CHOICE accept-all trusted=true"],
             "{shape}: one real click on the accept option"
         );
-        let line = format!("Accepted the consent banner ({banner})");
+        let line = format!("Accepted the consent banner ({banner}): pressed \"{label}\"");
         assert!(
             outcome.progress.contains(&line),
             "{shape}: missing {line:?} in {:#?}",
@@ -261,7 +286,11 @@ async fn a_wall_that_appears_long_after_the_page_loaded_is_still_accepted() {
 #[tokio::test]
 async fn consent_or_pay_in_the_page_itself_gets_the_consent_and_never_the_purchase() {
     let clicked = scan("consent-choice-wall.html", true).await;
-    assert_accepted(&clicked, "button \"akzeptieren und weiter\"");
+    assert_accepted(
+        &clicked,
+        "button \"akzeptieren und weiter\"",
+        "akzeptieren und weiter",
+    );
 }
 
 #[tokio::test]
@@ -303,12 +332,103 @@ async fn a_wall_without_an_accept_option_is_noted_once_and_nothing_is_pressed() 
     let said: Vec<&String> = outcome
         .progress
         .iter()
-        .filter(|line| line.contains("consent dialog"))
+        .filter(|line| line.contains("Consent banner detected"))
         .collect();
     assert_eq!(
         said,
         [
-            "A consent dialog (Sourcepoint) is showing and nothing in it plainly means \"accept all\"; it was left alone"
+            "Consent banner detected (Sourcepoint), automatic accept failed: nothing in it plainly means \"accept all\", so it was left alone"
         ]
+    );
+}
+
+// -- markup seen on real sites -----------------------------------------------------------
+
+#[tokio::test]
+async fn a_cookiebot_dialog_in_the_publishers_own_design_is_accepted_by_its_danish_label() {
+    assert_accepted(
+        &scan("consent-cookiebot-custom.html", true).await,
+        "button \"tillad alle\"",
+        "tillad alle",
+    );
+}
+
+#[tokio::test]
+async fn both_generations_of_the_usercentrics_dialog_are_accepted() {
+    let fixtures = Fixtures::start().await;
+    for (version, label) in [("3", "alle akzeptieren"), ("2", "akzeptieren")] {
+        let url = format!(
+            "{}?version={version}",
+            fixtures.url("consent-usercentrics.html")
+        );
+        let outcome = support::run(accepting(&url)).await;
+        let capture = captured(&outcome);
+        assert!(
+            capture.consent_accepted,
+            "{version}: {:#?}",
+            outcome.progress
+        );
+        assert_eq!(
+            console_of(capture),
+            ["CONSENT accepted trusted=true"],
+            "{version}: the accept control and nothing else"
+        );
+        let line = format!("Accepted the consent banner (Usercentrics): pressed \"{label}\"");
+        assert!(
+            outcome.progress.contains(&line),
+            "{version}: missing {line:?} in {:#?}",
+            outcome.progress
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_empty_consent_platform_container_is_not_reported_as_a_dialog() {
+    let fixtures = Fixtures::start().await;
+    let mut request = accepting(&format!(
+        "{}?version=empty",
+        fixtures.url("consent-usercentrics.html")
+    ));
+    request.observe_seconds = 4;
+    let outcome = support::run(request).await;
+    let capture = captured(&outcome);
+
+    assert!(!capture.consent_accepted);
+    assert_eq!(console_of(capture), Vec::<&str>::new());
+    assert!(
+        capture.consent_notes.is_empty(),
+        "{:?}",
+        capture.consent_notes
+    );
+    assert!(
+        !outcome
+            .progress
+            .iter()
+            .any(|line| line.contains("Consent banner detected")),
+        "{:#?}",
+        outcome.progress
+    );
+}
+
+#[tokio::test]
+async fn the_wall_is_found_behind_two_dozen_ad_frames_and_only_its_accept_pressed() {
+    let fixtures = Fixtures::start().await;
+    let cmp = Fixtures::start().await;
+    let url = format!(
+        "{}?cmp={}",
+        fixtures.url("consent-many-frames.html"),
+        cmp.url("")
+    );
+    let outcome = support::run(accepting(&url)).await;
+    let capture = captured(&outcome);
+
+    assert!(capture.consent_accepted, "{:#?}", outcome.progress);
+    assert_eq!(console_of(capture), ["CHOICE accept-all trusted=true"]);
+    assert!(
+        outcome.progress.contains(
+            &"Accepted the consent banner (Sourcepoint): pressed \"alle akzeptieren\"".to_string()
+        ),
+        "{:#?}",
+        outcome.progress
     );
 }

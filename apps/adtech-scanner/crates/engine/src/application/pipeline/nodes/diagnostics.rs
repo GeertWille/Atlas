@@ -18,6 +18,7 @@ use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::application::ports::{FetchError, FetchProxy, PublicFileRequest};
 use crate::application::sellers_json::{Cancelled, Origin, SellersJsonSource};
 use crate::domain::diagnostics::ads_txt::{self, AdsTxt, AdsTxtOutcome};
+use crate::domain::diagnostics::identity::BrowserIdentity;
 use crate::domain::diagnostics::sellers_cache::utc_day;
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
 use crate::domain::diagnostics::site::{AdsTxtLocation, ads_txt_location, subdomain_ads_txt_url};
@@ -172,6 +173,7 @@ async fn fetch_ads_txt(
         loopback_origin: location.loopback_origin.clone(),
         proxy: scan_proxy(run),
         known_version: None,
+        identity: scan_identity(run)?,
     };
     let outcome = match run.deps.files.fetch(&request, &run.job.cancel).await {
         Ok(file) => ads_txt::read_response(file.status, file.content_type.as_deref(), &file.body),
@@ -215,11 +217,13 @@ async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<Selle
             .join(", ")
     ))
     .await?;
+    let identity = scan_identity(run)?;
     let mut pending = JoinSet::new();
     for lookup in lookups {
         pending.spawn(look_up_sellers(
             Arc::clone(&run.deps.sellers_json),
             lookup,
+            identity.clone(),
             run.job.cancel.clone(),
         ));
     }
@@ -295,12 +299,27 @@ fn age(ms: f64) -> String {
     }
 }
 
+/// The scan's browser as the app's own requests to sites present it.
+fn scan_identity(run: &StepRun<'_>) -> Result<BrowserIdentity, NodeError> {
+    let capture = run.state.capture()?;
+    let language = capture
+        .environment
+        .browserbase
+        .as_ref()
+        .and_then(|facts| facts.language.as_deref());
+    Ok(BrowserIdentity::of_scan(&capture.user_agent, language))
+}
+
 async fn look_up_sellers(
     source: Arc<SellersJsonSource>,
     lookup: SellersLookup,
+    identity: BrowserIdentity,
     cancel: CancellationToken,
 ) -> (String, Result<(SellersOutcome, Origin), Cancelled>) {
-    let file = match source.read(&lookup.ad_system_domain, &cancel).await {
+    let file = match source
+        .read(&lookup.ad_system_domain, &identity, &cancel)
+        .await
+    {
         Ok(file) => file,
         Err(Cancelled) => return (lookup.ad_system_domain, Err(Cancelled)),
     };

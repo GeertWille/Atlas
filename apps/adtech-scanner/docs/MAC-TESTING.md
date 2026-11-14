@@ -158,14 +158,22 @@ defect was found in the shortcut layer, and the suite can now judge macOS at all
 
 ## 7. Consent click-through (ticket #3)
 
-For each site: did the scan accept the dialog by itself, and how long after load?
+For each site: did the scan accept the dialog by itself, and how long after load? The audit trail of
+the Capture step names what was pressed: `Accepted the consent banner (Sourcepoint): pressed "alle
+akzeptieren"`.
 
-- [ ] bild.de (Sourcepoint, with the PUR subscription option): "Alle akzeptieren" is clicked, the subscription option is not
-- [ ] A OneTrust site
-- [ ] A Didomi site
-- [ ] A Cookiebot site
-- [ ] A Usercentrics site
-- [ ] When it fails, the report says "consent banner detected, automatic accept failed"
+Already seen working on 2026-11-14 from the sandbox (headless, local Chromium from a US address and
+Browserbase in eu-central-1; see HANDOVER, "Consent on real sites"): bild.de, spiegel.de, ikea.com/nl,
+otto.de, 20minutes.fr, marmiton.org, jyllands-posten.dk, dr.dk, obi.de, o2online.de, usercentrics.com.
+What is left for the Mac is your own Chrome from a European address, headless and headed:
+
+- [ ] bild.de (Sourcepoint, with the PUR subscription option): pressed "alle akzeptieren", the subscription option is not pressed
+- [ ] A OneTrust site (otto.de, ikea.com/nl)
+- [ ] A Didomi site (marmiton.org, 20minutes.fr)
+- [ ] A Cookiebot site (jyllands-posten.dk, dr.dk)
+- [ ] A Usercentrics site (obi.de, o2online.de)
+- [ ] When it fails, the Capture step says "Consent banner detected (<platform>), automatic accept failed: nothing in it plainly means "accept all", so it was left alone" (a blocked entry). Seen in the sandbox on dr.dk before its Danish labels were added; a site in a language other than en/nl/de/fr/es/it/pt/da is the likeliest place to see it now
+- [ ] How long between the dialog appearing and the press, on bild.de: from the sandbox (120 ms from the browser) it was up to 4 s on Browserbase
 
 ## 8. bild.de specifically
 

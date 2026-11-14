@@ -20,6 +20,7 @@ use super::judge::{JudgeRequest, JudgeResponse};
 use super::llm::{LlmError, LlmRequest, LlmResponse};
 use crate::domain::archive::Location;
 pub use crate::domain::archive::index::{BodyIndexRow, RequestEndKind, RequestIndexRow};
+use crate::domain::diagnostics::identity::BrowserIdentity;
 pub use crate::domain::network::exchange::RequestAdLink;
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
@@ -426,6 +427,8 @@ pub struct PublicFileRequest {
     /// What an earlier answer said about its version. With it the server is
     /// asked for the file only if it changed, and answers 304 if it did not.
     pub known_version: Option<FileVersion>,
+    /// The browser the request presents itself as: the scan's.
+    pub identity: BrowserIdentity,
 }
 
 /// The validators of an HTTP answer, as the server stated them.

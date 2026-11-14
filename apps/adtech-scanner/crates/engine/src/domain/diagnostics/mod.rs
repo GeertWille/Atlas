@@ -5,6 +5,7 @@
 pub mod adapters;
 pub mod ads_txt;
 pub mod consent;
+pub mod identity;
 pub mod params;
 pub mod sellers_cache;
 pub mod sellers_json;
