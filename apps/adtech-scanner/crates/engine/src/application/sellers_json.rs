@@ -21,12 +21,13 @@ use super::ports::{
     CachedSellersJson, Clock, FetchError, FetchProxy, PublicFile, PublicFileFetcher,
     PublicFileRequest, SellersJsonCache,
 };
-use crate::domain::diagnostics::identity::BrowserIdentity;
+use crate::domain::diagnostics::identity::{BrowserIdentity, SELLERS_JSON_ACCEPT};
 use crate::domain::diagnostics::sellers_cache::{
     MAX_FILE_BYTES, Standing, is_passing_trouble, standing,
 };
 use crate::domain::diagnostics::sellers_json::{check_readable, is_web_page};
 use crate::domain::diagnostics::site::sellers_json_url;
+use crate::domain::diagnostics::{CopyStoodIn, refusal};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -40,21 +41,18 @@ pub enum Origin {
     /// The kept copy of `fetched_at` (epoch ms), recent enough to be used
     /// without asking.
     Kept { fetched_at: f64 },
-    /// The kept copy of `fetched_at`, used because the exchange could not
-    /// be reached.
-    KeptWhileUnreachable { fetched_at: f64 },
-    /// The kept copy of `fetched_at`, used because the exchange answered
-    /// with something that is not a sellers.json (a web page, a challenge
-    /// page, half a file).
-    KeptOverUnreadableAnswer { fetched_at: f64 },
+    /// The kept copy of `fetched_at`, used in place of what the exchange
+    /// gave this request.
+    KeptInstead {
+        fetched_at: f64,
+        because: CopyStoodIn,
+    },
 }
 
-/// Why the exchange's answer may leave a kept copy in its place.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PassingTrouble {
-    Unreachable,
-    UnreadableAnswer,
-}
+/// Why the lookup failed when the exchange answered 2xx with a web page:
+/// a firewall's block page, a challenge, a redirect to the home page or a
+/// "not found" page served as found. Which one it is cannot be told.
+const WEB_PAGE: &str = "the site answered with a web page instead of the file";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SellersJsonFile {
@@ -168,6 +166,7 @@ impl SellersJsonSource {
                 .map(|(_, _, version)| version.clone())
                 .filter(|version| version.is_stated()),
             identity: identity.clone(),
+            accept: SELLERS_JSON_ACCEPT,
         };
         let answer = match self.files.fetch(&request, cancel).await {
             // Nothing is kept of a lookup that was called off.
@@ -175,7 +174,9 @@ impl SellersJsonSource {
             answer => answer,
         };
         let now = self.clock.now_ms();
-        let ((reason, trouble), kept_file) = match (answer, kept_file) {
+        // Why there is no file, what may stand in for it, and whether the
+        // answer is the exchange's to every scan or only to this one's.
+        let (reason, trouble, for_every_scan, kept_file) = match (answer, kept_file) {
             (Ok(answer), Some((file, _, _))) if answer.status == 304 => {
                 // Should the date not be written, the copy is asked about
                 // again next time; it is current all the same.
@@ -185,20 +186,10 @@ impl SellersJsonSource {
                     origin: Origin::Confirmed,
                 });
             }
-            (Ok(answer), kept_file)
-                if (200..300).contains(&answer.status)
-                    && is_web_page(answer.content_type.as_deref(), &answer.body) =>
-            {
-                (
-                    (
-                        "the site refused the request: it answered with a web page instead of the file"
-                            .to_string(),
-                        Some(PassingTrouble::UnreadableAnswer),
-                    ),
-                    kept_file,
-                )
-            }
             (Ok(answer), kept_file) if (200..300).contains(&answer.status) => {
+                // A valid file is a file whatever type it was announced as;
+                // that it looks like a web page only names a failure.
+                let web_page = is_web_page(answer.content_type.as_deref(), &answer.body);
                 match readable(answer.body).await {
                     Ok(body) => {
                         let file = PublicFile { body, ..answer };
@@ -207,45 +198,61 @@ impl SellersJsonSource {
                     // A web page, a soft 404 or half a file says nothing
                     // about the sellers. Like an exchange that cannot be
                     // reached, it does not replace a copy that still serves.
-                    Err(reason) => ((reason, Some(PassingTrouble::UnreadableAnswer)), kept_file),
+                    Err(reason) => (
+                        if web_page {
+                            WEB_PAGE.to_string()
+                        } else {
+                            reason
+                        },
+                        Some(CopyStoodIn::AnswerNotSellersJson),
+                        true,
+                        kept_file,
+                    ),
                 }
             }
+            // A refusal may be of this scan's browser only (a firewall that
+            // turns some user agents away): it neither replaces a copy that
+            // still serves nor is it handed to other scans as their answer.
+            (Ok(answer), kept_file) if matches!(answer.status, 401 | 403) => (
+                refusal(answer.status),
+                Some(CopyStoodIn::AnswerNotSellersJson),
+                false,
+                kept_file,
+            ),
             (Ok(answer), kept_file) => (
-                (
-                    if matches!(answer.status, 401 | 403) {
-                        format!("the site refused the request (HTTP {})", answer.status)
-                    } else {
-                        format!("the exchange answered HTTP {}", answer.status)
-                    },
-                    is_passing_trouble(answer.status).then_some(PassingTrouble::Unreachable),
-                ),
+                format!("the exchange answered HTTP {}", answer.status),
+                is_passing_trouble(answer.status).then_some(CopyStoodIn::ExchangeUnreachable),
+                true,
                 kept_file,
             ),
             (Err(error), kept_file) => (
-                (error.to_string(), Some(PassingTrouble::Unreachable)),
+                error.to_string(),
+                Some(CopyStoodIn::ExchangeUnreachable),
+                true,
                 kept_file,
             ),
         };
-        if let (Some((file, fetched_at, _)), Some(Standing::AskAgainOrUse), Some(trouble)) =
+        if let (Some((file, fetched_at, _)), Some(Standing::AskAgainOrUse), Some(because)) =
             (kept_file, kept_standing, trouble)
         {
-            let origin = match trouble {
-                PassingTrouble::Unreachable => Origin::KeptWhileUnreachable { fetched_at },
-                PassingTrouble::UnreadableAnswer => Origin::KeptOverUnreadableAnswer { fetched_at },
-            };
             return Ok(SellersJsonFile {
                 content: Ok(file),
-                origin,
+                origin: Origin::KeptInstead {
+                    fetched_at,
+                    because,
+                },
             });
         }
-        let unavailable = CachedSellersJson {
-            fetched_at: now,
-            final_url: request.url,
-            version: Default::default(),
-            content: Err(reason.clone()),
-        };
-        // A cache that cannot be written costs the next scan a request.
-        let _ = self.cache.store(domain, unavailable).await;
+        if for_every_scan {
+            let unavailable = CachedSellersJson {
+                fetched_at: now,
+                final_url: request.url,
+                version: Default::default(),
+                content: Err(reason.clone()),
+            };
+            // A cache that cannot be written costs the next scan a request.
+            let _ = self.cache.store(domain, unavailable).await;
+        }
         Ok(SellersJsonFile {
             content: Err(reason),
             origin: Origin::Downloaded,

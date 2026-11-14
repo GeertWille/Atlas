@@ -13,6 +13,9 @@ use adscan_model::{
 const CLICK_TO_CHOICE_MS: std::ops::RangeInclusive<f64> = -1_000.0..=5_000.0;
 /// Consent that comes later than this into a page view held the page up.
 pub const LATE_CONSENT_MS: f64 = 3_000.0;
+/// A dialog the consent platform reported this long before the scanner
+/// accepted it was up while the scanner was not yet looking.
+const SHOWN_BEFORE_ACCEPTED_MS: f64 = 1_000.0;
 
 /// The consent dialog of one page view. Times are ms into the page view.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -134,13 +137,24 @@ impl PageConsent {
             ));
         }
         let (accepted_at, banner) = self.scanner_accepted.as_ref()?;
-        (*accepted_at >= LATE_CONSENT_MS).then(|| {
-            format!(
-                "On page {page} the scanner accepted the consent dialog ({banner}) {} into the page view; \
-                 the dialog was not there to accept earlier. {consequence}",
-                seconds(*accepted_at)
-            )
-        })
+        if *accepted_at < LATE_CONSENT_MS {
+            return None;
+        }
+        let accepted = format!(
+            "On page {page} the scanner accepted the consent dialog ({banner}) {} into the page view.",
+            seconds(*accepted_at)
+        );
+        let earlier = match self.prompt_at_ms {
+            Some(shown) if accepted_at - shown >= SHOWN_BEFORE_ACCEPTED_MS => format!(
+                "The consent platform reported the dialog from {}; the scanner only starts looking for a \
+                 dialog once the page has loaded.",
+                seconds(shown)
+            ),
+            _ => "The scanner only starts looking for a dialog once the page has loaded, so it may have \
+                  been showing earlier."
+                .to_string(),
+        };
+        Some(format!("{accepted} {earlier} {consequence}"))
     }
 }
 
@@ -283,8 +297,43 @@ mod tests {
         let account = late.account(Some(&scroll)).unwrap();
         assert!(
             account.starts_with(
-                "On page 1 the scanner accepted the consent dialog (OneTrust) 12.5 s into the page view"
+                "On page 1 the scanner accepted the consent dialog (OneTrust) 12.5 s into the page view. \
+                 The scanner only starts looking for a dialog once the page has loaded, so it may have been \
+                 showing earlier. Where the ad stack waits"
             ),
+            "{account}"
+        );
+
+        // bild.de through a residential proxy: shown at 14.5 s, pressed at
+        // 18.3 s. The dialog was there before; the scanner was not looking.
+        let slow_page = consent(
+            vec![
+                tcf(14_500.0, "cmpuishown"),
+                tcf(18_500.0, "useractioncomplete"),
+            ],
+            vec![note(18_300.0, ConsentNoteKind::Accepted, "Sourcepoint")],
+        );
+        let account = slow_page.account(Some(&scroll)).unwrap();
+        assert!(
+            account.starts_with(
+                "On page 1 the scanner accepted the consent dialog (Sourcepoint) 18.3 s into the page view. \
+                 The consent platform reported the dialog from 14.5 s; the scanner only starts looking for a \
+                 dialog once the page has loaded. Where the ad stack waits"
+            ),
+            "{account}"
+        );
+        // Nothing claims the dialog was not there to accept.
+        assert!(!account.contains("not there"), "{account}");
+
+        // Without a report from the consent platform the same is said as a
+        // possibility.
+        let unreported = consent(
+            vec![],
+            vec![note(5_000.0, ConsentNoteKind::Accepted, "Didomi")],
+        );
+        let account = unreported.account(Some(&scroll)).unwrap();
+        assert!(
+            account.contains("so it may have been showing earlier."),
             "{account}"
         );
     }

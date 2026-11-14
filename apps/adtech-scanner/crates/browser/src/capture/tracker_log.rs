@@ -332,18 +332,20 @@ mod tests {
                 r#"{"t":8000,"type":"routeChange","url":"https://news.example/kelp","navigationType":"push"},
                    {"t":7900,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":8300},
                    {"t":8100,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":9600.5},
-                   {"t":8200,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":null}"#,
+                   {"t":8200,"type":"bidsRequested","adUnitCodes":[],"adUnitCount":2,"timeout":null,"releasedAt":null,"stillHeld":true}"#,
             ),
             &mut pages,
         );
 
-        let placed: Vec<(u32, f64, Option<f64>)> = log
+        let placed: Vec<(u32, f64, Option<f64>, bool)> = log
             .events()
             .iter()
             .filter_map(|event| match event.kind {
-                TrackerEventKind::BidsRequested { released_at, .. } => {
-                    Some((event.page, event.t, released_at))
-                }
+                TrackerEventKind::BidsRequested {
+                    released_at,
+                    still_held,
+                    ..
+                } => Some((event.page, event.t, released_at, still_held)),
                 _ => None,
             })
             .collect();
@@ -351,9 +353,9 @@ mod tests {
             placed,
             [
                 // Made before the route change, let through after it.
-                (0, 7_900.0, Some(8_300.0)),
-                (1, 100.0, Some(1_600.5)),
-                (1, 200.0, None),
+                (0, 7_900.0, Some(8_300.0), false),
+                (1, 100.0, Some(1_600.5), false),
+                (1, 200.0, None, true),
             ]
         );
     }

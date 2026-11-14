@@ -11,6 +11,7 @@ use adscan_engine::application::ports::{
     PublicFileRequest, SellersJsonCache,
 };
 use adscan_engine::application::sellers_json::{Origin, SellersJsonFile, SellersJsonSource};
+use adscan_engine::domain::diagnostics::CopyStoodIn;
 use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
@@ -136,7 +137,7 @@ impl Fixture {
         self.source
             .read(
                 EXCHANGE,
-                &BrowserIdentity::default(),
+                &BrowserIdentity::of_scan("", None),
                 &CancellationToken::new(),
             )
             .await
@@ -186,14 +187,15 @@ fn file(origin: Origin) -> SellersJsonFile {
     }
 }
 
-/// The reason a lookup of `what` gives: a web page is the site refusing the
-/// request (a firewall's or challenge page), anything else a broken file.
+/// The reason a lookup of `what` gives: a web page is named as one (it may
+/// be a firewall's or a challenge page, or a "not found" page served as
+/// found), anything else is a broken file.
 fn not_sellers_json<'a>(read: &'a SellersJsonFile, what: &str) -> &'a str {
     let reason = read.content.as_ref().unwrap_err();
     if what == "a web page" {
         assert_eq!(
             reason,
-            "the site refused the request: it answered with a web page instead of the file"
+            "the site answered with a web page instead of the file"
         );
     } else {
         assert!(
@@ -260,7 +262,10 @@ async fn an_unreadable_answer_never_replaces_an_older_copy_that_still_serves() {
             .await;
         assert_eq!(
             fixture.read().await,
-            file(Origin::KeptOverUnreadableAnswer { fetched_at: START }),
+            file(Origin::KeptInstead {
+                fetched_at: START,
+                because: CopyStoodIn::AnswerNotSellersJson,
+            }),
             "{what}"
         );
         assert_eq!(fixture.kept().await, copy, "{what}: the copy is untouched");
@@ -296,7 +301,10 @@ async fn a_copy_outlives_an_unreadable_answer_and_is_confirmed_when_the_exchange
         .await;
     assert_eq!(
         fixture.read().await,
-        file(Origin::KeptOverUnreadableAnswer { fetched_at: START })
+        file(Origin::KeptInstead {
+            fetched_at: START,
+            because: CopyStoodIn::AnswerNotSellersJson,
+        })
     );
 
     fixture.server.reset().await;
@@ -398,4 +406,85 @@ async fn an_unreadable_kept_file_is_never_confirmed_or_used_in_place_of_the_exch
             "{status}: the unreadable file is gone"
         );
     }
+}
+
+/// Some hosts announce every file as a web page. A body that is a valid
+/// sellers.json is one, whatever its announced type.
+#[tokio::test]
+async fn a_valid_file_announced_as_a_web_page_is_read_and_kept() {
+    let fixture = fixture().await;
+    fixture
+        .exchange_answers(answer(200, "text/html; charset=UTF-8", SELLERS, "\"v1\""))
+        .await;
+    assert_eq!(fixture.read().await, file(Origin::Downloaded));
+    assert_eq!(
+        fixture.kept().await.content,
+        Ok(SELLERS.as_bytes().to_vec())
+    );
+    assert_eq!(
+        fixture.read().await,
+        file(Origin::Kept { fetched_at: START })
+    );
+}
+
+/// A firewall that sends the request to a block page, as
+/// `www.mediaimpact.de` did to the app's own name, read end to end: the
+/// lookup names a web page, and a copy that still serves stands in for it.
+#[tokio::test]
+async fn a_block_page_behind_a_redirect_is_a_web_page_and_a_kept_copy_stands_in_for_it() {
+    let fixture = fixture().await;
+    block(&fixture.server).await;
+    let read = fixture.read().await;
+    assert_eq!(
+        read,
+        SellersJsonFile {
+            content: Err("the site answered with a web page instead of the file".into()),
+            origin: Origin::Downloaded,
+        }
+    );
+
+    // With a copy of two days ago, the copy is read and stays as it was.
+    let fixture = self::fixture().await;
+    fixture.exchange_answers(the_file()).await;
+    fixture.read().await;
+    let copy = fixture.kept().await;
+    fixture.clock.advance(2.0 * 24.0 * HOUR);
+    block(&fixture.server).await;
+    assert_eq!(
+        fixture.read().await,
+        file(Origin::KeptInstead {
+            fetched_at: START,
+            because: CopyStoodIn::AnswerNotSellersJson,
+        })
+    );
+    assert_eq!(fixture.kept().await, copy);
+    let paths: Vec<String> = fixture
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| request.url.path().to_string())
+        .collect();
+    assert_eq!(paths, ["/sellers.json", BLOCKED]);
+}
+
+const BLOCKED: &str = "/RUNCLOUD-8G-WAF-BLOCKED";
+
+/// From now on the exchange sends every request to a firewall's block page.
+async fn block(server: &MockServer) {
+    server.reset().await;
+    Mock::given(method("GET"))
+        .and(path("/sellers.json"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", BLOCKED))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(BLOCKED))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "<!DOCTYPE html><html><body>Blocked by the firewall</body></html>",
+            "text/html; charset=UTF-8",
+        ))
+        .mount(server)
+        .await;
 }

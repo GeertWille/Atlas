@@ -1,0 +1,22 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: a platform's container without height</title><link rel="icon" href="data:,"></head>
+<body>
+<p>Een nieuwssite.</p>
+<script>
+// Quantcast's `.qc-cmp2-container` as some sites lay it out: the container
+// itself has no height, the dialog is a fixed child. Nothing in it plainly
+// means "accept all". `version=empty` is the container with nothing in it.
+var version = new URLSearchParams(location.search).get('version');
+var container = document.createElement('div');
+container.className = 'qc-cmp2-container';
+container.style.cssText = 'height:0;overflow:visible';
+if (version !== 'empty') {
+  container.innerHTML =
+    '<div class="qc-cmp2-main" role="dialog" style="position:fixed;left:300px;top:120px;width:600px;height:400px;background:#fff">' +
+    '<p>Wij en onze partners gebruiken cookies.</p>' +
+    '<button onclick="console.log(\'WRONG more\')">Meer opties</button>' +
+    '</div>';
+}
+setTimeout(function () { document.body.appendChild(container); }, 300);
+</script>
+</body></html>

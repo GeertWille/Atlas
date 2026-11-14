@@ -41,7 +41,6 @@ use adscan_model::{CaptureProxy, ProxyScheme};
 use crate::application::ports::{
     FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
-use crate::domain::diagnostics::identity::BROWSER_ACCEPT;
 use crate::domain::diagnostics::site::{RedirectScope, is_loopback};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -73,10 +72,10 @@ async fn exchange(request: &PublicFileRequest) -> Result<PublicFile, FetchError>
         let route = admit(&url, request.loopback_origin.as_deref()).await?;
         let mut asked = client(&url, &route, &request.proxy)?
             .get(url.clone())
-            // As the scan's browser would ask, opening the address in a tab:
-            // sites refuse clients they do not know.
+            // Under the scan's browser's name: sites refuse clients they do
+            // not know.
             .header(USER_AGENT, &request.identity.user_agent)
-            .header(ACCEPT, BROWSER_ACCEPT)
+            .header(ACCEPT, request.accept)
             .header(ACCEPT_LANGUAGE, &request.identity.accept_language);
         // Sent on every hop: the version was stated by whichever address
         // answered in the end, and a server ignores one it does not know.

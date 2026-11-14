@@ -32,6 +32,17 @@ const TAB_PATIENCE: Duration = Duration::from_secs(10);
 /// Isolated world for the scanner's own evaluations, invisible to page scripts.
 pub(super) const SCANNER_WORLD: &str = "adscan";
 
+/// The `Runtime.evaluate` parameters that run `expression` in `world`, the
+/// answer to a `Page.createIsolatedWorld`.
+pub(super) fn evaluation_in_world(world: &Value, expression: &str) -> Value {
+    json!({
+        "expression": expression,
+        "returnByValue": true,
+        "awaitPromise": true,
+        "contextId": world["executionContextId"],
+    })
+}
+
 /// How much of what a tab loaded the browser keeps for the scanner to read.
 const TAB_BODY_BUFFER_BYTES: u64 = 256 * 1024 * 1024;
 /// The same for each iframe and worker below it: bodies are read the moment
@@ -911,14 +922,7 @@ impl Page {
                 json!({ "frameId": frame_id, "worldName": SCANNER_WORLD }),
             )
             .await;
-        Ok(tolerate_rejection(world)?.map(|world| {
-            json!({
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": true,
-                "contextId": world["executionContextId"],
-            })
-        }))
+        Ok(tolerate_rejection(world)?.map(|world| evaluation_in_world(&world, expression)))
     }
 
     pub(crate) async fn scroll_position(&mut self) -> Result<Option<ScrollPosition>, CaptureError> {

@@ -104,7 +104,8 @@ pub struct KeptCopy {
 pub enum CopyStoodIn {
     /// No answer: a network error, a timeout, HTTP 429 or a 5xx.
     ExchangeUnreachable,
-    /// The exchange answered, with something that is not a sellers.json.
+    /// The exchange answered, with something that is not a sellers.json: a
+    /// web page, half a file, or a refusal (401, 403) of this scan's request.
     AnswerNotSellersJson,
 }
 
@@ -155,6 +156,11 @@ pub(crate) fn check(
         pages: Vec::new(),
         request_ids: Vec::new(),
     }
+}
+
+/// Why a site's file could not be read when the site answered 401 or 403.
+pub(crate) fn refusal(status: u16) -> String {
+    format!("the site refused the request (HTTP {status})")
 }
 
 /// Cuts text down to what may be stored: one line of at most 300 printable

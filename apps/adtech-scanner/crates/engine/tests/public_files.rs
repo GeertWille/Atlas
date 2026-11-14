@@ -8,7 +8,9 @@ use adscan_engine::application::ports::{
     FetchError, FetchProxy, FileVersion, PublicFile, PublicFileFetcher, PublicFileRequest,
 };
 use adscan_engine::domain::diagnostics::ads_txt::{self, AdsTxtOutcome};
-use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
+use adscan_engine::domain::diagnostics::identity::{
+    ADS_TXT_ACCEPT, BrowserIdentity, SELLERS_JSON_ACCEPT,
+};
 use adscan_engine::infrastructure::public_files::HttpPublicFileFetcher;
 use adscan_model::{CaptureProxy, ProxyScheme};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -33,7 +35,8 @@ fn request(server: &MockServer, file: &str) -> PublicFileRequest {
         loopback_origin: Some(server.uri()),
         proxy: system_proxy(),
         known_version: None,
-        identity: BrowserIdentity::default(),
+        identity: BrowserIdentity::of_scan("", None),
+        accept: ADS_TXT_ACCEPT,
     }
 }
 
@@ -96,7 +99,8 @@ async fn a_file_is_read_with_its_status_and_content_type() {
     let agent = header("user-agent").unwrap();
     assert!(agent.starts_with("Mozilla/5.0 ("), "{agent}");
     assert!(!agent.contains("adtech-scanner"), "{agent}");
-    assert!(header("accept").unwrap().starts_with("text/html,"));
+    // For the file's own type, not for a page.
+    assert_eq!(header("accept").as_deref(), Some("text/plain,*/*;q=0.8"));
     assert_eq!(header("accept-language").as_deref(), Some("en-US,en;q=0.9"));
     assert_eq!(header("cookie"), None);
     assert_eq!(header("authorization"), None);
@@ -308,6 +312,7 @@ async fn files_are_asked_for_as_a_browser_and_a_block_page_is_never_a_file() {
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/153.0.0.0 Safari/537.36",
             Some("nl-BE"),
         ),
+        accept: SELLERS_JSON_ACCEPT,
         ..request(&server, "/sellers.json")
     };
     let file = fetch(&as_the_scan).await.unwrap();
@@ -330,11 +335,7 @@ async fn files_are_asked_for_as_a_browser_and_a_block_page_is_never_a_file() {
         "{}",
         sent("user-agent")
     );
-    assert!(
-        sent("accept").starts_with("text/html,"),
-        "{}",
-        sent("accept")
-    );
+    assert_eq!(sent("accept"), "application/json,*/*;q=0.8");
 
     // The fallback is a browser too, in another language: this firewall
     // wants Dutch, and sends it to the block page, which is no file.
@@ -628,7 +629,8 @@ async fn an_unreachable_server_is_a_network_error_in_plain_words() {
         loopback_origin: Some(origin),
         proxy: system_proxy(),
         known_version: None,
-        identity: BrowserIdentity::default(),
+        identity: BrowserIdentity::of_scan("", None),
+        accept: ADS_TXT_ACCEPT,
     };
     assert_eq!(
         fetch(&gone).await,
@@ -682,7 +684,8 @@ async fn a_public_file_is_requested_through_the_scans_proxy_with_its_credentials
         loopback_origin: None,
         proxy: through_proxy(port, Some("scanner"), Some("s3cret")),
         known_version: None,
-        identity: BrowserIdentity::default(),
+        identity: BrowserIdentity::of_scan("", None),
+        accept: ADS_TXT_ACCEPT,
     };
     // The proxy refuses the tunnel; what matters is what it was asked.
     assert!(matches!(fetch(&request).await, Err(FetchError::Network(_))));
@@ -747,7 +750,8 @@ async fn the_address_checks_hold_whatever_the_proxy() {
                 loopback_origin: None,
                 proxy: proxy.clone(),
                 known_version: None,
-                identity: BrowserIdentity::default(),
+                identity: BrowserIdentity::of_scan("", None),
+                accept: ADS_TXT_ACCEPT,
             };
             assert_eq!(
                 refusal(fetch(&request).await),

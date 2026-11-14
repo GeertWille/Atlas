@@ -1234,6 +1234,14 @@ async fn a_chunk_cut_for_the_reading_guide_is_named_in_the_audit_trail_and_the_r
         "{}",
         warning.message
     );
+    assert!(
+        warning.message.contains(
+            "such a chunk is a single line longer than that (a script that could not be parsed, or a \
+             very long literal)"
+        ),
+        "{}",
+        warning.message
+    );
     assert_eq!(
         warning.data.as_ref().unwrap()["longestChars"],
         json!(length)

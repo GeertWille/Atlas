@@ -13,8 +13,11 @@ use serde_json::json;
 /// The page table shows at most this many page views.
 const MAX_PAGE_ROWS: usize = 8;
 /// A `requestBids` call that Prebid went on with this much later was held
-/// by a hook of its own; less is the time the call itself takes.
+/// by a hook; less is the time the call itself takes.
 const HELD_CALL_MS: f64 = 50.0;
+/// What holds a `requestBids` call. The tracker only sees that it was held,
+/// not by which hook.
+const CALL_HOLDERS: &str = "hooks on requestBids (such as consent management or currency)";
 
 /// Says which records the views below cover and how they are labelled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,21 +374,23 @@ pub fn page_events(capture: &Capture, page: u32) -> String {
                 ad_unit_count,
                 timeout,
                 released_at,
+                still_held,
             } => format!(
                 "pbjs.requestBids called: adUnitCodes=[{}] adUnitsToAuction={} timeout={}{}",
                 ad_unit_codes.join(", "),
                 ad_unit_count.map_or("unknown".to_string(), |count| count.to_string()),
                 ms(*timeout),
-                match released_at {
-                    Some(at) if *at - event.t >= HELD_CALL_MS => format!(
-                        "; Prebid's own hooks (consent management, currency) held it until t={} ({} later)",
+                match (released_at, still_held) {
+                    (Some(at), _) if *at - event.t >= HELD_CALL_MS => format!(
+                        "; {CALL_HOLDERS} held it until t={} ({} later)",
                         ms(Some(*at)),
                         ms(Some(*at - event.t)),
                     ),
-                    Some(_) => String::new(),
-                    None => "; still held by Prebid's own hooks (consent management, currency) when the \
-                             page view ended"
-                        .to_string(),
+                    (None, true) =>
+                        format!("; still held by {CALL_HOLDERS} when the page view ended"),
+                    // Let through at once, or not known (a scan stored
+                    // before releases were recorded).
+                    _ => String::new(),
                 },
             ),
             Ev::AdUnitsAdded { registered } => format!(
@@ -512,7 +517,7 @@ mod tests {
 
     #[test]
     fn the_page_timeline_times_a_bid_request_by_its_call_and_says_how_long_prebid_held_it() {
-        let asked = |t: f64, released_at: Option<f64>| TrackerEvent {
+        let asked = |t: f64, released_at: Option<f64>, still_held: bool| TrackerEvent {
             page: 0,
             t,
             kind: Ev::BidsRequested {
@@ -520,14 +525,22 @@ mod tests {
                 ad_unit_count: Some(1),
                 timeout: Some(900.0),
                 released_at,
+                still_held,
             },
         };
+        // As a scan stored before releases were recorded holds it.
+        let stored_before: TrackerEvent = serde_json::from_value(json!({
+            "page": 0, "t": 3_500.0, "type": "bidsRequested",
+            "adUnitCodes": ["top"], "adUnitCount": 1, "timeout": 900.0,
+        }))
+        .unwrap();
         let capture = Capture::single_page(
             "https://news.example/",
             vec![
-                asked(400.0, Some(1_500.0)),
-                asked(2_500.0, Some(2_500.4)),
-                asked(3_000.0, None),
+                asked(400.0, Some(1_500.0), false),
+                asked(2_500.0, Some(2_500.4), false),
+                asked(3_000.0, None, true),
+                stored_before,
             ],
         );
         let timeline = page_events(&capture, 0);
@@ -537,14 +550,16 @@ mod tests {
             lines,
             [
                 format!(
-                    "t=400ms {call}; Prebid's own hooks (consent management, currency) held it until \
-                     t=1500ms (1100ms later)"
+                    "t=400ms {call}; hooks on requestBids (such as consent management or currency) held \
+                     it until t=1500ms (1100ms later)"
                 ),
                 format!("t=2500ms {call}"),
                 format!(
-                    "t=3000ms {call}; still held by Prebid's own hooks (consent management, currency) when \
-                     the page view ended"
+                    "t=3000ms {call}; still held by hooks on requestBids (such as consent management or \
+                     currency) when the page view ended"
                 ),
+                // Not known: nothing is said about it.
+                format!("t=3500ms {call}"),
             ]
         );
     }

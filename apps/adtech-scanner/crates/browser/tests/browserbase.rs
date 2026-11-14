@@ -1255,6 +1255,51 @@ async fn a_consent_dialog_in_a_frame_of_the_pages_process_is_accepted() {
     );
 }
 
+/// Browserbase answers each command a round trip later, and an ad-heavy
+/// page has dozens of frames: every frame is asked about a consent dialog
+/// at once, not one after the other. Measured at the gateway: how many of
+/// the scanner's isolated-world requests were sent before any was answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_consent_dialog_is_looked_for_in_every_frame_at_once() {
+    let Some(remote) = Remote::start().await else {
+        return;
+    };
+    let fixtures = Fixtures::start().await;
+    let cmp = Fixtures::start().await;
+    let mut request = remote.request(&format!(
+        "{}?cmp={}",
+        fixtures.url("consent-many-frames.html"),
+        cmp.url("")
+    ));
+    request.accept_consent = true;
+    request.observe_seconds = 3;
+
+    let outcome = remote.reported().run(request).await;
+
+    let capture = captured(&outcome);
+    assert!(capture.consent_accepted, "{:#?}", outcome.progress);
+    let session = remote.only_session();
+    let worlds: Vec<(u64, u64)> = session
+        .sent("Page.createIsolatedWorld")
+        .into_iter()
+        .filter(|command| command.params["worldName"] == "adscan")
+        .filter_map(|command| Some((command.sent_at, command.answered_at?)))
+        .collect();
+    // The most requests that were on their way at the same moment.
+    let most_at_once = worlds
+        .iter()
+        .map(|(sent, _)| {
+            worlds
+                .iter()
+                .filter(|(other_sent, other_answered)| other_sent <= sent && other_answered > sent)
+                .count()
+        })
+        .max()
+        .unwrap_or_default();
+    // The page, two dozen ad frames and the consent message's frame.
+    assert!(most_at_once >= 20, "{most_at_once} of {}", worlds.len());
+}
+
 /// A person browses in Browserbase's live view, which is a second client
 /// on the page next to the capture's one. The capture records where they
 /// go, tells the engine when the live view can be opened, keeps the

@@ -1,7 +1,7 @@
 //! Parser for ads.txt files, following the IAB Tech Lab ads.txt 1.1
 //! specification: comments, seller records, variables and extension fields.
 
-use super::excerpt;
+use super::{excerpt, refusal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Relationship {
@@ -75,11 +75,7 @@ pub fn read_response(status: u16, content_type: Option<&str>, body: &[u8]) -> Ad
     match status {
         404 | 410 => return AdsTxtOutcome::Missing,
         200..=299 => {}
-        401 | 403 => {
-            return AdsTxtOutcome::Unreadable(format!(
-                "the site refused the request (HTTP {status})"
-            ));
-        }
+        401 | 403 => return AdsTxtOutcome::Unreadable(refusal(status)),
         other => return AdsTxtOutcome::Unreadable(format!("the site answered HTTP {other}")),
     }
     // Compressed or otherwise binary data would parse as nothing but invalid lines.

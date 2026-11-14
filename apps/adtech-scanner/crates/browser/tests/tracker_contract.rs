@@ -838,19 +838,21 @@ async fn what_the_page_asks_prebid_for_is_reported_and_the_call_goes_on_as_made(
                 ad_unit_codes: vec![],
                 ad_unit_count: None,
                 timeout: None,
-                released_at: released[0],
+                // Whether Prebid's event marks the call or its release
+                // depends on its version: not known.
+                released_at: None,
+                still_held: false,
             },
             &Kind::BidsRequested {
                 ad_unit_codes: strings(&["top", "side"]),
                 ad_unit_count: Some(0),
                 timeout: Some(900.0),
                 released_at: released[1],
+                still_held: false,
             },
         ]
     );
-    // The replayed call is known from the moment Prebid went on with it; no
-    // hook of this page holds a call back.
-    assert_eq!(released[0], Some(asked[0].0));
+    // No hook of this page holds a call back.
     let held_ms = released[1].expect("let through") - asked[1].0;
     assert!((0.0..50.0).contains(&held_ms), "{held_ms}");
     assert_eq!(
@@ -900,7 +902,9 @@ async fn a_bid_request_held_for_consent_is_timed_by_the_call_and_by_its_release(
                 ad_unit_count,
                 timeout,
                 released_at,
+                still_held,
             } => {
+                assert!(!still_held);
                 assert_eq!(
                     (ad_unit_codes, *ad_unit_count, *timeout),
                     (&strings(&["top"]), Some(1), Some(900.0))
@@ -953,19 +957,155 @@ async fn a_bid_request_still_held_when_the_visit_ends_is_reported_as_held() {
     request.observe_seconds = 4;
     let capture = support::capture_ok(request).await;
 
-    let asked: Vec<(f64, Option<f64>)> = bids_requested(&capture)
-        .into_iter()
-        .map(|(t, kind)| match kind {
-            Kind::BidsRequested { released_at, .. } => (t, *released_at),
-            _ => unreachable!(),
-        })
-        .collect();
+    let asked = calls(&capture);
     assert_eq!(asked.len(), 2, "{asked:?}");
-    assert!((400.0..1_000.0).contains(&asked[0].0), "{asked:?}");
-    assert!(asked[1].0 >= 2_500.0, "{asked:?}");
+    assert!((400.0..1_000.0).contains(&asked[0].t), "{asked:?}");
+    assert!(asked[1].t >= 2_500.0, "{asked:?}");
     assert!(
-        asked.iter().all(|(_, released)| released.is_none()),
+        asked
+            .iter()
+            .all(|call| call.released_at.is_none() && call.still_held),
         "{asked:?}"
     );
     assert!(kinds(&capture, "auctionInit").is_empty());
+}
+
+/// One `bidsRequested` event, flattened.
+#[derive(Debug)]
+struct Call {
+    t: f64,
+    codes: Vec<String>,
+    released_at: Option<f64>,
+    still_held: bool,
+}
+
+fn calls(capture: &Capture) -> Vec<Call> {
+    bids_requested(capture)
+        .into_iter()
+        .map(|(t, kind)| match kind {
+            Kind::BidsRequested {
+                ad_unit_codes,
+                released_at,
+                still_held,
+                ..
+            } => Call {
+                t,
+                codes: ad_unit_codes.clone(),
+                released_at: *released_at,
+                still_held: *still_held,
+            },
+            _ => unreachable!(),
+        })
+        .collect()
+}
+
+async fn consent_wait(query: &str) -> Capture {
+    let fixtures = support::Fixtures::start().await;
+    let mut request = support::request(
+        &format!("{}?{query}", fixtures.url("prebid-consent-wait.html")),
+        DeviceProfile::Desktop,
+    );
+    request.visitor = VisitorBehavior::None;
+    request.observe_seconds = 4;
+    support::capture_ok(request).await
+}
+
+/// The hooks of a call are fixed when it is made, so a call already held
+/// when the tracker hooks in passes neither of its hooks. Prebid's event as
+/// it goes on with the call still reports it, once, at its release.
+#[tokio::test]
+async fn a_call_already_held_when_the_tracker_hooks_in_is_reported_when_it_is_let_through() {
+    let capture = consent_wait("late").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    // Made at 0.4 s, before the tracker; known from its release at 1.5 s.
+    assert!((1_500.0..2_000.0).contains(&asked[0].t), "{asked:?}");
+    assert_eq!(asked[0].released_at, Some(asked[0].t), "{asked:?}");
+    assert!(
+        asked[0].codes.is_empty() && !asked[0].still_held,
+        "{asked:?}"
+    );
+    // Made at 2.5 s with the tracker's hooks: timed by the call, with details.
+    assert!(asked[1].t >= 2_500.0, "{asked:?}");
+    assert_eq!(asked[1].codes, strings(&["top"]));
+    assert!(
+        asked[1].released_at.unwrap() - asked[1].t < 50.0,
+        "{asked:?}"
+    );
+    assert_eq!(kinds(&capture, "auctionInit").len(), 2);
+}
+
+/// Prebid 11 emits its event as the call is made, before the hooks. A call
+/// made with the tracker's hooks is reported from them alone; one made
+/// before the tracker subscribed is known from the event history, without
+/// its release.
+#[tokio::test]
+async fn with_prebid_11s_event_order_each_call_is_reported_once() {
+    let capture = consent_wait("order=11").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!((400.0..1_000.0).contains(&asked[0].t), "{asked:?}");
+    assert!(asked[0].released_at.unwrap() >= 1_500.0, "{asked:?}");
+    assert!(asked[1].t >= 2_500.0, "{asked:?}");
+    assert!(
+        asked.iter().all(|call| call.codes == strings(&["top"])),
+        "{asked:?}"
+    );
+
+    let capture = consent_wait("order=11&late").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!((400.0..1_000.0).contains(&asked[0].t), "{asked:?}");
+    assert!(
+        asked[0].released_at.is_none() && !asked[0].still_held,
+        "{asked:?}"
+    );
+    assert_eq!(asked[1].codes, strings(&["top"]));
+}
+
+/// A page that goes into the back/forward cache may come back: what is
+/// held then is not reported as held for good, and its release still is.
+#[tokio::test]
+async fn a_page_put_in_the_back_forward_cache_keeps_its_held_calls_open() {
+    let capture = consent_wait("bfcache").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert!((400.0..1_000.0).contains(&asked[0].t), "{asked:?}");
+    assert!(asked[0].released_at.unwrap() >= 1_500.0, "{asked:?}");
+    assert!(!asked[0].still_held, "{asked:?}");
+}
+
+/// A page that holds its calls for ever: the tracker keeps at most 50 open
+/// and reports the oldest as soon as there are more, with the release not
+/// known; every call is reported once.
+#[tokio::test]
+async fn calls_held_for_ever_are_kept_open_at_most_fifty_at_a_time() {
+    let capture = consent_wait("consent=never&calls=60").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 61, "{asked:?}");
+    assert!(asked.iter().all(|call| call.released_at.is_none()));
+    let unknown = asked.iter().filter(|call| !call.still_held).count();
+    assert_eq!(unknown, 11, "the oldest beyond 50, of 61 calls");
+}
+
+/// A hook that passes calls on with a new options object hides which call
+/// went on when more than one is held: none is given a release it may not
+/// have had, and none is reported twice.
+#[tokio::test]
+async fn when_it_cannot_be_told_which_held_call_went_on_no_release_is_guessed() {
+    let capture = consent_wait("replace").await;
+    let asked = calls(&capture);
+    assert_eq!(asked.len(), 2, "{asked:?}");
+    assert_eq!(asked[0].codes, strings(&["slow"]));
+    assert_eq!(asked[1].codes, strings(&["top"]));
+    assert!((400.0..800.0).contains(&asked[0].t), "{asked:?}");
+    assert!((800.0..1_200.0).contains(&asked[1].t), "{asked:?}");
+    assert!(
+        asked
+            .iter()
+            .all(|call| call.released_at.is_none() && !call.still_held),
+        "{asked:?}"
+    );
+    // Both auctions ran.
+    assert_eq!(kinds(&capture, "auctionInit").len(), 2);
 }

@@ -3,17 +3,23 @@
 //! site treats them like the visit. Sites and their firewalls refuse clients
 //! they do not know, and an app's own name is one of those (found on
 //! `www.mediaimpact.de/sellers.json`, which answers it with a block page).
-//! One identity per scan; nothing rotates.
+//! One identity per scan; nothing rotates. Only the user agent and the
+//! language are the browser's: `Accept` names the file's type, and the
+//! client hints Chrome adds (`sec-ch-ua`) are not sent, so a firewall that
+//! checks for them can still tell these requests from the browser.
 
 /// A desktop Chrome on a Mac, for requests with no scan whose browser could
 /// be copied (a scan whose capture reported no user agent). Chrome's reduced
 /// user agent string: only the major version is real, and it is not checked
 /// against the release calendar here.
-pub const FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+const FALLBACK_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
      AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36";
-/// What Chrome asks for when a person opens an address in a tab.
-pub const BROWSER_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,\
-     image/avif,image/webp,image/apng,*/*;q=0.8";
+/// What is asked for: the file's own type first, then anything. Not what
+/// Chrome sends when a person opens the address in a tab (`text/html`
+/// first): a server that negotiates the content could answer that with a
+/// web page around the file.
+pub const ADS_TXT_ACCEPT: &str = "text/plain,*/*;q=0.8";
+pub const SELLERS_JSON_ACCEPT: &str = "application/json,*/*;q=0.8";
 const FALLBACK_LANGUAGE: &str = "en-US";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,12 +43,6 @@ impl BrowserIdentity {
             },
             accept_language: accept_language(language.unwrap_or(FALLBACK_LANGUAGE)),
         }
-    }
-}
-
-impl Default for BrowserIdentity {
-    fn default() -> Self {
-        Self::of_scan("", None)
     }
 }
 
@@ -81,7 +81,7 @@ mod tests {
         );
         assert_eq!(scan.accept_language, "nl-BE,nl;q=0.9");
 
-        let unknown = BrowserIdentity::default();
+        let unknown = BrowserIdentity::of_scan("", None);
         assert_eq!(unknown.user_agent, FALLBACK_USER_AGENT);
         assert!(unknown.user_agent.contains("Chrome/") && !unknown.user_agent.contains("adtech"));
         assert_eq!(unknown.accept_language, "en-US,en;q=0.9");

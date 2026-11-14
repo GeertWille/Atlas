@@ -429,6 +429,8 @@ pub struct PublicFileRequest {
     pub known_version: Option<FileVersion>,
     /// The browser the request presents itself as: the scan's.
     pub identity: BrowserIdentity,
+    /// The `Accept` header: the type of the file asked for.
+    pub accept: &'static str,
 }
 
 /// The validators of an HTTP answer, as the server stated them.

@@ -481,9 +481,17 @@ pub enum TrackerEventKind {
     /// (then without the details).
     ///
     /// `t` is when the page made the call: the tracker's hook runs ahead of
-    /// every hook of Prebid's modules. For a call taken from Prebid's event
-    /// history, or one made before the tracker hooked in, the moment of the
-    /// call is not known and `t` is `released_at`.
+    /// every hook on the call. Two cases are known only from Prebid's
+    /// `requestBids` event, without the details. A call taken from Prebid's
+    /// event history: `t` is the event's time, and whether that was the call
+    /// or its release depends on the Prebid version, so the release is not
+    /// known. A call made before the tracker hooked in and let through after
+    /// it (the hooks of a call are fixed when it is made): `t` is
+    /// `released_at`, and the moment of the call is not known.
+    ///
+    /// Three states of the release: `released_at` set (let through then),
+    /// `still_held` (not let through when the page view's recording ended),
+    /// neither (not known; also every scan stored before 2026-11-14).
     BidsRequested {
         /// The ad unit codes the call named; empty when it named none or
         /// they are not known.
@@ -495,13 +503,16 @@ pub enum TrackerEventKind {
         ad_unit_count: Option<u32>,
         #[serde(default)]
         timeout: Option<f64>,
-        /// When Prebid went on with the call, after the hooks of its modules
+        /// When Prebid went on with the call, after the hooks on it
         /// (consent management and currency hold it until consent or the
         /// rates are there), in ms into the page view like `t`. Any auction
-        /// starts from here. `None` when the call was still held when the
-        /// page view's recording ended.
+        /// starts from here. `None` when it is not known or did not happen.
         #[serde(default)]
         released_at: Option<f64>,
+        /// The call was still held by a hook when the page view's recording
+        /// ended. Never set together with `released_at`.
+        #[serde(default)]
+        still_held: bool,
     },
     /// `addAdUnits` was called; `registered` is how many ad units Prebid
     /// holds afterwards (`None` when read from the event history).

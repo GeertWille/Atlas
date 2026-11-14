@@ -18,7 +18,7 @@ use crate::application::pipeline::state::{NodeError, NodeResult};
 use crate::application::ports::{FetchError, FetchProxy, PublicFileRequest};
 use crate::application::sellers_json::{Cancelled, Origin, SellersJsonSource};
 use crate::domain::diagnostics::ads_txt::{self, AdsTxt, AdsTxtOutcome};
-use crate::domain::diagnostics::identity::BrowserIdentity;
+use crate::domain::diagnostics::identity::{ADS_TXT_ACCEPT, BrowserIdentity};
 use crate::domain::diagnostics::sellers_cache::utc_day;
 use crate::domain::diagnostics::sellers_json::{self, SellersOutcome};
 use crate::domain::diagnostics::site::{AdsTxtLocation, ads_txt_location, subdomain_ads_txt_url};
@@ -174,6 +174,7 @@ async fn fetch_ads_txt(
         proxy: scan_proxy(run),
         known_version: None,
         identity: scan_identity(run)?,
+        accept: ADS_TXT_ACCEPT,
     };
     let outcome = match run.deps.files.fetch(&request, &run.job.cancel).await {
         Ok(file) => ads_txt::read_response(file.status, file.content_type.as_deref(), &file.body),
@@ -242,12 +243,16 @@ async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<Selle
             Origin::Kept { fetched_at } => {
                 format!("kept copy, fetched {}", age(now - fetched_at))
             }
-            Origin::KeptWhileUnreachable { fetched_at } => format!(
-                "the exchange could not be reached: kept copy, fetched {}",
-                utc_day(fetched_at)
-            ),
-            Origin::KeptOverUnreadableAnswer { fetched_at } => format!(
-                "the exchange's answer was not a valid sellers.json: kept copy, fetched {}",
+            Origin::KeptInstead {
+                fetched_at,
+                because,
+            } => format!(
+                "{}: kept copy, fetched {}",
+                match because {
+                    CopyStoodIn::ExchangeUnreachable => "the exchange could not be reached",
+                    CopyStoodIn::AnswerNotSellersJson =>
+                        "the exchange's answer was not a valid sellers.json",
+                },
                 utc_day(fetched_at)
             ),
         };
@@ -266,16 +271,11 @@ async fn read_sellers_json(run: &mut StepRun<'_>, file: &AdsTxt) -> Result<Selle
             }
         };
         run.info(message).await?;
-        let stood_in = match origin {
-            Origin::KeptWhileUnreachable { fetched_at } => {
-                Some((fetched_at, CopyStoodIn::ExchangeUnreachable))
-            }
-            Origin::KeptOverUnreadableAnswer { fetched_at } => {
-                Some((fetched_at, CopyStoodIn::AnswerNotSellersJson))
-            }
-            Origin::Downloaded | Origin::Confirmed | Origin::Kept { .. } => None,
-        };
-        if let Some((fetched_at, because)) = stood_in {
+        if let Origin::KeptInstead {
+            fetched_at,
+            because,
+        } = origin
+        {
             read.copies.insert(
                 domain.clone(),
                 KeptCopy {

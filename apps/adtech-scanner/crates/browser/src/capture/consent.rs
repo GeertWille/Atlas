@@ -23,7 +23,7 @@ use crate::cdp::CdpError;
 
 use super::error::CaptureError;
 use super::injected::{ConsentAsk, consent_expression};
-use super::page::{Page, SCANNER_WORLD, tolerate_rejection};
+use super::page::{Page, SCANNER_WORLD, evaluation_in_world, tolerate_rejection};
 use super::visitor::Point;
 use super::visitor::motion::Waypoint;
 
@@ -216,19 +216,15 @@ impl Page {
             .zip(worlds.as_array().into_iter().flatten())
             .enumerate()
         {
-            let Some(context) = world["executionContextId"].as_u64() else {
+            // The frame went away meanwhile.
+            if world["executionContextId"].as_u64().is_none() {
                 continue;
-            };
+            }
             asked.push(index);
             looks.push(self.cdp.send(
                 Some(&frame.session_id),
                 "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true,
-                    "awaitPromise": true,
-                    "contextId": context,
-                }),
+                evaluation_in_world(world, &expression),
             ));
         }
         let looks = self.record_until_answered(all_answered(looks)).await?;

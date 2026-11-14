@@ -60,6 +60,10 @@ pub struct Command {
     pub in_session: bool,
     /// How large the message was that answered it; `None` while unanswered.
     pub reply_bytes: Option<usize>,
+    /// Where in the connection's traffic it was sent, and where answered:
+    /// the number of messages the relay had passed on by then.
+    pub sent_at: u64,
+    pub answered_at: Option<u64>,
 }
 
 struct Session {
@@ -648,7 +652,9 @@ async fn relay(connection: TcpStream, service: Arc<Service>) {
     )
     .await
     .expect("the stand-in browser takes the gateway's connection");
+    let mut passed_on = 0u64;
     loop {
+        passed_on += 1;
         tokio::select! {
             biased;
             // Cut: both ends are dropped as they are.
@@ -662,6 +668,8 @@ async fn relay(connection: TcpStream, service: Arc<Service>) {
                             params: command["params"].clone(),
                             in_session: command["sessionId"].is_string(),
                             reply_bytes: None,
+                            sent_at: passed_on,
+                            answered_at: None,
                         });
                     }
                     if browser.send(Message::Text(text)).await.is_err() {
@@ -677,6 +685,7 @@ async fn relay(connection: TcpStream, service: Arc<Service>) {
                         let mut commands = commands.lock().unwrap();
                         if let Some(command) = commands.iter_mut().rev().find(|command| command.id == id) {
                             command.reply_bytes = Some(message.len());
+                            command.answered_at = Some(passed_on);
                         }
                     }
                     if capture.send(message).await.is_err() {

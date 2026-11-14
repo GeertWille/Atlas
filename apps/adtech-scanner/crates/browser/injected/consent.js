@@ -101,8 +101,10 @@
   // A consent wall may offer a paid way out next to the consent option
   // ("read with ads" or "subscribe"). Whatever a control is otherwise, one
   // that names a purchase is never clicked.
+  // Words are bounded by anything but a letter, accented ones included
+  // (Danish `køb`, `abonnér`). `kr` is the Danish and Swedish krone.
   var PURCHASE =
-    /(^|[^a-z])(pur|abo|abos|abonn\w*|subscri\w*|suscri\w*|pay|paid|bezahl\w*|zahlen|kaufen|kopen|buy|acheter|payer|comprar|premium|plus|price|preis|prijs|prix)([^a-z]|$)|[€$£]/i;
+    /(^|[^a-z\u00c0-\u024f])(pur|abo|abos|abonn[a-z\u00c0-\u024f]*|subscri[a-z\u00c0-\u024f]*|suscri[a-z\u00c0-\u024f]*|pay|paid|bezahl[a-z\u00c0-\u024f]*|zahlen|kaufen|kopen|buy|acheter|payer|comprar|køb[a-z\u00c0-\u024f]*|betal[a-z\u00c0-\u024f]*|kr\.?|premium|plus|price|preis|prijs|prix)([^a-z\u00c0-\u024f]|$)|[€$£]/i;
   var CONSENT_CONTEXT = /cookie|consent|privacy|gdpr|rgpd|datenschutz|privacidad|confidentialit|cmp/i;
   var CLICKABLE = 'button, [role="button"], a, input[type="button"], input[type="submit"]';
 
@@ -212,12 +214,26 @@
     return inContext;
   }
 
-  // A container that is laid out but empty, or hidden, is no dialog to
-  // report: a consent platform keeps its container on pages where it shows
-  // nothing.
-  function isShowing(element) {
+  function hasBox(element) {
     var box = element.getBoundingClientRect();
     return box.width > 0 && box.height > 0 && getComputedStyle(element).visibility !== 'hidden';
+  }
+
+  // A dialog shows when it, or something in it, has a box on the screen: a
+  // platform's container may have no height itself and hold the dialog in a
+  // fixed child. A container that is empty, or hidden, is no dialog to
+  // report: a consent platform keeps its container on pages where it shows
+  // nothing.
+  var MAX_DESCENDANTS_LOOKED_AT = 500;
+  function isShowing(element) {
+    if (hasBox(element)) return true;
+    var inside = Array.prototype.slice.call(element.querySelectorAll('*'), 0, MAX_DESCENDANTS_LOOKED_AT);
+    if (element.shadowRoot) {
+      inside = inside.concat(
+        Array.prototype.slice.call(element.shadowRoot.querySelectorAll('*'), 0, MAX_DESCENDANTS_LOOKED_AT)
+      );
+    }
+    return inside.some(hasBox);
   }
 
   function findDialog(roots) {

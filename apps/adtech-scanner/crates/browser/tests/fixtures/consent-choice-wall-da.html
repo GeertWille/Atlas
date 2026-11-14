@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Consent: consent or pay, in Danish</title><link rel="icon" href="data:,"></head>
+<body>
+<div id="cookie-wall" role="dialog" aria-label="Cookies og privatliv">
+  <p>Læs med annoncer og cookies, eller køb adgang uden.</p>
+  <button onclick="console.log('WRONG buy')" title="Accepter alle">Køb adgang</button>
+  <button onclick="console.log('WRONG pay')" title="Godkend">Betal 39 kr. om måneden</button>
+  <button onclick="console.log('WRONG price')" title="Tillad alle">Læs uden annoncer for 39 kr.</button>
+  <button onclick="console.log('WRONG settings')">Indstillinger</button>
+  <button onclick="this.parentNode.remove(); console.log('CONSENT accepted')">Accepter og luk</button>
+</div>
+</body></html>

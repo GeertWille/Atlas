@@ -101,7 +101,9 @@
   }
 
   // What is held back until it is complete goes out as it stands when the
-  // scanner asks for everything, or the page goes away.
+  // scanner asks for everything (once, at the end of the capture), or the
+  // page goes away. A page put into the back/forward cache has not gone
+  // away: it may be restored and go on.
   var beforeFinalFlush = [];
   function flushEverything() {
     for (var i = 0; i < beforeFinalFlush.length; i++) guard(beforeFinalFlush[i])();
@@ -109,7 +111,18 @@
   }
 
   win.addEventListener('__adscan_flush', flushEverything);
-  win.addEventListener('pagehide', flushEverything);
+  win.addEventListener('pagehide', function (event) {
+    if (event && event.persisted) flush();
+    else flushEverything();
+  });
+
+  // Runs `fn` once the current task is done, before the page's next task.
+  var afterThisTask =
+    typeof win.queueMicrotask === 'function'
+      ? win.queueMicrotask.bind(win)
+      : function (fn) {
+          win.Promise.resolve().then(fn);
+        };
 
   // ------------------------------------------------------------------ values
 
@@ -378,16 +391,28 @@
   // is 10, consentManagement and currency hook `requestBids` at 50, debugging
   // at 99 and percentInView at 100. A hook ahead of all of them sees the call
   // when the page makes it; one behind all of them sees when Prebid goes on
-  // with it, after whatever its modules waited for (consent, currency rates).
+  // with it, after whatever was waited for (consent, currency rates). The
+  // hooks of a call are fixed when it is made (fun-hooks copies the list):
+  // a call made before the tracker hooked in passes neither hook.
   var FIRST_HOOK_PRIORITY = 1e6;
   var LAST_HOOK_PRIORITY = -1e6;
-  // Calls seen by the first hook and not yet by the last, oldest first.
+  // Calls seen by the first hook and not yet by the last, oldest first. A
+  // page that holds calls for ever cannot grow it past this.
+  var MAX_HELD_BID_REQUESTS = 50;
   var heldBidRequests = [];
+  // Prebid's `requestBids` event says that there was a call, never with
+  // what. Prebid 11 emits it as the call is made, before the hooks; older
+  // builds emitted it as the call went on, after them. A live event is
+  // reported only when no hook of the tracker accounts for it: neither the
+  // first hook right after it (the call was made with the tracker's hooks)
+  // nor the last hook right before it (that call was just let through).
+  var unclaimedEvents = [];
+  var releasesInThisTask = [];
 
   // What the page asks Prebid for is only in the arguments of `requestBids`;
   // the event Prebid emits for the call carries none. Prebid's own hook on
   // the function (the one its modules use) shows them. The call goes on
-  // exactly as made, whatever happens here.
+  // with exactly the arguments and receiver it was made with.
   function watchBidRequests(instance) {
     var request = instance.requestBids;
     if (typeof request !== 'function' || typeof request.before !== 'function') return;
@@ -418,56 +443,111 @@
       adUnitCount: isArray(asked.adUnits) ? asked.adUnits.length : registeredAdUnits(instance),
       timeout: num(asked.timeout),
       releasedAt: null,
+      stillHeld: false,
     };
   }
 
+  // A held call reported before it was let through: when it was made, and
+  // either that it is still held or that its release is not known.
+  function reportHeld(held, stillHeld) {
+    held.fields.stillHeld = stillHeld;
+    emit('bidsRequested', held.fields, held.at);
+  }
+
   function holdBidsRequested(instance, options) {
+    for (var i = 0; i < unclaimedEvents.length; i++) {
+      if (unclaimedEvents[i].instance === instance && !unclaimedEvents[i].claimed) {
+        unclaimedEvents[i].claimed = true;
+        break;
+      }
+    }
+    if (heldBidRequests.length >= MAX_HELD_BID_REQUESTS) reportHeld(heldBidRequests.shift(), false);
     heldBidRequests.push({
       instance: instance,
       options: options,
       at: now(),
       fields: bidsRequestedFields(instance, options),
-      reported: false,
+      // Another call's release could have been this one's.
+      ambiguous: false,
     });
   }
 
-  // Hooks pass the call's options object on, so it names the call; a hook
-  // that passed another one on still releases the instance's oldest call.
+  // Hooks pass the call's options object on, so it names the call. A hook
+  // that passed another one on leaves it to the instance's one held call;
+  // with several, which one went on is not known.
   function releaseBidsRequested(instance, options) {
-    var found = -1;
+    releasesInThisTask.push(instance);
+    if (releasesInThisTask.length === 1) {
+      afterThisTask(function () {
+        releasesInThisTask = [];
+      });
+    }
+    var exact = -1;
+    var candidates = [];
     for (var i = 0; i < heldBidRequests.length; i++) {
-      var candidate = heldBidRequests[i];
-      if (candidate.instance !== instance) continue;
-      if (candidate.options === options) {
-        found = i;
+      if (heldBidRequests[i].instance !== instance) continue;
+      if (heldBidRequests[i].options === options) {
+        exact = i;
         break;
       }
-      if (found < 0 && !candidate.reported) found = i;
+      candidates.push(i);
     }
+    if (exact < 0 && candidates.length === 1) exact = candidates[0];
     var releasedAt = now();
-    if (found < 0) {
-      // The call was made before the tracker hooked in.
+    if (exact < 0 && candidates.length) {
+      for (var c = 0; c < candidates.length; c++) heldBidRequests[candidates[c]].ambiguous = true;
+      return;
+    }
+    if (exact < 0) {
+      // Not seen by the first hook: already reported because too many calls
+      // were held, or the hooks changed under a running call (fun-hooks
+      // copies them when the call is made).
       var fields = bidsRequestedFields(instance, options);
       fields.releasedAt = tenths(releasedAt);
       emit('bidsRequested', fields, releasedAt);
       return;
     }
-    var held = heldBidRequests.splice(found, 1)[0];
-    // Reported as still held when the page went away: once is enough.
-    if (held.reported) return;
+    var held = heldBidRequests.splice(exact, 1)[0];
     held.fields.releasedAt = tenths(releasedAt);
     emit('bidsRequested', held.fields, held.at);
   }
 
   function reportHeldBidRequests() {
-    for (var i = 0; i < heldBidRequests.length; i++) {
-      var held = heldBidRequests[i];
-      if (held.reported) continue;
-      held.reported = true;
-      emit('bidsRequested', held.fields, held.at);
-    }
+    var held = heldBidRequests;
+    heldBidRequests = [];
+    for (var i = 0; i < held.length; i++) reportHeld(held[i], !held[i].ambiguous);
   }
   beforeFinalFlush.push(reportHeldBidRequests);
+
+  // A live `requestBids` event of an instance whose calls the tracker hooks.
+  function onRequestBidsEvent(instance) {
+    var released = releasesInThisTask.indexOf(instance);
+    if (released >= 0) {
+      releasesInThisTask.splice(released, 1);
+      return;
+    }
+    var event = { instance: instance, at: now(), claimed: false };
+    unclaimedEvents.push(event);
+    afterThisTask(
+      guard(function () {
+        unclaimedEvents.splice(unclaimedEvents.indexOf(event), 1);
+        if (event.claimed) return;
+        // A call made before the tracker hooked in, let through now: the
+        // event comes as Prebid goes on with it.
+        emit(
+          'bidsRequested',
+          {
+            adUnitCodes: [],
+            adUnitCount: registeredAdUnits(instance),
+            timeout: null,
+            releasedAt: tenths(event.at),
+            stillHeld: false,
+          },
+          event.at
+        );
+      })
+    );
+  }
 
   function moduleNames(modules) {
     var names = [];
@@ -488,18 +568,22 @@
     var live = num(at) === null;
     switch (eventType) {
       case 'requestBids':
-        if (live && watchedRequests.has(instance)) break;
-        // Prebid emits this as it goes on with the call, after its hooks.
-        var releasedAt = live ? now() : at;
+        if (live && watchedRequests.has(instance)) {
+          onRequestBidsEvent(instance);
+          break;
+        }
+        // When Prebid emits this, at the call or at its release, depends on
+        // its version: the release is not known.
         emit(
           'bidsRequested',
           {
             adUnitCodes: [],
             adUnitCount: live ? registeredAdUnits(instance) : null,
             timeout: null,
-            releasedAt: tenths(releasedAt),
+            releasedAt: null,
+            stillHeld: false,
           },
-          releasedAt
+          at
         );
         break;
       case 'addAdUnits':

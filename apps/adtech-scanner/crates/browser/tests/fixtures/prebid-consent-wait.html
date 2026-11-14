@@ -3,32 +3,49 @@
 <body>
 <script>
 // A stand-in for Prebid whose `requestBids` hooks run as fun-hooks runs them:
-// highest priority first, 10 when none is given. Its consent management hooks
-// the call at 50, as Prebid's consentManagement module does, and holds every
-// call until consent is given: at 1.5 s, or never with `?consent=never`.
-(function () {
+// highest priority first, 10 when none is given, and the hooks of a call
+// fixed when the call is made. Its consent management hooks the call at 50,
+// as Prebid's consentManagement module does, and holds every call until
+// consent is given: at 1.5 s, at once with `consent=now`, or never with
+// `consent=never`.
+//
+// Other variants, by query parameter:
+//   order=11  the `requestBids` event is emitted as the call is made, before
+//             the hooks, as Prebid 11 does; otherwise as the call goes on,
+//             after them, as older builds did.
+//   late      `window.pbjs` is only set at 1 s, so the tracker hooks in while
+//             the first call is held.
+//   bfcache   at 1 s the page says it goes into the back/forward cache
+//             (`pagehide` with `persisted`), and goes on.
+//   calls=N   N calls before consent instead of one.
+//   replace   a hook of the page's at 20 passes every call on with a new
+//             options object, and holds the call for the `slow` ad unit
+//             until 3 s; the calls are for `slow` at 0.4 s and `top` at 0.8 s.
+var query = new URLSearchParams(location.search);
+var prebid = (function () {
   var handlers = {};
   var history = [];
   function emit(eventType, args) {
     history.push({ eventType: eventType, args: args, elapsedTime: performance.now() });
     (handlers[eventType] || []).forEach(function (handler) { handler(args); });
   }
-  var pbjs = (window.pbjs = {
-    version: '10.25.0',
+  var eventFirst = query.get('order') === '11';
+  var pbjs = {
+    version: eventFirst ? '11.49.0' : '10.25.0',
     installedModules: ['consentManagementTcf'],
     adUnits: [],
     onEvent: function (eventType, handler) { (handlers[eventType] = handlers[eventType] || []).push(handler); },
     getEvents: function () { return history.slice(); },
     setConfig: function () {},
     getConfig: function () { return {}; },
-  });
+  };
   pbjs.addAdUnits = function (units) {
     [].concat(units || []).forEach(function (unit) { pbjs.adUnits.push(unit); });
     emit('addAdUnits');
   };
   var auctions = 0;
   function requestBids(options) {
-    emit('requestBids');
+    if (!eventFirst) emit('requestBids');
     var units = options.adUnits || pbjs.adUnits;
     var auctionId = 'auction-' + ++auctions;
     emit('auctionInit', { auctionId: auctionId, timeout: options.timeout, adUnits: units });
@@ -36,11 +53,13 @@
   }
   var befores = [];
   pbjs.requestBids = function () {
+    if (eventFirst) emit('requestBids');
     var self = this;
+    var order = befores.slice();
     var next = 0;
     (function run() {
       var args = [].slice.call(arguments);
-      if (next < befores.length) befores[next++].hook.apply(self, [run].concat(args));
+      if (next < order.length) order[next++].hook.apply(self, [run].concat(args));
       else requestBids.apply(self, args);
     }).apply(null, arguments);
   };
@@ -49,24 +68,49 @@
     befores.sort(function (a, b) { return b.priority - a.priority; });
   };
 
-  var consentGiven = false;
+  var consentGiven = query.get('consent') === 'now';
   var waiting = [];
   pbjs.requestBids.before(function (next, options) {
     if (consentGiven) return next.call(this, options);
     var self = this;
     waiting.push(function () { next.call(self, options); });
   }, 50);
-  if (location.search.indexOf('consent=never') < 0) {
+  if (!consentGiven && query.get('consent') !== 'never') {
     setTimeout(function () {
       consentGiven = true;
       waiting.splice(0).forEach(function (release) { release(); });
     }, 1500);
   }
+  if (query.has('replace')) {
+    pbjs.requestBids.before(function (next, options) {
+      var self = this;
+      var copy = Object.assign({}, options);
+      if ((options.adUnitCodes || []).indexOf('slow') < 0) return next.call(self, copy);
+      setTimeout(function () { next.call(self, copy); }, 3000 - performance.now());
+    }, 20);
+  }
+  return pbjs;
 })();
 
-// The wrapper asks for bids before consent is given, and again after.
-pbjs.addAdUnits([{ code: 'top', mediaTypes: { banner: { sizes: [[728, 90]] } }, bids: [] }]);
-setTimeout(function () { pbjs.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 400);
-setTimeout(function () { pbjs.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 2500);
+if (query.has('late')) setTimeout(function () { window.pbjs = prebid; }, 1000);
+else window.pbjs = prebid;
+if (query.has('bfcache')) {
+  setTimeout(function () {
+    window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+  }, 1000);
+}
+
+prebid.addAdUnits([{ code: 'top', mediaTypes: { banner: { sizes: [[728, 90]] } }, bids: [] }]);
+if (query.has('replace')) {
+  setTimeout(function () { prebid.requestBids({ adUnitCodes: ['slow'], timeout: 900 }); }, 400);
+  setTimeout(function () { prebid.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 800);
+} else {
+  // The wrapper asks for bids before consent is given, and again after.
+  var calls = Number(query.get('calls')) || 1;
+  setTimeout(function () {
+    for (var i = 0; i < calls; i++) prebid.requestBids({ adUnitCodes: ['top'], timeout: 900 });
+  }, 400);
+  setTimeout(function () { prebid.requestBids({ adUnitCodes: ['top'], timeout: 900 }); }, 2500);
+}
 </script>
 </body></html>

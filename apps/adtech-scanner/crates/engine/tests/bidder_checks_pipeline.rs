@@ -497,7 +497,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
         [
             (
                 DiagnosticStatus::NotChecked,
-                "The sellers.json of appnexus.com could not be read: the site refused the request: it answered with a web page instead of the file"
+                "The sellers.json of appnexus.com could not be read: the site answered with a web page instead of the file"
             ),
             (
                 DiagnosticStatus::NotChecked,
@@ -508,7 +508,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
     assert_eq!(
         lookup_lines(&harness, &detail).await,
         [
-            "sellers.json of appnexus.com could not be read: the site refused the request: it answered with a web page instead of the file",
+            "sellers.json of appnexus.com could not be read: the site answered with a web page instead of the file",
             "sellers.json of rubiconproject.com could not be read: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
         ]
     );
@@ -521,7 +521,7 @@ async fn an_exchange_that_serves_a_web_page_is_reported_as_unreadable_never_as_s
     assert_eq!(
         lookup_lines(&harness, &again).await,
         [
-            "sellers.json of appnexus.com could not be read less than a minute ago: the site refused the request: it answered with a web page instead of the file",
+            "sellers.json of appnexus.com could not be read less than a minute ago: the site answered with a web page instead of the file",
             "sellers.json of rubiconproject.com could not be read less than a minute ago: the file is not valid sellers.json (EOF while parsing a string at line 1 column 51)",
         ]
     );

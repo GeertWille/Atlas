@@ -385,29 +385,63 @@ async fn both_generations_of_the_usercentrics_dialog_are_accepted() {
 #[tokio::test]
 async fn an_empty_consent_platform_container_is_not_reported_as_a_dialog() {
     let fixtures = Fixtures::start().await;
-    let mut request = accepting(&format!(
-        "{}?version=empty",
-        fixtures.url("consent-usercentrics.html")
-    ));
-    request.observe_seconds = 4;
+    // Usercentrics' empty host, which no dialog selector names, and an empty
+    // Quantcast container, which the platform's dialog selector does name:
+    // only its having no box keeps it from being reported.
+    for fixture in ["consent-usercentrics.html", "consent-wrapper.html"] {
+        let mut request = accepting(&format!("{}?version=empty", fixtures.url(fixture)));
+        request.observe_seconds = 4;
+        let outcome = support::run(request).await;
+        let capture = captured(&outcome);
+
+        assert!(!capture.consent_accepted, "{fixture}");
+        assert_eq!(console_of(capture), Vec::<&str>::new(), "{fixture}");
+        assert!(
+            capture.consent_notes.is_empty(),
+            "{fixture}: {:?}",
+            capture.consent_notes
+        );
+        assert!(
+            !outcome
+                .progress
+                .iter()
+                .any(|line| line.contains("Consent banner detected")),
+            "{fixture}: {:#?}",
+            outcome.progress
+        );
+    }
+}
+
+/// A platform's container without height of its own, its dialog in a fixed
+/// child: the dialog is showing, and one without an accept option is noted.
+#[tokio::test]
+async fn a_dialog_in_a_container_without_height_is_showing() {
+    let fixtures = Fixtures::start().await;
+    let mut request = accepting(&fixtures.url("consent-wrapper.html"));
+    request.observe_seconds = 5;
     let outcome = support::run(request).await;
     let capture = captured(&outcome);
 
     assert!(!capture.consent_accepted);
     assert_eq!(console_of(capture), Vec::<&str>::new());
-    assert!(
-        capture.consent_notes.is_empty(),
-        "{:?}",
-        capture.consent_notes
+    let notes: Vec<(ConsentNoteKind, &str)> = capture
+        .consent_notes
+        .iter()
+        .map(|note| (note.kind, note.banner.as_str()))
+        .collect();
+    assert_eq!(
+        notes,
+        [(
+            ConsentNoteKind::DialogWithoutAccept,
+            "Quantcast / InMobi Choice"
+        )]
     );
-    assert!(
-        !outcome
-            .progress
-            .iter()
-            .any(|line| line.contains("Consent banner detected")),
-        "{:#?}",
-        outcome.progress
-    );
+}
+
+#[tokio::test]
+async fn consent_or_pay_in_danish_gets_the_consent_and_never_the_purchase() {
+    let clicked = scan("consent-choice-wall-da.html", true).await;
+    assert_accepted(&clicked, "button \"accepter og luk\"", "accepter og luk");
 }
 
 #[tokio::test]

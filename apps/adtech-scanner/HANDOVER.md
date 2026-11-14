@@ -764,12 +764,15 @@ What the backend guarantees about it:
   consent platform on a subdomain of the publisher, as Sourcepoint on bild.de) and out-of-process
   iframes, each in the scanner's isolated world. All frames are asked in one go (two round trips to
   the browser, however many frames), which matters on Browserbase: asked one by one, bild.de's
-  frames took about 10 s per look from a machine 120 ms away. What to press comes from one table of
+  frames took about 10 s per look from a machine 120 ms away (test:
+  `the_consent_dialog_is_looked_for_in_every_frame_at_once` in `tests/browserbase.rs`, which counts
+  the requests on their way at once at the stand-in's gateway). What to press comes from one table of
   platforms (`PLATFORMS` in consent.js; a row there, a row in `tests/consent.rs` and one in
   `fixtures/consent-platforms.html` adds a platform) and from labels that plainly mean "accept all" in
   en/nl/de/fr/es/it/pt/da, read from text, `aria-label` and `title`. A control whose name mentions a
-  purchase (PUR, Abo, subscribe, pay, a price) is never pressed, so on a consent-or-pay wall only the
-  consent option is. The control is pressed with a real click at its place on the screen once
+  purchase (PUR, Abo, subscribe, pay, Danish køb/betal, a price in €, $, £ or kr) is never pressed,
+  so on a consent-or-pay wall only the consent option is (words are bounded by any non-letter,
+  accented letters counting as letters; fixture `consent-choice-wall-da.html`). The control is pressed with a real click at its place on the screen once
   `DOM.getNodeForLocation` confirms that its frame is what is there; otherwise from script. It is looked
   for twice a second for ten seconds after the page loaded, then every two seconds for as long as the
   page view is watched. The audit trail says what was pressed (`Accepted the consent banner
@@ -777,8 +780,10 @@ What the backend guarantees about it:
   `Capture.consentNotes` records what the scanner did (`accepted`) or could not do
   (`dialogWithoutAccept`, also a `blocked` entry with reason `consent`: "Consent banner detected
   (Cookiebot), automatic accept failed: nothing in it plainly means "accept all", so it was left
-  alone"). A platform's dialog counts as showing only when it has a box on the screen: Usercentrics
-  keeps its (empty, zero-height) host element on pages where it asks nothing.
+  alone"). A platform's dialog counts as showing only when it, or an element in it (its open shadow
+  tree included, the first 500 of each), has a box on the screen: Usercentrics keeps its (empty,
+  zero-height) host element on pages where it asks nothing, while a container may have no height
+  itself and hold the dialog in a fixed child (fixture `consent-wrapper.html`, both cases).
 - **Consent on real sites** (2026-11-14, ticket #3; local Chromium from a US address and Browserbase
   eu-central-1, bild.de through a Browserbase proxy in DE). Accepted, with `__tcfapi` reporting
   `useractioncomplete` and all 11 purposes (or the platform's cookie where it is not TCF) and ad
@@ -795,8 +800,11 @@ What the backend guarantees about it:
   (seen once, from the US, not checked from the EU). The opt-in test `tests/consent_live.rs` repeats
   a visit and prints what was found, pressed and reported (see its header for the variables).
   Looking starts only after the page loaded, so on a slow page the dialog can be up for a few seconds
-  before it is pressed (bild.de through the residential proxy: shown at 14.5 s, pressed at 18.3 s);
-  the engine's "the dialog was not there to accept earlier" overstates that case.
+  before it is pressed (bild.de through the residential proxy: shown at 14.5 s, pressed at 18.3 s).
+  The engine's account of a late acceptance says so: with the platform's `cmpuishown` at least 1 s
+  before the press, "The consent platform reported the dialog from 14.5 s; the scanner only starts
+  looking for a dialog once the page has loaded", otherwise "... so it may have been showing
+  earlier" (until 2026-11-14 it said "the dialog was not there to accept earlier").
 - **Consent the scan did not give.** The engine combines those notes with what the consent platform
   reports (`TcfState`): `domain/consent_wait.rs` says per page view whether the scanner gave consent,
   someone else did (a person, in a visible browser) and when, or nobody. Where bidding on a page view
@@ -810,18 +818,38 @@ What the backend guarantees about it:
   `requestBids.before` hook, and `addAdUnits` calls (`adUnitsAdded`); calls made before it subscribed
   are replayed from `pbjs.getEvents()` without those details. Prebid's hooks (fun-hooks) run the
   highest priority first: consentManagement and currency hook the call at 50, debugging at 99,
-  percentInView at 100, the default is 10. The tracker hooks it twice (2026-11-14, ticket #8): at
-  priority 1e6, ahead of all of them, so the event's `t` is when the page made the call, and at -1e6,
-  behind all of them, which gives `releasedAt`: when Prebid went on with the call, after a consent or
-  currency wait. A call still held when the page goes away or the capture ends is reported then, with
-  `releasedAt` empty. Before, the tracker's one hook ran at the default 10, after the consent wait, and
-  `t` was the release time; scans stored before keep that `t` and have no `releasedAt`. Who reads it:
+  percentInView at 100, the default is 10; and the hooks of a call are fixed when it is made
+  (fun-hooks 1.1.0 copies its list per call, read in its source). The tracker hooks it twice
+  (2026-11-14, ticket #8): at priority 1e6, ahead of all of them, so the event's `t` is when the page
+  made the call, and at -1e6, behind all of them, which gives `releasedAt`: when Prebid went on with
+  the call, after a consent or currency wait. The release has three states (`releasedAt`, `stillHeld`,
+  or neither = not known):
+  - a call still held when the page goes away or the capture ends is reported then with `stillHeld`
+    (a `pagehide` into the back/forward cache is not the end: the page may come back and go on);
+  - at most 50 calls are kept open; beyond that the oldest is reported at once with the release not
+    known;
+  - a hook may pass the call on with a new options object, which is how the two hooks tell calls
+    apart: with one call of that Prebid held it is that one, with several it is not known which went
+    on, so none is given a release (their release is reported as not known at the end);
+  - Prebid's `requestBids` event: Prebid 11 emits it as the call is made, before the hooks (read in
+    the 11.49.0 source, `src/prebid.ts`); older builds emitted it as the call went on, after them (not
+    checked against a given version). A call taken from the event history therefore has its release
+    not known. A live event that no hook of the tracker accounts for (neither the first hook right
+    after it nor the last hook right before it, in the same task) is a call made before the tracker
+    hooked in and let through now, in the older order: it is reported with `t` = `releasedAt` = the
+    event, without details.
+  Before, the tracker's one hook ran at the default 10, after the consent wait, and `t` was the release
+  time; scans stored before keep that `t` and have neither field, so their release reads as not known.
+  `stillHeld` is a model field with a default (stored scans read), and tracker events are not exported
+  to TypeScript, so no binding changed. Who reads it:
   `bids-requested-without-ad-units` (when the page asked, in its evidence; which page view the call
   is on), the gate rule's stand-down (only that such a call exists), and the Phase 2 page timeline
-  (the call, and how long Prebid's hooks held it). `bidding-waited-for-consent` and the auction
-  timings read `auctionInit` and the consent platform, not this event, and are unchanged. Test:
-  `tracker_contract.rs`, fixture `prebid-consent-wait.html` (consent hook at 50 holding the call 1.1 s;
-  fails with the old priority). The rule
+  (the call, and how long "hooks on requestBids (such as consent management or currency)" held it, or
+  that they still held it; nothing for a release not known). `bidding-waited-for-consent` and the
+  auction timings read `auctionInit` and the consent platform, not this event, and are unchanged.
+  Test: `tracker_contract.rs`, fixture `prebid-consent-wait.html` (consent hook at 50 holding the call
+  1.1 s, which fails with the old priority; variants for Prebid 11's event order, a tracker that hooks
+  in late, the back/forward cache, 60 calls held for ever, and a hook that replaces the options). The rule
   `bids-requested-without-ad-units` (high) fires when bids were asked for with zero ad units and no
   auction ran on that page view: the wrapper dropped every ad unit, usually because it filtered out
   every bidder for this visitor. The gate rule stands down for it. Both events are in the Phase 2
@@ -1181,14 +1209,17 @@ The site's ads.txt leaves through the scan's proxy choice, a sellers.json throug
 answered that with a redirect to a firewall block page (`/RUNCLOUD-8G-WAF-BLOCKED`) while serving the
 file to a browser. Now every request of the fetcher (ads.txt, a `SUBDOMAIN=` ads.txt, sellers.json)
 sends the user agent the scan's own browser reported (`Capture.user_agent`, with `HeadlessChrome/`
-written as `Chrome/`, the one change), `Accept` as Chrome sends it for a page opened in a tab, and
+written as `Chrome/`, the one change), an `Accept` for the file's type (`text/plain,*/*;q=0.8` for
+ads.txt, `application/json,*/*;q=0.8` for sellers.json; not Chrome's `text/html,...` for a page opened
+in a tab, which a server that negotiates the content could answer with a web page), and
 `Accept-Language` from the browser's language where the capture knows it (Browserbase reports it) or
 `en-US,en;q=0.9`. A scan whose capture reported no user agent uses a desktop Chrome on a Mac
 (`domain/diagnostics/identity.rs::FALLBACK_USER_AGENT`, Chrome 153: the version of the test
 Chromium, not checked against Chrome's release calendar). One identity per scan, no rotation. The
 API clients (Anthropic, TypeSafe, Browserbase) still send `adtech-scanner/<version>`. Tests:
 `tests/public_files.rs` (a server that sends other clients to a block page), `tests/sellers_json_source.rs`
-(the shared download carries the asking scan's identity), `tests/bidder_checks_pipeline.rs`. Not tried
+(six scans in different languages share one download, which carries the language of the scan whose
+turn it was), `tests/bidder_checks_pipeline.rs`. Not tried
 against `www.mediaimpact.de` itself from here.
 
 ### sellers.json cache
@@ -1213,8 +1244,14 @@ new default; tested against test doubles and a mock server only, never against a
   this scan)". When the copy stands in for an answer that was not a sellers.json (next point), it ends
   with "...: the exchange answered during this scan, but not with a valid sellers.json)" instead, and
   the audit trail says "the exchange's answer was not a valid sellers.json: kept copy" (`Origin::
-  KeptOverUnreadableAnswer`, 2026-11-14; before, it said "could not be reached"). Nothing older than 7 days is ever used. Any other answer (404, 403) is believed and
-  replaces the kept file.
+  KeptInstead` with `CopyStoodIn::AnswerNotSellersJson`, 2026-11-14; before, it said "could not be
+  reached"). Nothing older than 7 days is ever used. HTTP 401 and 403 count as such an answer too:
+  a refusal may be of one scan's browser only (a firewall that turns one user agent away, now that
+  each scan sends its own), so it leaves a kept copy in place and is never remembered as a failed
+  lookup; without a copy the scan that was refused reads "the site refused the request (HTTP 403)"
+  and the next scan asks for itself (since 2026-11-14; before, a 403 replaced the kept file and was
+  handed to every scan for an hour). Any other answer (404, 410, other 4xx) is believed and replaces
+  the kept file.
 - **Only a sellers.json is kept as one.** A 2xx answer is kept as a file only when the lookup's own
   parser can read it (`domain/diagnostics/sellers_json.rs::check_readable`, which is `find_sellers`
   asked for no id). A web page, a challenge page, a soft 404, JSON without a `sellers` array or a
@@ -1223,9 +1260,15 @@ new default; tested against test doubles and a mock server only, never against a
   with the same note on its checks, and the exchange is asked again by the next scan; without such a
   file the answer is remembered as a failed lookup for 1 hour and the check reads "The sellers.json
   of <exchange> could not be read: the file is not valid sellers.json (...)", never "seller id not
-  listed". A web page (announced as HTML, or starting with a tag, after any redirect: a firewall's
-  block page, a challenge) reads "the site refused the request: it answered with a web page instead
-  of the file"; HTTP 401 and 403 read "the site refused the request (HTTP 403)", for ads.txt too. A kept file is checked the same way every time it is read: one that is not a sellers.json
+  listed". An answer that does not parse and is a web page (announced as HTML, or starting with a
+  tag, after any redirect: a firewall's block page, a challenge, a redirect to the home page, a "not
+  found" page served with 200) reads "the site answered with a web page instead of the file", the
+  same neutral wording as ads.txt's, since which of these it is cannot be told; "refused" is kept for
+  HTTP 401 and 403 ("the site refused the request (HTTP 403)", for ads.txt too, one function in
+  `domain/diagnostics/mod.rs`). A body that parses is a sellers.json whatever its `Content-Type`
+  (some hosts announce every file as `text/html`). Tests: `tests/sellers_json_validity.rs` (a block
+  page behind a redirect read end to end, a valid file served as `text/html`),
+  `tests/sellers_json_source.rs` (401 and 403). A kept file is checked the same way every time it is read: one that is not a sellers.json
   (kept by a build from before 2026-11-13) counts as no entry, its version is not asked about, it
   is never used in place of an unreachable exchange, and the exchange's answer replaces it. A 304
   only renews a kept file: the cache refuses to move the date of a failed lookup
@@ -1281,7 +1324,8 @@ Jev. The switch enables two things:
   from one real run (2026-11-12, 15 requests, 33,847 tokens, $0.0014, 0.65 s) and are provisional.
   Requests stay one part each: at that cost and latency batching scripts would gain nothing.
 - **Reading guide.** After Beautify, chunks of the scripts selected for Phase 2 (about 160 lines each,
-  at most 8,000 characters; a chunk that is one longer line, as a script that could not be parsed
+  at most 8,000 characters; a chunk that is one longer line, as a script that could not be parsed or a
+  very long literal
   leaves after the fallback reflow, is shown to Jev cut to its first 8,000 characters: the request
   says so in `state.script.cut` and the step logs a warning per script with the number of cut chunks
   and the longest, since 2026-11-14; before, the cut was silent; at most 60 chunks per scan) get

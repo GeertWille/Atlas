@@ -75,7 +75,8 @@ pub(super) async fn build(
         let record = &run.state.scripts[run.state.sources[cut.source].script_index].record;
         let message = format!(
             "{} {}: {} of its chunks are longer than {LINE_CHUNK_MAX_CHARS} characters (the longest has {}): \
-             lines that long are left by a script that could not be parsed. Jev System One is shown only \
+             such a chunk is a single line longer than that (a script that could not be parsed, or a very \
+             long literal). Jev System One is shown only \
              the first {LINE_CHUNK_MAX_CHARS} characters of each, so the reading guide ranks them on that part",
             record.id, record.url, cut.count, cut.longest_chars,
         );

@@ -15,6 +15,7 @@ use adscan_engine::application::ports::{
 use adscan_engine::application::sellers_json::{
     Cancelled, Origin, SellersJsonFile, SellersJsonSource,
 };
+use adscan_engine::domain::diagnostics::CopyStoodIn;
 use adscan_engine::domain::diagnostics::identity::BrowserIdentity;
 use adscan_engine::infrastructure::sellers_cache::LocalSellersJsonCache;
 use adscan_model::CaptureProxy;
@@ -136,8 +137,9 @@ async fn a_file_is_downloaded_once_and_then_read_from_the_kept_copy() {
                 password: None
             },
             known_version: None,
-            // As the scan's browser would ask.
+            // As the scan's browser would ask, for a JSON file.
             identity: scan_identity(),
+            accept: "application/json,*/*;q=0.8",
         }]
     );
 
@@ -239,7 +241,13 @@ async fn an_exchange_that_cannot_be_reached_is_answered_from_a_copy_of_at_most_a
         fixture.clock.advance(7.0 * 24.0 * HOUR);
         assert_eq!(
             fixture.read().await,
-            file(SELLERS, Origin::KeptWhileUnreachable { fetched_at: START }),
+            file(
+                SELLERS,
+                Origin::KeptInstead {
+                    fetched_at: START,
+                    because: CopyStoodIn::ExchangeUnreachable,
+                }
+            ),
             "{trouble:?}"
         );
         // Used, not renewed: the next scan asks again.
@@ -305,6 +313,55 @@ async fn a_failed_lookup_is_remembered_for_an_hour() {
     assert_eq!(unreachable.1, 1, "and it is remembered too");
 }
 
+/// A refusal can be of the asking scan's browser alone (a firewall that
+/// turns one user agent away): it does not replace a copy that still
+/// serves, and is never handed to another scan as that scan's answer.
+#[tokio::test]
+async fn a_refusal_leaves_the_kept_copy_in_place_and_is_never_another_scans_answer() {
+    for status in [401, 403] {
+        let fixture = fixture();
+        fixture
+            .files
+            .answer(URL, sellers_json(SELLERS, Some("\"v1\"")));
+        fixture.read().await;
+        fixture.clock.advance(2.0 * 24.0 * HOUR);
+        fixture.files.answer(URL, text_file(status, "Forbidden"));
+
+        assert_eq!(
+            fixture.read().await,
+            file(
+                SELLERS,
+                Origin::KeptInstead {
+                    fetched_at: START,
+                    because: CopyStoodIn::AnswerNotSellersJson,
+                }
+            ),
+            "{status}"
+        );
+        // Still the copy of two days ago, and still asked about.
+        fixture.requests();
+        fixture
+            .files
+            .answer(URL, sellers_json(SELLERS, Some("\"v1\"")));
+        assert_eq!(fixture.read().await, file(SELLERS, Origin::Downloaded));
+        assert_eq!(
+            fixture.requests()[0].known_version.as_ref().unwrap().etag,
+            Some("\"v1\"".to_string()),
+            "{status}"
+        );
+
+        // Without a copy the scan that was refused is told so, and the next
+        // scan asks for itself.
+        let fixture = self::fixture();
+        fixture.files.answer(URL, text_file(status, "Forbidden"));
+        let refused = format!("the site refused the request (HTTP {status})");
+        assert_eq!(fixture.read().await, unavailable(&refused));
+        assert_eq!(fixture.read().await, unavailable(&refused));
+        assert_eq!(fixture.requests().len(), 2, "{status}: not remembered");
+        assert_eq!(fixture.source.cache_info().await.entries, 0, "{status}");
+    }
+}
+
 /// The outcome of a lookup nothing answers, and how many requests two
 /// lookups in a row made.
 async fn fixture_without_answer() -> (SellersJsonFile, usize) {
@@ -337,15 +394,21 @@ async fn a_name_that_is_no_public_domain_is_never_asked_and_never_kept() {
 struct GatedFiles {
     started: AtomicUsize,
     gate: Notify,
+    /// The language each request was asked in, by address.
+    asked_in: Mutex<Vec<(String, String)>>,
 }
 
 #[async_trait]
 impl PublicFileFetcher for GatedFiles {
     async fn fetch(
         &self,
-        _request: &PublicFileRequest,
+        request: &PublicFileRequest,
         cancel: &CancellationToken,
     ) -> Result<PublicFile, FetchError> {
+        self.asked_in.lock().unwrap().push((
+            request.url.clone(),
+            request.identity.accept_language.clone(),
+        ));
         self.started.fetch_add(1, Ordering::SeqCst);
         tokio::select! {
             () = self.gate.notified() => sellers_json(SELLERS, None),
@@ -359,6 +422,7 @@ fn gated() -> (Arc<SellersJsonSource>, Arc<GatedFiles>, tempfile::TempDir) {
     let files = Arc::new(GatedFiles {
         started: AtomicUsize::new(0),
         gate: Notify::new(),
+        asked_in: Mutex::default(),
     });
     let source = Arc::new(SellersJsonSource::new(
         files.clone(),
@@ -381,13 +445,22 @@ async fn until_started(files: &GatedFiles, count: usize) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn scans_that_need_the_same_exchange_at_once_share_one_download() {
     let (source, files, _directory) = gated();
-    let readers: Vec<_> = (0..6)
-        .map(|_| {
+    // Six scans, each with its own browser: the one download is asked for
+    // as the scan whose turn it is would ask, whichever that is.
+    let languages = ["nl-BE", "de-DE", "fr-FR", "da-DK", "it-IT", "es-ES"];
+    let readers: Vec<_> = languages
+        .into_iter()
+        .map(|language| {
             let source = Arc::clone(&source);
+            let identity = BrowserIdentity::of_scan(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+                Some(language),
+            );
             tokio::spawn(async move {
-                source
-                    .read(EXCHANGE, &scan_identity(), &CancellationToken::new())
-                    .await
+                let read = source
+                    .read(EXCHANGE, &identity, &CancellationToken::new())
+                    .await;
+                (identity, read)
             })
         })
         .collect();
@@ -414,9 +487,14 @@ async fn scans_that_need_the_same_exchange_at_once_share_one_download() {
 
     files.gate.notify_waiters();
     let mut origins = Vec::new();
+    let mut downloaded_for = Vec::new();
     for reader in readers {
-        let read = reader.await.unwrap().unwrap();
+        let (identity, read) = reader.await.unwrap();
+        let read = read.unwrap();
         assert_eq!(read.content.as_deref(), Ok(SELLERS.as_bytes()));
+        if read.origin == Origin::Downloaded {
+            downloaded_for.push(identity.accept_language);
+        }
         origins.push(read.origin);
     }
     other.await.unwrap().unwrap();
@@ -434,6 +512,19 @@ async fn scans_that_need_the_same_exchange_at_once_share_one_download() {
             .filter(|origin| **origin == Origin::Kept { fetched_at: START })
             .count(),
         5
+    );
+    let asked_in: Vec<String> = files
+        .asked_in
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(url, _)| url == URL)
+        .map(|(_, language)| language.clone())
+        .collect();
+    assert_eq!(downloaded_for.len(), 1);
+    assert_eq!(
+        asked_in, downloaded_for,
+        "the download carries its own scan's language"
     );
 }
 

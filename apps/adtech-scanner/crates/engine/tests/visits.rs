@@ -805,6 +805,7 @@ fn page_that_asks_for_bids_without_ad_units(ad_unit_count: Option<u32>) -> Captu
             ad_unit_count,
             timeout: Some(900.0),
             released_at: Some(420.5),
+            still_held: false,
         },
     ));
     for slot in ["top", "side", "footer"] {
